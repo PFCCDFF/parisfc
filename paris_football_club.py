@@ -622,7 +622,6 @@ def script_streamlit(pfc_kpi, edf_kpi):
     # Chemin du logo (peut être une URL ou un fichier local)
     logo_path = "https://upload.wikimedia.org/wikipedia/fr/thumb/d/db/Logo_Paris_FC_2011.svg/1200px-Logo_Paris_FC_2011.svg.png"
 
-
     # CSS pour placer le logo en haut à droite
     st.markdown(
         f"""
@@ -643,10 +642,8 @@ def script_streamlit(pfc_kpi, edf_kpi):
         unsafe_allow_html=True
     )
 
-
     # URL de l'image (Google Drive, Imgur, GitHub, etc.)
     image_url = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
-
 
     # Afficher l'image en haut de la barre latérale
     st.sidebar.image(image_url)
