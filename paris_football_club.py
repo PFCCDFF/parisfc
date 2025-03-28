@@ -659,11 +659,14 @@ def script_streamlit(pfc_kpi, edf_kpi):
     # URL du logo
     logo_certifié_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
 
-    # Affichage du logo
+    # Affichage du logo toujours en bas de la barre latérale
     st.sidebar.markdown(
         f"""
-        <div style="display: flex; justify-content: center;">
-            <img src="{logo_certifié_paris}" width="200">
+        <div style="display: flex; flex-direction: column; height: 100vh; justify-content: space-between;">
+            <div></div>  <!-- Cette div pousse le logo vers le bas -->
+            <div style="text-align: center; margin-bottom: 300px;">
+                <img src="{logo_certifié_paris}" width="200">
+            </div>
         </div>
         """,
         unsafe_allow_html=True
