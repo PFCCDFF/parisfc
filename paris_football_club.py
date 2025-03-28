@@ -619,8 +619,7 @@ def script_streamlit(pfc_kpi, edf_kpi):
     # Title of the app
     st.title("Paris Football Club")
 
-    # Chemin du logo (peut être une URL ou un fichier local)
-    logo_path = "https://upload.wikimedia.org/wikipedia/fr/thumb/d/db/Logo_Paris_FC_2011.svg/1200px-Logo_Paris_FC_2011.svg.png"
+    logo_monochrome = "https://i.postimg.cc/BQQ5K5tp/Monochrome.png"
 
     # CSS pour placer le logo en haut à droite
     st.markdown(
@@ -636,19 +635,39 @@ def script_streamlit(pfc_kpi, edf_kpi):
             }}
         </style>
         <div class="logo-container">
-            <img src="{logo_path}">
+            <img src="{logo_monochrome}">
         </div>
         """,
         unsafe_allow_html=True
     )
 
-    # URL de l'image (Google Drive, Imgur, GitHub, etc.)
-    image_url = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
+    # Chemin du logo (peut être une URL ou un fichier local)
+    logo_pfc = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
 
-    # Afficher l'image en haut de la barre latérale
-    st.sidebar.image(image_url)
+    # Affichage du logo
+    st.sidebar.markdown(
+        f"""
+        <div style="display: flex; justify-content: center;">
+            <img src="{logo_pfc}" width="100">
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-    page = st.sidebar.selectbox("Choisissez une page", ["Statistiques", "Comparaison"]) 
+    page = st.sidebar.selectbox("Choisissez une page", ["Statistiques", "Comparaison"])
+
+    # URL du logo
+    logo_certifié_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
+
+    # Affichage du logo
+    st.sidebar.markdown(
+        f"""
+        <div style="display: flex; justify-content: center;">
+            <img src="{logo_certifié_paris}" width="200">
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
     if page == "Statistiques":
         st.header("Statistiques")
