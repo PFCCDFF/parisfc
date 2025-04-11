@@ -833,6 +833,7 @@ if __name__ == '__main__':
 
             if submitted:
                 if password == st.secrets["password"]:
+                    st.success("Mot de passe correct")
                     st.session_state.authenticated = True
                     st.rerun()
                 else:
