@@ -832,7 +832,7 @@ if __name__ == '__main__':
             submitted = st.form_submit_button("Valider")
 
             if submitted:
-                if password == st.secrets["password"]:
+                if password == st.secrets["password"]["password"]:
                     st.success("Mot de passe correct")
                     st.session_state.authenticated = True
                     st.rerun()
