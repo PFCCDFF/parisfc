@@ -5,6 +5,7 @@ from mplsoccer import PyPizza
 import io
 from mplsoccer import Radar, FontManager, grid
 import streamlit as st
+from streamlit_option_menu import option_menu
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -305,7 +306,7 @@ def create_data(match, joueurs, is_edf):
     # Nettoyage des noms de joueurs avant le merge
     dfs = [df_duration, df_tirs, df_passes, df_dribbles, df_duels_defensifs, df_interceptions, df_pertes_de_balle]
     for df in dfs:
-        df['Player'] = df['Player'].str.strip()
+        df['Player'] = df['Player'].apply(lambda x: x.strip() if isinstance(x, str) else x)
 
     # Fusionner les dataframes
     df = df_duration.merge(df_tirs, on='Player', how='outer')
@@ -629,7 +630,30 @@ def script_streamlit(pfc_kpi, edf_kpi):
         unsafe_allow_html=True
     )
 
-    page = st.sidebar.selectbox("Choisissez une page", ["Statistiques", "Comparaison"])
+    with st.sidebar:
+        page = option_menu(
+            menu_title="",
+            options=["Statistiques", "Comparaison"],
+            icons=["graph-up-arrow", "people"],
+            menu_icon="cast",
+            default_index=0,
+            orientation="vertical",
+            styles={
+                "container": {"padding": "5!important", "background-color": "transparent"},
+                "icon": {"font-size": "18px"},
+                "nav-link": {
+                    "font-size": "16px",
+                    "text-align": "left",
+                    "margin":"0px",
+                    "--hover-color": "#0E1117"
+                },
+                "nav-link-selected": {
+                    "background-color": "#0E1117",
+                    "color": "#ecebe3",
+                    "font-weight": "bold"
+                }
+            }
+        )
 
     # URL du logo
     logo_certifié_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
@@ -798,6 +822,11 @@ def script_streamlit(pfc_kpi, edf_kpi):
                     st.pyplot(fig)
 
 if __name__ == '__main__':
+    st.set_page_config(
+        page_title="Paris Football Club",
+        page_icon="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
+    )
+
     # Title of the app
     st.title("Paris Football Club")
 
