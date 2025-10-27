@@ -1,9 +1,60 @@
+L'erreur import pkg_resources signifie que la bibliothèque setuptools, qui fournit le module pkg_resources, n'est pas installée dans ton environnement. Voici comment résoudre ce problème et s'assurer que toutes les dépendances sont correctement installées.
+
+1. Installer setuptools
+Pour résoudre cette erreur, installe la bibliothèque setuptools avec la commande suivante :
+bash Copierpip install setuptools
+
+2. Installer toutes les dépendances
+Pour éviter d'autres erreurs similaires, assure-toi que toutes les dépendances sont installées. Voici comment procéder :
+a. Créer un fichier requirements.txt
+Crée un fichier requirements.txt à la racine de ton projet avec le contenu suivant :
+txt Copiersetuptools==68.0.0
+bcrypt==4.0.1
+pandas==2.0.3
+numpy==1.24.3
+streamlit==1.27.0
+streamlit-option-menu==0.3.6
+google-auth==2.22.0
+google-auth-oauthlib==1.0.0
+google-auth-httplib2==0.1.0
+google-api-python-client==2.96.0
+mplsoccer==1.0.1
+openpyxl==3.1.2
+
+b. Installer les dépendances
+Utilise la commande suivante pour installer toutes les dépendances listées dans requirements.txt :
+bash Copierpip install -r requirements.txt
+
+3. Vérifier l'environnement Python
+Assure-toi que tu utilises une version récente de Python (3.8 ou supérieure) et que tu es dans le bon environnement virtuel si tu en utilises un.
+a. Vérifier la version de Python
+bash Copierpython --version
+b. Créer et activer un environnement virtuel (recommandé)
+Si tu n'as pas encore d'environnement virtuel, crée-en un et active-le :
+bash Copier# Créer un environnement virtuel
+python -m venv venv
+
+# Activer l'environnement virtuel
+# Sur Windows :
+venv\Scripts\activate
+# Sur macOS/Linux :
+source venv/bin/activate
+
+# Installer les dépendances
+pip install -r requirements.txt
+
+4. Exécuter le script
+Une fois toutes les dépendances installées, exécute ton script avec la commande suivante :
+bash Copierstreamlit run paris_football_club.py
+
+5. Script corrigé avec vérification des dépendances
+Voici une version corrigée du script avec une vérification plus robuste des dépendances :
+python Copierimport sys
 import subprocess
-import sys
-import pkg_resources
 
 def install_requirements():
     required_packages = [
+        "setuptools==68.0.0",
         "bcrypt==4.0.1",
         "pandas==2.0.3",
         "numpy==1.24.3",
@@ -20,15 +71,14 @@ def install_requirements():
     for package in required_packages:
         package_name = package.split("==")[0]
         try:
-            pkg_resources.get_distribution(package_name)
+            __import__(package_name)
             print(f"{package_name} est déjà installé.")
-        except pkg_resources.DistributionNotFound:
+        except ImportError:
             print(f"Installation de {package_name}...")
             subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
-# --- Installation des dépendances ---
-if __name__ == "__main__":
-    install_requirements()
+# Installer les dépendances manquantes
+install_requirements()
 
 # --- Importation des bibliothèques ---
 import pandas as pd
@@ -42,6 +92,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from mplsoccer import PyPizza, Radar, FontManager, grid
 import bcrypt
+import pkg_resources
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -793,3 +844,4 @@ if __name__ == '__main__':
     else:
         users_df = load_users()
         script_streamlit(users_df)
+
