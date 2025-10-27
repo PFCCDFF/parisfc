@@ -29,6 +29,30 @@ def authenticate_google_drive():
     
     return service
 
+st.sidebar.title("Base de données")
+
+if st.sidebar.button("Mettre à jour la base de données"):
+    with st.spinner("Mise à jour des données en cours..."):
+        download_google_drive()
+    st.success("✅ Mise à jour terminée")
+    st.cache_data.clear()
+
+@st.cache_data
+def charger_donnees():
+    data_folder = "data"
+    fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx'))]
+
+    df_dict = {}
+    for f in fichiers:
+        path = os.path.join(data_folder, f)
+        if f.endswith(".csv"):
+            df_dict[f] = pd.read_csv(path)
+        else:
+            df_dict[f] = pd.read_excel(path)
+    return df_dict
+
+base_donnees = charger_donnees()
+
 # Télécharger un fichier
 def download_file(service, file_id, file_name, output_folder):
     request = service.files().get_media(fileId=file_id)
@@ -870,3 +894,4 @@ if __name__ == '__main__':
     if st.session_state.authenticated:
         pfc_kpi, edf_kpi = collect_data()
         script_streamlit(pfc_kpi, edf_kpi)
+
