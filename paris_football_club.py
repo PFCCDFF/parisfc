@@ -1,3 +1,4 @@
+pip install -r requirements.txt
 import pandas as pd
 import numpy as np
 import os
@@ -760,3 +761,4 @@ if __name__ == '__main__':
     else:
         users_df = load_users()
         script_streamlit(users_df)
+
