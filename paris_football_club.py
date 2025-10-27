@@ -1,4 +1,36 @@
-pip install -r requirements.txt
+import subprocess
+import sys
+import pkg_resources
+
+def install_requirements():
+    required_packages = [
+        "bcrypt==4.0.1",
+        "pandas==2.0.3",
+        "numpy==1.24.3",
+        "streamlit==1.27.0",
+        "streamlit-option-menu==0.3.6",
+        "google-auth==2.22.0",
+        "google-auth-oauthlib==1.0.0",
+        "google-auth-httplib2==0.1.0",
+        "google-api-python-client==2.96.0",
+        "mplsoccer==1.0.1",
+        "openpyxl==3.1.2"
+    ]
+
+    for package in required_packages:
+        package_name = package.split("==")[0]
+        try:
+            pkg_resources.get_distribution(package_name)
+            print(f"{package_name} est déjà installé.")
+        except pkg_resources.DistributionNotFound:
+            print(f"Installation de {package_name}...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+# --- Installation des dépendances ---
+if __name__ == "__main__":
+    install_requirements()
+
+# --- Importation des bibliothèques ---
 import pandas as pd
 import numpy as np
 import os
@@ -761,4 +793,3 @@ if __name__ == '__main__':
     else:
         users_df = load_users()
         script_streamlit(users_df)
-
