@@ -53,6 +53,9 @@ def charger_donnees():
 
 base_donnees = charger_donnees()
 
+match = base_donnees["match.csv"]
+joueurs = base_donnees["joueurs.csv"]
+
 # Télécharger un fichier
 def download_file(service, file_id, file_name, output_folder):
     request = service.files().get_media(fileId=file_id)
@@ -894,4 +897,5 @@ if __name__ == '__main__':
     if st.session_state.authenticated:
         pfc_kpi, edf_kpi = collect_data()
         script_streamlit(pfc_kpi, edf_kpi)
+
 
