@@ -8,6 +8,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from mplsoccer import PyPizza, Radar, FontManager, grid
+import bcrypt
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -50,6 +51,24 @@ def download_google_drive():
                 download_file(service, file['id'], file['name'], output_folder)
             else:
                 print(f"Fichier ignoré (non .csv ou .xlsx) : {file['name']}")
+
+# --- Fonctions de gestion des utilisateurs ---
+def hash_password(password):
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def verify_password(hashed_password, password):
+    return bcrypt.checkpw(password.encode(), hashed_password.encode())
+
+def load_users():
+    try:
+        users_df = pd.read_excel("data/Classeurs permissions streamlit.xlsx")
+        return users_df
+    except Exception as e:
+        st.error(f"Erreur lors du chargement des utilisateurs : {e}")
+        return pd.DataFrame(columns=["username", "password", "profile", "permissions"])
+
+def check_permission(required_permission):
+    return required_permission in st.session_state.get("permissions", [])
 
 # --- Fonctions de traitement des données ---
 def players_edf_duration(match):
@@ -351,7 +370,7 @@ def collect_data():
     pfc_kpi = pd.DataFrame()
     edf_kpi = pd.DataFrame()
     for filename in os.listdir('data'):
-        if filename.endswith('.xlsx'):
+        if filename.endswith('.xlsx') and "EDF" in filename:
             print(f'\'{filename}\' : Récupération des statistiques en cours...')
             edf = pd.read_excel(f'data/{filename}')
             unique_matches = edf['Match'].unique()
@@ -420,7 +439,28 @@ def collect_data():
                 pfc_kpi = pd.concat([pfc_kpi, df])
     return pfc_kpi, edf_kpi
 
-def script_streamlit():
+# --- Fonctions d'authentification ---
+def login_page(users_df):
+    st.title("Connexion")
+    username = st.text_input("Nom d'utilisateur")
+    password = st.text_input("Mot de passe", type="password")
+
+    if st.button("Se connecter"):
+        user = users_df[users_df["username"] == username]
+        if not user.empty:
+            if verify_password(user["password"].iloc[0], password):
+                st.session_state["authenticated"] = True
+                st.session_state["profile"] = user["profile"].iloc[0]
+                st.session_state["username"] = username
+                st.session_state["permissions"] = user["permissions"].iloc[0].split(",")
+                st.rerun()
+            else:
+                st.error("Mot de passe incorrect")
+        else:
+            st.error("Utilisateur non trouvé")
+
+# --- Script principal ---
+def script_streamlit(users_df):
     # Chemin du logo
     logo_pfc = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
     st.sidebar.markdown(
@@ -432,16 +472,24 @@ def script_streamlit():
         unsafe_allow_html=True
     )
 
-    # Ajouter un bouton de mise à jour des données
+    # Afficher le profil de l'utilisateur connecté
+    st.sidebar.write(f"Connecté en tant que : **{st.session_state['username']}** ({st.session_state['profile']})")
+
+    # Bouton de déconnexion
+    if st.sidebar.button("Se déconnecter"):
+        del st.session_state["authenticated"]
+        del st.session_state["profile"]
+        del st.session_state["username"]
+        del st.session_state["permissions"]
+        st.rerun()
+
+    # Bouton de mise à jour des données
     if st.sidebar.button("Mettre à jour les données"):
-        # Supprimer les anciennes données de la session
         if 'pfc_kpi' in st.session_state:
             del st.session_state['pfc_kpi']
         if 'edf_kpi' in st.session_state:
             del st.session_state['edf_kpi']
-        # Afficher un message de confirmation
         st.sidebar.success("Les données vont être mises à jour...")
-        # Forcer le rechargement des données
         st.rerun()
 
     # Vérifier si les données sont déjà en session
@@ -455,24 +503,25 @@ def script_streamlit():
         pfc_kpi = st.session_state.pfc_kpi
         edf_kpi = st.session_state.edf_kpi
 
-    # Affichage du logo certifié Paris
-    logo_certifié_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
-    st.sidebar.markdown(
-        f"""
-        <div style="display: flex; flex-direction: column; height: 100vh; justify-content: space-between;">
-            <div></div>
-            <div style="text-align: center; margin-bottom: 300px;">
-                <img src="{logo_certifié_paris}" width="200">
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    # Filtrer les données PFC pour les joueuses
+    if st.session_state["profile"] == "joueuse":
+        pfc_kpi = pfc_kpi[pfc_kpi['Player'] == st.session_state["username"]]
+
+    # Adapter la sidebar en fonction des permissions
+    page_options = []
+    if check_permission("Statistiques"):
+        page_options.append("Statistiques")
+    if check_permission("Comparaison"):
+        page_options.append("Comparaison")
+
+    if not page_options:
+        st.error("Vous n'avez accès à aucune page.")
+        return
 
     with st.sidebar:
         page = option_menu(
             menu_title="",
-            options=["Statistiques", "Comparaison"],
+            options=page_options,
             icons=["graph-up-arrow", "people"],
             menu_icon="cast",
             default_index=0,
@@ -494,99 +543,182 @@ def script_streamlit():
             }
         )
 
+    # Affichage du logo certifié Paris
+    logo_certifié_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
+    st.sidebar.markdown(
+        f"""
+        <div style="display: flex; flex-direction: column; height: 100vh; justify-content: space-between;">
+            <div></div>
+            <div style="text-align: center; margin-bottom: 300px;">
+                <img src="{logo_certifié_paris}" width="200">
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
     if page == "Statistiques":
         st.header("Statistiques")
-        st.subheader("Sélectionnez une joueuse du Paris FC")
-        player = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique())
-        player_data = pfc_kpi[pfc_kpi['Player'] == player]
-        game = st.multiselect("Choisissez un ou plusieurs matchs", player_data['Adversaire'].unique())
-        player_data = player_data[player_data['Adversaire'].isin(game)]
-        player_data = player_data.groupby('Player').agg({
-            'Temps de jeu (en minutes)': 'sum',
-            'Buts': 'sum',
-        }).join(
-            player_data.groupby('Player').mean(numeric_only=True).drop(columns=['Temps de jeu (en minutes)', 'Buts'])
-        ).round().astype(int).reset_index()
-        if len(game) == 0:
-            st.error("Veuillez sélectionner au moins un match.")
+
+        if st.session_state["profile"] == "joueuse":
+            st.subheader(f"Vos statistiques, {st.session_state['username']}")
+            player_data = pfc_kpi
+
+            if not player_data.empty:
+                player_data = player_data.groupby('Player').agg({
+                    'Temps de jeu (en minutes)': 'sum',
+                    'Buts': 'sum',
+                }).join(
+                    player_data.groupby('Player').mean(numeric_only=True).drop(columns=['Temps de jeu (en minutes)', 'Buts'])
+                ).round().astype(int).reset_index()
+
+                time_played, goals = st.columns(2)
+                with time_played:
+                    st.metric("Temps de jeu", f"{player_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
+                with goals:
+                    st.metric("Buts", f"{player_data['Buts'].iloc[0]}")
+
+                tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Comparaison EDF"])
+                with tab1:
+                    fig = create_individual_radar(player_data)
+                    st.pyplot(fig)
+                with tab2:
+                    if check_permission("KPIs"):
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        with col1:
+                            st.metric("Rigueur", f"{player_data['Rigueur'].iloc[0]}/100")
+                        with col2:
+                            st.metric("Récupération", f"{player_data['Récupération'].iloc[0]}/100")
+                        with col3:
+                            st.metric("Distribution", f"{player_data['Distribution'].iloc[0]}/100")
+                        with col4:
+                            st.metric("Percussion", f"{player_data['Percussion'].iloc[0]}/100")
+                        with col5:
+                            st.metric("Finition", f"{player_data['Finition'].iloc[0]}/100")
+                    else:
+                        st.warning("Vous n'avez pas la permission de voir les KPIs.")
+                with tab3:
+                    st.subheader("Comparaison avec l'Équipe de France")
+                    edf_poste = st.selectbox("Sélectionnez un poste EDF", edf_kpi['Poste'].unique())
+                    edf_data = edf_kpi[edf_kpi['Poste'] == edf_poste]
+                    st.dataframe(edf_data)
+            else:
+                st.error("Aucune donnée disponible.")
         else:
-            time_played, goals = st.columns(2)
-            with time_played:
-                st.metric("Temps de jeu", f"{player_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
-            with goals:
-                st.metric("Buts", f"{player_data['Buts'].iloc[0]}")
-            tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
-            with tab1:
-                fig = create_individual_radar(player_data)
-                st.pyplot(fig)
-            with tab2:
-                col1, col2, col3, col4, col5 = st.columns(5)
-                with col1:
-                    st.metric("Rigueur", f"{player_data['Rigueur'].iloc[0]}/100")
-                with col2:
-                    st.metric("Récupération", f"{player_data['Récupération'].iloc[0]}/100")
-                with col3:
-                    st.metric("Distribution", f"{player_data['Distribution'].iloc[0]}/100")
-                with col4:
-                    st.metric("Percussion", f"{player_data['Percussion'].iloc[0]}/100")
-                with col5:
-                    st.metric("Finition", f"{player_data['Finition'].iloc[0]}/100")
-            with tab3:
-                col1, col2, col3, col4, col5, col6 = st.columns(6)
-                with col1:
-                    st.metric("Défenseur central", f"{player_data['Défenseur central'].iloc[0]}/100")
-                with col2:
-                    st.metric("Défenseur latéral", f"{player_data['Défenseur latéral'].iloc[0]}/100")
-                with col3:
-                    st.metric("Milieu défensif", f"{player_data['Milieu défensif'].iloc[0]}/100")
-                with col4:
-                    st.metric("Milieu relayeur", f"{player_data['Milieu relayeur'].iloc[0]}/100")
-                with col5:
-                    st.metric("Milieu offensif", f"{player_data['Milieu offensif'].iloc[0]}/100")
-                with col6:
-                    st.metric("Attaquant", f"{player_data['Attaquant'].iloc[0]}/100")
+            st.subheader("Sélectionnez une joueuse du Paris FC")
+            player = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique())
+            player_data = pfc_kpi[pfc_kpi['Player'] == player]
+            game = st.multiselect("Choisissez un ou plusieurs matchs", player_data['Adversaire'].unique())
+            player_data = player_data[player_data['Adversaire'].isin(game)]
+
+            if len(game) == 0:
+                st.error("Veuillez sélectionner au moins un match.")
+            else:
+                player_data = player_data.groupby('Player').agg({
+                    'Temps de jeu (en minutes)': 'sum',
+                    'Buts': 'sum',
+                }).join(
+                    player_data.groupby('Player').mean(numeric_only=True).drop(columns=['Temps de jeu (en minutes)', 'Buts'])
+                ).round().astype(int).reset_index()
+
+                time_played, goals = st.columns(2)
+                with time_played:
+                    st.metric("Temps de jeu", f"{player_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
+                with goals:
+                    st.metric("Buts", f"{player_data['Buts'].iloc[0]}")
+
+                tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
+                with tab1:
+                    fig = create_individual_radar(player_data)
+                    st.pyplot(fig)
+                with tab2:
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                    with col1:
+                        st.metric("Rigueur", f"{player_data['Rigueur'].iloc[0]}/100")
+                    with col2:
+                        st.metric("Récupération", f"{player_data['Récupération'].iloc[0]}/100")
+                    with col3:
+                        st.metric("Distribution", f"{player_data['Distribution'].iloc[0]}/100")
+                    with col4:
+                        st.metric("Percussion", f"{player_data['Percussion'].iloc[0]}/100")
+                    with col5:
+                        st.metric("Finition", f"{player_data['Finition'].iloc[0]}/100")
+                with tab3:
+                    col1, col2, col3, col4, col5, col6 = st.columns(6)
+                    with col1:
+                        st.metric("Défenseur central", f"{player_data['Défenseur central'].iloc[0]}/100")
+                    with col2:
+                        st.metric("Défenseur latéral", f"{player_data['Défenseur latéral'].iloc[0]}/100")
+                    with col3:
+                        st.metric("Milieu défensif", f"{player_data['Milieu défensif'].iloc[0]}/100")
+                    with col4:
+                        st.metric("Milieu relayeur", f"{player_data['Milieu relayeur'].iloc[0]}/100")
+                    with col5:
+                        st.metric("Milieu offensif", f"{player_data['Milieu offensif'].iloc[0]}/100")
+                    with col6:
+                        st.metric("Attaquant", f"{player_data['Attaquant'].iloc[0]}/100")
+
     elif page == "Comparaison":
         st.header("Comparaison")
-        st.subheader("Sélectionnez une joueuse du Paris FC")
-        player1 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_1')
-        player1_data = pfc_kpi[pfc_kpi['Player'] == player1]
-        game1 = st.multiselect("Choisissez un ou plusieurs matchs", player1_data['Adversaire'].unique(), key='games_1')
-        player1_data = player1_data[player1_data['Adversaire'].isin(game1)]
-        player1_data = player1_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
-        tab1, tab2 = st.tabs(["Comparaison (PFC)", "Comparaison (EDF)"])
-        with tab1:
-            st.subheader("Sélectionnez une autre joueuse du Paris FC")
-            player2 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_2_pfc')
-            player2_data = pfc_kpi[pfc_kpi['Player'] == player2]
-            game2 = st.multiselect("Choisissez un ou plusieurs matchs", player2_data['Adversaire'].unique(), key='games_2_pfc')
-            player2_data = player2_data[player2_data['Adversaire'].isin(game2)]
-            player2_data = player2_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
-            if st.button("Afficher le radar", key='button_pfc'):
-                if len(game1) == 0 or len(game2) == 0:
-                    st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
-                else:
-                    players_data = pd.concat([player1_data, player2_data])
-                    fig = create_comparison_radar(players_data)
-                    st.pyplot(fig)
-        with tab2:
-            st.subheader("Sélectionnez un poste de l'Équipe de France")
-            player2 = st.selectbox("Choisissez un poste de comparaison", edf_kpi['Poste'].unique(), key='player_2_edf')
+
+        if st.session_state["profile"] == "joueuse":
+            st.subheader(f"Comparez vos statistiques avec l'Équipe de France")
+            player1_data = pfc_kpi
+
+            player2 = st.selectbox("Sélectionnez un poste EDF", edf_kpi['Poste'].unique())
             player2_data = edf_kpi[edf_kpi['Poste'] == player2]
             player2_data.rename(columns={'Poste': 'Player'}, inplace=True)
-            if st.button("Afficher le radar", key='button_edf'):
-                if len(game1) == 0:
-                    st.error("Veuillez sélectionner au moins un match.")
-                else:
-                    players_data = pd.concat([player1_data, player2_data])
-                    fig = create_comparison_radar(players_data)
-                    st.pyplot(fig)
 
+            if st.button("Afficher le radar"):
+                players_data = pd.concat([player1_data, player2_data])
+                fig = create_comparison_radar(players_data)
+                st.pyplot(fig)
+        else:
+            st.subheader("Sélectionnez une joueuse du Paris FC")
+            player1 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_1')
+            player1_data = pfc_kpi[pfc_kpi['Player'] == player1]
+            game1 = st.multiselect("Choisissez un ou plusieurs matchs", player1_data['Adversaire'].unique(), key='games_1')
+            player1_data = player1_data[player1_data['Adversaire'].isin(game1)]
+            player1_data = player1_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
+
+            tab1, tab2 = st.tabs(["Comparaison (PFC)", "Comparaison (EDF)"])
+            with tab1:
+                st.subheader("Sélectionnez une autre joueuse du Paris FC")
+                player2 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_2_pfc')
+                player2_data = pfc_kpi[pfc_kpi['Player'] == player2]
+                game2 = st.multiselect("Choisissez un ou plusieurs matchs", player2_data['Adversaire'].unique(), key='games_2_pfc')
+                player2_data = player2_data[player2_data['Adversaire'].isin(game2)]
+                player2_data = player2_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
+
+                if st.button("Afficher le radar", key='button_pfc'):
+                    if len(game1) == 0 or len(game2) == 0:
+                        st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
+                    else:
+                        players_data = pd.concat([player1_data, player2_data])
+                        fig = create_comparison_radar(players_data)
+                        st.pyplot(fig)
+            with tab2:
+                st.subheader("Sélectionnez un poste de l'Équipe de France")
+                player2 = st.selectbox("Choisissez un poste de comparaison", edf_kpi['Poste'].unique(), key='player_2_edf')
+                player2_data = edf_kpi[edf_kpi['Poste'] == player2]
+                player2_data.rename(columns={'Poste': 'Player'}, inplace=True)
+
+                if st.button("Afficher le radar", key='button_edf'):
+                    if len(game1) == 0:
+                        st.error("Veuillez sélectionner au moins un match.")
+                    else:
+                        players_data = pd.concat([player1_data, player2_data])
+                        fig = create_comparison_radar(players_data)
+                        st.pyplot(fig)
+
+# --- Point d'entrée ---
 if __name__ == '__main__':
     st.set_page_config(
         page_title="Paris Football Club",
         page_icon="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
     )
     st.title("Paris Football Club")
+
     logo_monochrome = "https://i.postimg.cc/BQQ5K5tp/Monochrome.png"
     st.markdown(
         f"""
@@ -606,17 +738,13 @@ if __name__ == '__main__':
         """,
         unsafe_allow_html=True
     )
+
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
+
     if not st.session_state.authenticated:
-        with st.form("login_form"):
-            password = st.text_input("Mot de passe", type="password")
-            submitted = st.form_submit_button("Valider")
-            if submitted:
-                if password == st.secrets["password"]["password"]:
-                    st.session_state.authenticated = True
-                    st.rerun()
-                else:
-                    st.error("Mot de passe incorrect")
-    if st.session_state.authenticated:
-        script_streamlit()
+        users_df = load_users()
+        login_page(users_df)
+    else:
+        users_df = load_users()
+        script_streamlit(users_df)
