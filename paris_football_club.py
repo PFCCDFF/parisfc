@@ -43,14 +43,14 @@ def download_google_drive():
     os.makedirs(output_folder, exist_ok=True)
     files = list_files_in_folder(service, folder_id)
     if not files:
-        print("Aucun fichier trouvé dans le dossier.")
+        st.error("Aucun fichier trouvé dans le dossier Google Drive.")
     else:
         for file in files:
             if file['name'].endswith(('.csv', '.xlsx')):
-                print(f"Téléchargement de : {file['name']}...")
+                st.write(f"Téléchargement de : {file['name']}...")
                 download_file(service, file['id'], file['name'], output_folder)
             else:
-                print(f"Fichier ignoré (non .csv ou .xlsx) : {file['name']}")
+                st.write(f"Fichier ignoré (non .csv ou .xlsx) : {file['name']}")
 
 # --- Fonctions de gestion des utilisateurs ---
 def hash_password(password):
@@ -63,9 +63,12 @@ def load_users():
     try:
         users_df = pd.read_excel("data/Classeurs permissions streamlit.xlsx")
         return users_df
+    except FileNotFoundError:
+        st.error("Le fichier 'Classeurs permissions streamlit.xlsx' est introuvable. Veuillez le télécharger depuis Google Drive.")
+        return None
     except Exception as e:
         st.error(f"Erreur lors du chargement des utilisateurs : {e}")
-        return pd.DataFrame(columns=["username", "password", "profile", "permissions"])
+        return None
 
 def check_permission(required_permission):
     return required_permission in st.session_state.get("permissions", [])
@@ -371,7 +374,7 @@ def collect_data():
     edf_kpi = pd.DataFrame()
     for filename in os.listdir('data'):
         if filename.endswith('.xlsx') and "EDF" in filename:
-            print(f'\'{filename}\' : Récupération des statistiques en cours...')
+            st.write(f'\'{filename}\' : Récupération des statistiques en cours...')
             edf = pd.read_excel(f'data/{filename}')
             unique_matches = edf['Match'].unique()
             for match in unique_matches:
@@ -446,6 +449,10 @@ def login_page(users_df):
     password = st.text_input("Mot de passe", type="password")
 
     if st.button("Se connecter"):
+        if users_df is None:
+            st.error("Le fichier des utilisateurs n'est pas disponible. Veuillez contacter l'administrateur.")
+            return
+
         user = users_df[users_df["username"] == username]
         if not user.empty:
             if verify_password(user["password"].iloc[0], password):
@@ -743,8 +750,13 @@ if __name__ == '__main__':
         st.session_state.authenticated = False
 
     if not st.session_state.authenticated:
+        # Télécharger le fichier des utilisateurs depuis Google Drive
+        download_google_drive()
         users_df = load_users()
-        login_page(users_df)
+        if users_df is not None:
+            login_page(users_df)
+        else:
+            st.error("Impossible de charger le fichier des utilisateurs. Veuillez vérifier que le fichier 'Classeurs permissions streamlit.xlsx' est présent dans le dossier 'data'.")
     else:
         users_df = load_users()
         script_streamlit(users_df)
