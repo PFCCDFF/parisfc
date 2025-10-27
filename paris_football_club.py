@@ -1,6 +1,5 @@
 import subprocess
 import sys
-import pkg_resources
 
 def install_requirements():
     required_packages = [
@@ -793,3 +792,4 @@ if __name__ == '__main__':
     else:
         users_df = load_users()
         script_streamlit(users_df)
+
