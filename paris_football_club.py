@@ -434,14 +434,10 @@ def script_streamlit():
 
     # Ajouter un bouton de mise à jour des données
     if st.sidebar.button("Mettre à jour les données"):
-        # Supprimer les anciennes données de la session
         if 'pfc_kpi' in st.session_state:
-            del st.session_state['pfc_kpi']
+            del st.session_state.pfc_kpi
         if 'edf_kpi' in st.session_state:
-            del st.session_state['edf_kpi']
-        # Afficher un message de confirmation
-        st.sidebar.success("Les données vont être mises à jour...")
-        # Forcer le rechargement des données
+            del st.session_state.edf_kpi
         st.rerun()
 
     # Vérifier si les données sont déjà en session
@@ -450,7 +446,6 @@ def script_streamlit():
             pfc_kpi, edf_kpi = collect_data()
             st.session_state.pfc_kpi = pfc_kpi
             st.session_state.edf_kpi = edf_kpi
-            st.sidebar.success("Données chargées avec succès !")
     else:
         pfc_kpi = st.session_state.pfc_kpi
         edf_kpi = st.session_state.edf_kpi
