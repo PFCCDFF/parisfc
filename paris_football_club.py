@@ -14,13 +14,10 @@ warnings.filterwarnings('ignore')
 
 # --- Fonction de nettoyage des noms de joueuses ---
 def nettoyer_nom_joueuse(nom):
-    """
-    Nettoie le nom d'une joueuse en supprimant les doublons séparés par une virgule.
-    Exemple : "Nom, Nom" -> "Nom"
-    """
+    """Nettoie le nom d'une joueuse en supprimant les doublons séparés par une virgule."""
     if isinstance(nom, str):
-        nom = nom.strip()
-        parts = [part.strip() for part in nom.split(",")]
+        nom = nom.strip().upper()  # Convertir en majuscules pour la comparaison
+        parts = [part.strip().upper() for part in nom.split(",")]
         if len(parts) > 1 and parts[0] == parts[1]:
             return parts[0]
         return nom
@@ -28,6 +25,7 @@ def nettoyer_nom_joueuse(nom):
 
 # --- Fonctions d'authentification et téléchargement Google Drive ---
 def authenticate_google_drive():
+    """Authentification avec Google Drive."""
     SCOPES = ['https://www.googleapis.com/auth/drive']
     service_account_info = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
     creds = service_account.Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
@@ -35,6 +33,7 @@ def authenticate_google_drive():
     return service
 
 def download_file(service, file_id, file_name, output_folder):
+    """Télécharge un fichier depuis Google Drive."""
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
@@ -47,11 +46,57 @@ def download_file(service, file_id, file_name, output_folder):
     print(f"Fichier téléchargé : {file_path}")
 
 def list_files_in_folder(service, folder_id):
+    """Liste les fichiers dans un dossier Google Drive."""
     query = f"'{folder_id}' in parents and trashed=false"
     results = service.files().list(q=query, fields="files(id, name)").execute()
     return results.get('files', [])
 
+def download_permissions_file(service, folder_id):
+    """Télécharge le fichier des permissions depuis Google Drive."""
+    files = list_files_in_folder(service, folder_id)
+    for file in files:
+        if file['name'] == "Classeurs permissions streamlit.xlsx":
+            output_folder = "data"
+            os.makedirs(output_folder, exist_ok=True)
+            download_file(service, file['id'], file['name'], output_folder)
+            permissions_path = os.path.join(output_folder, file['name'])
+            return permissions_path
+    return None
+
+def load_permissions():
+    """Charge les permissions depuis le fichier Excel."""
+    service = authenticate_google_drive()
+    folder_id = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
+    permissions_path = download_permissions_file(service, folder_id)
+    if permissions_path:
+        permissions_df = pd.read_excel(permissions_path)
+        permissions = {}
+        for _, row in permissions_df.iterrows():
+            profile = row['Profil']
+            permissions[profile] = {
+                "password": row['Mot de passe'],
+                "permissions": row['Permissions'].split(',') if isinstance(row['Permissions'], str) else [],
+                "player": row.get('Joueuse', None)  # Récupère le nom de la joueuse associée
+            }
+        return permissions
+    return {}
+
+# --- Gestion des profils et permissions ---
+def check_permission(user_profile, required_permission, permissions):
+    """Vérifie si un profil a une permission spécifique."""
+    if user_profile in permissions:
+        return required_permission in permissions[user_profile]["permissions"]
+    return False
+
+def get_player_for_profile(profile, permissions):
+    """Récupère le nom de la joueuse associée à un profil."""
+    if profile in permissions:
+        return permissions[profile].get("player", None)
+    return None
+
+# --- Fonctions de chargement et traitement des données ---
 def download_google_drive():
+    """Télécharge les données depuis Google Drive."""
     service = authenticate_google_drive()
     folder_id = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
     output_folder = "data"
@@ -61,22 +106,20 @@ def download_google_drive():
         print("Aucun fichier trouvé dans le dossier.")
     else:
         for file in files:
-            if file['name'].endswith(('.csv', '.xlsx')):
+            if file['name'].endswith(('.csv', '.xlsx')) and file['name'] != "Classeurs permissions streamlit.xlsx":
                 print(f"Téléchargement de : {file['name']}...")
                 download_file(service, file['id'], file['name'], output_folder)
-            else:
-                print(f"Fichier ignoré (non .csv ou .xlsx) : {file['name']}")
 
-# --- Fonctions de chargement des données ---
 @st.cache_data
 def charger_donnees():
+    """Charge les données locales."""
     data_folder = "data"
     if not os.path.exists(data_folder):
         st.error(f"Le dossier '{data_folder}' n'existe pas.")
         return {}
-    fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx'))]
+    fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx')) and f != "Classeurs permissions streamlit.xlsx"]
     if not fichiers:
-        st.warning(f"Aucun fichier CSV ou Excel trouvé dans '{data_folder}'.")
+        st.warning(f"Aucun fichier de données trouvé dans '{data_folder}'.")
         return {}
     df_dict = {}
     for f in fichiers:
@@ -90,7 +133,7 @@ def charger_donnees():
             st.error(f"Erreur lors de la lecture du fichier {f}: {e}")
     return df_dict
 
-# --- Fonctions de traitement des données ---
+# --- Fonctions de traitement des données (inchangées) ---
 def players_edf_duration(match):
     df_filtered = match.loc[match['Poste'] != 'Gardienne']
     df_duration = pd.DataFrame({
@@ -117,7 +160,7 @@ def players_duration(match):
         'Temps de jeu (en minutes)': list(players_duration.values())
     })
     df_duration = df_duration.sort_values(by='Temps de jeu (en minutes)', ascending=False)
-    df_duration['Player'] = df_duration['Player'].replace('HAMINI Alya', 'HAMICI Alya')
+    df_duration['Player'] = df_duration['Player'].replace('HAMINI ALYA', 'HAMICI ALYA')
     return df_duration
 
 def players_shots(joueurs):
@@ -235,7 +278,6 @@ def create_data(match, joueurs, is_edf):
         df_duration = players_edf_duration(match)
     else:
         df_duration = players_duration(match)
-
     dfs = [
         df_duration,
         players_shots(joueurs),
@@ -245,16 +287,11 @@ def create_data(match, joueurs, is_edf):
         players_interceptions(joueurs),
         players_ball_losses(joueurs)
     ]
-
-    # Nettoyage des noms de joueurs avant le merge
     for df in dfs:
         df['Player'] = df['Player'].apply(nettoyer_nom_joueuse)
-
-    # Fusionner les dataframes
     df = df_duration
     for other_df in dfs[1:]:
         df = df.merge(other_df, on='Player', how='outer')
-
     df.fillna(0, inplace=True)
     df = df[(df.iloc[:, 1:] != 0).any(axis=1)]
     df = df[df['Temps de jeu (en minutes)'] >= 10]
@@ -333,15 +370,16 @@ def create_comparison_radar(df):
 # --- Fonction principale de collecte des données ---
 @st.cache_data
 def collect_data():
+    """Collecte et traite les données."""
     download_google_drive()
     pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
     data_folder = "data"
     if not os.path.exists(data_folder):
         st.error(f"Le dossier '{data_folder}' n'existe pas.")
         return pfc_kpi, edf_kpi
-    fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx'))]
+    fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx')) and f != "Classeurs permissions streamlit.xlsx"]
     if not fichiers:
-        st.warning(f"Aucun fichier CSV ou Excel trouvé dans '{data_folder}'.")
+        st.warning(f"Aucun fichier de données trouvé dans '{data_folder}'.")
         return pfc_kpi, edf_kpi
     for filename in fichiers:
         path = os.path.join(data_folder, filename)
@@ -407,15 +445,53 @@ def collect_data():
             st.error(f"Erreur lors du traitement du fichier {filename}: {e}")
     return pfc_kpi, edf_kpi
 
-# --- Interface Streamlit ---
-def script_streamlit(pfc_kpi, edf_kpi):
+# --- Fonction pour filtrer les données par joueuse ---
+def filter_data_by_player(df, player_name):
+    """Filtre les données pour une joueuse spécifique."""
+    if player_name:
+        # Nettoyer le nom pour la comparaison
+        player_name_clean = nettoyer_nom_joueuse(player_name)
+        # Filtrer les données
+        df['Player_clean'] = df['Player'].apply(nettoyer_nom_joueuse)
+        filtered_df = df[df['Player_clean'] == player_name_clean].copy()
+        filtered_df.drop(columns=['Player_clean'], inplace=True, errors='ignore')
+        return filtered_df
+    return df
+
+# --- Interface Streamlit avec gestion des permissions et filtrage par joueuse ---
+def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
+    """Interface principale adaptée aux permissions et filtrée par joueuse."""
     logo_pfc = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
     st.sidebar.markdown(f"<div style='display: flex; justify-content: center;'><img src='{logo_pfc}' width='100'></div>", unsafe_allow_html=True)
+
+    # Récupérer le nom de la joueuse associée au profil
+    player_name = get_player_for_profile(user_profile, permissions)
+    st.sidebar.title(f"Connecté en tant que: {user_profile}")
+    if player_name:
+        st.sidebar.write(f"Joueuse associée: {player_name}")
+
+    # Bouton de mise à jour des données (uniquement pour les profils autorisés)
+    if check_permission(user_profile, "update_data", permissions):
+        if st.sidebar.button("Mettre à jour la base de données"):
+            with st.spinner("Mise à jour des données en cours..."):
+                download_google_drive()
+            st.success("✅ Mise à jour terminée")
+            st.cache_data.clear()
+
+    # Filtrer les données en fonction du profil
+    if player_name:
+        pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
+
+    # Affichage des onglets en fonction des permissions
+    available_options = ["Statistiques"]
+    if check_permission(user_profile, "compare_players", permissions):
+        available_options.append("Comparaison")
+
     with st.sidebar:
         page = option_menu(
             menu_title="",
-            options=["Statistiques", "Comparaison"],
-            icons=["graph-up-arrow", "people"],
+            options=available_options,
+            icons=["graph-up-arrow", "people"][:len(available_options)],
             menu_icon="cast",
             default_index=0,
             orientation="vertical",
@@ -426,105 +502,188 @@ def script_streamlit(pfc_kpi, edf_kpi):
                 "nav-link-selected": {"background-color": "#0E1117", "color": "#ecebe3", "font-weight": "bold"}
             }
         )
+
     logo_certifie_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
-    st.sidebar.markdown(f"<div style='display: flex; flex-direction: column; height: 100vh; justify-content: space-between;'><div></div><div style='text-align: center; margin-bottom: 300px;'><img src='{logo_certifie_paris}' width='200'></div></div>", unsafe_allow_html=True)
+    st.sidebar.markdown(
+        f"""
+        <div style='display: flex; flex-direction: column; height: 100vh; justify-content: space-between;'>
+            <div></div>
+            <div style='text-align: center; margin-bottom: 300px;'>
+                <img src='{logo_certifie_paris}' width='200'>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # --- Pages ---
     if page == "Statistiques":
         st.header("Statistiques")
-        st.subheader("Sélectionnez une joueuse du Paris FC")
-        player = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique())
-        player_data = pfc_kpi[pfc_kpi['Player'] == player]
-        game = st.multiselect("Choisissez un ou plusieurs matchs", player_data['Adversaire'].unique())
-        player_data = player_data[player_data['Adversaire'].isin(game)]
-        player_data = player_data.groupby('Player').agg({
-            'Temps de jeu (en minutes)': 'sum',
-            'Buts': 'sum',
-        }).join(
-            player_data.groupby('Player').mean(numeric_only=True).drop(columns=['Temps de jeu (en minutes)', 'Buts'])
-        ).round().astype(int).reset_index()
-        if not game:
-            st.error("Veuillez sélectionner au moins un match.")
+
+        if pfc_kpi.empty:
+            st.warning("Aucune donnée disponible pour votre profil.")
         else:
-            time_played, goals = st.columns(2)
-            with time_played:
-                st.metric("Temps de jeu", f"{player_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
-            with goals:
-                st.metric("Buts", f"{player_data['Buts'].iloc[0]}")
-            tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
-            with tab1:
-                fig = create_individual_radar(player_data)
-                st.pyplot(fig)
-            with tab2:
-                col1, col2, col3, col4, col5 = st.columns(5)
-                with col1: st.metric("Rigueur", f"{player_data['Rigueur'].iloc[0]}/100")
-                with col2: st.metric("Récupération", f"{player_data['Récupération'].iloc[0]}/100")
-                with col3: st.metric("Distribution", f"{player_data['Distribution'].iloc[0]}/100")
-                with col4: st.metric("Percussion", f"{player_data['Percussion'].iloc[0]}/100")
-                with col5: st.metric("Finition", f"{player_data['Finition'].iloc[0]}/100")
-            with tab3:
-                col1, col2, col3, col4, col5, col6 = st.columns(6)
-                with col1: st.metric("Défenseur central", f"{player_data['Défenseur central'].iloc[0]}/100")
-                with col2: st.metric("Défenseur latéral", f"{player_data['Défenseur latéral'].iloc[0]}/100")
-                with col3: st.metric("Milieu défensif", f"{player_data['Milieu défensif'].iloc[0]}/100")
-                with col4: st.metric("Milieu relayeur", f"{player_data['Milieu relayeur'].iloc[0]}/100")
-                with col5: st.metric("Milieu offensif", f"{player_data['Milieu offensif'].iloc[0]}/100")
-                with col6: st.metric("Attaquant", f"{player_data['Attaquant'].iloc[0]}/100")
-    elif page == "Comparaison":
-        st.header("Comparaison")
-        st.subheader("Sélectionnez une joueuse du Paris FC")
-        player1 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_1')
-        player1_data = pfc_kpi[pfc_kpi['Player'] == player1]
-        game1 = st.multiselect("Choisissez un ou plusieurs matchs", player1_data['Adversaire'].unique(), key='games_1')
-        player1_data = player1_data[player1_data['Adversaire'].isin(game1)].groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
-        tab1, tab2 = st.tabs(["Comparaison (PFC)", "Comparaison (EDF)"])
-        with tab1:
-            st.subheader("Sélectionnez une autre joueuse du Paris FC")
-            player2 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_2_pfc')
-            player2_data = pfc_kpi[pfc_kpi['Player'] == player2]
-            game2 = st.multiselect("Choisissez un ou plusieurs matchs", player2_data['Adversaire'].unique(), key='games_2_pfc')
-            player2_data = player2_data[player2_data['Adversaire'].isin(game2)].groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
-            if st.button("Afficher le radar", key='button_pfc'):
-                if not game1 or not game2:
-                    st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
+            if player_name:
+                st.subheader(f"Statistiques pour {player_name}")
+
+                # Pour une joueuse, on n'a qu'une seule ligne de données
+                player_data = pfc_kpi
+
+                if player_data.empty:
+                    st.warning(f"Aucune donnée disponible pour {player_name}.")
                 else:
-                    players_data = pd.concat([player1_data, player2_data])
-                    fig = create_comparison_radar(players_data)
-                    st.pyplot(fig)
-        with tab2:
-            st.subheader("Sélectionnez un poste de l'Équipe de France")
-            player2 = st.selectbox("Choisissez un poste de comparaison", edf_kpi['Poste'].unique(), key='player_2_edf')
-            player2_data = edf_kpi[edf_kpi['Poste'] == player2].rename(columns={'Poste': 'Player'})
-            if st.button("Afficher le radar", key='button_edf'):
-                if not game1:
+                    time_played, goals = st.columns(2)
+                    with time_played:
+                        st.metric("Temps de jeu", f"{player_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
+                    with goals:
+                        st.metric("Buts", f"{player_data['Buts'].iloc[0]}")
+
+                    tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
+
+                    with tab1:
+                        fig = create_individual_radar(player_data)
+                        st.pyplot(fig)
+
+                    with tab2:
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        with col1: st.metric("Rigueur", f"{player_data['Rigueur'].iloc[0]}/100")
+                        with col2: st.metric("Récupération", f"{player_data['Récupération'].iloc[0]}/100")
+                        with col3: st.metric("Distribution", f"{player_data['Distribution'].iloc[0]}/100")
+                        with col4: st.metric("Percussion", f"{player_data['Percussion'].iloc[0]}/100")
+                        with col5: st.metric("Finition", f"{player_data['Finition'].iloc[0]}/100")
+
+                    with tab3:
+                        col1, col2, col3, col4, col5, col6 = st.columns(6)
+                        with col1: st.metric("Défenseur central", f"{player_data['Défenseur central'].iloc[0]}/100")
+                        with col2: st.metric("Défenseur latéral", f"{player_data['Défenseur latéral'].iloc[0]}/100")
+                        with col3: st.metric("Milieu défensif", f"{player_data['Milieu défensif'].iloc[0]}/100")
+                        with col4: st.metric("Milieu relayeur", f"{player_data['Milieu relayeur'].iloc[0]}/100")
+                        with col5: st.metric("Milieu offensif", f"{player_data['Milieu offensif'].iloc[0]}/100")
+                        with col6: st.metric("Attaquant", f"{player_data['Attaquant'].iloc[0]}/100")
+            else:
+                # Pour les profils admin/coach (accès à toutes les joueuses)
+                st.subheader("Sélectionnez une joueuse du Paris FC")
+                player = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique())
+                player_data = pfc_kpi[pfc_kpi['Player'] == player]
+                game = st.multiselect("Choisissez un ou plusieurs matchs", player_data['Adversaire'].unique())
+                player_data = player_data[player_data['Adversaire'].isin(game)]
+                player_data = player_data.groupby('Player').agg({
+                    'Temps de jeu (en minutes)': 'sum',
+                    'Buts': 'sum',
+                }).join(
+                    player_data.groupby('Player').mean(numeric_only=True).drop(columns=['Temps de jeu (en minutes)', 'Buts'])
+                ).round().astype(int).reset_index()
+
+                if not game:
                     st.error("Veuillez sélectionner au moins un match.")
                 else:
-                    players_data = pd.concat([player1_data, player2_data])
-                    fig = create_comparison_radar(players_data)
-                    st.pyplot(fig)
+                    time_played, goals = st.columns(2)
+                    with time_played:
+                        st.metric("Temps de jeu", f"{player_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
+                    with goals:
+                        st.metric("Buts", f"{player_data['Buts'].iloc[0]}")
+
+                    tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
+
+                    with tab1:
+                        fig = create_individual_radar(player_data)
+                        st.pyplot(fig)
+
+                    with tab2:
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        with col1: st.metric("Rigueur", f"{player_data['Rigueur'].iloc[0]}/100")
+                        with col2: st.metric("Récupération", f"{player_data['Récupération'].iloc[0]}/100")
+                        with col3: st.metric("Distribution", f"{player_data['Distribution'].iloc[0]}/100")
+                        with col4: st.metric("Percussion", f"{player_data['Percussion'].iloc[0]}/100")
+                        with col5: st.metric("Finition", f"{player_data['Finition'].iloc[0]}/100")
+
+                    with tab3:
+                        col1, col2, col3, col4, col5, col6 = st.columns(6)
+                        with col1: st.metric("Défenseur central", f"{player_data['Défenseur central'].iloc[0]}/100")
+                        with col2: st.metric("Défenseur latéral", f"{player_data['Défenseur latéral'].iloc[0]}/100")
+                        with col3: st.metric("Milieu défensif", f"{player_data['Milieu défensif'].iloc[0]}/100")
+                        with col4: st.metric("Milieu relayeur", f"{player_data['Milieu relayeur'].iloc[0]}/100")
+                        with col5: st.metric("Milieu offensif", f"{player_data['Milieu offensif'].iloc[0]}/100")
+                        with col6: st.metric("Attaquant", f"{player_data['Attaquant'].iloc[0]}/100")
+
+    elif page == "Comparaison":
+        st.header("Comparaison")
+
+        # Seuls les profils admin/coach peuvent comparer
+        if not player_name:
+            st.subheader("Sélectionnez une joueuse du Paris FC")
+            player1 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_1')
+            player1_data = pfc_kpi[pfc_kpi['Player'] == player1]
+            game1 = st.multiselect("Choisissez un ou plusieurs matchs", player1_data['Adversaire'].unique(), key='games_1')
+            player1_data = player1_data[player1_data['Adversaire'].isin(game1)].groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
+
+            tab1, tab2 = st.tabs(["Comparaison (PFC)", "Comparaison (EDF)"])
+
+            with tab1:
+                st.subheader("Sélectionnez une autre joueuse du Paris FC")
+                player2 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_2_pfc')
+                player2_data = pfc_kpi[pfc_kpi['Player'] == player2]
+                game2 = st.multiselect("Choisissez un ou plusieurs matchs", player2_data['Adversaire'].unique(), key='games_2_pfc')
+                player2_data = player2_data[player2_data['Adversaire'].isin(game2)].groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
+                if st.button("Afficher le radar", key='button_pfc'):
+                    if not game1 or not game2:
+                        st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
+                    else:
+                        players_data = pd.concat([player1_data, player2_data])
+                        fig = create_comparison_radar(players_data)
+                        st.pyplot(fig)
+
+            with tab2:
+                st.subheader("Sélectionnez un poste de l'Équipe de France")
+                player2 = st.selectbox("Choisissez un poste de comparaison", edf_kpi['Poste'].unique(), key='player_2_edf')
+                player2_data = edf_kpi[edf_kpi['Poste'] == player2].rename(columns={'Poste': 'Player'})
+                if st.button("Afficher le radar", key='button_edf'):
+                    if not game1:
+                        st.error("Veuillez sélectionner au moins un match.")
+                    else:
+                        players_data = pd.concat([player1_data, player2_data])
+                        fig = create_comparison_radar(players_data)
+                        st.pyplot(fig)
+        else:
+            st.warning("Les joueuses ne peuvent pas accéder à la fonctionnalité de comparaison.")
 
 # --- Point d'entrée principal ---
 if __name__ == '__main__':
     st.set_page_config(page_title="Paris Football Club", page_icon="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png", layout="wide")
     st.title("Paris Football Club")
-    logo_monochrome = "https://i.postimg.cc/BQQ5K5tp/Monochrome.png"
-    st.markdown(f"<style>.logo-container{{position:absolute;top:-100px;right:10px;}}.logo-container img{{width:90px;}}</style><div class='logo-container'><img src='{logo_monochrome}'></div>", unsafe_allow_html=True)
+
+    # Chargement des permissions
+    permissions = load_permissions()
+    if not permissions:
+        st.error("Impossible de charger les permissions. Vérifiez que le fichier 'Classeurs permissions streamlit.xlsx' est présent dans le dossier Google Drive.")
+        st.stop()
+
+    # Authentification
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
+    if "user_profile" not in st.session_state:
+        st.session_state.user_profile = None
+
     if not st.session_state.authenticated:
         with st.form("login_form"):
+            username = st.text_input("Nom d'utilisateur (profil)")
             password = st.text_input("Mot de passe", type="password")
             submitted = st.form_submit_button("Valider")
             if submitted:
-                if password == st.secrets["password"]["password"]:
+                if username in permissions and password == permissions[username]["password"]:
                     st.session_state.authenticated = True
+                    st.session_state.user_profile = username
                     st.rerun()
                 else:
-                    st.error("Mot de passe incorrect")
-    if st.session_state.authenticated:
-        st.sidebar.title("Base de données")
-        if st.sidebar.button("Mettre à jour la base de données"):
-            with st.spinner("Mise à jour des données en cours..."):
-                download_google_drive()
-            st.success("✅ Mise à jour terminée")
-            st.cache_data.clear()
-        pfc_kpi, edf_kpi = collect_data()
-        script_streamlit(pfc_kpi, edf_kpi)
+                    st.error("Nom d'utilisateur ou mot de passe incorrect")
+        st.stop()
+
+    # Téléchargement et traitement des données
+    logo_monochrome = "https://i.postimg.cc/BQQ5K5tp/Monochrome.png"
+    st.markdown(f"<style>.logo-container{{position:absolute;top:-100px;right:10px;}}.logo-container img{{width:90px;}}</style><div class='logo-container'><img src='{logo_monochrome}'></div>", unsafe_allow_html=True)
+
+    # Chargement des données
+    pfc_kpi, edf_kpi = collect_data()
+
+    # Affichage de l'interface
+    script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
