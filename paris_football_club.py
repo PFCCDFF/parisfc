@@ -12,6 +12,20 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
+# --- Fonction de nettoyage des noms de joueuses ---
+def nettoyer_nom_joueuse(nom):
+    """
+    Nettoie le nom d'une joueuse en supprimant les doublons séparés par une virgule.
+    Exemple : "Nom, Nom" -> "Nom"
+    """
+    if isinstance(nom, str):
+        nom = nom.strip()
+        parts = [part.strip() for part in nom.split(",")]
+        if len(parts) > 1 and parts[0] == parts[1]:
+            return parts[0]
+        return nom
+    return nom
+
 # --- Fonctions d'authentification et téléchargement Google Drive ---
 def authenticate_google_drive():
     SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -80,7 +94,7 @@ def charger_donnees():
 def players_edf_duration(match):
     df_filtered = match.loc[match['Poste'] != 'Gardienne']
     df_duration = pd.DataFrame({
-        'Player': df_filtered['Player'],
+        'Player': df_filtered['Player'].apply(nettoyer_nom_joueuse),
         'Temps de jeu (en minutes)': df_filtered['Temps de jeu']
     })
     return df_duration
@@ -91,7 +105,7 @@ def players_duration(match):
     for i in range(len(match)):
         duration = match.iloc[i]['Duration']
         for poste in list_of_players:
-            player = match.iloc[i][poste]
+            player = nettoyer_nom_joueuse(match.iloc[i][poste])
             if player in players_duration:
                 players_duration[player] += duration
             else:
@@ -111,7 +125,7 @@ def players_shots(joueurs):
     for i in range(len(joueurs)):
         action = joueurs.iloc[i]['Action']
         if isinstance(action, str) and 'Tir' in action:
-            player = joueurs.iloc[i]['Row']
+            player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
             players_shots[player] = players_shots.get(player, 0) + action.count('Tir')
             is_successful = joueurs.iloc[i]['Tir']
             if isinstance(is_successful, str) and ('Tir Cadré' in is_successful or 'But' in is_successful):
@@ -131,7 +145,7 @@ def players_passes(joueurs):
     for i in range(len(joueurs)):
         action = joueurs.iloc[i]['Action']
         if isinstance(action, str) and 'Passe' in action:
-            player = joueurs.iloc[i]['Row']
+            player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
             passe = joueurs.iloc[i]['Passe']
             if isinstance(passe, str) and 'Courte' in passe:
                 player_short_passes[player] = player_short_passes.get(player, 0) + passe.count('Courte')
@@ -158,7 +172,7 @@ def players_dribbles(joueurs):
     for i in range(len(joueurs)):
         action = joueurs.iloc[i]['Action']
         if isinstance(action, str) and 'Dribble' in action:
-            player = joueurs.iloc[i]['Row']
+            player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
             players_dribbles[player] = players_dribbles.get(player, 0) + action.count('Dribble')
             is_successful = joueurs.iloc[i]['Dribble']
             if isinstance(is_successful, str) and 'Réussi' in is_successful:
@@ -176,7 +190,7 @@ def players_defensive_duels(joueurs):
     for i in range(len(joueurs)):
         action = joueurs.iloc[i]['Action']
         if isinstance(action, str) and 'Duel défensif' in action:
-            player = joueurs.iloc[i]['Row']
+            player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
             players_defensive_duels[player] = players_defensive_duels.get(player, 0) + action.count('Duel défensif')
             is_successful = joueurs.iloc[i]['Duel défensifs']
             if isinstance(is_successful, str) and 'Gagné' in is_successful:
@@ -197,7 +211,7 @@ def players_interceptions(joueurs):
     for i in range(len(joueurs)):
         action = joueurs.iloc[i]['Action']
         if isinstance(action, str) and 'Interception' in action:
-            player = joueurs.iloc[i]['Row']
+            player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
             players_interceptions[player] = players_interceptions.get(player, 0) + action.count('Interception')
     return pd.DataFrame({
         'Player': list(players_interceptions.keys()),
@@ -209,7 +223,7 @@ def players_ball_losses(joueurs):
     for i in range(len(joueurs)):
         action = joueurs.iloc[i]['Action']
         if isinstance(action, str) and 'Perte de balle' in action:
-            player = joueurs.iloc[i]['Row']
+            player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
             players_ball_losses[player] = players_ball_losses.get(player, 0) + action.count('Perte de balle')
     return pd.DataFrame({
         'Player': list(players_ball_losses.keys()),
@@ -221,6 +235,7 @@ def create_data(match, joueurs, is_edf):
         df_duration = players_edf_duration(match)
     else:
         df_duration = players_duration(match)
+
     dfs = [
         df_duration,
         players_shots(joueurs),
@@ -230,11 +245,16 @@ def create_data(match, joueurs, is_edf):
         players_interceptions(joueurs),
         players_ball_losses(joueurs)
     ]
+
+    # Nettoyage des noms de joueurs avant le merge
     for df in dfs:
-        df['Player'] = df['Player'].apply(lambda x: x.strip() if isinstance(x, str) else x)
+        df['Player'] = df['Player'].apply(nettoyer_nom_joueuse)
+
+    # Fusionner les dataframes
     df = df_duration
     for other_df in dfs[1:]:
         df = df.merge(other_df, on='Player', how='outer')
+
     df.fillna(0, inplace=True)
     df = df[(df.iloc[:, 1:] != 0).any(axis=1)]
     df = df[df['Temps de jeu (en minutes)'] >= 10]
@@ -415,7 +435,12 @@ def script_streamlit(pfc_kpi, edf_kpi):
         player_data = pfc_kpi[pfc_kpi['Player'] == player]
         game = st.multiselect("Choisissez un ou plusieurs matchs", player_data['Adversaire'].unique())
         player_data = player_data[player_data['Adversaire'].isin(game)]
-        player_data = player_data.groupby('Player').agg({'Temps de jeu (en minutes)': 'sum', 'Buts': 'sum'}).join(player_data.groupby('Player').mean(numeric_only=True).drop(columns=['Temps de jeu (en minutes)', 'Buts'])).round().astype(int).reset_index()
+        player_data = player_data.groupby('Player').agg({
+            'Temps de jeu (en minutes)': 'sum',
+            'Buts': 'sum',
+        }).join(
+            player_data.groupby('Player').mean(numeric_only=True).drop(columns=['Temps de jeu (en minutes)', 'Buts'])
+        ).round().astype(int).reset_index()
         if not game:
             st.error("Veuillez sélectionner au moins un match.")
         else:
