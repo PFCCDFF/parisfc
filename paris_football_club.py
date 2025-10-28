@@ -630,3 +630,6 @@ if __name__ == '__main__':
                     st.error("Mot de passe incorrect")
     if st.session_state.authenticated:
         script_streamlit()
+
+streamlit run paris_football_club.py --logger.level=debug
+
