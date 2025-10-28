@@ -1,5 +1,5 @@
 # Dependencies for Paris FC Streamlit App
-# Compatible with Python 3.12
+# Compatible with Python 3.11
 
 # Core dependencies (versions récentes sans dépendance à distutils)
 streamlit==1.27.0
