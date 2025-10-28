@@ -186,30 +186,17 @@ def players_duration(match):
     return df_duration
 
 def players_shots(joueurs):
-    """Calcule les statistiques de tirs."""
-    if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
-        st.warning("Colonnes manquantes pour calculer les statistiques de tirs")
-        return pd.DataFrame()
-
     players_shots, players_shots_on_target, players_goals = {}, {}, {}
-
     for i in range(len(joueurs)):
         action = joueurs.iloc[i]['Action']
         if isinstance(action, str) and 'Tir' in action:
             player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
             players_shots[player] = players_shots.get(player, 0) + action.count('Tir')
-
-            if 'Tir' in joueurs.columns:
-                is_successful = joueurs.iloc[i]['Tir']
-                if isinstance(is_successful, str):
-                    if 'Tir Cadré' in is_successful or 'But' in is_successful:
-                        players_shots_on_target[player] = players_shots_on_target.get(player, 0) + is_successful.count('Tir Cadré') + is_successful.count('But')
-                    if 'But' in is_successful:
-                        players_goals[player] = players_goals.get(player, 0) + 1
-
-    if not players_shots:
-        return pd.DataFrame()
-
+            is_successful = joueurs.iloc[i]['Tir']
+            if isinstance(is_successful, str) and ('Tir Cadré' in is_successful or 'But' in is_successful):
+                players_shots_on_target[player] = players_shots_on_target.get(player, 0) + is_successful.count('Tir Cadré') + is_successful.count('But')
+            if isinstance(is_successful, str) and 'But' in is_successful:
+                players_goals[player] = players_goals.get(player, 0) + 1
     return pd.DataFrame({
         'Player': list(players_shots.keys()),
         'Tirs': list(players_shots.values()),
@@ -1231,3 +1218,4 @@ if __name__ == '__main__':
 
     # Téléchargement et traitement des données
     logo
+
