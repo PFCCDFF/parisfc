@@ -76,7 +76,7 @@ def load_permissions():
             permissions[profile] = {
                 "password": row['Mot de passe'],
                 "permissions": row['Permissions'].split(',') if isinstance(row['Permissions'], str) else [],
-                "player": row.get('Joueuse', None)  # Récupère le nom de la joueuse associée
+                "player": row.get('Joueuse', None)
             }
         return permissions
     return {}
@@ -84,9 +84,14 @@ def load_permissions():
 # --- Gestion des profils et permissions ---
 def check_permission(user_profile, required_permission, permissions):
     """Vérifie si un profil a une permission spécifique."""
-    if user_profile in permissions:
-        return required_permission in permissions[user_profile]["permissions"]
-    return False
+    if user_profile not in permissions:
+        return False
+
+    # Si le profil a la permission "all", il a accès à tout
+    if "all" in permissions[user_profile]["permissions"]:
+        return True
+
+    return required_permission in permissions[user_profile]["permissions"]
 
 def get_player_for_profile(profile, permissions):
     """Récupère le nom de la joueuse associée à un profil."""
@@ -133,7 +138,7 @@ def charger_donnees():
             st.error(f"Erreur lors de la lecture du fichier {f}: {e}")
     return df_dict
 
-# --- Fonctions de traitement des données (inchangées) ---
+# --- Fonctions de traitement des données ---
 def players_edf_duration(match):
     df_filtered = match.loc[match['Poste'] != 'Gardienne']
     df_duration = pd.DataFrame({
@@ -367,6 +372,18 @@ def create_comparison_radar(df):
     fig.set_facecolor('#0e1117')
     return fig
 
+# --- Fonction pour filtrer les données par joueuse ---
+def filter_data_by_player(df, player_name):
+    """Filtre les données pour une joueuse spécifique."""
+    if not player_name:
+        return df
+
+    player_name_clean = nettoyer_nom_joueuse(player_name)
+    df['Player_clean'] = df['Player'].apply(nettoyer_nom_joueuse)
+    filtered_df = df[df['Player_clean'] == player_name_clean].copy()
+    filtered_df.drop(columns=['Player_clean'], inplace=True, errors='ignore')
+    return filtered_df
+
 # --- Fonction principale de collecte des données ---
 @st.cache_data
 def collect_data():
@@ -445,19 +462,6 @@ def collect_data():
             st.error(f"Erreur lors du traitement du fichier {filename}: {e}")
     return pfc_kpi, edf_kpi
 
-# --- Fonction pour filtrer les données par joueuse ---
-def filter_data_by_player(df, player_name):
-    """Filtre les données pour une joueuse spécifique."""
-    if player_name:
-        # Nettoyer le nom pour la comparaison
-        player_name_clean = nettoyer_nom_joueuse(player_name)
-        # Filtrer les données
-        df['Player_clean'] = df['Player'].apply(nettoyer_nom_joueuse)
-        filtered_df = df[df['Player_clean'] == player_name_clean].copy()
-        filtered_df.drop(columns=['Player_clean'], inplace=True, errors='ignore')
-        return filtered_df
-    return df
-
 # --- Interface Streamlit avec gestion des permissions et filtrage par joueuse ---
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     """Interface principale adaptée aux permissions et filtrée par joueuse."""
@@ -470,8 +474,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     if player_name:
         st.sidebar.write(f"Joueuse associée: {player_name}")
 
+    # Bouton de déconnexion
+    if st.sidebar.button("🔒 Déconnexion"):
+        st.session_state.authenticated = False
+        st.session_state.user_profile = None
+        st.rerun()
+
     # Bouton de mise à jour des données (uniquement pour les profils autorisés)
-    if check_permission(user_profile, "update_data", permissions):
+    if check_permission(user_profile, "update_data", permissions) or check_permission(user_profile, "all", permissions):
         if st.sidebar.button("Mettre à jour la base de données"):
             with st.spinner("Mise à jour des données en cours..."):
                 download_google_drive()
@@ -482,16 +492,22 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     if player_name:
         pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
 
-    # Affichage des onglets en fonction des permissions
+    # Déterminer les options disponibles en fonction des permissions
     available_options = ["Statistiques"]
-    if check_permission(user_profile, "compare_players", permissions):
+
+    # Les admins et coachs peuvent accéder à la comparaison
+    if check_permission(user_profile, "compare_players", permissions) or check_permission(user_profile, "all", permissions):
         available_options.append("Comparaison")
+
+    # Option "Gestion" réservée aux admins
+    if check_permission(user_profile, "all", permissions):
+        available_options.append("Gestion")
 
     with st.sidebar:
         page = option_menu(
             menu_title="",
             options=available_options,
-            icons=["graph-up-arrow", "people"][:len(available_options)],
+            icons=["graph-up-arrow", "people", "gear"][:len(available_options)],
             menu_icon="cast",
             default_index=0,
             orientation="vertical",
@@ -524,14 +540,15 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.warning("Aucune donnée disponible pour votre profil.")
         else:
             if player_name:
+                # Pour une joueuse, affichage direct de ses statistiques
                 st.subheader(f"Statistiques pour {player_name}")
 
-                # Pour une joueuse, on n'a qu'une seule ligne de données
-                player_data = pfc_kpi
-
-                if player_data.empty:
+                if pfc_kpi.empty:
                     st.warning(f"Aucune donnée disponible pour {player_name}.")
                 else:
+                    # Affichage des données de la joueuse
+                    player_data = pfc_kpi
+
                     time_played, goals = st.columns(2)
                     with time_played:
                         st.metric("Temps de jeu", f"{player_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
@@ -565,87 +582,150 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.subheader("Sélectionnez une joueuse du Paris FC")
                 player = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique())
                 player_data = pfc_kpi[pfc_kpi['Player'] == player]
-                game = st.multiselect("Choisissez un ou plusieurs matchs", player_data['Adversaire'].unique())
-                player_data = player_data[player_data['Adversaire'].isin(game)]
-                player_data = player_data.groupby('Player').agg({
-                    'Temps de jeu (en minutes)': 'sum',
-                    'Buts': 'sum',
-                }).join(
-                    player_data.groupby('Player').mean(numeric_only=True).drop(columns=['Temps de jeu (en minutes)', 'Buts'])
-                ).round().astype(int).reset_index()
 
-                if not game:
-                    st.error("Veuillez sélectionner au moins un match.")
+                if player_data.empty:
+                    st.error("Aucune donnée disponible pour cette joueuse.")
                 else:
-                    time_played, goals = st.columns(2)
-                    with time_played:
-                        st.metric("Temps de jeu", f"{player_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
-                    with goals:
-                        st.metric("Buts", f"{player_data['Buts'].iloc[0]}")
+                    game = st.multiselect("Choisissez un ou plusieurs matchs", player_data['Adversaire'].unique())
+                    filtered_data = player_data[player_data['Adversaire'].isin(game)] if game else player_data
 
-                    tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
+                    if filtered_data.empty:
+                        st.warning("Aucun match sélectionné ou aucune donnée disponible.")
+                    else:
+                        aggregated_data = filtered_data.groupby('Player').agg({
+                            'Temps de jeu (en minutes)': 'sum',
+                            'Buts': 'sum',
+                        }).join(
+                            filtered_data.groupby('Player').mean(numeric_only=True).drop(columns=['Temps de jeu (en minutes)', 'Buts'])
+                        ).round().astype(int).reset_index()
 
-                    with tab1:
-                        fig = create_individual_radar(player_data)
-                        st.pyplot(fig)
+                        time_played, goals = st.columns(2)
+                        with time_played:
+                            st.metric("Temps de jeu", f"{aggregated_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
+                        with goals:
+                            st.metric("Buts", f"{aggregated_data['Buts'].iloc[0]}")
 
-                    with tab2:
-                        col1, col2, col3, col4, col5 = st.columns(5)
-                        with col1: st.metric("Rigueur", f"{player_data['Rigueur'].iloc[0]}/100")
-                        with col2: st.metric("Récupération", f"{player_data['Récupération'].iloc[0]}/100")
-                        with col3: st.metric("Distribution", f"{player_data['Distribution'].iloc[0]}/100")
-                        with col4: st.metric("Percussion", f"{player_data['Percussion'].iloc[0]}/100")
-                        with col5: st.metric("Finition", f"{player_data['Finition'].iloc[0]}/100")
+                        tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
 
-                    with tab3:
-                        col1, col2, col3, col4, col5, col6 = st.columns(6)
-                        with col1: st.metric("Défenseur central", f"{player_data['Défenseur central'].iloc[0]}/100")
-                        with col2: st.metric("Défenseur latéral", f"{player_data['Défenseur latéral'].iloc[0]}/100")
-                        with col3: st.metric("Milieu défensif", f"{player_data['Milieu défensif'].iloc[0]}/100")
-                        with col4: st.metric("Milieu relayeur", f"{player_data['Milieu relayeur'].iloc[0]}/100")
-                        with col5: st.metric("Milieu offensif", f"{player_data['Milieu offensif'].iloc[0]}/100")
-                        with col6: st.metric("Attaquant", f"{player_data['Attaquant'].iloc[0]}/100")
+                        with tab1:
+                            fig = create_individual_radar(aggregated_data)
+                            st.pyplot(fig)
+
+                        with tab2:
+                            col1, col2, col3, col4, col5 = st.columns(5)
+                            with col1: st.metric("Rigueur", f"{aggregated_data['Rigueur'].iloc[0]}/100")
+                            with col2: st.metric("Récupération", f"{aggregated_data['Récupération'].iloc[0]}/100")
+                            with col3: st.metric("Distribution", f"{aggregated_data['Distribution'].iloc[0]}/100")
+                            with col4: st.metric("Percussion", f"{aggregated_data['Percussion'].iloc[0]}/100")
+                            with col5: st.metric("Finition", f"{aggregated_data['Finition'].iloc[0]}/100")
+
+                        with tab3:
+                            col1, col2, col3, col4, col5, col6 = st.columns(6)
+                            with col1: st.metric("Défenseur central", f"{aggregated_data['Défenseur central'].iloc[0]}/100")
+                            with col2: st.metric("Défenseur latéral", f"{aggregated_data['Défenseur latéral'].iloc[0]}/100")
+                            with col3: st.metric("Milieu défensif", f"{aggregated_data['Milieu défensif'].iloc[0]}/100")
+                            with col4: st.metric("Milieu relayeur", f"{aggregated_data['Milieu relayeur'].iloc[0]}/100")
+                            with col5: st.metric("Milieu offensif", f"{aggregated_data['Milieu offensif'].iloc[0]}/100")
+                            with col6: st.metric("Attaquant", f"{aggregated_data['Attaquant'].iloc[0]}/100")
 
     elif page == "Comparaison":
         st.header("Comparaison")
 
-        # Seuls les profils admin/coach peuvent comparer
-        if not player_name:
+        # Seuls les profils avec permission peuvent comparer
+        if check_permission(user_profile, "compare_players", permissions) or check_permission(user_profile, "all", permissions):
             st.subheader("Sélectionnez une joueuse du Paris FC")
             player1 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_1')
             player1_data = pfc_kpi[pfc_kpi['Player'] == player1]
-            game1 = st.multiselect("Choisissez un ou plusieurs matchs", player1_data['Adversaire'].unique(), key='games_1')
-            player1_data = player1_data[player1_data['Adversaire'].isin(game1)].groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
 
-            tab1, tab2 = st.tabs(["Comparaison (PFC)", "Comparaison (EDF)"])
+            if player1_data.empty:
+                st.error("Aucune donnée disponible pour cette joueuse.")
+            else:
+                game1 = st.multiselect("Choisissez un ou plusieurs matchs", player1_data['Adversaire'].unique(), key='games_1')
+                filtered_player1_data = player1_data[player1_data['Adversaire'].isin(game1)] if game1 else player1_data
+                aggregated_player1_data = filtered_player1_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
 
-            with tab1:
-                st.subheader("Sélectionnez une autre joueuse du Paris FC")
-                player2 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_2_pfc')
-                player2_data = pfc_kpi[pfc_kpi['Player'] == player2]
-                game2 = st.multiselect("Choisissez un ou plusieurs matchs", player2_data['Adversaire'].unique(), key='games_2_pfc')
-                player2_data = player2_data[player2_data['Adversaire'].isin(game2)].groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
-                if st.button("Afficher le radar", key='button_pfc'):
-                    if not game1 or not game2:
-                        st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
+                tab1, tab2 = st.tabs(["Comparaison (PFC)", "Comparaison (EDF)"])
+
+                with tab1:
+                    st.subheader("Sélectionnez une autre joueuse du Paris FC")
+                    player2 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_2_pfc')
+                    player2_data = pfc_kpi[pfc_kpi['Player'] == player2]
+
+                    if player2_data.empty:
+                        st.error("Aucune donnée disponible pour cette joueuse.")
                     else:
-                        players_data = pd.concat([player1_data, player2_data])
-                        fig = create_comparison_radar(players_data)
-                        st.pyplot(fig)
+                        game2 = st.multiselect("Choisissez un ou plusieurs matchs", player2_data['Adversaire'].unique(), key='games_2_pfc')
+                        filtered_player2_data = player2_data[player2_data['Adversaire'].isin(game2)] if game2 else player2_data
+                        aggregated_player2_data = filtered_player2_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
 
-            with tab2:
-                st.subheader("Sélectionnez un poste de l'Équipe de France")
-                player2 = st.selectbox("Choisissez un poste de comparaison", edf_kpi['Poste'].unique(), key='player_2_edf')
-                player2_data = edf_kpi[edf_kpi['Poste'] == player2].rename(columns={'Poste': 'Player'})
-                if st.button("Afficher le radar", key='button_edf'):
-                    if not game1:
-                        st.error("Veuillez sélectionner au moins un match.")
-                    else:
-                        players_data = pd.concat([player1_data, player2_data])
-                        fig = create_comparison_radar(players_data)
-                        st.pyplot(fig)
+                        if st.button("Afficher le radar", key='button_pfc'):
+                            if aggregated_player1_data.empty or aggregated_player2_data.empty:
+                                st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
+                            else:
+                                players_data = pd.concat([aggregated_player1_data, aggregated_player2_data])
+                                fig = create_comparison_radar(players_data)
+                                st.pyplot(fig)
+
+                with tab2:
+                    st.subheader("Sélectionnez un poste de l'Équipe de France")
+                    player2 = st.selectbox("Choisissez un poste de comparaison", edf_kpi['Poste'].unique(), key='player_2_edf')
+                    player2_data = edf_kpi[edf_kpi['Poste'] == player2].rename(columns={'Poste': 'Player'})
+
+                    if st.button("Afficher le radar", key='button_edf'):
+                        if aggregated_player1_data.empty:
+                            st.error("Veuillez sélectionner au moins un match pour la joueuse PFC.")
+                        else:
+                            players_data = pd.concat([aggregated_player1_data, player2_data])
+                            fig = create_comparison_radar(players_data)
+                            st.pyplot(fig)
         else:
-            st.warning("Les joueuses ne peuvent pas accéder à la fonctionnalité de comparaison.")
+            st.warning("Vous n'avez pas la permission d'accéder à cette fonctionnalité.")
+
+    elif page == "Gestion":
+        st.header("Gestion des utilisateurs")
+        if check_permission(user_profile, "all", permissions):
+            st.write("Cette page est réservée à la gestion des utilisateurs.")
+
+            # Affichage des utilisateurs actuels
+            st.subheader("Liste des utilisateurs")
+            users_data = []
+            for profile, info in permissions.items():
+                users_data.append({
+                    "Profil": profile,
+                    "Permissions": ", ".join(info["permissions"]),
+                    "Joueuse associée": info.get("player", "Aucune")
+                })
+            users_df = pd.DataFrame(users_data)
+            st.dataframe(users_df)
+
+            # Formulaire pour ajouter un utilisateur
+            with st.expander("Ajouter un utilisateur"):
+                with st.form("add_user_form"):
+                    new_profile = st.text_input("Nouveau profil")
+                    new_password = st.text_input("Mot de passe", type="password")
+                    new_permissions = st.multiselect(
+                        "Permissions",
+                        ["view_stats", "compare_players", "update_data", "all"],
+                        default=["view_stats"]
+                    )
+                    new_player = st.text_input("Joueuse associée (optionnel)")
+
+                    submitted = st.form_submit_button("Créer le profil")
+                    if submitted:
+                        if new_profile in permissions:
+                            st.error("Ce profil existe déjà!")
+                        else:
+                            # Ici, dans une version complète, vous mettriez à jour le fichier Excel
+                            # Pour l'instant, on met à jour uniquement en mémoire
+                            permissions[new_profile] = {
+                                "password": new_password,
+                                "permissions": new_permissions,
+                                "player": new_player if new_player else None
+                            }
+                            st.success(f"Profil {new_profile} créé avec succès!")
+                            # Dans une application réelle, vous devriez sauvegarder ces modifications
+        else:
+            st.error("Vous n'avez pas la permission d'accéder à cette page.")
 
 # --- Point d'entrée principal ---
 if __name__ == '__main__':
