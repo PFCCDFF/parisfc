@@ -119,9 +119,17 @@ def get_player_for_profile(profile, permissions):
         return permissions[profile].get("player", None)
     return None
 
-# --- Fonctions de traitement des données ---
+# --- Fonctions de traitement des données avec gestion des colonnes manquantes ---
 def players_edf_duration(match):
+    """Calcule la durée de jeu pour les joueuses EDF."""
+    if 'Poste' not in match.columns or 'Temps de jeu' not in match.columns:
+        st.warning("Colonnes manquantes pour calculer la durée de jeu EDF")
+        return pd.DataFrame()
+
     df_filtered = match.loc[match['Poste'] != 'Gardienne']
+    if df_filtered.empty:
+        return pd.DataFrame()
+
     df_duration = pd.DataFrame({
         'Player': df_filtered['Player'].apply(nettoyer_nom_joueuse),
         'Temps de jeu (en minutes)': df_filtered['Temps de jeu']
@@ -129,18 +137,36 @@ def players_edf_duration(match):
     return df_duration
 
 def players_duration(match):
+    """Calcule la durée de jeu pour les joueuses PFC."""
+    if 'Duration' not in match.columns:
+        st.warning("Colonne 'Duration' manquante pour calculer la durée de jeu")
+        return pd.DataFrame()
+
     players_duration = {}
     list_of_players = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']
+
+    # Vérifier que toutes les colonnes de poste existent
+    available_posts = [poste for poste in list_of_players if poste in match.columns]
+    if not available_posts:
+        st.warning("Aucune colonne de poste disponible pour calculer la durée de jeu")
+        return pd.DataFrame()
+
     for i in range(len(match)):
         duration = match.iloc[i]['Duration']
-        for poste in list_of_players:
-            player = nettoyer_nom_joueuse(match.iloc[i][poste])
-            if player in players_duration:
-                players_duration[player] += duration
-            else:
-                players_duration[player] = duration
+        for poste in available_posts:
+            if poste in match.columns:
+                player = nettoyer_nom_joueuse(match.iloc[i][poste])
+                if player in players_duration:
+                    players_duration[player] += duration
+                else:
+                    players_duration[player] = duration
+
+    if not players_duration:
+        return pd.DataFrame()
+
     for player in players_duration:
         players_duration[player] /= 60
+
     df_duration = pd.DataFrame({
         'Player': list(players_duration.keys()),
         'Temps de jeu (en minutes)': list(players_duration.values())
@@ -150,17 +176,29 @@ def players_duration(match):
     return df_duration
 
 def players_shots(joueurs):
+    """Calcule les statistiques de tirs."""
+    if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        st.warning("Colonnes manquantes pour calculer les statistiques de tirs")
+        return pd.DataFrame()
+
     players_shots, players_shots_on_target, players_goals = {}, {}, {}
+
     for i in range(len(joueurs)):
         action = joueurs.iloc[i]['Action']
         if isinstance(action, str) and 'Tir' in action:
             player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
             players_shots[player] = players_shots.get(player, 0) + action.count('Tir')
-            is_successful = joueurs.iloc[i]['Tir']
-            if isinstance(is_successful, str) and ('Tir Cadré' in is_successful or 'But' in is_successful):
-                players_shots_on_target[player] = players_shots_on_target.get(player, 0) + is_successful.count('Tir Cadré') + is_successful.count('But')
-            if isinstance(is_successful, str) and 'But' in is_successful:
-                players_goals[player] = players_goals.get(player, 0) + 1
+
+            if 'Tir' in joueurs.columns:
+                is_successful = joueurs.iloc[i]['Tir']
+                if isinstance(is_successful, str) and ('Tir Cadré' in is_successful or 'But' in is_successful):
+                    players_shots_on_target[player] = players_shots_on_target.get(player, 0) + is_successful.count('Tir Cadré') + is_successful.count('But')
+                if isinstance(is_successful, str) and 'But' in is_successful:
+                    players_goals[player] = players_goals.get(player, 0) + 1
+
+    if not players_shots:
+        return pd.DataFrame()
+
     return pd.DataFrame({
         'Player': list(players_shots.keys()),
         'Tirs': list(players_shots.values()),
@@ -169,21 +207,35 @@ def players_shots(joueurs):
     }).sort_values(by='Tirs', ascending=False)
 
 def players_passes(joueurs):
+    """Calcule les statistiques de passes."""
+    if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        st.warning("Colonnes manquantes pour calculer les statistiques de passes")
+        return pd.DataFrame()
+
     player_short_passes, player_long_passes = {}, {}
     players_successful_short_passes, players_successful_long_passes = {}, {}
+
     for i in range(len(joueurs)):
         action = joueurs.iloc[i]['Action']
         if isinstance(action, str) and 'Passe' in action:
             player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
-            passe = joueurs.iloc[i]['Passe']
-            if isinstance(passe, str) and 'Courte' in passe:
-                player_short_passes[player] = player_short_passes.get(player, 0) + passe.count('Courte')
-                if 'Réussie' in passe:
-                    players_successful_short_passes[player] = players_successful_short_passes.get(player, 0) + passe.count('Réussie')
-            if isinstance(passe, str) and 'Longue' in passe:
-                player_long_passes[player] = player_long_passes.get(player, 0) + passe.count('Longue')
-                if 'Réussie' in passe:
-                    players_successful_long_passes[player] = players_successful_long_passes.get(player, 0) + passe.count('Réussie')
+
+            if 'Passe' in joueurs.columns:
+                passe = joueurs.iloc[i]['Passe']
+                if isinstance(passe, str):
+                    if 'Courte' in passe:
+                        player_short_passes[player] = player_short_passes.get(player, 0) + passe.count('Courte')
+                        if 'Réussie' in passe:
+                            players_successful_short_passes[player] = players_successful_short_passes.get(player, 0) + passe.count('Réussie')
+
+                    if 'Longue' in passe:
+                        player_long_passes[player] = player_long_passes.get(player, 0) + passe.count('Longue')
+                        if 'Réussie' in passe:
+                            players_successful_long_passes[player] = players_successful_long_passes.get(player, 0) + passe.count('Réussie')
+
+    if not player_short_passes:
+        return pd.DataFrame()
+
     df_passes = pd.DataFrame({
         'Player': list(player_short_passes.keys()),
         'Passes courtes': [player_short_passes.get(player, 0) for player in player_short_passes],
@@ -191,179 +243,376 @@ def players_passes(joueurs):
         'Passes réussies (courtes)': [players_successful_short_passes.get(player, 0) for player in player_short_passes],
         'Passes réussies (longues)': [players_successful_long_passes.get(player, 0) for player in player_short_passes]
     })
-    df_passes['Passes'] = df_passes['Passes courtes'] + df_passes['Passes longues']
-    df_passes['Passes réussies'] = df_passes['Passes réussies (courtes)'] + df_passes['Passes réussies (longues)']
-    df_passes['Pourcentage de passes réussies'] = (df_passes['Passes réussies'] / df_passes['Passes'] * 100).fillna(0)
+
+    if not df_passes.empty:
+        df_passes['Passes'] = df_passes['Passes courtes'] + df_passes['Passes longues']
+        df_passes['Passes réussies'] = df_passes['Passes réussies (courtes)'] + df_passes['Passes réussies (longues)']
+        df_passes['Pourcentage de passes réussies'] = (df_passes['Passes réussies'] / df_passes['Passes'] * 100).fillna(0)
+
     return df_passes.sort_values(by='Passes courtes', ascending=False)
 
 def players_dribbles(joueurs):
+    """Calcule les statistiques de dribbles."""
+    if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        st.warning("Colonnes manquantes pour calculer les statistiques de dribbles")
+        return pd.DataFrame()
+
     players_dribbles, players_successful_dribbles = {}, {}
+
     for i in range(len(joueurs)):
         action = joueurs.iloc[i]['Action']
         if isinstance(action, str) and 'Dribble' in action:
             player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
             players_dribbles[player] = players_dribbles.get(player, 0) + action.count('Dribble')
-            is_successful = joueurs.iloc[i]['Dribble']
-            if isinstance(is_successful, str) and 'Réussi' in is_successful:
-                players_successful_dribbles[player] = players_successful_dribbles.get(player, 0) + is_successful.count('Réussi')
+
+            if 'Dribble' in joueurs.columns:
+                is_successful = joueurs.iloc[i]['Dribble']
+                if isinstance(is_successful, str) and 'Réussi' in is_successful:
+                    players_successful_dribbles[player] = players_successful_dribbles.get(player, 0) + is_successful.count('Réussi')
+
+    if not players_dribbles:
+        return pd.DataFrame()
+
     df_dribbles = pd.DataFrame({
         'Player': list(players_dribbles.keys()),
         'Dribbles': list(players_dribbles.values()),
         'Dribbles réussis': [players_successful_dribbles.get(player, 0) for player in players_dribbles]
     })
-    df_dribbles['Pourcentage de dribbles réussis'] = (df_dribbles['Dribbles réussis'] / df_dribbles['Dribbles'] * 100).fillna(0)
+
+    if not df_dribbles.empty:
+        df_dribbles['Pourcentage de dribbles réussis'] = (df_dribbles['Dribbles réussis'] / df_dribbles['Dribbles'] * 100).fillna(0)
+
     return df_dribbles.sort_values(by='Dribbles', ascending=False)
 
 def players_defensive_duels(joueurs):
+    """Calcule les statistiques de duels défensifs avec gestion des colonnes manquantes."""
+    if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        st.warning("Colonnes manquantes pour calculer les statistiques de duels défensifs")
+        return pd.DataFrame()
+
     players_defensive_duels, players_successful_defensive_duels, players_faults = {}, {}, {}
+
+    # Vérifier si la colonne 'Duel défensifs' existe, sinon utiliser une alternative
+    duels_col = 'Duel défensifs' if 'Duel défensifs' in joueurs.columns else 'Duel défensif'
+
     for i in range(len(joueurs)):
         action = joueurs.iloc[i]['Action']
         if isinstance(action, str) and 'Duel défensif' in action:
             player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
             players_defensive_duels[player] = players_defensive_duels.get(player, 0) + action.count('Duel défensif')
-            is_successful = joueurs.iloc[i]['Duel défensifs']
-            if isinstance(is_successful, str) and 'Gagné' in is_successful:
-                players_successful_defensive_duels[player] = players_successful_defensive_duels.get(player, 0) + is_successful.count('Gagné')
-            if isinstance(is_successful, str) and 'Faute' in is_successful:
-                players_faults[player] = players_faults.get(player, 0) + is_successful.count('Faute')
+
+            # Vérifier si la colonne existe avant de l'utiliser
+            if duels_col in joueurs.columns:
+                is_successful = joueurs.iloc[i][duels_col]
+                if isinstance(is_successful, str):
+                    if 'Gagné' in is_successful:
+                        players_successful_defensive_duels[player] = players_successful_defensive_duels.get(player, 0) + is_successful.count('Gagné')
+                    if 'Faute' in is_successful:
+                        players_faults[player] = players_faults.get(player, 0) + is_successful.count('Faute')
+
+    if not players_defensive_duels:
+        return pd.DataFrame()
+
     df_duels_defensifs = pd.DataFrame({
         'Player': list(players_defensive_duels.keys()),
         'Duels défensifs': list(players_defensive_duels.values()),
         'Duels défensifs gagnés': [players_successful_defensive_duels.get(player, 0) for player in players_defensive_duels],
         'Fautes': [players_faults.get(player, 0) for player in players_defensive_duels]
     })
-    df_duels_defensifs['Pourcentage de duels défensifs gagnés'] = (df_duels_defensifs['Duels défensifs gagnés'] / df_duels_defensifs['Duels défensifs'] * 100).fillna(0)
+
+    if not df_duels_defensifs.empty and 'Duels défensifs' in df_duels_defensifs.columns:
+        df_duels_defensifs['Pourcentage de duels défensifs gagnés'] = (
+            df_duels_defensifs['Duels défensifs gagnés'] / df_duels_defensifs['Duels défensifs'] * 100
+        ).fillna(0)
+
     return df_duels_defensifs.sort_values(by='Duels défensifs', ascending=False)
 
 def players_interceptions(joueurs):
+    """Calcule les statistiques d'interceptions."""
+    if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        st.warning("Colonnes manquantes pour calculer les statistiques d'interceptions")
+        return pd.DataFrame()
+
     players_interceptions = {}
+
     for i in range(len(joueurs)):
         action = joueurs.iloc[i]['Action']
         if isinstance(action, str) and 'Interception' in action:
             player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
             players_interceptions[player] = players_interceptions.get(player, 0) + action.count('Interception')
+
+    if not players_interceptions:
+        return pd.DataFrame()
+
     return pd.DataFrame({
         'Player': list(players_interceptions.keys()),
         'Interceptions': list(players_interceptions.values())
     }).sort_values(by='Interceptions', ascending=False)
 
 def players_ball_losses(joueurs):
+    """Calcule les statistiques de pertes de balle."""
+    if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        st.warning("Colonnes manquantes pour calculer les statistiques de pertes de balle")
+        return pd.DataFrame()
+
     players_ball_losses = {}
+
     for i in range(len(joueurs)):
         action = joueurs.iloc[i]['Action']
         if isinstance(action, str) and 'Perte de balle' in action:
             player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
             players_ball_losses[player] = players_ball_losses.get(player, 0) + action.count('Perte de balle')
+
+    if not players_ball_losses:
+        return pd.DataFrame()
+
     return pd.DataFrame({
         'Player': list(players_ball_losses.keys()),
         'Pertes de balle': list(players_ball_losses.values())
     }).sort_values(by='Pertes de balle', ascending=False)
 
 def create_metrics(df):
-    """Crée les métriques à partir des données brutes."""
-    metrics = ['Timing', 'Force physique', 'Intelligence tactique', 'Technique 1', 'Technique 2', 'Technique 3', 'Explosivité', 'Prise de risque', 'Précision', 'Sang-froid']
-    df['Timing'] = np.where(df['Duels défensifs'] > 0, (df['Duels défensifs'] - df['Fautes']) / df['Duels défensifs'], 0)
-    df['Force physique'] = np.where(df['Duels défensifs'] > 0, df['Duels défensifs gagnés'] / df['Duels défensifs'], 0)
-    df['Intelligence tactique'] = np.where(df['Interceptions'] > 0, df['Interceptions'] / df['Interceptions'].max(), 0)
-    df['Technique 1'] = np.where(df['Passes'] > 0, df['Passes'] / df['Passes'].max(), 0)
-    df['Technique 2'] = np.where(df['Passes courtes'] > 0, df['Passes réussies (courtes)'] / df['Passes courtes'], 0)
-    df['Technique 3'] = np.where(df['Passes longues'] > 0, df['Passes réussies (longues)'] / df['Passes longues'], 0)
-    df['Explosivité'] = np.where(df['Dribbles'] > 0, df['Dribbles réussis'] / df['Dribbles'], 0)
-    df['Prise de risque'] = np.where(df['Dribbles'] > 0, df['Dribbles'] / df['Dribbles'].max(), 0)
-    df['Précision'] = np.where(df['Tirs'] > 0, df['Tirs cadrés'] / df['Tirs'], 0)
-    df['Sang-froid'] = np.where(df['Tirs'] > 0, df['Tirs'] / df['Tirs'].max(), 0)
-    for metric in metrics:
-        df[metric] = (df[metric].rank(pct=True) * 100).fillna(0)
+    """Crée les métriques à partir des données brutes avec gestion des colonnes manquantes."""
+    if df.empty:
+        return df
+
+    metrics = ['Timing', 'Force physique', 'Intelligence tactique',
+               'Technique 1', 'Technique 2', 'Technique 3',
+               'Explosivité', 'Prise de risque', 'Précision', 'Sang-froid']
+
+    # Vérifier les colonnes nécessaires avant de calculer les métriques
+    has_duels = 'Duels défensifs' in df.columns and 'Fautes' in df.columns
+    has_interceptions = 'Interceptions' in df.columns
+    has_passes = 'Passes' in df.columns
+    has_passes_courtes = 'Passes courtes' in df.columns and 'Passes réussies (courtes)' in df.columns
+    has_passes_longues = 'Passes longues' in df.columns and 'Passes réussies (longues)' in df.columns
+    has_dribbles = 'Dribbles' in df.columns and 'Dribbles réussis' in df.columns
+    has_tirs = 'Tirs' in df.columns and 'Tirs cadrés' in df.columns
+
+    # Calculer uniquement les métriques pour lesquelles on a les données
+    if has_duels and len(df[df['Duels défensifs'] > 0]) > 0:
+        df['Timing'] = np.where(df['Duels défensifs'] > 0,
+                               (df['Duels défensifs'] - df['Fautes']) / df['Duels défensifs'], 0)
+        df['Force physique'] = np.where(df['Duels défensifs'] > 0,
+                                       df['Duels défensifs gagnés'] / df['Duels défensifs'], 0)
+
+    if has_interceptions and len(df[df['Interceptions'] > 0]) > 0:
+        df['Intelligence tactique'] = np.where(df['Interceptions'] > 0,
+                                             df['Interceptions'] / df['Interceptions'].max(), 0)
+
+    if has_passes and len(df[df['Passes'] > 0]) > 0:
+        df['Technique 1'] = np.where(df['Passes'] > 0,
+                                    df['Passes'] / df['Passes'].max(), 0)
+
+    if has_passes_courtes and len(df[df['Passes courtes'] > 0]) > 0:
+        df['Technique 2'] = np.where(df['Passes courtes'] > 0,
+                                    df['Passes réussies (courtes)'] / df['Passes courtes'], 0)
+
+    if has_passes_longues and len(df[df['Passes longues'] > 0]) > 0:
+        df['Technique 3'] = np.where(df['Passes longues'] > 0,
+                                    df['Passes réussies (longues)'] / df['Passes longues'], 0)
+
+    if has_dribbles and len(df[df['Dribbles'] > 0]) > 0:
+        df['Explosivité'] = np.where(df['Dribbles'] > 0,
+                                   df['Dribbles réussis'] / df['Dribbles'], 0)
+        df['Prise de risque'] = np.where(df['Dribbles'] > 0,
+                                       df['Dribbles'] / df['Dribbles'].max(), 0)
+
+    if has_tirs and len(df[df['Tirs'] > 0]) > 0:
+        df['Précision'] = np.where(df['Tirs'] > 0,
+                                  df['Tirs cadrés'] / df['Tirs'], 0)
+        df['Sang-froid'] = np.where(df['Tirs'] > 0,
+                                   df['Tirs'] / df['Tirs'].max(), 0)
+
+    # Calculer les percentiles uniquement pour les métriques qui existent
+    existing_metrics = [m for m in metrics if m in df.columns]
+    for metric in existing_metrics:
+        if len(df[df[metric] > 0]) > 0:
+            df[metric] = (df[metric].rank(pct=True) * 100).fillna(0)
+
     return df
 
 def create_kpis(df):
     """Crée les KPIs à partir des métriques."""
-    df['Rigueur'] = (df['Timing'] + df['Force physique']) / 2
-    df['Récupération'] = df['Intelligence tactique']
-    df['Distribution'] = (df['Technique 1'] + df['Technique 2'] + df['Technique 3']) / 3
-    df['Percussion'] = (df['Explosivité'] + df['Prise de risque']) / 2
-    df['Finition'] = (df['Précision'] + df['Sang-froid']) / 2
+    if df.empty:
+        return df
+
+    required_metrics = ['Timing', 'Force physique', 'Intelligence tactique',
+                       'Technique 1', 'Technique 2', 'Technique 3',
+                       'Explosivité', 'Prise de risque', 'Précision', 'Sang-froid']
+
+    # Vérifier quelles métriques sont disponibles
+    available_metrics = [m for m in required_metrics if m in df.columns]
+
+    # Calculer uniquement les KPIs pour lesquels on a les métriques nécessaires
+    if 'Timing' in available_metrics and 'Force physique' in available_metrics:
+        df['Rigueur'] = (df['Timing'] + df['Force physique']) / 2
+
+    if 'Intelligence tactique' in available_metrics:
+        df['Récupération'] = df['Intelligence tactique']
+
+    tech_metrics = [m for m in ['Technique 1', 'Technique 2', 'Technique 3'] if m in available_metrics]
+    if len(tech_metrics) > 0:
+        df['Distribution'] = df[tech_metrics].mean(axis=1)
+
+    if 'Explosivité' in available_metrics and 'Prise de risque' in available_metrics:
+        df['Percussion'] = (df['Explosivité'] + df['Prise de risque']) / 2
+
+    if 'Précision' in available_metrics and 'Sang-froid' in available_metrics:
+        df['Finition'] = (df['Précision'] + df['Sang-froid']) / 2
+
     return df
 
 def create_poste(df):
     """Crée les notes par poste."""
-    df['Défenseur central'] = (df['Rigueur'] * 5 + df['Récupération'] * 5 + df['Distribution'] * 5 + df['Percussion'] * 1 + df['Finition'] * 1) / 17
-    df['Défenseur latéral'] = (df['Rigueur'] * 3 + df['Récupération'] * 3 + df['Distribution'] * 3 + df['Percussion'] * 3 + df['Finition'] * 3) / 15
-    df['Milieu défensif'] = (df['Rigueur'] * 4 + df['Récupération'] * 4 + df['Distribution'] * 4 + df['Percussion'] * 2 + df['Finition'] * 2) / 16
-    df['Milieu relayeur'] = (df['Rigueur'] * 3 + df['Récupération'] * 3 + df['Distribution'] * 3 + df['Percussion'] * 3 + df['Finition'] * 3) / 15
-    df['Milieu offensif'] = (df['Rigueur'] * 2 + df['Récupération'] * 2 + df['Distribution'] * 2 + df['Percussion'] * 4 + df['Finition'] * 4) / 14
-    df['Attaquant'] = (df['Rigueur'] * 1 + df['Récupération'] * 1 + df['Distribution'] * 1 + df['Percussion'] * 5 + df['Finition'] * 5) / 13
+    if df.empty:
+        return df
+
+    required_kpis = ['Rigueur', 'Récupération', 'Distribution', 'Percussion', 'Finition']
+    available_kpis = [kpi for kpi in required_kpis if kpi in df.columns]
+
+    if len(available_kpis) < 5:
+        st.warning("Données insuffisantes pour calculer les notes par poste")
+        return df
+
+    df['Défenseur central'] = (df['Rigueur'] * 5 + df['Récupération'] * 5 +
+                              df['Distribution'] * 5 + df['Percussion'] * 1 +
+                              df['Finition'] * 1) / 17
+    df['Défenseur latéral'] = (df['Rigueur'] * 3 + df['Récupération'] * 3 +
+                              df['Distribution'] * 3 + df['Percussion'] * 3 +
+                              df['Finition'] * 3) / 15
+    df['Milieu défensif'] = (df['Rigueur'] * 4 + df['Récupération'] * 4 +
+                            df['Distribution'] * 4 + df['Percussion'] * 2 +
+                            df['Finition'] * 2) / 16
+    df['Milieu relayeur'] = (df['Rigueur'] * 3 + df['Récupération'] * 3 +
+                            df['Distribution'] * 3 + df['Percussion'] * 3 +
+                            df['Finition'] * 3) / 15
+    df['Milieu offensif'] = (df['Rigueur'] * 2 + df['Récupération'] * 2 +
+                            df['Distribution'] * 2 + df['Percussion'] * 4 +
+                            df['Finition'] * 4) / 14
+    df['Attaquant'] = (df['Rigueur'] * 1 + df['Récupération'] * 1 +
+                      df['Distribution'] * 1 + df['Percussion'] * 5 +
+                      df['Finition'] * 5) / 13
     return df
 
 def create_data(match, joueurs, is_edf):
-    """Crée un dataframe complet à partir des données brutes."""
-    if is_edf:
-        df_duration = players_edf_duration(match)
-    else:
-        df_duration = players_duration(match)
+    """Crée un dataframe complet à partir des données brutes avec gestion des erreurs."""
+    try:
+        if is_edf:
+            df_duration = players_edf_duration(match)
+        else:
+            df_duration = players_duration(match)
 
-    dfs = [
-        df_duration,
-        players_shots(joueurs),
-        players_passes(joueurs),
-        players_dribbles(joueurs),
-        players_defensive_duels(joueurs),
-        players_interceptions(joueurs),
-        players_ball_losses(joueurs)
-    ]
+        # Appeler toutes les fonctions de calcul avec gestion des erreurs
+        dfs = [df_duration]
 
-    # Nettoyage des noms de joueurs avant le merge
-    for df in dfs:
-        if not df.empty and 'Player' in df.columns:
-            df['Player'] = df['Player'].apply(nettoyer_nom_joueuse)
+        try:
+            dfs.append(players_shots(joueurs))
+        except Exception as e:
+            st.warning(f"Erreur lors du calcul des tirs: {e}")
 
-    # Fusionner les dataframes
-    if len(dfs) > 0 and not df_duration.empty:
-        df = df_duration
-        for other_df in dfs[1:]:
-            if not other_df.empty:
-                df = df.merge(other_df, on='Player', how='outer')
-    else:
-        df = pd.DataFrame()
+        try:
+            dfs.append(players_passes(joueurs))
+        except Exception as e:
+            st.warning(f"Erreur lors du calcul des passes: {e}")
 
-    if not df.empty:
-        df.fillna(0, inplace=True)
-        df = df[(df.iloc[:, 1:] != 0).any(axis=1)]
-        df = df[df['Temps de jeu (en minutes)'] >= 10]
+        try:
+            dfs.append(players_dribbles(joueurs))
+        except Exception as e:
+            st.warning(f"Erreur lors du calcul des dribbles: {e}")
 
-    return df
+        try:
+            dfs.append(players_defensive_duels(joueurs))
+        except Exception as e:
+            st.warning(f"Erreur lors du calcul des duels défensifs: {e}")
+
+        try:
+            dfs.append(players_interceptions(joueurs))
+        except Exception as e:
+            st.warning(f"Erreur lors du calcul des interceptions: {e}")
+
+        try:
+            dfs.append(players_ball_losses(joueurs))
+        except Exception as e:
+            st.warning(f"Erreur lors du calcul des pertes de balle: {e}")
+
+        # Nettoyage des noms de joueurs avant le merge
+        valid_dfs = []
+        for df in dfs:
+            if not df.empty and 'Player' in df.columns:
+                df['Player'] = df['Player'].apply(nettoyer_nom_joueuse)
+                valid_dfs.append(df)
+
+        if not valid_dfs:
+            return pd.DataFrame()
+
+        # Fusionner les dataframes
+        df = valid_dfs[0]
+        for other_df in valid_dfs[1:]:
+            df = df.merge(other_df, on='Player', how='outer')
+
+        if not df.empty:
+            df.fillna(0, inplace=True)
+            df = df[(df.iloc[:, 1:] != 0).any(axis=1)]
+            df = df[df['Temps de jeu (en minutes)'] >= 10]
+
+            # Appliquer les transformations métriques
+            try:
+                df = create_metrics(df)
+                df = create_kpis(df)
+                df = create_poste(df)
+            except Exception as e:
+                st.warning(f"Erreur lors du calcul des métriques: {e}")
+
+        return df
+
+    except Exception as e:
+        st.error(f"Erreur lors de la création des données: {e}")
+        return pd.DataFrame()
 
 # --- Fonction pour filtrer les données par joueuse ---
 def filter_data_by_player(df, player_name):
     """Filtre les données pour une joueuse spécifique."""
-    if not player_name or df.empty:
+    if not player_name or df.empty or 'Player' not in df.columns:
         return df
+
     player_name_clean = nettoyer_nom_joueuse(player_name)
-    if 'Player' not in df.columns:
-        return df
     df['Player_clean'] = df['Player'].apply(nettoyer_nom_joueuse)
     filtered_df = df[df['Player_clean'] == player_name_clean].copy()
     filtered_df.drop(columns=['Player_clean'], inplace=True, errors='ignore')
     return filtered_df
 
-# --- Fonctions de visualisation ---
+# --- Fonctions de visualisation avec gestion des erreurs ---
 def create_individual_radar(df):
     """Crée un radar individuel pour une joueuse."""
-    if df.empty:
+    if df.empty or 'Player' not in df.columns:
         st.warning("Aucune donnée disponible pour créer le radar.")
         return None
 
-    columns_to_plot = ['Timing', 'Force physique', 'Intelligence tactique', 'Technique 1', 'Technique 2', 'Technique 3', 'Explosivité', 'Prise de risque', 'Précision', 'Sang-froid']
-    colors = ['#6A7CD9', '#00BFFE', '#FF9470', '#F27979', '#BFBFBF'] * 2
-
     try:
+        columns_to_plot = ['Timing', 'Force physique', 'Intelligence tactique',
+                          'Technique 1', 'Technique 2', 'Technique 3',
+                          'Explosivité', 'Prise de risque', 'Précision', 'Sang-froid']
+
+        # Vérifier quelles colonnes sont disponibles
+        available_columns = [col for col in columns_to_plot if col in df.columns]
+        if not available_columns:
+            st.warning("Aucune colonne de métrique disponible pour le radar")
+            return None
+
+        colors = ['#6A7CD9', '#00BFFE', '#FF9470', '#F27979', '#BFBFBF'] * 2
+
         player = df.iloc[0]
-        pizza = PyPizza(params=columns_to_plot, background_color='#0e1117', straight_line_color='#FFFFFF', last_circle_color='#FFFFFF')
+        pizza = PyPizza(params=available_columns, background_color='#0e1117',
+                       straight_line_color='#FFFFFF', last_circle_color='#FFFFFF')
+
         fig, _ = pizza.make_pizza(
             figsize=(8, 8),
-            values=[player[col] for col in columns_to_plot],
-            slice_colors=colors,
-            kwargs_values=dict(color='#FFFFFF', fontsize=9, bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117', boxstyle='round, pad=0.2', lw=1)),
+            values=[player[col] for col in available_columns],
+            slice_colors=colors[:len(available_columns)],
+            kwargs_values=dict(color='#FFFFFF', fontsize=9,
+                              bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117',
+                                       boxstyle='round, pad=0.2', lw=1)),
             kwargs_params=dict(color='#FFFFFF', fontsize=10, fontproperties='monospace')
         )
         fig.set_facecolor('#0e1117')
@@ -373,38 +622,57 @@ def create_individual_radar(df):
         return None
 
 def create_comparison_radar(df):
-    """Crée un radar de comparaison entre deux joueuses."""
+    """Crée un radar de comparaison entre deux joueurs."""
     if df.empty or len(df) < 2:
         st.warning("Données insuffisantes pour créer une comparaison.")
         return None
 
-    metrics = ['Timing', 'Force physique', 'Intelligence tactique', 'Technique 1', 'Technique 2', 'Technique 3', 'Explosivité', 'Prise de risque', 'Précision', 'Sang-froid']
-    low, high = (0,) * 10, (100,) * 10
-
     try:
-        radar = Radar(metrics, low, high, num_rings=4, ring_width=1, center_circle_radius=1)
+        metrics = ['Timing', 'Force physique', 'Intelligence tactique',
+                  'Technique 1', 'Technique 2', 'Technique 3',
+                  'Explosivité', 'Prise de risque', 'Précision', 'Sang-froid']
+
+        # Vérifier quelles colonnes sont disponibles
+        available_metrics = [m for m in metrics if m in df.columns]
+        if len(available_metrics) < 2:
+            st.warning("Pas assez de métriques disponibles pour la comparaison")
+            return None
+
+        low, high = (0,) * len(available_metrics), (100,) * len(available_metrics)
+
+        radar = Radar(available_metrics, low, high, num_rings=4,
+                     ring_width=1, center_circle_radius=1)
+
         URL1 = 'https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Thin.ttf'
         URL2 = 'https://raw.githubusercontent.com/google/fonts/main/apache/robotoslab/RobotoSlab%5Bwght%5D.ttf'
         robotto_thin, robotto_bold = FontManager(URL1), FontManager(URL2)
 
-        fig, axs = grid(figheight=14, grid_height=0.915, title_height=0.06, endnote_height=0.025,
-                        title_space=0, endnote_space=0, grid_key='radar')
+        fig, axs = grid(figheight=14, grid_height=0.915, title_height=0.06,
+                        endnote_height=0.025, title_space=0, endnote_space=0,
+                        grid_key='radar')
 
         radar.setup_axis(ax=axs['radar'], facecolor='None')
-        radar.draw_circles(ax=axs['radar'], facecolor='#28252c', edgecolor='#39353f', lw=1.5)
+        radar.draw_circles(ax=axs['radar'], facecolor='#28252c',
+                          edgecolor='#39353f', lw=1.5)
 
-        player_values_1, player_values_2 = df.iloc[0][metrics].values, df.iloc[1][metrics].values
+        player_values_1 = df.iloc[0][available_metrics].values
+        player_values_2 = df.iloc[1][available_metrics].values
+
         radar.draw_radar_compare(player_values_1, player_values_2, ax=axs['radar'],
                                 kwargs_radar={'facecolor': '#00f2c1', 'alpha': 0.6},
                                 kwargs_compare={'facecolor': '#d80499', 'alpha': 0.6})
 
-        radar.draw_range_labels(ax=axs['radar'], fontsize=25, color='#fcfcfc', fontproperties=robotto_thin.prop)
-        radar.draw_param_labels(ax=axs['radar'], fontsize=25, color='#fcfcfc', fontproperties=robotto_thin.prop)
+        radar.draw_range_labels(ax=axs['radar'], fontsize=25, color='#fcfcfc',
+                               fontproperties=robotto_thin.prop)
+        radar.draw_param_labels(ax=axs['radar'], fontsize=25, color='#fcfcfc',
+                               fontproperties=robotto_thin.prop)
 
-        axs['title'].text(0.01, 0.65, df.iloc[0]['Player'], fontsize=25, color='#01c49d',
-                          fontproperties=robotto_bold.prop, ha='left', va='center')
+        axs['title'].text(0.01, 0.65, df.iloc[0]['Player'], fontsize=25,
+                         color='#01c49d', fontproperties=robotto_bold.prop,
+                         ha='left', va='center')
         axs['title'].text(0.99, 0.65, df.iloc[1]['Player'], fontsize=25,
-                          fontproperties=robotto_bold.prop, ha='right', va='center', color='#d80499')
+                         fontproperties=robotto_bold.prop, ha='right',
+                         va='center', color='#d80499')
 
         fig.set_facecolor('#0e1117')
         return fig
@@ -446,16 +714,11 @@ def collect_data():
                     print(f"Traitement du fichier Excel EDF: {filename}")
                     edf = data
                     matchs_csv = [f for f in fichiers if f.startswith('EDF_U19_Match') and f.endswith('.csv')]
-                    matchs = []
+
                     for csv_file in matchs_csv:
                         try:
-                            matchs.append(pd.read_csv(os.path.join(data_folder, csv_file)))
-                        except Exception as e:
-                            st.error(f"Erreur lors de la lecture du fichier {csv_file}: {e}")
-
-                    for i, match_data in enumerate(matchs):
-                        try:
-                            df = create_data(edf[edf['Match'] == f'Match {i + 1}'], match_data, True)
+                            match_data = pd.read_csv(os.path.join(data_folder, csv_file))
+                            df = create_data(edf[edf['Match'] == f'Match {1}'], match_data, True)
                             if not df.empty:
                                 for index, row in df.iterrows():
                                     time_played = row['Temps de jeu (en minutes)']
@@ -463,18 +726,24 @@ def collect_data():
                                         if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
                                             df.loc[index, col] = row[col] * (90 / time_played)
                                 df = create_metrics(df)
-                                df = df.merge(edf[['Player', 'Poste']], on='Player', how='left')
+                                if 'Poste' in edf.columns:
+                                    df = df.merge(edf[['Player', 'Poste']], on='Player', how='left')
                                 cols = ['Player', 'Poste'] + [col for col in df.columns if col not in ['Player', 'Poste']]
                                 df = df[cols]
                                 edf_kpi = pd.concat([edf_kpi, df])
                         except Exception as e:
-                            st.error(f"Erreur lors du traitement du Match {i + 1}: {e}")
+                            st.error(f"Erreur lors du traitement du fichier {csv_file}: {e}")
 
                     if not edf_kpi.empty:
-                        edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
-                        edf_kpi = edf_kpi.drop(columns='Temps de jeu (en minutes)', errors='ignore')
-                        edf_kpi['Poste'] = edf_kpi['Poste'].replace({'Milieux axiale': 'Milieu axiale', 'Milieux offensive': 'Milieu offensive'})
-                        edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
+                        if 'Poste' in edf_kpi.columns:
+                            edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
+                            edf_kpi = edf_kpi.drop(columns='Temps de jeu (en minutes)', errors='ignore')
+                            if 'Poste' in edf_kpi.columns:
+                                edf_kpi['Poste'] = edf_kpi['Poste'].replace({
+                                    'Milieux axiale': 'Milieu axiale',
+                                    'Milieux offensive': 'Milieu offensive'
+                                })
+                                edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
 
                 elif filename.endswith('.csv') and 'PFC' in filename:
                     print(f"Traitement du fichier CSV PFC: {filename}")
@@ -483,32 +752,40 @@ def collect_data():
                         st.warning(f"Le nom du fichier {filename} ne suit pas le format attendu.")
                         continue
 
-                    equipe_domicile, _, equipe_exterieur, journee, categorie, date = parts[:6]
-                    match, joueurs = pd.DataFrame(), pd.DataFrame()
+                    try:
+                        equipe_domicile = parts[0]
+                        equipe_exterieur = parts[2]
+                        journee = parts[3]
+                        categorie = parts[4]
+                        date = parts[5]
 
-                    for i in range(len(data)):
-                        if data['Row'].iloc[i] in [equipe_domicile, equipe_exterieur]:
-                            match = pd.concat([match, data.iloc[i:i+1]], ignore_index=True)
-                        elif not any(x in data['Row'].iloc[i] for x in ['Corner', 'Coup-franc', 'Penalty', 'Carton']):
-                            joueurs = pd.concat([joueurs, data.iloc[i:i+1]], ignore_index=True)
+                        match, joueurs = pd.DataFrame(), pd.DataFrame()
 
-                    if not joueurs.empty:
-                        df = create_data(match, joueurs, False)
-                        if not df.empty:
-                            for index, row in df.iterrows():
-                                time_played = row['Temps de jeu (en minutes)']
-                                for col in df.columns:
-                                    if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
-                                        df.loc[index, col] = row[col] * (90 / time_played)
-                            df = create_metrics(df)
-                            df = create_kpis(df)
-                            df = create_poste(df)
-                            adversaire = equipe_exterieur if equipe_domicile == 'PFC' else equipe_domicile
-                            df.insert(1, 'Adversaire', f'{adversaire} - {journee}')
-                            df.insert(2, 'Journée', journee)
-                            df.insert(3, 'Catégorie', categorie)
-                            df.insert(4, 'Date', date)
-                            pfc_kpi = pd.concat([pfc_kpi, df])
+                        for i in range(len(data)):
+                            if data['Row'].iloc[i] in [equipe_domicile, equipe_exterieur]:
+                                match = pd.concat([match, data.iloc[i:i+1]], ignore_index=True)
+                            elif not any(x in str(data['Row'].iloc[i]) for x in ['Corner', 'Coup-franc', 'Penalty', 'Carton']):
+                                joueurs = pd.concat([joueurs, data.iloc[i:i+1]], ignore_index=True)
+
+                        if not joueurs.empty:
+                            df = create_data(match, joueurs, False)
+                            if not df.empty:
+                                for index, row in df.iterrows():
+                                    time_played = row['Temps de jeu (en minutes)']
+                                    for col in df.columns:
+                                        if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
+                                            df.loc[index, col] = row[col] * (90 / time_played)
+                                df = create_metrics(df)
+                                df = create_kpis(df)
+                                df = create_poste(df)
+                                adversaire = equipe_exterieur if equipe_domicile == 'PFC' else equipe_domicile
+                                df.insert(1, 'Adversaire', f'{adversaire} - {journee}')
+                                df.insert(2, 'Journée', journee)
+                                df.insert(3, 'Catégorie', categorie)
+                                df.insert(4, 'Date', date)
+                                pfc_kpi = pd.concat([pfc_kpi, df])
+                    except Exception as e:
+                        st.error(f"Erreur lors du traitement du fichier {filename}: {e}")
 
             except Exception as e:
                 st.error(f"Erreur lors du traitement du fichier {filename}: {e}")
@@ -546,7 +823,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.cache_data.clear()
 
     # Filtrer les données en fonction du profil
-    if player_name and not pfc_kpi.empty:
+    if player_name and not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
         pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
 
     # Déterminer les options disponibles en fonction des permissions
@@ -614,48 +891,45 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             else:
                                 filtered_data = player_data
 
-                            aggregated_data = filtered_data.groupby('Player').agg({
-                                'Temps de jeu (en minutes)': 'sum',
-                                'Buts': 'sum',
-                            }).join(
-                                filtered_data.groupby('Player').mean(numeric_only=True).drop(columns=['Temps de jeu (en minutes)', 'Buts'])
-                            ).round().astype(int).reset_index()
-                        else:
-                            aggregated_data = player_data
-                            st.warning("Aucun match disponible pour cette joueuse.")
-                    else:
-                        aggregated_data = player_data
+                            if not filtered_data.empty:
+                                aggregated_data = filtered_data.groupby('Player').agg({
+                                    'Temps de jeu (en minutes)': 'sum',
+                                    'Buts': 'sum',
+                                }).join(
+                                    filtered_data.groupby('Player').mean(numeric_only=True).drop(columns=['Temps de jeu (en minutes)', 'Buts'], errors='ignore')
+                                ).round().astype(int).reset_index()
 
-                    if not aggregated_data.empty:
-                        time_played, goals = st.columns(2)
-                        with time_played:
-                            st.metric("Temps de jeu", f"{aggregated_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
-                        with goals:
-                            st.metric("Buts", f"{aggregated_data['Buts'].iloc[0]}")
+                                time_played, goals = st.columns(2)
+                                with time_played:
+                                    st.metric("Temps de jeu", f"{aggregated_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
+                                with goals:
+                                    st.metric("Buts", f"{aggregated_data['Buts'].iloc[0]}")
 
-                        tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
+                                tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
 
-                        with tab1:
-                            fig = create_individual_radar(aggregated_data)
-                            if fig:
-                                st.pyplot(fig)
+                                with tab1:
+                                    fig = create_individual_radar(aggregated_data)
+                                    if fig:
+                                        st.pyplot(fig)
 
-                        with tab2:
-                            col1, col2, col3, col4, col5 = st.columns(5)
-                            with col1: st.metric("Rigueur", f"{aggregated_data['Rigueur'].iloc[0]}/100")
-                            with col2: st.metric("Récupération", f"{aggregated_data['Récupération'].iloc[0]}/100")
-                            with col3: st.metric("Distribution", f"{aggregated_data['Distribution'].iloc[0]}/100")
-                            with col4: st.metric("Percussion", f"{aggregated_data['Percussion'].iloc[0]}/100")
-                            with col5: st.metric("Finition", f"{aggregated_data['Finition'].iloc[0]}/100")
+                                with tab2:
+                                    if 'Rigueur' in aggregated_data.columns:
+                                        col1, col2, col3, col4, col5 = st.columns(5)
+                                        with col1: st.metric("Rigueur", f"{aggregated_data['Rigueur'].iloc[0]}/100")
+                                        with col2: st.metric("Récupération", f"{aggregated_data['Récupération'].iloc[0]}/100")
+                                        with col3: st.metric("Distribution", f"{aggregated_data['Distribution'].iloc[0]}/100")
+                                        with col4: st.metric("Percussion", f"{aggregated_data['Percussion'].iloc[0]}/100")
+                                        with col5: st.metric("Finition", f"{aggregated_data['Finition'].iloc[0]}/100")
 
-                        with tab3:
-                            col1, col2, col3, col4, col5, col6 = st.columns(6)
-                            with col1: st.metric("Défenseur central", f"{aggregated_data['Défenseur central'].iloc[0]}/100")
-                            with col2: st.metric("Défenseur latéral", f"{aggregated_data['Défenseur latéral'].iloc[0]}/100")
-                            with col3: st.metric("Milieu défensif", f"{aggregated_data['Milieu défensif'].iloc[0]}/100")
-                            with col4: st.metric("Milieu relayeur", f"{aggregated_data['Milieu relayeur'].iloc[0]}/100")
-                            with col5: st.metric("Milieu offensif", f"{aggregated_data['Milieu offensif'].iloc[0]}/100")
-                            with col6: st.metric("Attaquant", f"{aggregated_data['Attaquant'].iloc[0]}/100")
+                                with tab3:
+                                    if 'Défenseur central' in aggregated_data.columns:
+                                        col1, col2, col3, col4, col5, col6 = st.columns(6)
+                                        with col1: st.metric("Défenseur central", f"{aggregated_data['Défenseur central'].iloc[0]}/100")
+                                        with col2: st.metric("Défenseur latéral", f"{aggregated_data['Défenseur latéral'].iloc[0]}/100")
+                                        with col3: st.metric("Milieu défensif", f"{aggregated_data['Milieu défensif'].iloc[0]}/100")
+                                        with col4: st.metric("Milieu relayeur", f"{aggregated_data['Milieu relayeur'].iloc[0]}/100")
+                                        with col5: st.metric("Milieu offensif", f"{aggregated_data['Milieu offensif'].iloc[0]}/100")
+                                        with col6: st.metric("Attaquant", f"{aggregated_data['Attaquant'].iloc[0]}/100")
             else:
                 st.subheader("Sélectionnez une joueuse du Paris FC")
                 player = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique())
@@ -664,48 +938,49 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 if player_data.empty:
                     st.error("Aucune donnée disponible pour cette joueuse.")
                 else:
-                    game = st.multiselect("Choisissez un ou plusieurs matchs", player_data['Adversaire'].unique())
-                    filtered_data = player_data[player_data['Adversaire'].isin(game)] if game else player_data
+                    if 'Adversaire' in player_data.columns:
+                        game = st.multiselect("Choisissez un ou plusieurs matchs", player_data['Adversaire'].unique())
+                        filtered_data = player_data[player_data['Adversaire'].isin(game)] if game else player_data
 
-                    if filtered_data.empty:
-                        st.warning("Aucun match sélectionné ou aucune donnée disponible.")
-                    else:
-                        aggregated_data = filtered_data.groupby('Player').agg({
-                            'Temps de jeu (en minutes)': 'sum',
-                            'Buts': 'sum',
-                        }).join(
-                            filtered_data.groupby('Player').mean(numeric_only=True).drop(columns=['Temps de jeu (en minutes)', 'Buts'])
-                        ).round().astype(int).reset_index()
+                        if not filtered_data.empty:
+                            aggregated_data = filtered_data.groupby('Player').agg({
+                                'Temps de jeu (en minutes)': 'sum',
+                                'Buts': 'sum',
+                            }).join(
+                                filtered_data.groupby('Player').mean(numeric_only=True).drop(columns=['Temps de jeu (en minutes)', 'Buts'], errors='ignore')
+                            ).round().astype(int).reset_index()
 
-                        time_played, goals = st.columns(2)
-                        with time_played:
-                            st.metric("Temps de jeu", f"{aggregated_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
-                        with goals:
-                            st.metric("Buts", f"{aggregated_data['Buts'].iloc[0]}")
+                            time_played, goals = st.columns(2)
+                            with time_played:
+                                st.metric("Temps de jeu", f"{aggregated_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
+                            with goals:
+                                st.metric("Buts", f"{aggregated_data['Buts'].iloc[0]}")
 
-                        tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
+                            tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
 
-                        with tab1:
-                            fig = create_individual_radar(aggregated_data)
-                            if fig:
-                                st.pyplot(fig)
+                            with tab1:
+                                fig = create_individual_radar(aggregated_data)
+                                if fig:
+                                    st.pyplot(fig)
 
-                        with tab2:
-                            col1, col2, col3, col4, col5 = st.columns(5)
-                            with col1: st.metric("Rigueur", f"{aggregated_data['Rigueur'].iloc[0]}/100")
-                            with col2: st.metric("Récupération", f"{aggregated_data['Récupération'].iloc[0]}/100")
-                            with col3: st.metric("Distribution", f"{aggregated_data['Distribution'].iloc[0]}/100")
-                            with col4: st.metric("Percussion", f"{aggregated_data['Percussion'].iloc[0]}/100")
-                            with col5: st.metric("Finition", f"{aggregated_data['Finition'].iloc[0]}/100")
+                            with tab2:
+                                if 'Rigueur' in aggregated_data.columns:
+                                    col1, col2, col3, col4, col5 = st.columns(5)
+                                    with col1: st.metric("Rigueur", f"{aggregated_data['Rigueur'].iloc[0]}/100")
+                                    with col2: st.metric("Récupération", f"{aggregated_data['Récupération'].iloc[0]}/100")
+                                    with col3: st.metric("Distribution", f"{aggregated_data['Distribution'].iloc[0]}/100")
+                                    with col4: st.metric("Percussion", f"{aggregated_data['Percussion'].iloc[0]}/100")
+                                    with col5: st.metric("Finition", f"{aggregated_data['Finition'].iloc[0]}/100")
 
-                        with tab3:
-                            col1, col2, col3, col4, col5, col6 = st.columns(6)
-                            with col1: st.metric("Défenseur central", f"{aggregated_data['Défenseur central'].iloc[0]}/100")
-                            with col2: st.metric("Défenseur latéral", f"{aggregated_data['Défenseur latéral'].iloc[0]}/100")
-                            with col3: st.metric("Milieu défensif", f"{aggregated_data['Milieu défensif'].iloc[0]}/100")
-                            with col4: st.metric("Milieu relayeur", f"{aggregated_data['Milieu relayeur'].iloc[0]}/100")
-                            with col5: st.metric("Milieu offensif", f"{aggregated_data['Milieu offensif'].iloc[0]}/100")
-                            with col6: st.metric("Attaquant", f"{aggregated_data['Attaquant'].iloc[0]}/100")
+                            with tab3:
+                                if 'Défenseur central' in aggregated_data.columns:
+                                    col1, col2, col3, col4, col5, col6 = st.columns(6)
+                                    with col1: st.metric("Défenseur central", f"{aggregated_data['Défenseur central'].iloc[0]}/100")
+                                    with col2: st.metric("Défenseur latéral", f"{aggregated_data['Défenseur latéral'].iloc[0]}/100")
+                                    with col3: st.metric("Milieu défensif", f"{aggregated_data['Milieu défensif'].iloc[0]}/100")
+                                    with col4: st.metric("Milieu relayeur", f"{aggregated_data['Milieu relayeur'].iloc[0]}/100")
+                                    with col5: st.metric("Milieu offensif", f"{aggregated_data['Milieu offensif'].iloc[0]}/100")
+                                    with col6: st.metric("Attaquant", f"{aggregated_data['Attaquant'].iloc[0]}/100")
 
     elif page == "Comparaison":
         st.header("Comparaison")
@@ -732,7 +1007,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             data2 = pfc_kpi[pfc_kpi['Adversaire'] == game2]
 
                             if not data1.empty and not data2.empty:
-                                # Renommer les joueurs pour la comparaison
                                 data1 = data1.copy()
                                 data2 = data2.copy()
                                 data1['Player'] = f"{player_name} ({game1})"
@@ -750,14 +1024,13 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         st.warning("Pas assez de matchs disponibles pour la comparaison.")
 
                 st.write("### Comparaison avec les données EDF")
-                if not edf_kpi.empty:
+                if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
                     poste = st.selectbox("Sélectionnez un poste EDF pour comparaison",
                                        edf_kpi['Poste'].unique())
                     edf_data = edf_kpi[edf_kpi['Poste'] == poste].rename(columns={'Poste': 'Player'})
 
                     if not edf_data.empty:
                         player_data = pfc_kpi.copy()
-                        player_data = player_data.rename(columns={'Player': 'Player'})
 
                         if st.button("Comparer avec EDF"):
                             players_data = pd.concat([player_data, edf_data])
@@ -770,52 +1043,58 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                     st.warning("Aucune donnée EDF disponible.")
         else:
             st.subheader("Sélectionnez une joueuse du Paris FC")
-            player1 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_1')
-            player1_data = pfc_kpi[pfc_kpi['Player'] == player1]
+            if not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
+                player1 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_1')
+                player1_data = pfc_kpi[pfc_kpi['Player'] == player1]
 
-            if player1_data.empty:
-                st.error("Aucune donnée disponible pour cette joueuse.")
-            else:
-                game1 = st.multiselect("Choisissez un ou plusieurs matchs", player1_data['Adversaire'].unique(), key='games_1')
-                filtered_player1_data = player1_data[player1_data['Adversaire'].isin(game1)] if game1 else player1_data
-                aggregated_player1_data = filtered_player1_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
+                if player1_data.empty:
+                    st.error("Aucune donnée disponible pour cette joueuse.")
+                else:
+                    if 'Adversaire' in player1_data.columns:
+                        game1 = st.multiselect("Choisissez un ou plusieurs matchs", player1_data['Adversaire'].unique(), key='games_1')
+                        filtered_player1_data = player1_data[player1_data['Adversaire'].isin(game1)] if game1 else player1_data
+                        aggregated_player1_data = filtered_player1_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
 
-                tab1, tab2 = st.tabs(["Comparaison (PFC)", "Comparaison (EDF)"])
+                        tab1, tab2 = st.tabs(["Comparaison (PFC)", "Comparaison (EDF)"])
 
-                with tab1:
-                    st.subheader("Sélectionnez une autre joueuse du Paris FC")
-                    player2 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_2_pfc')
-                    player2_data = pfc_kpi[pfc_kpi['Player'] == player2]
+                        with tab1:
+                            st.subheader("Sélectionnez une autre joueuse du Paris FC")
+                            player2 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_2_pfc')
+                            player2_data = pfc_kpi[pfc_kpi['Player'] == player2]
 
-                    if player2_data.empty:
-                        st.error("Aucune donnée disponible pour cette joueuse.")
-                    else:
-                        game2 = st.multiselect("Choisissez un ou plusieurs matchs", player2_data['Adversaire'].unique(), key='games_2_pfc')
-                        filtered_player2_data = player2_data[player2_data['Adversaire'].isin(game2)] if game2 else player2_data
-                        aggregated_player2_data = filtered_player2_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
-
-                        if st.button("Afficher le radar", key='button_pfc'):
-                            if aggregated_player1_data.empty or aggregated_player2_data.empty:
-                                st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
+                            if player2_data.empty:
+                                st.error("Aucune donnée disponible pour cette joueuse.")
                             else:
-                                players_data = pd.concat([aggregated_player1_data, aggregated_player2_data])
-                                fig = create_comparison_radar(players_data)
-                                if fig:
-                                    st.pyplot(fig)
+                                if 'Adversaire' in player2_data.columns:
+                                    game2 = st.multiselect("Choisissez un ou plusieurs matchs", player2_data['Adversaire'].unique(), key='games_2_pfc')
+                                    filtered_player2_data = player2_data[player2_data['Adversaire'].isin(game2)] if game2 else player2_data
+                                    aggregated_player2_data = filtered_player2_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
 
-                with tab2:
-                    st.subheader("Sélectionnez un poste de l'Équipe de France")
-                    player2 = st.selectbox("Choisissez un poste de comparaison", edf_kpi['Poste'].unique(), key='player_2_edf')
-                    player2_data = edf_kpi[edf_kpi['Poste'] == player2].rename(columns={'Poste': 'Player'})
+                                    if st.button("Afficher le radar", key='button_pfc'):
+                                        if aggregated_player1_data.empty or aggregated_player2_data.empty:
+                                            st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
+                                        else:
+                                            players_data = pd.concat([aggregated_player1_data, aggregated_player2_data])
+                                            fig = create_comparison_radar(players_data)
+                                            if fig:
+                                                st.pyplot(fig)
 
-                    if st.button("Afficher le radar", key='button_edf'):
-                        if aggregated_player1_data.empty:
-                            st.error("Veuillez sélectionner au moins un match pour la joueuse PFC.")
-                        else:
-                            players_data = pd.concat([aggregated_player1_data, player2_data])
-                            fig = create_comparison_radar(players_data)
-                            if fig:
-                                st.pyplot(fig)
+                        with tab2:
+                            if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
+                                st.subheader("Sélectionnez un poste de l'Équipe de France")
+                                player2 = st.selectbox("Choisissez un poste de comparaison", edf_kpi['Poste'].unique(), key='player_2_edf')
+                                player2_data = edf_kpi[edf_kpi['Poste'] == player2].rename(columns={'Poste': 'Player'})
+
+                                if st.button("Afficher le radar", key='button_edf'):
+                                    if aggregated_player1_data.empty:
+                                        st.error("Veuillez sélectionner au moins un match pour la joueuse PFC.")
+                                    else:
+                                        players_data = pd.concat([aggregated_player1_data, player2_data])
+                                        fig = create_comparison_radar(players_data)
+                                        if fig:
+                                            st.pyplot(fig)
+                            else:
+                                st.warning("Aucune donnée EDF disponible.")
 
     elif page == "Gestion":
         st.header("Gestion des utilisateurs")
