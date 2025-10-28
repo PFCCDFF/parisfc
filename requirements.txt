@@ -1,10 +1,31 @@
+# Dependencies for Paris FC Streamlit App
+# Compatible with Python 3.10/3.11 (recommended) and 3.12 (with adjustments)
+
+# Core dependencies
+streamlit==1.27.0
 pandas==2.0.3
 numpy==1.24.3
-streamlit==1.27.0
-streamlit-option-menu==0.3.6
+openpyxl==3.1.2
+
+# Authentication & Google Drive
 google-auth==2.22.0
 google-auth-oauthlib==1.0.0
 google-auth-httplib2==0.1.0
 google-api-python-client==2.96.0
+
+# Visualization (mplsoccer and dependencies)
 mplsoccer==1.0.1
-openpyxl==3.1.2
+matplotlib==3.7.2
+scipy==1.10.1
+pillow==9.5.0
+
+# UI Components
+streamlit-option-menu==0.3.6
+
+# Required for build processes (especially for Python 3.12)
+setuptools==68.0.0
+wheel==0.41.2
+distutils
+
+# Optional: For password hashing (if you reinstate bcrypt later)
+# bcrypt==4.0.1
