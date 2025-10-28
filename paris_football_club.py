@@ -13,43 +13,59 @@ warnings.filterwarnings('ignore')
 
 # --- Fonctions d'interaction avec Google Drive ---
 def authenticate_google_drive():
-    SCOPES = ['https://www.googleapis.com/auth/drive']
-    service_account_info = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
-    creds = service_account.Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
-    service = build('drive', 'v3', credentials=creds)
-    return service
+    try:
+        SCOPES = ['https://www.googleapis.com/auth/drive']
+        service_account_info = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
+        creds = service_account.Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
+        service = build('drive', 'v3', credentials=creds)
+        return service
+    except Exception as e:
+        st.error(f"Erreur d'authentification Google Drive: {e}")
+        return None
 
 def download_file(service, file_id, file_name, output_folder):
-    request = service.files().get_media(fileId=file_id)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        status, done = downloader.next_chunk()
-    file_path = os.path.join(output_folder, file_name)
-    with open(file_path, 'wb') as f:
-        f.write(fh.getbuffer())
+    try:
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+        file_path = os.path.join(output_folder, file_name)
+        with open(file_path, 'wb') as f:
+            f.write(fh.getbuffer())
+    except Exception as e:
+        st.error(f"Erreur lors du téléchargement du fichier {file_name}: {e}")
 
 def list_files_in_folder(service, folder_id):
-    query = f"'{folder_id}' in parents and trashed=false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
-    return results.get('files', [])
+    try:
+        query = f"'{folder_id}' in parents and trashed=false"
+        results = service.files().list(q=query, fields="files(id, name)").execute()
+        return results.get('files', [])
+    except Exception as e:
+        st.error(f"Erreur lors de la liste des fichiers: {e}")
+        return []
 
 def download_google_drive():
-    service = authenticate_google_drive()
-    folder_id = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
-    output_folder = "data"
-    os.makedirs(output_folder, exist_ok=True)
-    files = list_files_in_folder(service, folder_id)
-    if not files:
-        print("Aucun fichier trouvé dans le dossier.")
-    else:
-        for file in files:
-            if file['name'].endswith(('.csv', '.xlsx')):
-                print(f"Téléchargement de : {file['name']}...")
-                download_file(service, file['id'], file['name'], output_folder)
-            else:
-                print(f"Fichier ignoré (non .csv ou .xlsx) : {file['name']}")
+    try:
+        service = authenticate_google_drive()
+        if service is None:
+            return
+        folder_id = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
+        output_folder = "data"
+        os.makedirs(output_folder, exist_ok=True)
+        files = list_files_in_folder(service, folder_id)
+        if not files:
+            st.warning("Aucun fichier trouvé dans le dossier Google Drive.")
+        else:
+            for file in files:
+                if file['name'].endswith(('.csv', '.xlsx')):
+                    st.write(f"Téléchargement de : {file['name']}...")
+                    download_file(service, file['id'], file['name'], output_folder)
+                else:
+                    st.write(f"Fichier ignoré (non .csv ou .xlsx) : {file['name']}")
+    except Exception as e:
+        st.error(f"Erreur lors du téléchargement des fichiers depuis Google Drive: {e}")
 
 # --- Fonctions de traitement des données ---
 def players_edf_duration(match):
@@ -347,78 +363,82 @@ def create_comparison_radar(df):
 
 @st.cache_data
 def collect_data():
-    download_google_drive()
-    pfc_kpi = pd.DataFrame()
-    edf_kpi = pd.DataFrame()
-    for filename in os.listdir('data'):
-        if filename.endswith('.xlsx'):
-            print(f'\'{filename}\' : Récupération des statistiques en cours...')
-            edf = pd.read_excel(f'data/{filename}')
-            unique_matches = edf['Match'].unique()
-            for match in unique_matches:
-                globals()[match] = edf[edf['Match'] == match]
-            match_1 = pd.read_csv("data/EDF_U19_Match1.csv")
-            match_2 = pd.read_csv("data/EDF_U19_Match2.csv")
-            match_3 = pd.read_csv("data/EDF_U19_Match3.csv")
-            matchs = [match_1, match_2, match_3]
-            edf_kpi = pd.DataFrame()
-            for i in range(len(matchs)):
-                df = create_data(globals()[f'Match {i + 1}'], matchs[i], True)
-                for index, row in df.iterrows():
-                    time_played = row['Temps de jeu (en minutes)']
-                    for col in df.columns:
-                        if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
-                            df.loc[index, col] = row[col] * (90 / time_played)
-                df = create_metrics(df)
-                df = df.merge(edf[['Player', 'Poste']], on='Player', how='left')
-                cols = ['Player', 'Poste'] + [col for col in df.columns if col not in ['Player', 'Poste']]
-                df = df[cols]
-                edf_kpi = pd.concat([edf_kpi, df])
-            edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
-            edf_kpi = edf_kpi.drop(columns='Temps de jeu (en minutes)')
-            edf_kpi['Poste'] = edf_kpi['Poste'].replace({
-                'Milieux axiale': 'Milieu axiale',
-                'Milieux offensive': 'Milieu offensive'
-            })
-            edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
-        elif filename.endswith('.csv'):
-            if 'PFC' not in filename:
-                continue
-            data = pd.read_csv(f'data/{filename}')
-            base_filename = filename.split('.')[0]
-            parts = base_filename.split('_')
-            equipe_domicile = parts[0]
-            equipe_exterieur = parts[2]
-            journee = parts[3]
-            categorie = parts[4]
-            date = parts[5]
-            match = pd.DataFrame()
-            joueurs = pd.DataFrame()
-            for i in range(len(data)):
-                if data['Row'].iloc[i] == equipe_domicile or data['Row'].iloc[i] == equipe_exterieur:
-                    match = pd.concat([match, data.iloc[i:i+1]], ignore_index=True)
-                elif not('Corner' in data['Row'].iloc[i] or 'Coup-franc' in data['Row'].iloc[i] or 'Penalty' in data['Row'].iloc[i] or 'Carton' in data['Row'].iloc[i]):
-                    joueurs = pd.concat([joueurs, data.iloc[i:i+1]], ignore_index=True)
-            if len(joueurs) > 0:
-                df = create_data(match, joueurs, False)
-                for index, row in df.iterrows():
-                    time_played = row['Temps de jeu (en minutes)']
-                    for col in df.columns:
-                        if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
-                            df.loc[index, col] = row[col] * (90 / time_played)
-                df = create_metrics(df)
-                df = create_kpis(df)
-                df = create_poste(df)
-                if equipe_domicile == 'PFC':
-                    adversaire = equipe_exterieur
-                else:
-                    adversaire = equipe_domicile
-                df.insert(1, 'Adversaire', f'{adversaire} - {journee}')
-                df.insert(2, 'Journée', journee)
-                df.insert(3, 'Catégorie', categorie)
-                df.insert(4, 'Date', date)
-                pfc_kpi = pd.concat([pfc_kpi, df])
-    return pfc_kpi, edf_kpi
+    try:
+        download_google_drive()
+        pfc_kpi = pd.DataFrame()
+        edf_kpi = pd.DataFrame()
+        for filename in os.listdir('data'):
+            if filename.endswith('.xlsx'):
+                st.write(f'\'{filename}\' : Récupération des statistiques en cours...')
+                edf = pd.read_excel(f'data/{filename}')
+                unique_matches = edf['Match'].unique()
+                for match in unique_matches:
+                    globals()[match] = edf[edf['Match'] == match]
+                match_1 = pd.read_csv("data/EDF_U19_Match1.csv")
+                match_2 = pd.read_csv("data/EDF_U19_Match2.csv")
+                match_3 = pd.read_csv("data/EDF_U19_Match3.csv")
+                matchs = [match_1, match_2, match_3]
+                edf_kpi = pd.DataFrame()
+                for i in range(len(matchs)):
+                    df = create_data(globals()[f'Match {i + 1}'], matchs[i], True)
+                    for index, row in df.iterrows():
+                        time_played = row['Temps de jeu (en minutes)']
+                        for col in df.columns:
+                            if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
+                                df.loc[index, col] = row[col] * (90 / time_played)
+                    df = create_metrics(df)
+                    df = df.merge(edf[['Player', 'Poste']], on='Player', how='left')
+                    cols = ['Player', 'Poste'] + [col for col in df.columns if col not in ['Player', 'Poste']]
+                    df = df[cols]
+                    edf_kpi = pd.concat([edf_kpi, df])
+                edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
+                edf_kpi = edf_kpi.drop(columns='Temps de jeu (en minutes)')
+                edf_kpi['Poste'] = edf_kpi['Poste'].replace({
+                    'Milieux axiale': 'Milieu axiale',
+                    'Milieux offensive': 'Milieu offensive'
+                })
+                edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
+            elif filename.endswith('.csv'):
+                if 'PFC' not in filename:
+                    continue
+                data = pd.read_csv(f'data/{filename}')
+                base_filename = filename.split('.')[0]
+                parts = base_filename.split('_')
+                equipe_domicile = parts[0]
+                equipe_exterieur = parts[2]
+                journee = parts[3]
+                categorie = parts[4]
+                date = parts[5]
+                match = pd.DataFrame()
+                joueurs = pd.DataFrame()
+                for i in range(len(data)):
+                    if data['Row'].iloc[i] == equipe_domicile or data['Row'].iloc[i] == equipe_exterieur:
+                        match = pd.concat([match, data.iloc[i:i+1]], ignore_index=True)
+                    elif not('Corner' in data['Row'].iloc[i] or 'Coup-franc' in data['Row'].iloc[i] or 'Penalty' in data['Row'].iloc[i] or 'Carton' in data['Row'].iloc[i]):
+                        joueurs = pd.concat([joueurs, data.iloc[i:i+1]], ignore_index=True)
+                if len(joueurs) > 0:
+                    df = create_data(match, joueurs, False)
+                    for index, row in df.iterrows():
+                        time_played = row['Temps de jeu (en minutes)']
+                        for col in df.columns:
+                            if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
+                                df.loc[index, col] = row[col] * (90 / time_played)
+                    df = create_metrics(df)
+                    df = create_kpis(df)
+                    df = create_poste(df)
+                    if equipe_domicile == 'PFC':
+                        adversaire = equipe_exterieur
+                    else:
+                        adversaire = equipe_domicile
+                    df.insert(1, 'Adversaire', f'{adversaire} - {journee}')
+                    df.insert(2, 'Journée', journee)
+                    df.insert(3, 'Catégorie', categorie)
+                    df.insert(4, 'Date', date)
+                    pfc_kpi = pd.concat([pfc_kpi, df])
+        return pfc_kpi, edf_kpi
+    except Exception as e:
+        st.error(f"Erreur lors de la collecte des données: {e}")
+        return pd.DataFrame(), pd.DataFrame()
 
 def script_streamlit():
     # Chemin du logo
@@ -431,7 +451,6 @@ def script_streamlit():
         """,
         unsafe_allow_html=True
     )
-
     # Ajouter un bouton de mise à jour des données
     if st.sidebar.button("Mettre à jour les données"):
         if 'pfc_kpi' in st.session_state:
@@ -439,7 +458,6 @@ def script_streamlit():
         if 'edf_kpi' in st.session_state:
             del st.session_state.edf_kpi
         st.rerun()
-
     # Vérifier si les données sont déjà en session
     if 'pfc_kpi' not in st.session_state or 'edf_kpi' not in st.session_state:
         with st.spinner("Téléchargement et traitement des données..."):
@@ -449,7 +467,6 @@ def script_streamlit():
     else:
         pfc_kpi = st.session_state.pfc_kpi
         edf_kpi = st.session_state.edf_kpi
-
     # Affichage du logo certifié Paris
     logo_certifié_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
     st.sidebar.markdown(
@@ -463,7 +480,6 @@ def script_streamlit():
         """,
         unsafe_allow_html=True
     )
-
     with st.sidebar:
         page = option_menu(
             menu_title="",
@@ -488,7 +504,6 @@ def script_streamlit():
                 }
             }
         )
-
     if page == "Statistiques":
         st.header("Statistiques")
         st.subheader("Sélectionnez une joueuse du Paris FC")
