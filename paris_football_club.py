@@ -1216,6 +1216,13 @@ if __name__ == '__main__':
                     st.error("Nom d'utilisateur ou mot de passe incorrect")
         st.stop()
 
-    # Téléchargement et traitement des données
-    logo
+       # Téléchargement et traitement des données
+    logo_monochrome = "https://i.postimg.cc/BQQ5K5tp/Monochrome.png"
+    st.markdown(f"<style>.logo-container{{position:absolute;top:-100px;right:10px;}}.logo-container img{{width:90px;}}</style><div class='logo-container'><img src='{logo_monochrome}'></div>", unsafe_allow_html=True)
 
+    # Chargement des données
+    pfc_kpi, edf_kpi = collect_data()
+
+    # Affichage de l'interface
+    script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+    
