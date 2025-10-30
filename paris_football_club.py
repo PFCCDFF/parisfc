@@ -428,13 +428,17 @@ def create_data(match, joueurs, is_edf):
     """Crée un dataframe complet à partir des données brutes."""
     try:
         if is_edf:
-            df_duration = players_edf_duration(match)
+            # Fusionner les données des joueuses avec leurs postes
+            joueurs['Player'] = joueurs['Player'].apply(nettoyer_nom_joueuse)
+            df_duration = joueurs.merge(match[['Player', 'Poste']], on='Player', how='left')
             if df_duration.empty:
                 return pd.DataFrame()
-            if 'Player' in df_duration.columns and 'Player' in match.columns:
-                df_duration = df_duration.merge(match[['Player', 'Poste']], on='Player', how='left')
+
+            # Calculer la durée de jeu
+            if 'Temps de jeu' in joueurs.columns:
+                df_duration['Temps de jeu (en minutes)'] = joueurs['Temps de jeu']
             else:
-                st.warning("Colonne 'Player' ou 'Poste' manquante dans les données EDF.")
+                st.warning("Colonne 'Temps de jeu' manquante dans les données EDF.")
                 return pd.DataFrame()
         else:
             df_duration = players_duration(match)
@@ -550,6 +554,7 @@ def collect_data():
                 all_edf_data = []
                 for csv_file in matchs_csv:
                     match_data = pd.read_csv(os.path.join(data_folder, csv_file))
+                    match_data['Player'] = match_data['Player'].apply(nettoyer_nom_joueuse)
                     df = create_data(edf_joueuses, match_data, True)
                     if not df.empty:
                         all_edf_data.append(df)
