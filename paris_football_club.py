@@ -433,19 +433,17 @@ def create_data(match, joueurs, is_edf):
                 return pd.DataFrame()
             joueurs['Player'] = joueurs['Player'].apply(nettoyer_nom_joueuse)
 
-            # Fusionner les données des joueuses avec leurs postes et temps de jeu
-            df_duration = joueurs.merge(match[['Player', 'Poste']], on='Player', how='left')
-            if df_duration.empty:
-                st.warning("Aucune donnée EDF valide trouvée après fusion.")
+            # Vérifier que les colonnes 'Poste' et 'Temps de jeu' sont présentes
+            if 'Poste' not in joueurs.columns or 'Temps de jeu' not in joueurs.columns:
+                st.error("Les colonnes 'Poste' ou 'Temps de jeu' sont manquantes dans les données EDF.")
                 return pd.DataFrame()
 
-            if 'Temps de jeu' not in joueurs.columns:
-                st.error("La colonne 'Temps de jeu' est manquante dans les données EDF.")
-                return pd.DataFrame()
-            df_duration['Temps de jeu (en minutes)'] = joueurs['Temps de jeu']
+            df_duration = pd.DataFrame({
+                'Player': joueurs['Player'],
+                'Temps de jeu (en minutes)': joueurs['Temps de jeu'],
+                'Poste': joueurs['Poste']
+            })
         else:
-            if 'Player' not in joueurs.columns:
-                joueurs['Player'] = joueurs['Row'].apply(nettoyer_nom_joueuse)
             df_duration = players_duration(match)
 
         dfs = [df_duration]
@@ -556,7 +554,6 @@ def collect_data():
                 st.error("Les colonnes 'Player', 'Poste' ou 'Temps de jeu' sont manquantes dans le fichier EDF_Joueuses.xlsx.")
                 return pfc_kpi, edf_kpi
             edf_joueuses['Player'] = edf_joueuses['Player'].apply(nettoyer_nom_joueuse)
-            edf_joueuses = edf_joueuses[['Player', 'Poste', 'Temps de jeu']]
 
             matchs_csv = [f for f in fichiers if f.startswith('EDF_U19_Match') and f.endswith('.csv')]
             if matchs_csv:
@@ -568,8 +565,13 @@ def collect_data():
                         continue
                     match_data['Player'] = match_data['Row'].apply(nettoyer_nom_joueuse)
 
-                    # Fusionner les données des fichiers CSV avec les données des joueuses (incluant le temps de jeu)
-                    df = create_data(edf_joueuses, match_data, True)
+                    # Fusionner les données des fichiers CSV avec les données des joueuses (incluant le poste et le temps de jeu)
+                    match_data = match_data.merge(edf_joueuses, on='Player', how='left')
+                    if match_data.empty:
+                        st.warning(f"Aucune donnée valide trouvée dans le fichier {csv_file} après fusion.")
+                        continue
+
+                    df = create_data(match_data, match_data, True)
                     if not df.empty:
                         all_edf_data.append(df)
 
@@ -1193,6 +1195,7 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
