@@ -14,7 +14,7 @@ warnings.filterwarnings('ignore')
 
 # Configuration de la page
 st.set_page_config(
-    page_title="Pôle vidéo/data CDFF",
+    page_title="Paris FC - Centre de Formation Féminin",
     page_icon=":soccer:",
     layout="wide"
 )
@@ -1103,3 +1103,4 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
