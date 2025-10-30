@@ -1078,7 +1078,7 @@ if __name__ == '__main__':
             unsafe_allow_html=True
         )
         with st.form("login_form"):
-            st.markdown("<h1 style='color: white;'>Paris Football Club</h1>", unsafe_allow_html=True)
+            st.markdown("<h1 style='color: white;'>Paris FC - Centre de Formation Féminin</h1>", unsafe_allow_html=True)
             username = st.text_input("Nom d'utilisateur (profil)", key="username")
             password = st.text_input("Mot de passe", type="password", key="password")
             submitted = st.form_submit_button("Valider")
@@ -1103,5 +1103,6 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
