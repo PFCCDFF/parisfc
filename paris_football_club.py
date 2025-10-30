@@ -805,8 +805,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     with col1:
         st.image(logo_pfc, width=150)
     with col2:
-        st.markdown("<h1 style='color: white;'>Paris FC - Centre de Formation Féminin</h1>", unsafe_allow_html=True)
-        st.markdown("<h3 style='color: white;'>Data Center</h3>", unsafe_allow_html=True)
+        st.markdown("<h1 style='color: white;'>Pôle vidéo/data CDFF</h1>", unsafe_allow_html=True)
+        st.markdown("<h3 style='color: white;'>Saison 2025-26</h3>", unsafe_allow_html=True)
 
     player_name = get_player_for_profile(user_profile, permissions)
 
@@ -825,7 +825,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     if player_name and not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
         pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
         if pfc_kpi.empty:
-            pass
+            st.warning(f"Aucune donnée disponible pour la joueuse {player_name}")
 
     available_options = ["Statistiques"]
     if check_permission(user_profile, "compare_players", permissions) or check_permission(user_profile, "all", permissions) or player_name:
@@ -854,7 +854,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     if page == "Statistiques":
         st.markdown("<h2 style='color: white;'>Statistiques</h2>", unsafe_allow_html=True)
         if pfc_kpi.empty:
-            pass
+            st.warning("Aucune donnée disponible pour votre profil.")
         else:
             if player_name:
                 st.markdown(f"<h3 style='color: white;'>Statistiques pour {player_name}</h3>", unsafe_allow_html=True)
@@ -903,19 +903,67 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                     with col5: st.markdown(f"<h4 style='color: white;'>Milieu offensif: {aggregated_data['Milieu offensif'].iloc[0]}/100</h4>", unsafe_allow_html=True)
                                     with col6: st.markdown(f"<h4 style='color: white;'>Attaquant: {aggregated_data['Attaquant'].iloc[0]}/100</h4>", unsafe_allow_html=True)
                         else:
-                            pass
+                            st.warning("Aucune donnée disponible pour les matchs sélectionnés.")
                     else:
-                        pass
+                        st.warning("Aucun match disponible pour cette joueuse.")
                 else:
-                    pass
+                    st.warning("Colonne 'Adversaire' manquante dans les données.")
             else:
-                pass
+                st.subheader("Sélectionnez une joueuse du Paris FC")
+                if not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
+                    player = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique())
+                    player_data = pfc_kpi[pfc_kpi['Player'] == player]
+                    if player_data.empty:
+                        st.error("Aucune donnée disponible pour cette joueuse.")
+                    else:
+                        if 'Adversaire' in player_data.columns:
+                            game = st.multiselect("Choisissez un ou plusieurs matchs", player_data['Adversaire'].unique())
+                            filtered_data = player_data[player_data['Adversaire'].isin(game)] if game else player_data
+                            if not filtered_data.empty:
+                                aggregated_data = filtered_data.groupby('Player').agg({
+                                    'Temps de jeu (en minutes)': 'sum',
+                                    'Buts': 'sum',
+                                }).join(
+                                    filtered_data.groupby('Player').mean(numeric_only=True).drop(
+                                        columns=['Temps de jeu (en minutes)', 'Buts'], errors='ignore'
+                                    )
+                                ).round().astype(int).reset_index()
+                                time_played, goals = st.columns(2)
+                                with time_played:
+                                    st.markdown(f"<h4 style='color: white;'>Temps de jeu: {aggregated_data['Temps de jeu (en minutes)'].iloc[0]} minutes</h4>", unsafe_allow_html=True)
+                                with goals:
+                                    st.markdown(f"<h4 style='color: white;'>Buts: {aggregated_data['Buts'].iloc[0]}</h4>", unsafe_allow_html=True)
+                                tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
+                                with tab1:
+                                    fig = create_individual_radar(aggregated_data)
+                                    if fig:
+                                        st.pyplot(fig)
+                                with tab2:
+                                    if 'Rigueur' in aggregated_data.columns:
+                                        col1, col2, col3, col4, col5 = st.columns(5)
+                                        with col1: st.markdown(f"<h4 style='color: white;'>Rigueur: {aggregated_data['Rigueur'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+                                        with col2: st.markdown(f"<h4 style='color: white;'>Récupération: {aggregated_data['Récupération'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+                                        with col3: st.markdown(f"<h4 style='color: white;'>Distribution: {aggregated_data['Distribution'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+                                        with col4: st.markdown(f"<h4 style='color: white;'>Percussion: {aggregated_data['Percussion'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+                                        with col5: st.markdown(f"<h4 style='color: white;'>Finition: {aggregated_data['Finition'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+                                with tab3:
+                                    if 'Défenseur central' in aggregated_data.columns:
+                                        col1, col2, col3, col4, col5, col6 = st.columns(6)
+                                        with col1: st.markdown(f"<h4 style='color: white;'>Défenseur central: {aggregated_data['Défenseur central'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+                                        with col2: st.markdown(f"<h4 style='color: white;'>Défenseur latéral: {aggregated_data['Défenseur latéral'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+                                        with col3: st.markdown(f"<h4 style='color: white;'>Milieu défensif: {aggregated_data['Milieu défensif'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+                                        with col4: st.markdown(f"<h4 style='color: white;'>Milieu relayeur: {aggregated_data['Milieu relayeur'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+                                        with col5: st.markdown(f"<h4 style='color: white;'>Milieu offensif: {aggregated_data['Milieu offensif'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+                                        with col6: st.markdown(f"<h4 style='color: white;'>Attaquant: {aggregated_data['Attaquant'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+            else:
+                st.warning("Aucune donnée disponible.")
+
     elif page == "Comparaison":
         st.markdown("<h2 style='color: white;'>Comparaison</h2>", unsafe_allow_html=True)
         if player_name:
             st.markdown(f"<h3 style='color: white;'>Comparaison pour {player_name}</h3>", unsafe_allow_html=True)
             if pfc_kpi.empty:
-                pass
+                st.warning(f"Aucune donnée disponible pour {player_name}.")
             else:
                 st.markdown("<h4 style='color: white;'>1. Comparez vos performances sur différents matchs</h4>", unsafe_allow_html=True)
                 if 'Adversaire' in pfc_kpi.columns:
@@ -950,11 +998,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         if fig:
                                             st.pyplot(fig)
                                     else:
-                                        pass
+                                        st.warning("Pas assez de données pour la comparaison.")
                             else:
-                                pass
+                                st.warning("Pas assez de matchs sélectionnés avec des données valides.")
                         else:
-                            pass
+                            st.warning("Veuillez sélectionner au moins 2 matchs pour la comparaison.")
 
                 st.markdown("<h4 style='color: white;'>2. Comparez-vous aux données EDF</h4>", unsafe_allow_html=True)
                 if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
@@ -977,11 +1025,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                 if fig:
                                     st.pyplot(fig)
                         else:
-                            pass
+                            st.warning("Aucune donnée disponible pour cette joueuse.")
                     else:
-                        pass
+                        st.warning("Aucune donnée EDF disponible pour ce poste.")
                 else:
-                    pass
+                    st.warning("Aucune donnée EDF disponible pour la comparaison.")
 
                 st.markdown("<h4 style='color: white;'>3. Comparez-vous à vos moyennes globales</h4>", unsafe_allow_html=True)
                 if not pfc_kpi.empty:
@@ -1011,13 +1059,58 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                     if fig:
                                         st.pyplot(fig)
                             else:
-                                pass
+                                st.warning("Aucune donnée disponible pour ce match.")
                         else:
-                            pass
+                            st.warning("Colonne 'Adversaire' manquante dans les données.")
                     else:
-                        pass
+                        st.warning("Aucune donnée disponible pour cette joueuse.")
         else:
-            pass
+            st.subheader("Sélectionnez une joueuse du Paris FC")
+            if not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
+                player1 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_1')
+                player1_data = pfc_kpi[pfc_kpi['Player'] == player1]
+                if player1_data.empty:
+                    st.error("Aucune donnée disponible pour cette joueuse.")
+                else:
+                    if 'Adversaire' in player1_data.columns:
+                        game1 = st.multiselect("Choisissez un ou plusieurs matchs", player1_data['Adversaire'].unique(), key='games_1')
+                        filtered_player1_data = player1_data[player1_data['Adversaire'].isin(game1)] if game1 else player1_data
+                        aggregated_player1_data = filtered_player1_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
+                        tab1, tab2 = st.tabs(["Comparaison (PFC)", "Comparaison (EDF)"])
+                        with tab1:
+                            st.subheader("Sélectionnez une autre joueuse du Paris FC")
+                            player2 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_2_pfc')
+                            player2_data = pfc_kpi[pfc_kpi['Player'] == player2]
+                            if player2_data.empty:
+                                st.error("Aucune donnée disponible pour cette joueuse.")
+                            else:
+                                if 'Adversaire' in player2_data.columns:
+                                    game2 = st.multiselect("Choisissez un ou plusieurs matchs", player2_data['Adversaire'].unique(), key='games_2_pfc')
+                                    filtered_player2_data = player2_data[player2_data['Adversaire'].isin(game2)] if game2 else player2_data
+                                    aggregated_player2_data = filtered_player2_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
+                                    if st.button("Afficher le radar", key='button_pfc'):
+                                        if aggregated_player1_data.empty or aggregated_player2_data.empty:
+                                            st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
+                                        else:
+                                            players_data = pd.concat([aggregated_player1_data, aggregated_player2_data])
+                                            fig = create_comparison_radar(players_data)
+                                            if fig:
+                                                st.pyplot(fig)
+                        with tab2:
+                            if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
+                                st.subheader("Sélectionnez un poste de l'Équipe de France")
+                                player2 = st.selectbox("Choisissez un poste de comparaison", edf_kpi['Poste'].unique(), key='player_2_edf')
+                                player2_data = edf_kpi[edf_kpi['Poste'] == player2].rename(columns={'Poste': 'Player'})
+                                if st.button("Afficher le radar", key='button_edf'):
+                                    if aggregated_player1_data.empty:
+                                        st.error("Veuillez sélectionner au moins un match pour la joueuse PFC.")
+                                    else:
+                                        players_data = pd.concat([aggregated_player1_data, player2_data])
+                                        fig = create_comparison_radar(players_data)
+                                        if fig:
+                                            st.pyplot(fig)
+                            else:
+                                st.warning("Aucune donnée EDF disponible.")
     elif page == "Gestion":
         st.markdown("<h2 style='color: white;'>Gestion des utilisateurs</h2>", unsafe_allow_html=True)
         if check_permission(user_profile, "all", permissions):
@@ -1055,6 +1148,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             st.success(f"Profil {new_profile} créé avec succès!")
         else:
             st.error("Vous n'avez pas la permission d'accéder à cette page.")
+
 
 # =============================================
 # POINT D'ENTRÉE PRINCIPAL
@@ -1103,6 +1197,7 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
