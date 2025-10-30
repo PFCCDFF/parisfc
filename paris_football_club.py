@@ -671,7 +671,7 @@ def create_individual_radar(df):
             last_circle_color='#FFFFFF'
         )
         fig, _ = pizza.make_pizza(
-            figsize=(6, 6),
+            figsize=(4, 4),
             values=[player[col] for col in available_columns],
             slice_colors=colors[:len(available_columns)],
             kwargs_values=dict(
@@ -679,7 +679,7 @@ def create_individual_radar(df):
                 fontsize=9,
                 bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117', boxstyle='round, pad=0.2', lw=1)
             ),
-            kwargs_params=dict(color='#FFFFFF', fontsize=12, fontproperties='monospace')
+            kwargs_params=dict(color='#FFFFFF', fontsize=8, fontproperties='monospace')
         )
         fig.set_facecolor('#0e1117')
         return fig
@@ -1195,6 +1195,7 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
