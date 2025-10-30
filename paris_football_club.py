@@ -402,7 +402,6 @@ def create_poste(df):
     required_kpis = ['Rigueur', 'Récupération', 'Distribution', 'Percussion', 'Finition']
     available_kpis = [kpi for kpi in required_kpis if kpi in df.columns]
     if len(available_kpis) < 5:
-        st.warning("Données insuffisantes pour calculer les notes par poste")
         return df
     df['Défenseur central'] = (df['Rigueur'] * 5 + df['Récupération'] * 5 +
                               df['Distribution'] * 5 + df['Percussion'] * 1 +
@@ -423,6 +422,7 @@ def create_poste(df):
                       df['Distribution'] * 1 + df['Percussion'] * 5 +
                       df['Finition'] * 5) / 13
     return df
+
 
 def create_data(match, joueurs, is_edf):
     """Crée un dataframe complet à partir des données brutes."""
@@ -1195,6 +1195,7 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
