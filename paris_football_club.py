@@ -676,10 +676,10 @@ def create_individual_radar(df):
             slice_colors=colors[:len(available_columns)],
             kwargs_values=dict(
                 color='#FFFFFF',
-                fontsize=5,
+                fontsize=3,
                 bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117', boxstyle='round, pad=0.2', lw=1)
             ),
-            kwargs_params=dict(color='#FFFFFF', fontsize=5, fontproperties='monospace')
+            kwargs_params=dict(color='#FFFFFF', fontsize=3, fontproperties='monospace')
         )
         fig.set_facecolor('#0e1117')
         return fig
@@ -1195,6 +1195,7 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
