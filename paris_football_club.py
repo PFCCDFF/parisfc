@@ -671,7 +671,7 @@ def create_individual_radar(df):
             last_circle_color='#FFFFFF'
         )
         fig, _ = pizza.make_pizza(
-            figsize=(8, 8),
+            figsize=(6, 6),
             values=[player[col] for col in available_columns],
             slice_colors=colors[:len(available_columns)],
             kwargs_values=dict(
@@ -679,7 +679,7 @@ def create_individual_radar(df):
                 fontsize=9,
                 bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117', boxstyle='round, pad=0.2', lw=1)
             ),
-            kwargs_params=dict(color='#FFFFFF', fontsize=10, fontproperties='monospace')
+            kwargs_params=dict(color='#FFFFFF', fontsize=12, fontproperties='monospace')
         )
         fig.set_facecolor('#0e1117')
         return fig
@@ -741,13 +741,13 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         )
         radar.draw_range_labels(
             ax=axs['radar'],
-            fontsize=25,
+            fontsize=18,
             color='#fcfcfc',
             fontproperties=robotto_thin.prop
         )
         radar.draw_param_labels(
             ax=axs['radar'],
-            fontsize=25,
+            fontsize=18,
             color='#fcfcfc',
             fontproperties=robotto_thin.prop
         )
@@ -756,7 +756,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         axs['title'].text(
             0.01, 0.65,
             player1_label,
-            fontsize=25,
+            fontsize=18,
             color='#01c49d',
             fontproperties=robotto_bold.prop,
             ha='left',
@@ -765,7 +765,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         axs['title'].text(
             0.99, 0.65,
             player2_label,
-            fontsize=25,
+            fontsize=18,
             fontproperties=robotto_bold.prop,
             ha='right',
             va='center',
@@ -1195,6 +1195,7 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
