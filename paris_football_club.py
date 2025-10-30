@@ -1,5 +1,3 @@
-Code ok avec interface joueuses et comparaisons EDF
-
 import pandas as pd
 import numpy as np
 import os
@@ -1213,4 +1211,5 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
