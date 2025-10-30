@@ -428,18 +428,19 @@ def create_data(match, joueurs, is_edf):
     """Crée un dataframe complet à partir des données brutes."""
     try:
         if is_edf:
-            # Fusionner les données des joueuses avec leurs postes
+            if 'Player' not in joueurs.columns:
+                st.error("La colonne 'Player' est manquante dans les données EDF.")
+                return pd.DataFrame()
             joueurs['Player'] = joueurs['Player'].apply(nettoyer_nom_joueuse)
             df_duration = joueurs.merge(match[['Player', 'Poste']], on='Player', how='left')
             if df_duration.empty:
+                st.warning("Aucune donnée EDF valide trouvée après fusion.")
                 return pd.DataFrame()
 
-            # Calculer la durée de jeu
-            if 'Temps de jeu' in joueurs.columns:
-                df_duration['Temps de jeu (en minutes)'] = joueurs['Temps de jeu']
-            else:
-                st.warning("Colonne 'Temps de jeu' manquante dans les données EDF.")
+            if 'Temps de jeu' not in joueurs.columns:
+                st.error("La colonne 'Temps de jeu' est manquante dans les données EDF.")
                 return pd.DataFrame()
+            df_duration['Temps de jeu (en minutes)'] = joueurs['Temps de jeu']
         else:
             df_duration = players_duration(match)
 
@@ -488,6 +489,7 @@ def create_data(match, joueurs, is_edf):
     except Exception as e:
         st.error(f"Erreur lors de la création des données: {e}")
         return pd.DataFrame()
+
 
 def filter_data_by_player(df, player_name):
     """Filtre les données pour une joueuse spécifique."""
@@ -546,6 +548,9 @@ def collect_data():
         edf_joueuses_path = os.path.join(data_folder, "EDF_Joueuses.xlsx")
         if os.path.exists(edf_joueuses_path):
             edf_joueuses = pd.read_excel(edf_joueuses_path)
+            if 'Player' not in edf_joueuses.columns or 'Poste' not in edf_joueuses.columns:
+                st.error("Les colonnes 'Player' ou 'Poste' sont manquantes dans le fichier EDF_Joueuses.xlsx.")
+                return pfc_kpi, edf_kpi
             edf_joueuses['Player'] = edf_joueuses['Player'].apply(nettoyer_nom_joueuse)
             edf_joueuses = edf_joueuses[['Player', 'Poste']]
 
@@ -554,6 +559,9 @@ def collect_data():
                 all_edf_data = []
                 for csv_file in matchs_csv:
                     match_data = pd.read_csv(os.path.join(data_folder, csv_file))
+                    if 'Player' not in match_data.columns:
+                        st.error(f"La colonne 'Player' est manquante dans le fichier {csv_file}.")
+                        continue
                     match_data['Player'] = match_data['Player'].apply(nettoyer_nom_joueuse)
                     df = create_data(edf_joueuses, match_data, True)
                     if not df.empty:
@@ -590,6 +598,9 @@ def collect_data():
                         categorie = parts[4]
                         date = parts[5]
                         data = pd.read_csv(path)
+                        if 'Row' not in data.columns:
+                            st.error(f"La colonne 'Row' est manquante dans le fichier {filename}.")
+                            continue
                         match, joueurs = pd.DataFrame(), pd.DataFrame()
                         for i in range(len(data)):
                             if data['Row'].iloc[i] in [equipe_domicile, equipe_exterieur]:
@@ -1174,3 +1185,4 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
