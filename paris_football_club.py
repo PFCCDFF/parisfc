@@ -429,8 +429,16 @@ def create_data(match, joueurs, is_edf):
     try:
         if is_edf:
             df_duration = players_edf_duration(match)
+            if df_duration.empty:
+                return pd.DataFrame()
+            if 'Player' in df_duration.columns and 'Player' in match.columns:
+                df_duration = df_duration.merge(match[['Player', 'Poste']], on='Player', how='left')
+            else:
+                st.warning("Colonne 'Player' ou 'Poste' manquante dans les données EDF.")
+                return pd.DataFrame()
         else:
             df_duration = players_duration(match)
+
         dfs = [df_duration]
         calc_functions = [
             ('tirs', players_shots),
@@ -447,16 +455,20 @@ def create_data(match, joueurs, is_edf):
                     dfs.append(result)
             except Exception as e:
                 st.warning(f"Erreur lors du calcul des {name}: {e}")
+
         valid_dfs = []
         for df in dfs:
             if not df.empty and 'Player' in df.columns:
                 df['Player'] = df['Player'].apply(nettoyer_nom_joueuse)
                 valid_dfs.append(df)
+
         if not valid_dfs:
             return pd.DataFrame()
+
         df = valid_dfs[0]
         for other_df in valid_dfs[1:]:
             df = df.merge(other_df, on='Player', how='outer')
+
         if not df.empty:
             df.fillna(0, inplace=True)
             df = df[(df.iloc[:, 1:] != 0).any(axis=1)]
@@ -520,47 +532,47 @@ def collect_data():
         if not os.path.exists(data_folder):
             st.error(f"Le dossier '{data_folder}' n'existe pas.")
             return pfc_kpi, edf_kpi
+
         fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx')) and f != "Classeurs permissions streamlit.xlsx"]
         if not fichiers:
             st.warning(f"Aucun fichier de données trouvé dans '{data_folder}'.")
             return pfc_kpi, edf_kpi
+
+        # Traitement des données EDF
+        edf_joueuses_path = os.path.join(data_folder, "EDF_Joueuses.xlsx")
+        if os.path.exists(edf_joueuses_path):
+            edf_joueuses = pd.read_excel(edf_joueuses_path)
+            edf_joueuses['Player'] = edf_joueuses['Player'].apply(nettoyer_nom_joueuse)
+            edf_joueuses = edf_joueuses[['Player', 'Poste']]
+
+            matchs_csv = [f for f in fichiers if f.startswith('EDF_U19_Match') and f.endswith('.csv')]
+            if matchs_csv:
+                all_edf_data = []
+                for csv_file in matchs_csv:
+                    match_data = pd.read_csv(os.path.join(data_folder, csv_file))
+                    df = create_data(edf_joueuses, match_data, True)
+                    if not df.empty:
+                        all_edf_data.append(df)
+
+                if all_edf_data:
+                    edf_kpi = pd.concat(all_edf_data)
+                    if 'Poste' in edf_kpi.columns:
+                        edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
+                        edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
+                    else:
+                        st.warning("Colonne 'Poste' manquante dans les données EDF.")
+                else:
+                    st.warning("Aucune donnée EDF valide trouvée.")
+            else:
+                st.warning("Aucun fichier CSV EDF trouvé.")
+        else:
+            st.warning("Fichier Excel EDF_Joueuses.xlsx introuvable.")
+
+        # Traitement des données PFC
         for filename in fichiers:
             path = os.path.join(data_folder, filename)
             try:
-                if filename.endswith('.csv'):
-                    data = pd.read_csv(path)
-                else:
-                    data = pd.read_excel(path)
-                if filename.endswith('.xlsx') and 'EDF' in filename:
-                    print(f"Traitement du fichier Excel EDF: {filename}")
-                    edf = data
-                    matchs_csv = [f for f in fichiers if f.startswith('EDF_U19_Match') and f.endswith('.csv')]
-                    for csv_file in matchs_csv:
-                        try:
-                            match_data = pd.read_csv(os.path.join(data_folder, csv_file))
-                            df = create_data(edf[edf['Match'] == f'Match {1}'], match_data, True)
-                            if not df.empty:
-                                for index, row in df.iterrows():
-                                    time_played = row['Temps de jeu (en minutes)']
-                                    for col in df.columns:
-                                        if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
-                                            df.loc[index, col] = row[col] * (90 / time_played)
-                                df = create_metrics(df)
-                                if 'Poste' in edf.columns:
-                                    df = df.merge(edf[['Player', 'Poste']], on='Player', how='left')
-                                cols = ['Player', 'Poste'] + [col for col in df.columns if col not in ['Player', 'Poste']]
-                                df = df[cols]
-                                edf_kpi = pd.concat([edf_kpi, df])
-                        except Exception as e:
-                            st.error(f"Erreur lors du traitement du fichier {csv_file}: {e}")
-                    if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
-                        edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
-                        edf_kpi['Poste'] = edf_kpi['Poste'].replace({
-                            'Milieux axiale': 'Milieu axiale',
-                            'Milieux offensive': 'Milieu offensive'
-                        })
-                        edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
-                elif filename.endswith('.csv') and 'PFC' in filename:
+                if filename.endswith('.csv') and 'PFC' in filename:
                     print(f"Traitement du fichier CSV PFC: {filename}")
                     parts = filename.split('.')[0].split('_')
                     if len(parts) < 6:
@@ -572,6 +584,7 @@ def collect_data():
                         journee = parts[3]
                         categorie = parts[4]
                         date = parts[5]
+                        data = pd.read_csv(path)
                         match, joueurs = pd.DataFrame(), pd.DataFrame()
                         for i in range(len(data)):
                             if data['Row'].iloc[i] in [equipe_domicile, equipe_exterieur]:
@@ -599,6 +612,7 @@ def collect_data():
                         st.error(f"Erreur lors du traitement du fichier {filename}: {e}")
             except Exception as e:
                 st.error(f"Erreur lors du traitement du fichier {filename}: {e}")
+
         return pfc_kpi, edf_kpi
     except Exception as e:
         st.error(f"Erreur lors de la collecte des données: {e}")
