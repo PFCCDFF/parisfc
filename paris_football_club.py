@@ -1167,87 +1167,6 @@ if __name__ == '__main__':
     # CSS personnalisé pour le style
     st.markdown("""
     <style>
-     /* Fond bleu pour toute la page */
-    .stApp {
-        background-color: #002B5C;
-        color: white;
-    }
-    /* Style pour les onglets */
-    .stTabs [data-baseweb="tab-list"] {
-        background-color: #003A58;
-        gap: 0;
-    }
-    <style>
-    /* Fond bleu pour toute la page */
-    .stApp {
-        background-color: #002B5C;
-        color: white;
-    }
-    /* Fond bleu pour les conteneurs principaux */
-    .main .block-container {
-        background-color: #002B5C;
-        color: white;
-    }
-    /* Style pour les onglets */
-    .stTabs [data-baseweb="tab-list"] {
-        background-color: #003A58;
-        gap: 0;
-    }
-    /* Style pour les onglets actifs */
-    .stTabs [aria-selected="true"] {
-        background-color: #0078D4;
-    }
-    /* Style pour les métriques */
-    .stMetric {
-        background-color: #003A58;
-        border-radius: 5px;
-        padding: 10px;
-    }
-    /* Style pour les DataFrames */
-    .stDataFrame {
-        background-color: white;
-        color: black;
-        border-radius: 5px;
-    }
-    /* Style pour les boutons */
-    .stButton>button {
-        background-color: #0078D4;
-        color: white;
-        border-radius: 5px;
-        border: none;
-    }
-    /* Style pour les sélecteurs */
-    .stSelectbox, .stMultiselect {
-        background-color: #003A58;
-        color: white;
-        border-radius: 5px;
-    }
-    /* Style pour les zones de texte */
-    .stTextInput>div>div>input, .stTextInput>div>div>textarea {
-        background-color: #003A58;
-        color: white;
-        border-radius: 5px;
-    }
-    /* Style pour les messages d'erreur */
-    .stAlert {
-        background-color: #d32f2f;
-        color: white;
-    }
-    /* Style pour les messages de succès */
-    [data-baseweb="notification"] .stAlert {
-        background-color: #388e3c;
-        color: white;
-    }
-    /* Style pour les onglets de contenu */
-    [data-testid="stVerticalBlock"] {
-        gap: 1rem;
-    }
-    /* Style pour les colonnes */
-    [data-testid="column"] {
-        background-color: #003A58;
-        border-radius: 5px;
-        padding: 1rem;
-    }
         .main-header {
             background: linear-gradient(135deg, #002B5C 0%, #0047AB 100%);
             color: white;
@@ -1346,9 +1265,3 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
-
-
-
-
-
-
