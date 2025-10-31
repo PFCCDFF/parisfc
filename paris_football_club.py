@@ -96,13 +96,14 @@ def download_google_drive():
         os.makedirs(output_folder, exist_ok=True)
         files = list_files_in_folder(service, folder_id)
         if not files:
-            pass
+            st.warning("Aucun fichier trouvé dans le dossier.")
         else:
             for file in files:
                 if file['name'].endswith(('.csv', '.xlsx')) and file['name'] != "Classeurs permissions streamlit.xlsx":
+                    st.write(f"Téléchargement de : {file['name']}...")
                     download_file(service, file['id'], file['name'], output_folder)
     except Exception as e:
-        pass
+        st.error(f"Erreur lors du téléchargement des fichiers: {e}")
 
 def download_permissions_file():
     """Télécharge le fichier des permissions depuis Google Drive."""
@@ -119,6 +120,7 @@ def download_permissions_file():
                 return permissions_path
         return None
     except Exception as e:
+        st.error(f"Erreur lors du téléchargement du fichier de permissions: {e}")
         return None
 
 def load_permissions():
@@ -138,6 +140,7 @@ def load_permissions():
             return permissions
         return {}
     except Exception as e:
+        st.error(f"Erreur lors du chargement des permissions: {e}")
         return {}
 
 # =============================================
@@ -160,6 +163,7 @@ def nettoyer_nom_joueuse(nom):
 def players_edf_duration(match):
     """Calcule la durée de jeu pour les joueuses EDF."""
     if 'Poste' not in match.columns or 'Temps de jeu' not in match.columns:
+        st.warning("Colonnes manquantes pour calculer la durée de jeu EDF")
         return pd.DataFrame()
     df_filtered = match.loc[match['Poste'] != 'Gardienne']
     if df_filtered.empty:
@@ -173,11 +177,13 @@ def players_edf_duration(match):
 def players_duration(match):
     """Calcule la durée de jeu pour les joueuses PFC."""
     if 'Duration' not in match.columns:
+        st.warning("Colonne 'Duration' manquante pour calculer la durée de jeu")
         return pd.DataFrame()
     players_duration = {}
     list_of_players = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']
     available_posts = [poste for poste in list_of_players if poste in match.columns]
     if not available_posts:
+        st.warning("Aucune colonne de poste disponible pour calculer la durée de jeu")
         return pd.DataFrame()
     for i in range(len(match)):
         duration = match.iloc[i]['Duration']
@@ -203,6 +209,7 @@ def players_duration(match):
 def players_shots(joueurs):
     """Calcule les statistiques de tirs."""
     if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        st.warning("Colonnes manquantes pour calculer les statistiques de tirs")
         return pd.DataFrame()
     players_shots, players_shots_on_target, players_goals = {}, {}, {}
     for i in range(len(joueurs)):
@@ -229,6 +236,7 @@ def players_shots(joueurs):
 def players_passes(joueurs):
     """Calcule les statistiques de passes."""
     if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        st.warning("Colonnes manquantes pour calculer les statistiques de passes")
         return pd.DataFrame()
     player_short_passes, player_long_passes = {}, {}
     players_successful_short_passes, players_successful_long_passes = {}, {}
@@ -265,6 +273,7 @@ def players_passes(joueurs):
 def players_dribbles(joueurs):
     """Calcule les statistiques de dribbles."""
     if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        st.warning("Colonnes manquantes pour calculer les statistiques de dribbles")
         return pd.DataFrame()
     players_dribbles, players_successful_dribbles = {}, {}
     for i in range(len(joueurs)):
@@ -290,6 +299,7 @@ def players_dribbles(joueurs):
 def players_defensive_duels(joueurs):
     """Calcule les statistiques de duels défensifs."""
     if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        st.warning("Colonnes manquantes pour calculer les statistiques de duels défensifs")
         return pd.DataFrame()
     players_defensive_duels, players_successful_defensive_duels, players_faults = {}, {}, {}
     duels_col = 'Duel défensifs' if 'Duel défensifs' in joueurs.columns else ('Duel défensif' if 'Duel défensif' in joueurs.columns else None)
@@ -322,6 +332,7 @@ def players_defensive_duels(joueurs):
 def players_interceptions(joueurs):
     """Calcule les statistiques d'interceptions."""
     if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        st.warning("Colonnes manquantes pour calculer les statistiques d'interceptions")
         return pd.DataFrame()
     players_interceptions = {}
     for i in range(len(joueurs)):
@@ -339,6 +350,7 @@ def players_interceptions(joueurs):
 def players_ball_losses(joueurs):
     """Calcule les statistiques de pertes de balle."""
     if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        st.warning("Colonnes manquantes pour calculer les statistiques de pertes de balle")
         return pd.DataFrame()
     players_ball_losses = {}
     for i in range(len(joueurs)):
@@ -455,15 +467,129 @@ def create_poste(df):
                       df['Finition'] * 5) / 13
     return df
 
+@st.cache_data
+def collect_data():
+    """Collecte et traite les données depuis Google Drive."""
+    try:
+        download_google_drive()
+        pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
+        data_folder = "data"
+        if not os.path.exists(data_folder):
+            st.error(f"Le dossier '{data_folder}' n'existe pas.")
+            return pfc_kpi, edf_kpi
+
+        fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx')) and f != "Classeurs permissions streamlit.xlsx"]
+        if not fichiers:
+            st.warning(f"Aucun fichier de données trouvé dans '{data_folder}'.")
+            return pfc_kpi, edf_kpi
+
+        # Traitement des données EDF
+        edf_joueuses_path = os.path.join(data_folder, "EDF_Joueuses.xlsx")
+        if os.path.exists(edf_joueuses_path):
+            edf_joueuses = pd.read_excel(edf_joueuses_path)
+            if 'Player' not in edf_joueuses.columns or 'Poste' not in edf_joueuses.columns or 'Temps de jeu' not in edf_joueuses.columns:
+                st.error("Les colonnes 'Player', 'Poste' ou 'Temps de jeu' sont manquantes dans le fichier EDF_Joueuses.xlsx.")
+                return pfc_kpi, edf_kpi
+            edf_joueuses['Player'] = edf_joueuses['Player'].apply(nettoyer_nom_joueuse)
+
+            matchs_csv = [f for f in fichiers if f.startswith('EDF_U19_Match') and f.endswith('.csv')]
+            if matchs_csv:
+                all_edf_data = []
+                for csv_file in matchs_csv:
+                    match_data = pd.read_csv(os.path.join(data_folder, csv_file))
+                    if 'Row' not in match_data.columns:
+                        st.error(f"La colonne 'Row' est manquante dans le fichier {csv_file}.")
+                        continue
+                    match_data['Player'] = match_data['Row'].apply(nettoyer_nom_joueuse)
+
+                    # Fusionner les données des fichiers CSV avec les données des joueuses (incluant le poste et le temps de jeu)
+                    match_data = match_data.merge(edf_joueuses, on='Player', how='left')
+                    if match_data.empty:
+                        st.warning(f"Aucune donnée valide trouvée dans le fichier {csv_file} après fusion.")
+                        continue
+
+                    df = create_data(match_data, match_data, True)
+                    if not df.empty:
+                        all_edf_data.append(df)
+
+                if all_edf_data:
+                    edf_kpi = pd.concat(all_edf_data)
+                    if 'Poste' in edf_kpi.columns:
+                        edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
+                        edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
+                    else:
+                        st.warning("Colonne 'Poste' manquante dans les données EDF.")
+                else:
+                    st.warning("Aucune donnée EDF valide trouvée.")
+            else:
+                st.warning("Aucun fichier CSV EDF trouvé.")
+        else:
+            st.warning("Fichier Excel EDF_Joueuses.xlsx introuvable.")
+
+        # Traitement des données PFC
+        for filename in fichiers:
+            path = os.path.join(data_folder, filename)
+            try:
+                if filename.endswith('.csv') and 'PFC' in filename:
+                    parts = filename.split('.')[0].split('_')
+                    if len(parts) < 6:
+                        st.warning(f"Le nom du fichier {filename} ne suit pas le format attendu.")
+                        continue
+                    try:
+                        equipe_domicile = parts[0]
+                        equipe_exterieur = parts[2]
+                        journee = parts[3]
+                        categorie = parts[4]
+                        date = parts[5]
+                        data = pd.read_csv(path)
+                        if 'Row' not in data.columns:
+                            st.error(f"La colonne 'Row' est manquante dans le fichier {filename}.")
+                            continue
+                        match, joueurs = pd.DataFrame(), pd.DataFrame()
+                        for i in range(len(data)):
+                            if data['Row'].iloc[i] in [equipe_domicile, equipe_exterieur]:
+                                match = pd.concat([match, data.iloc[i:i+1]], ignore_index=True)
+                            elif not any(str(x) in str(data['Row'].iloc[i]) for x in ['Corner', 'Coup-franc', 'Penalty', 'Carton']):
+                                joueurs = pd.concat([joueurs, data.iloc[i:i+1]], ignore_index=True)
+                        if not joueurs.empty:
+                            joueurs['Player'] = joueurs['Row'].apply(nettoyer_nom_joueuse)
+                            df = create_data(match, joueurs, False)
+                            if not df.empty:
+                                for index, row in df.iterrows():
+                                    time_played = row['Temps de jeu (en minutes)']
+                                    for col in df.columns:
+                                        if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
+                                            df.loc[index, col] = row[col] * (90 / time_played)
+                                df = create_metrics(df)
+                                df = create_kpis(df)
+                                df = create_poste(df)
+                                adversaire = equipe_exterieur if equipe_domicile == 'PFC' else equipe_domicile
+                                df.insert(1, 'Adversaire', f'{adversaire} - {journee}')
+                                df.insert(2, 'Journée', journee)
+                                df.insert(3, 'Catégorie', categorie)
+                                df.insert(4, 'Date', date)
+                                pfc_kpi = pd.concat([pfc_kpi, df])
+                    except Exception as e:
+                        st.error(f"Erreur lors du traitement du fichier {filename}: {e}")
+            except Exception as e:
+                st.error(f"Erreur lors du traitement du fichier {filename}: {e}")
+
+        return pfc_kpi, edf_kpi
+    except Exception as e:
+        st.error(f"Erreur lors de la collecte des données: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
 def create_data(match, joueurs, is_edf):
     """Crée un dataframe complet à partir des données brutes."""
     try:
         if is_edf:
             if 'Player' not in joueurs.columns:
+                st.error("La colonne 'Player' est manquante dans les données EDF.")
                 return pd.DataFrame()
             joueurs['Player'] = joueurs['Player'].apply(nettoyer_nom_joueuse)
 
             if 'Poste' not in joueurs.columns or 'Temps de jeu' not in joueurs.columns:
+                st.error("Les colonnes 'Poste' ou 'Temps de jeu' sont manquantes dans les données EDF.")
                 return pd.DataFrame()
 
             df_duration = pd.DataFrame({
@@ -489,7 +615,7 @@ def create_data(match, joueurs, is_edf):
                 if not result.empty:
                     dfs.append(result)
             except Exception as e:
-                pass
+                st.warning(f"Erreur lors du calcul des {name}: {e}")
 
         valid_dfs = []
         for df in dfs:
@@ -514,9 +640,10 @@ def create_data(match, joueurs, is_edf):
                 df = create_kpis(df)
                 df = create_poste(df)
             except Exception as e:
-                pass
+                st.warning(f"Erreur lors du calcul des métriques: {e}")
         return df
     except Exception as e:
+        st.error(f"Erreur lors de la création des données: {e}")
         return pd.DataFrame()
 
 def filter_data_by_player(df, player_name):
@@ -553,110 +680,10 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     ).round().astype(int).reset_index()
     return aggregated_data
 
-# =============================================
-# FONCTIONS DE COLLECTE DES DONNÉES
-# =============================================
-@st.cache_data
-def collect_data():
-    """Collecte et traite les données depuis Google Drive."""
-    try:
-        download_google_drive()
-        pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
-        data_folder = "data"
-        if not os.path.exists(data_folder):
-            return pfc_kpi, edf_kpi
-
-        fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx')) and f != "Classeurs permissions streamlit.xlsx"]
-        if not fichiers:
-            return pfc_kpi, edf_kpi
-
-        # Traitement des données EDF
-        edf_joueuses_path = os.path.join(data_folder, "EDF_Joueuses.xlsx")
-        if os.path.exists(edf_joueuses_path):
-            edf_joueuses = pd.read_excel(edf_joueuses_path)
-            if 'Player' not in edf_joueuses.columns or 'Poste' not in edf_joueuses.columns or 'Temps de jeu' not in edf_joueuses.columns:
-                return pfc_kpi, edf_kpi
-            edf_joueuses['Player'] = edf_joueuses['Player'].apply(nettoyer_nom_joueuse)
-
-            matchs_csv = [f for f in fichiers if f.startswith('EDF_U19_Match') and f.endswith('.csv')]
-            if matchs_csv:
-                all_edf_data = []
-                for csv_file in matchs_csv:
-                    match_data = pd.read_csv(os.path.join(data_folder, csv_file))
-                    if 'Row' not in match_data.columns:
-                        continue
-                    match_data['Player'] = match_data['Row'].apply(nettoyer_nom_joueuse)
-
-                    match_data = match_data.merge(edf_joueuses, on='Player', how='left')
-                    if match_data.empty:
-                        continue
-
-                    df = create_data(match_data, match_data, True)
-                    if not df.empty:
-                        all_edf_data.append(df)
-
-                if all_edf_data:
-                    edf_kpi = pd.concat(all_edf_data)
-                    if 'Poste' in edf_kpi.columns:
-                        edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
-                        edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
-
-        # Traitement des données PFC
-        for filename in fichiers:
-            path = os.path.join(data_folder, filename)
-            try:
-                if filename.endswith('.csv') and 'PFC' in filename:
-                    parts = filename.split('.')[0].split('_')
-                    if len(parts) < 6:
-                        continue
-                    try:
-                        equipe_domicile = parts[0]
-                        equipe_exterieur = parts[2]
-                        journee = parts[3]
-                        categorie = parts[4]
-                        date = parts[5]
-                        data = pd.read_csv(path)
-                        if 'Row' not in data.columns:
-                            continue
-                        match, joueurs = pd.DataFrame(), pd.DataFrame()
-                        for i in range(len(data)):
-                            if data['Row'].iloc[i] in [equipe_domicile, equipe_exterieur]:
-                                match = pd.concat([match, data.iloc[i:i+1]], ignore_index=True)
-                            elif not any(str(x) in str(data['Row'].iloc[i]) for x in ['Corner', 'Coup-franc', 'Penalty', 'Carton']):
-                                joueurs = pd.concat([joueurs, data.iloc[i:i+1]], ignore_index=True)
-                        if not joueurs.empty:
-                            joueurs['Player'] = joueurs['Row'].apply(nettoyer_nom_joueuse)
-                            df = create_data(match, joueurs, False)
-                            if not df.empty:
-                                for index, row in df.iterrows():
-                                    time_played = row['Temps de jeu (en minutes)']
-                                    for col in df.columns:
-                                        if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
-                                            df.loc[index, col] = row[col] * (90 / time_played)
-                                df = create_metrics(df)
-                                df = create_kpis(df)
-                                df = create_poste(df)
-                                adversaire = equipe_exterieur if equipe_domicile == 'PFC' else equipe_domicile
-                                df.insert(1, 'Adversaire', f'{adversaire} - {journee}')
-                                df.insert(2, 'Journée', journee)
-                                df.insert(3, 'Catégorie', categorie)
-                                df.insert(4, 'Date', date)
-                                pfc_kpi = pd.concat([pfc_kpi, df])
-                    except Exception as e:
-                        pass
-            except Exception as e:
-                pass
-
-        return pfc_kpi, edf_kpi
-    except Exception as e:
-        return pd.DataFrame(), pd.DataFrame()
-
-# =============================================
-# FONCTIONS DE VISUALISATION
-# =============================================
 def create_individual_radar(df):
     """Crée un radar individuel pour une joueuse."""
     if df.empty or 'Player' not in df.columns:
+        st.warning("Aucune donnée disponible pour créer le radar.")
         return None
     try:
         columns_to_plot = [
@@ -666,6 +693,7 @@ def create_individual_radar(df):
         ]
         available_columns = [col for col in columns_to_plot if col in df.columns]
         if not available_columns:
+            st.warning("Aucune colonne de métrique disponible pour le radar")
             return None
         colors = ['#6A7CD9', '#00BFFE', '#FF9470', '#F27979', '#BFBFBF'] * 2
         player = df.iloc[0]
@@ -689,11 +717,13 @@ def create_individual_radar(df):
         fig.set_facecolor('#001C30')
         return fig
     except Exception as e:
+        st.error(f"Erreur lors de la création du radar: {e}")
         return None
 
 def create_comparison_radar(df, player1_name=None, player2_name=None):
     """Crée un radar de comparaison entre deux joueurs."""
     if df.empty or len(df) < 2:
+        st.warning("Données insuffisantes pour créer une comparaison.")
         return None
     try:
         metrics = [
@@ -703,6 +733,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         ]
         available_metrics = [m for m in metrics if m in df.columns]
         if len(available_metrics) < 2:
+            st.warning("Pas assez de métriques disponibles pour la comparaison")
             return None
         low, high = (0,) * len(available_metrics), (100,) * len(available_metrics)
         radar = Radar(
@@ -776,11 +807,9 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         fig.set_facecolor('#001C30')
         return fig
     except Exception as e:
+        st.error(f"Erreur lors de la création du radar de comparaison: {e}")
         return None
 
-# =============================================
-# GESTION DES PROFILS ET PERMISSIONS
-# =============================================
 def check_permission(user_profile, required_permission, permissions):
     """Vérifie si un profil a une permission spécifique."""
     if user_profile not in permissions:
@@ -795,9 +824,6 @@ def get_player_for_profile(profile, permissions):
         return permissions[profile].get("player", None)
     return None
 
-# =============================================
-# INTERFACE STREAMLIT
-# =============================================
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     """Interface principale adaptée aux permissions et filtrée par joueuse."""
     logo_pfc = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
@@ -1149,7 +1175,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         else:
             st.error("Vous n'avez pas la permission d'accéder à cette page.")
 
-
 # =============================================
 # POINT D'ENTRÉE PRINCIPAL
 # =============================================
@@ -1172,7 +1197,7 @@ if __name__ == '__main__':
             unsafe_allow_html=True
         )
         with st.form("login_form"):
-            st.markdown("<h1 style='color: white;'>Paris FC - Centre de Formation Féminin</h1>", unsafe_allow_html=True)
+            st.markdown("<h1 style='color: white;'>Paris Football Club</h1>", unsafe_allow_html=True)
             username = st.text_input("Nom d'utilisateur (profil)", key="username")
             password = st.text_input("Mot de passe", type="password", key="password")
             submitted = st.form_submit_button("Valider")
@@ -1194,7 +1219,7 @@ if __name__ == '__main__':
     try:
         pfc_kpi, edf_kpi = collect_data()
     except Exception as e:
+        st.error(f"Erreur lors du chargement des données: {e}")
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
-
