@@ -1,14 +1,13 @@
 import pandas as pd
 import numpy as np
 import os
-from mplsoccer import PyPizza, Radar, FontManager, grid
 import streamlit as st
-from streamlit_option_menu import option_menu
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
 import warnings
+import unidecode
 
 warnings.filterwarnings('ignore')
 
@@ -50,9 +49,6 @@ st.markdown(
         background-color: #002A48;
         color: white;
     }
-    .st-bf, .st-cq, .st-d4, .st-bb, .st-at, .st-b7, .st-b5, .st-b6, .st-ba, .st-b8, .st-b9, .st-ba, .st-bb, .st-bc, .st-bd, .st-be, .st-bf, .st-bg, .st-bh, .st-bi, .st-bj, .st-bk, .st-bl, .st-bm, .st-bn, .st-bo, .st-bp, .st-bq, .st-br, .st-bs, .st-bt, .st-bu, .st-bv, .st-bw, .st-bx, .st-by, .st-bz, .st-c0, .st-c1, .st-c2, .st-c3, .st-c4, .st-c5, .st-c6, .st-c7, .st-c8, .st-c9, .st-ca, .st-cb, .st-cc, .st-cd, .st-ce, .st-cf, .st-cg, .st-ch, .st-ci, .st-cj, .st-ck, .st-cl, .st-cm, .st-cn, .st-co, .st-cp, .st-cq, .st-cr, .st-cs, .st-ct, .st-cu, .st-cv, .st-cw, .st-cx, .st-cy, .st-cz, .st-d2, .st-d3, .st-d5, .st-d6, .st-d7, .st-d8, .st-d9, .st-da, .st-db, .st-dc, .st-dd, .st-de, .st-df, .st-dg, .st-dh, .st-di, .st-dj, .st-dk, .st-dl, .st-dm, .st-dn, .st-do, .st-dp, .st-dq, .st-dr, .st-ds, .st-dt, .st-du, .st-dv, .st-dw, .st-dx, .st-dy, .st-dz, .st-ea, .st-eb, .st-ec, .st-ed, .st-ee, .st-ef, .st-eg, .st-eh, .st-ei, .st-ej, .st-ek, .st-el, .st-em, .st-en, .st-eo, .st-ep, .st-eq, .st-er, .st-es, .st-et, .st-eu, .st-ev, .st-ew, .st-ex, .st-ey, .st-ez {
-        color: white;
-    }
     </style>
     """,
     unsafe_allow_html=True
@@ -61,6 +57,7 @@ st.markdown(
 # =============================================
 # FONCTIONS D'AUTHENTIFICATION ET GESTION DRIVE
 # =============================================
+
 def authenticate_google_drive():
     """Authentification avec Google Drive."""
     SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -146,11 +143,11 @@ def load_permissions():
 # =============================================
 # FONCTIONS UTILITAIRES
 # =============================================
+
 def nettoyer_nom_joueuse(nom):
     """Nettoie le nom d'une joueuse en supprimant les doublons et standardisant le format."""
     if isinstance(nom, str):
-        nom = nom.strip().upper()
-        nom = nom.replace("É", "E").replace("È", "E").replace("Ê", "E").replace("À", "A").replace("Ù", "U")
+        nom = unidecode.unidecode(nom.strip().upper())
         parts = [part.strip().upper() for part in nom.split(",")]
         if len(parts) > 1 and parts[0] == parts[1]:
             return parts[0]
@@ -160,6 +157,7 @@ def nettoyer_nom_joueuse(nom):
 # =============================================
 # FONCTIONS DE TRAITEMENT DES DONNÉES
 # =============================================
+
 def players_edf_duration(match):
     """Calcule la durée de jeu pour les joueuses EDF."""
     if 'Poste' not in match.columns or 'Temps de jeu' not in match.columns:
@@ -477,12 +475,10 @@ def collect_data():
         if not os.path.exists(data_folder):
             st.error(f"Le dossier '{data_folder}' n'existe pas.")
             return pfc_kpi, edf_kpi
-
         fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx')) and f != "Classeurs permissions streamlit.xlsx"]
         if not fichiers:
             st.warning(f"Aucun fichier de données trouvé dans '{data_folder}'.")
             return pfc_kpi, edf_kpi
-
         # Traitement des données EDF
         edf_joueuses_path = os.path.join(data_folder, "EDF_Joueuses.xlsx")
         if os.path.exists(edf_joueuses_path):
@@ -491,7 +487,6 @@ def collect_data():
                 st.error("Les colonnes 'Player', 'Poste' ou 'Temps de jeu' sont manquantes dans le fichier EDF_Joueuses.xlsx.")
                 return pfc_kpi, edf_kpi
             edf_joueuses['Player'] = edf_joueuses['Player'].apply(nettoyer_nom_joueuse)
-
             matchs_csv = [f for f in fichiers if f.startswith('EDF_U19_Match') and f.endswith('.csv')]
             if matchs_csv:
                 all_edf_data = []
@@ -501,17 +496,14 @@ def collect_data():
                         st.error(f"La colonne 'Row' est manquante dans le fichier {csv_file}.")
                         continue
                     match_data['Player'] = match_data['Row'].apply(nettoyer_nom_joueuse)
-
                     # Fusionner les données des fichiers CSV avec les données des joueuses (incluant le poste et le temps de jeu)
                     match_data = match_data.merge(edf_joueuses, on='Player', how='left')
                     if match_data.empty:
                         st.warning(f"Aucune donnée valide trouvée dans le fichier {csv_file} après fusion.")
                         continue
-
                     df = create_data(match_data, match_data, True)
                     if not df.empty:
                         all_edf_data.append(df)
-
                 if all_edf_data:
                     edf_kpi = pd.concat(all_edf_data)
                     if 'Poste' in edf_kpi.columns:
@@ -525,7 +517,6 @@ def collect_data():
                 st.warning("Aucun fichier CSV EDF trouvé.")
         else:
             st.warning("Fichier Excel EDF_Joueuses.xlsx introuvable.")
-
         # Traitement des données PFC
         for filename in fichiers:
             path = os.path.join(data_folder, filename)
@@ -573,7 +564,6 @@ def collect_data():
                         st.error(f"Erreur lors du traitement du fichier {filename}: {e}")
             except Exception as e:
                 st.error(f"Erreur lors du traitement du fichier {filename}: {e}")
-
         return pfc_kpi, edf_kpi
     except Exception as e:
         st.error(f"Erreur lors de la collecte des données: {e}")
@@ -587,11 +577,9 @@ def create_data(match, joueurs, is_edf):
                 st.error("La colonne 'Player' est manquante dans les données EDF.")
                 return pd.DataFrame()
             joueurs['Player'] = joueurs['Player'].apply(nettoyer_nom_joueuse)
-
             if 'Poste' not in joueurs.columns or 'Temps de jeu' not in joueurs.columns:
                 st.error("Les colonnes 'Poste' ou 'Temps de jeu' sont manquantes dans les données EDF.")
                 return pd.DataFrame()
-
             df_duration = pd.DataFrame({
                 'Player': joueurs['Player'],
                 'Temps de jeu (en minutes)': joueurs['Temps de jeu'],
@@ -599,7 +587,6 @@ def create_data(match, joueurs, is_edf):
             })
         else:
             df_duration = players_duration(match)
-
         dfs = [df_duration]
         calc_functions = [
             ('tirs', players_shots),
@@ -616,20 +603,16 @@ def create_data(match, joueurs, is_edf):
                     dfs.append(result)
             except Exception as e:
                 st.warning(f"Erreur lors du calcul des {name}: {e}")
-
         valid_dfs = []
         for df in dfs:
             if not df.empty and 'Player' in df.columns:
                 df['Player'] = df['Player'].apply(nettoyer_nom_joueuse)
                 valid_dfs.append(df)
-
         if not valid_dfs:
             return pd.DataFrame()
-
         df = valid_dfs[0]
         for other_df in valid_dfs[1:]:
             df = df.merge(other_df, on='Player', how='outer')
-
         if not df.empty:
             df.fillna(0, inplace=True)
             df = df[(df.iloc[:, 1:] != 0).any(axis=1)]
@@ -680,136 +663,6 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     ).round().astype(int).reset_index()
     return aggregated_data
 
-def create_individual_radar(df):
-    """Crée un radar individuel pour une joueuse."""
-    if df.empty or 'Player' not in df.columns:
-        st.warning("Aucune donnée disponible pour créer le radar.")
-        return None
-    try:
-        columns_to_plot = [
-            'Timing', 'Force physique', 'Intelligence tactique',
-            'Technique 1', 'Technique 2', 'Technique 3',
-            'Explosivité', 'Prise de risque', 'Précision', 'Sang-froid'
-        ]
-        available_columns = [col for col in columns_to_plot if col in df.columns]
-        if not available_columns:
-            st.warning("Aucune colonne de métrique disponible pour le radar")
-            return None
-        colors = ['#6A7CD9', '#00BFFE', '#FF9470', '#F27979', '#BFBFBF'] * 2
-        player = df.iloc[0]
-        pizza = PyPizza(
-            params=available_columns,
-            background_color='#001C30',
-            straight_line_color='#FFFFFF',
-            last_circle_color='#FFFFFF'
-        )
-        fig, _ = pizza.make_pizza(
-            figsize=(8, 8),
-            values=[player[col] for col in available_columns],
-            slice_colors=colors[:len(available_columns)],
-            kwargs_values=dict(
-                color='#FFFFFF',
-                fontsize=9,
-                bbox=dict(edgecolor='#FFFFFF', facecolor='#001C30', boxstyle='round, pad=0.2', lw=1)
-            ),
-            kwargs_params=dict(color='#FFFFFF', fontsize=10, fontproperties='monospace')
-        )
-        fig.set_facecolor('#001C30')
-        return fig
-    except Exception as e:
-        st.error(f"Erreur lors de la création du radar: {e}")
-        return None
-
-def create_comparison_radar(df, player1_name=None, player2_name=None):
-    """Crée un radar de comparaison entre deux joueurs."""
-    if df.empty or len(df) < 2:
-        st.warning("Données insuffisantes pour créer une comparaison.")
-        return None
-    try:
-        metrics = [
-            'Timing', 'Force physique', 'Intelligence tactique',
-            'Technique 1', 'Technique 2', 'Technique 3',
-            'Explosivité', 'Prise de risque', 'Précision', 'Sang-froid'
-        ]
-        available_metrics = [m for m in metrics if m in df.columns]
-        if len(available_metrics) < 2:
-            st.warning("Pas assez de métriques disponibles pour la comparaison")
-            return None
-        low, high = (0,) * len(available_metrics), (100,) * len(available_metrics)
-        radar = Radar(
-            available_metrics,
-            low,
-            high,
-            num_rings=4,
-            ring_width=1,
-            center_circle_radius=1
-        )
-        URL1 = 'https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Thin.ttf'
-        URL2 = 'https://raw.githubusercontent.com/google/fonts/main/apache/robotoslab/RobotoSlab%5Bwght%5D.ttf'
-        robotto_thin, robotto_bold = FontManager(URL1), FontManager(URL2)
-        fig, axs = grid(
-            figheight=14,
-            grid_height=0.915,
-            title_height=0.06,
-            endnote_height=0.025,
-            title_space=0,
-            endnote_space=0,
-            grid_key='radar'
-        )
-        radar.setup_axis(ax=axs['radar'], facecolor='None')
-        radar.draw_circles(
-            ax=axs['radar'],
-            facecolor='#002A48',
-            edgecolor='#0078D4',
-            lw=1.5
-        )
-        player_values_1 = df.iloc[0][available_metrics].values
-        player_values_2 = df.iloc[1][available_metrics].values
-        radar.draw_radar_compare(
-            player_values_1,
-            player_values_2,
-            ax=axs['radar'],
-            kwargs_radar={'facecolor': '#0078D4', 'alpha': 0.6},
-            kwargs_compare={'facecolor': '#FF9470', 'alpha': 0.6}
-        )
-        radar.draw_range_labels(
-            ax=axs['radar'],
-            fontsize=25,
-            color='#fcfcfc',
-            fontproperties=robotto_thin.prop
-        )
-        radar.draw_param_labels(
-            ax=axs['radar'],
-            fontsize=25,
-            color='#fcfcfc',
-            fontproperties=robotto_thin.prop
-        )
-        player1_label = player1_name if player1_name else df.iloc[0]['Player']
-        player2_label = player2_name if player2_name else df.iloc[1]['Player']
-        axs['title'].text(
-            0.01, 0.65,
-            player1_label,
-            fontsize=25,
-            color='#0078D4',
-            fontproperties=robotto_bold.prop,
-            ha='left',
-            va='center'
-        )
-        axs['title'].text(
-            0.99, 0.65,
-            player2_label,
-            fontsize=25,
-            fontproperties=robotto_bold.prop,
-            ha='right',
-            va='center',
-            color='#FF9470'
-        )
-        fig.set_facecolor('#001C30')
-        return fig
-    except Exception as e:
-        st.error(f"Erreur lors de la création du radar de comparaison: {e}")
-        return None
-
 def check_permission(user_profile, required_permission, permissions):
     """Vérifie si un profil a une permission spécifique."""
     if user_profile not in permissions:
@@ -833,50 +686,35 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     with col2:
         st.markdown("<h1 style='color: white;'>Pôle vidéo/data CDFF</h1>", unsafe_allow_html=True)
         st.markdown("<h3 style='color: white;'>Saison 2025-26</h3>", unsafe_allow_html=True)
-
     player_name = get_player_for_profile(user_profile, permissions)
-
     if st.sidebar.button("🔒 Déconnexion"):
         st.session_state.authenticated = False
         st.session_state.user_profile = None
         st.rerun()
-
     if check_permission(user_profile, "update_data", permissions) or check_permission(user_profile, "all", permissions):
         if st.sidebar.button("Mettre à jour la base de données"):
             with st.spinner("Mise à jour des données en cours..."):
                 download_google_drive()
             st.success("✅ Mise à jour terminée")
             st.cache_data.clear()
-
     if player_name and not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
         pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
         if pfc_kpi.empty:
             st.warning(f"Aucune donnée disponible pour la joueuse {player_name}")
-
     available_options = ["Statistiques"]
     if check_permission(user_profile, "compare_players", permissions) or check_permission(user_profile, "all", permissions) or player_name:
         available_options.append("Comparaison")
     if check_permission(user_profile, "all", permissions):
         available_options.append("Gestion")
-
     with st.sidebar:
         logo_certifie_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
         st.image(logo_certifie_paris, width=150)
-        page = option_menu(
-            menu_title="Menu",
-            options=available_options,
-            icons=["graph-up", "people", "gear"],
-            menu_icon="cast",
-            default_index=0,
-            orientation="vertical",
-            styles={
-                "container": {"padding": "5!important", "background-color": "#002A48"},
-                "icon": {"color": "#0078D4", "font-size": "18px"},
-                "nav-link": {"font-size": "16px", "text-align": "left", "margin": "0px", "--hover-color": "#003A58"},
-                "nav-link-selected": {"background-color": "#0078D4", "color": "white"}
-            }
+        page = st.selectbox(
+            "Menu",
+            available_options,
+            index=0,
+            key="menu"
         )
-
     if page == "Statistiques":
         st.markdown("<h2 style='color: white;'>Statistiques</h2>", unsafe_allow_html=True)
         if pfc_kpi.empty:
@@ -908,9 +746,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                 st.markdown(f"<h4 style='color: white;'>Buts: {aggregated_data['Buts'].iloc[0]}</h4>", unsafe_allow_html=True)
                             tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
                             with tab1:
-                                fig = create_individual_radar(aggregated_data)
-                                if fig:
-                                    st.pyplot(fig)
+                                st.write("Radar individuel (à implémenter avec mplsoccer)")
                             with tab2:
                                 if 'Rigueur' in aggregated_data.columns:
                                     col1, col2, col3, col4, col5 = st.columns(5)
@@ -961,9 +797,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                     st.markdown(f"<h4 style='color: white;'>Buts: {aggregated_data['Buts'].iloc[0]}</h4>", unsafe_allow_html=True)
                                 tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
                                 with tab1:
-                                    fig = create_individual_radar(aggregated_data)
-                                    if fig:
-                                        st.pyplot(fig)
+                                    st.write("Radar individuel (à implémenter avec mplsoccer)")
                                 with tab2:
                                     if 'Rigueur' in aggregated_data.columns:
                                         col1, col2, col3, col4, col5 = st.columns(5)
@@ -981,31 +815,86 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         with col4: st.markdown(f"<h4 style='color: white;'>Milieu relayeur: {aggregated_data['Milieu relayeur'].iloc[0]}/100</h4>", unsafe_allow_html=True)
                                         with col5: st.markdown(f"<h4 style='color: white;'>Milieu offensif: {aggregated_data['Milieu offensif'].iloc[0]}/100</h4>", unsafe_allow_html=True)
                                         with col6: st.markdown(f"<h4 style='color: white;'>Attaquant: {aggregated_data['Attaquant'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-            else:
-                st.warning("Aucune donnée disponible.")
-
     elif page == "Comparaison":
-    st.markdown("<h2 style='color: white;'>Comparaison</h2>", unsafe_allow_html=True)
-    if player_name:
-        st.markdown(f"<h3 style='color: white;'>Comparaison pour {player_name}</h3>", unsafe_allow_html=True)
-        if pfc_kpi.empty:
-            st.warning(f"Aucune donnée disponible pour {player_name}.")
-        else:
-            st.markdown("<h4 style='color: white;'>1. Comparez vos performances sur différents matchs</h4>", unsafe_allow_html=True)
-            if 'Adversaire' in pfc_kpi.columns:
-                unique_matches = pfc_kpi['Adversaire'].unique()
-                if len(unique_matches) >= 1:
-                    selected_matches = st.multiselect(
-                        "Sélectionnez les matchs à comparer (2 ou plus)",
-                        unique_matches,
-                        key='selected_matches'
+        st.markdown("<h2 style='color: white;'>Comparaison</h2>", unsafe_allow_html=True)
+        if player_name:
+            st.markdown(f"<h3 style='color: white;'>Comparaison pour {player_name}</h3>", unsafe_allow_html=True)
+            if pfc_kpi.empty:
+                st.warning(f"Aucune donnée disponible pour {player_name}.")
+            else:
+                st.markdown("<h4 style='color: white;'>1. Comparez vos performances sur différents matchs</h4>", unsafe_allow_html=True)
+                if 'Adversaire' in pfc_kpi.columns:
+                    unique_matches = pfc_kpi['Adversaire'].unique()
+                    if len(unique_matches) >= 1:
+                        selected_matches = st.multiselect(
+                            "Sélectionnez les matchs à comparer (2 ou plus)",
+                            unique_matches,
+                            key='selected_matches'
+                        )
+                        if len(selected_matches) >= 2:
+                            comparison_data = []
+                            for match in selected_matches:
+                                match_data = pfc_kpi[pfc_kpi['Adversaire'] == match]
+                                if not match_data.empty:
+                                    aggregated = match_data.groupby('Player').agg({
+                                        'Temps de jeu (en minutes)': 'sum',
+                                        'Buts': 'sum',
+                                    }).join(
+                                        match_data.groupby('Player').mean(numeric_only=True).drop(
+                                            columns=['Temps de jeu (en minutes)', 'Buts'], errors='ignore'
+                                        )
+                                    ).round().astype(int).reset_index()
+                                    if not aggregated.empty:
+                                        aggregated['Player'] = f"{player_name} ({match})"
+                                        comparison_data.append(aggregated)
+                            if len(comparison_data) >= 2:
+                                players_data = pd.concat(comparison_data)
+                                if st.button("Comparer les matchs sélectionnés"):
+                                    if len(players_data) >= 2:
+                                        st.write("Radar de comparaison (à implémenter avec mplsoccer)")
+                                    else:
+                                        st.warning("Pas assez de données pour la comparaison.")
+                            else:
+                                st.warning("Pas assez de matchs sélectionnés avec des données valides.")
+                        else:
+                            st.warning("Veuillez sélectionner au moins 2 matchs pour la comparaison.")
+                    else:
+                        st.warning("Aucun match disponible pour cette joueuse.")
+                else:
+                    st.warning("Colonne 'Adversaire' manquante dans les données.")
+                st.markdown("<h4 style='color: white;'>2. Comparez-vous aux données EDF</h4>", unsafe_allow_html=True)
+                if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
+                    poste = st.selectbox(
+                        "Sélectionnez un poste EDF pour comparaison",
+                        edf_kpi['Poste'].unique(),
+                        key='edf_poste'
                     )
-                    if len(selected_matches) >= 2:
-                        comparison_data = []
-                        for match in selected_matches:
-                            match_data = pfc_kpi[pfc_kpi['Adversaire'] == match]
+                    edf_data = edf_kpi[edf_kpi['Poste'] == poste].rename(columns={'Poste': 'Player'})
+                    if not edf_data.empty:
+                        player_data = prepare_comparison_data(pfc_kpi, player_name)
+                        if not player_data.empty:
+                            if st.button("Comparer avec le poste EDF"):
+                                players_data = pd.concat([player_data, edf_data])
+                                st.write("Radar de comparaison (à implémenter avec mplsoccer)")
+                        else:
+                            st.warning("Aucune donnée disponible pour cette joueuse.")
+                    else:
+                        st.warning("Aucune donnée EDF disponible pour ce poste.")
+                else:
+                    st.warning("Aucune donnée EDF disponible pour la comparaison.")
+                st.markdown("<h4 style='color: white;'>3. Comparez-vous à vos moyennes globales</h4>", unsafe_allow_html=True)
+                if not pfc_kpi.empty:
+                    player_global_data = prepare_comparison_data(pfc_kpi, player_name)
+                    if not player_global_data.empty:
+                        if 'Adversaire' in pfc_kpi.columns:
+                            selected_match = st.selectbox(
+                                "Sélectionnez un match spécifique à comparer",
+                                pfc_kpi['Adversaire'].unique(),
+                                key='specific_match'
+                            )
+                            match_data = pfc_kpi[pfc_kpi['Adversaire'] == selected_match]
                             if not match_data.empty:
-                                aggregated = match_data.groupby('Player').agg({
+                                match_aggregated = match_data.groupby('Player').agg({
                                     'Temps de jeu (en minutes)': 'sum',
                                     'Buts': 'sum',
                                 }).join(
@@ -1013,135 +902,60 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         columns=['Temps de jeu (en minutes)', 'Buts'], errors='ignore'
                                     )
                                 ).round().astype(int).reset_index()
-                                if not aggregated.empty:
-                                    aggregated['Player'] = f"{player_name} ({match})"
-                                    comparison_data.append(aggregated)
-                        if len(comparison_data) >= 2:
-                            players_data = pd.concat(comparison_data)
-                            if st.button("Comparer les matchs sélectionnés"):
-                                if len(players_data) >= 2:
-                                    fig = create_comparison_radar(players_data)
-                                    if fig:
-                                        st.pyplot(fig)
-                                else:
-                                    st.warning("Pas assez de données pour la comparaison.")
+                                match_aggregated['Player'] = f"{player_name} ({selected_match})"
+                                player_global_data['Player'] = f"{player_name} (Moyenne globale)"
+                                if st.button("Comparer avec mes moyennes"):
+                                    players_data = pd.concat([match_aggregated, player_global_data])
+                                    st.write("Radar de comparaison (à implémenter avec mplsoccer)")
+                            else:
+                                st.warning("Aucune donnée disponible pour ce match.")
                         else:
-                            st.warning("Pas assez de matchs sélectionnés avec des données valides.")
-                    else:
-                        st.warning("Veuillez sélectionner au moins 2 matchs pour la comparaison.")
-                else:
-                    st.warning("Aucun match disponible pour cette joueuse.")
-            else:
-                st.warning("Colonne 'Adversaire' manquante dans les données.")
-
-            st.markdown("<h4 style='color: white;'>2. Comparez-vous aux données EDF</h4>", unsafe_allow_html=True)
-            if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
-                poste = st.selectbox(
-                    "Sélectionnez un poste EDF pour comparaison",
-                    edf_kpi['Poste'].unique(),
-                    key='edf_poste'
-                )
-                edf_data = edf_kpi[edf_kpi['Poste'] == poste].rename(columns={'Poste': 'Player'})
-                if not edf_data.empty:
-                    player_data = prepare_comparison_data(pfc_kpi, player_name)
-                    if not player_data.empty:
-                        if st.button("Comparer avec le poste EDF"):
-                            players_data = pd.concat([player_data, edf_data])
-                            fig = create_comparison_radar(
-                                players_data,
-                                player1_name=player_name,
-                                player2_name=f"EDF {poste}"
-                            )
-                            if fig:
-                                st.pyplot(fig)
+                            st.warning("Colonne 'Adversaire' manquante dans les données.")
                     else:
                         st.warning("Aucune donnée disponible pour cette joueuse.")
+        else:
+            st.subheader("Sélectionnez une joueuse du Paris FC")
+            if not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
+                player1 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_1')
+                player1_data = pfc_kpi[pfc_kpi['Player'] == player1]
+                if player1_data.empty:
+                    st.error("Aucune donnée disponible pour cette joueuse.")
                 else:
-                    st.warning("Aucune donnée EDF disponible pour ce poste.")
-            else:
-                st.warning("Aucune donnée EDF disponible pour la comparaison.")
-
-            st.markdown("<h4 style='color: white;'>3. Comparez-vous à vos moyennes globales</h4>", unsafe_allow_html=True)
-            if not pfc_kpi.empty:
-                player_global_data = prepare_comparison_data(pfc_kpi, player_name)
-                if not player_global_data.empty:
-                    if 'Adversaire' in pfc_kpi.columns:
-                        selected_match = st.selectbox(
-                            "Sélectionnez un match spécifique à comparer",
-                            pfc_kpi['Adversaire'].unique(),
-                            key='specific_match'
-                        )
-                        match_data = pfc_kpi[pfc_kpi['Adversaire'] == selected_match]
-                        if not match_data.empty:
-                            match_aggregated = match_data.groupby('Player').agg({
-                                'Temps de jeu (en minutes)': 'sum',
-                                'Buts': 'sum',
-                            }).join(
-                                match_data.groupby('Player').mean(numeric_only=True).drop(
-                                    columns=['Temps de jeu (en minutes)', 'Buts'], errors='ignore'
-                                )
-                            ).round().astype(int).reset_index()
-                            match_aggregated['Player'] = f"{player_name} ({selected_match})"
-                            player_global_data['Player'] = f"{player_name} (Moyenne globale)"
-                            if st.button("Comparer avec mes moyennes"):
-                                players_data = pd.concat([match_aggregated, player_global_data])
-                                fig = create_comparison_radar(players_data)
-                                if fig:
-                                    st.pyplot(fig)
-                        else:
-                            st.warning("Aucune donnée disponible pour ce match.")
-                    else:
-                        st.warning("Colonne 'Adversaire' manquante dans les données.")
-                else:
-                    st.warning("Aucune donnée disponible pour cette joueuse.")
-    else:
-        st.subheader("Sélectionnez une joueuse du Paris FC")
-        if not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
-            player1 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_1')
-            player1_data = pfc_kpi[pfc_kpi['Player'] == player1]
-            if player1_data.empty:
-                st.error("Aucune donnée disponible pour cette joueuse.")
-            else:
-                if 'Adversaire' in player1_data.columns:
-                    game1 = st.multiselect("Choisissez un ou plusieurs matchs", player1_data['Adversaire'].unique(), key='games_1')
-                    filtered_player1_data = player1_data[player1_data['Adversaire'].isin(game1)] if game1 else player1_data
-                    aggregated_player1_data = filtered_player1_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
-                    tab1, tab2 = st.tabs(["Comparaison (PFC)", "Comparaison (EDF)"])
-                    with tab1:
-                        st.subheader("Sélectionnez une autre joueuse du Paris FC")
-                        player2 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_2_pfc')
-                        player2_data = pfc_kpi[pfc_kpi['Player'] == player2]
-                        if player2_data.empty:
-                            st.error("Aucune donnée disponible pour cette joueuse.")
-                        else:
-                            if 'Adversaire' in player2_data.columns:
-                                game2 = st.multiselect("Choisissez un ou plusieurs matchs", player2_data['Adversaire'].unique(), key='games_2_pfc')
-                                filtered_player2_data = player2_data[player2_data['Adversaire'].isin(game2)] if game2 else player2_data
-                                aggregated_player2_data = filtered_player2_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
-                                if st.button("Afficher le radar", key='button_pfc'):
-                                    if aggregated_player1_data.empty or aggregated_player2_data.empty:
-                                        st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
+                    if 'Adversaire' in player1_data.columns:
+                        game1 = st.multiselect("Choisissez un ou plusieurs matchs", player1_data['Adversaire'].unique(), key='games_1')
+                        filtered_player1_data = player1_data[player1_data['Adversaire'].isin(game1)] if game1 else player1_data
+                        aggregated_player1_data = filtered_player1_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
+                        tab1, tab2 = st.tabs(["Comparaison (PFC)", "Comparaison (EDF)"])
+                        with tab1:
+                            st.subheader("Sélectionnez une autre joueuse du Paris FC")
+                            player2 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_2_pfc')
+                            player2_data = pfc_kpi[pfc_kpi['Player'] == player2]
+                            if player2_data.empty:
+                                st.error("Aucune donnée disponible pour cette joueuse.")
+                            else:
+                                if 'Adversaire' in player2_data.columns:
+                                    game2 = st.multiselect("Choisissez un ou plusieurs matchs", player2_data['Adversaire'].unique(), key='games_2_pfc')
+                                    filtered_player2_data = player2_data[player2_data['Adversaire'].isin(game2)] if game2 else player2_data
+                                    aggregated_player2_data = filtered_player2_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
+                                    if st.button("Afficher le radar", key='button_pfc'):
+                                        if aggregated_player1_data.empty or aggregated_player2_data.empty:
+                                            st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
+                                        else:
+                                            players_data = pd.concat([aggregated_player1_data, aggregated_player2_data])
+                                            st.write("Radar de comparaison (à implémenter avec mplsoccer)")
+                        with tab2:
+                            if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
+                                st.subheader("Sélectionnez un poste de l'Équipe de France")
+                                player2 = st.selectbox("Choisissez un poste de comparaison", edf_kpi['Poste'].unique(), key='player_2_edf')
+                                player2_data = edf_kpi[edf_kpi['Poste'] == player2].rename(columns={'Poste': 'Player'})
+                                if st.button("Afficher le radar", key='button_edf'):
+                                    if aggregated_player1_data.empty:
+                                        st.error("Veuillez sélectionner au moins un match pour la joueuse PFC.")
                                     else:
-                                        players_data = pd.concat([aggregated_player1_data, aggregated_player2_data])
-                                        fig = create_comparison_radar(players_data)
-                                        if fig:
-                                            st.pyplot(fig)
-                    with tab2:
-                        if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
-                            st.subheader("Sélectionnez un poste de l'Équipe de France")
-                            player2 = st.selectbox("Choisissez un poste de comparaison", edf_kpi['Poste'].unique(), key='player_2_edf')
-                            player2_data = edf_kpi[edf_kpi['Poste'] == player2].rename(columns={'Poste': 'Player'})
-                            if st.button("Afficher le radar", key='button_edf'):
-                                if aggregated_player1_data.empty:
-                                    st.error("Veuillez sélectionner au moins un match pour la joueuse PFC.")
-                                else:
-                                    players_data = pd.concat([aggregated_player1_data, player2_data])
-                                    fig = create_comparison_radar(players_data)
-                                    if fig:
-                                        st.pyplot(fig)
-                        else:
-                            st.warning("Aucune donnée EDF disponible.")
-
+                                        players_data = pd.concat([aggregated_player1_data, player2_data])
+                                        st.write("Radar de comparaison (à implémenter avec mplsoccer)")
+                            else:
+                                st.warning("Aucune donnée EDF disponible.")
     elif page == "Gestion":
         st.markdown("<h2 style='color: white;'>Gestion des utilisateurs</h2>", unsafe_allow_html=True)
         if check_permission(user_profile, "all", permissions):
@@ -1183,12 +997,12 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 # =============================================
 # POINT D'ENTRÉE PRINCIPAL
 # =============================================
+
 if __name__ == '__main__':
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if "user_profile" not in st.session_state:
         st.session_state.user_profile = None
-
     if not st.session_state.authenticated:
         st.markdown(
             """
@@ -1215,17 +1029,31 @@ if __name__ == '__main__':
                 else:
                     st.error("Nom d'utilisateur ou mot de passe incorrect")
         st.stop()
-
     permissions = load_permissions()
     if not permissions:
         st.error("Impossible de charger les permissions. Vérifiez que le fichier 'Classeurs permissions streamlit.xlsx' est présent dans le dossier Google Drive.")
         st.stop()
-
     try:
         pfc_kpi, edf_kpi = collect_data()
     except Exception as e:
         st.error(f"Erreur lors du chargement des données: {e}")
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
-
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
 
+# Génération du fichier requirements.txt
+requirements = """
+pandas==2.0.3
+numpy==1.24.3
+streamlit==1.28.0
+google-api-python-client==2.95.0
+google-auth-httplib2==0.1.0
+google-auth-oauthlib==1.0.0
+unidecode==1.3.6
+mplsoccer==1.0.0
+streamlit-option-menu==0.3.6
+"""
+
+with open('requirements.txt', 'w') as f:
+    f.write(requirements)
+
+{'script_corrected.py': open('script_corrected.py', 'r').read(), 'requirements.txt': requirements}
