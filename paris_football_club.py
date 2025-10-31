@@ -691,7 +691,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
             player_values_2,
             ax=axs['radar'],
             kwargs_radar={'facecolor': '#00f2c1', 'alpha': 0.6},
-            kwargs_compare={'facecolor': '#d80499', 'alpha': 0.6}
+            kwargs_compare={'facecolor': '#0078D4', 'alpha': 0.6}
         )
         radar.draw_range_labels(
             ax=axs['radar'],
@@ -702,7 +702,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         radar.draw_param_labels(
             ax=axs['radar'],
             fontsize=18,
-            color='#FFFFFF',
+            color='#003A58',
             fontproperties=robotto_thin.prop
         )
         player1_label = player1_name if player1_name else df.iloc[0]['Player']
@@ -723,7 +723,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
             fontproperties=robotto_bold.prop,
             ha='right',
             va='center',
-            color='#002B5C'
+            color='#0078D4'
         )
         fig.set_facecolor('#003A58')
         return fig
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
