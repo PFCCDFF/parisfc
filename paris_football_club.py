@@ -630,12 +630,12 @@ def create_individual_radar(df):
             slice_colors=colors[:len(available_columns)],
             kwargs_values=dict(
                 color='#FFFFFF',
-                fontsize=3.5,
+                fontsize=3,
                 bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117', boxstyle='round, pad=0.2', lw=1)
             ),
-            kwargs_params=dict(color='#FFFFFF', fontsize=3.5, fontproperties='monospace')
+            kwargs_params=dict(color='#FFFFFF', fontsize=3, fontproperties='monospace')
         )
-        fig.set_facecolor('#0e1117')
+        fig.set_facecolor('#002B5C')
         return fig
     except Exception as e:
         st.error(f"Erreur lors de la création du radar: {e}")
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
