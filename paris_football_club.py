@@ -620,7 +620,7 @@ def create_individual_radar(df):
         player = df.iloc[0]
         pizza = PyPizza(
             params=available_columns,
-            background_color='#0047AB',
+            background_color='#002B5C',
             straight_line_color='#FFFFFF',
             last_circle_color='#FFFFFF'
         )
@@ -635,7 +635,7 @@ def create_individual_radar(df):
             ),
             kwargs_params=dict(color='#FFFFFF', fontsize=3, fontproperties='monospace')
         )
-        fig.set_facecolor('#002B5C')
+        fig.set_facecolor('#0047AB')
         return fig
     except Exception as e:
         st.error(f"Erreur lors de la création du radar: {e}")
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
