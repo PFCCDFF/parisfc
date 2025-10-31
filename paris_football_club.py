@@ -1159,7 +1159,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 # =============================================
 if __name__ == '__main__':
     st.set_page_config(
-        page_title="Paris FC - Centre de Formation Féminin",
+        page_title="Paris FC - Pôle vidéo/data CDFF",
         page_icon="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png",
         layout="wide"
     )
@@ -1167,79 +1167,101 @@ if __name__ == '__main__':
     # CSS personnalisé pour le style
     st.markdown("""
     <style>
-    /* Fond bleu pour toute la page */
-    .stApp {
-        background-color: #002B5C;
-        color: white;
-    }
-    /* Fond bleu pour les conteneurs principaux */
-    .main .block-container {
-        background-color: #002B5C;
-        color: white;
-    }
-    /* Style pour les onglets */
-    .stTabs [data-baseweb="tab-list"] {
-        background-color: #003A58;
-        gap: 0;
-    }
-    /* Style pour les onglets actifs */
-    .stTabs [aria-selected="true"] {
-        background-color: #0078D4;
-    }
-    /* Style pour les métriques */
-    .stMetric {
-        background-color: #003A58;
-        border-radius: 5px;
-        padding: 10px;
-    }
-    /* Style pour les DataFrames */
-    .stDataFrame {
-        background-color: white;
-        color: black;
-        border-radius: 5px;
-    }
-    /* Style pour les boutons */
-    .stButton>button {
-        background-color: #0078D4;
-        color: white;
-        border-radius: 5px;
-        border: none;
-    }
-    /* Style pour les sélecteurs */
-    .stSelectbox, .stMultiselect {
-        background-color: #003A58;
-        color: white;
-        border-radius: 5px;
-    }
-    /* Style pour les zones de texte */
-    .stTextInput>div>div>input, .stTextInput>div>div>textarea {
-        background-color: #003A58;
-        color: white;
-        border-radius: 5px;
-    }
-    /* Style pour les messages d'erreur */
-    .stAlert {
-        background-color: #d32f2f;
-        color: white;
-    }
-    /* Style pour les messages de succès */
-    [data-baseweb="notification"] .stAlert {
-        background-color: #388e3c;
-        color: white;
-    }
-    /* Style pour les onglets de contenu */
-    [data-testid="stVerticalBlock"] {
-        gap: 1rem;
-    }
-    /* Style pour les colonnes */
-    [data-testid="column"] {
-        background-color: #003A58;
-        border-radius: 5px;
-        padding: 1rem;
-    }
-</style>
-""", unsafe_allow_html=True)
+        .main-header {
+            background: linear-gradient(135deg, #002B5C 0%, #0047AB 100%);
+            color: white;
+            padding: 2rem;
+            border-radius: 10px;
+            margin-bottom: 2rem;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .main-header h1 {
+            font-size: 3rem;
+            font-weight: bold;
+            margin: 0;
+            font-family: 'Arial', sans-serif;
+        }
+        .main-header p {
+            font-size: 1.2rem;
+            margin-top: 0.5rem;
+            font-family: 'Arial', sans-serif;
+        }
+        .logo-container {
+            position: absolute;
+            left: 1rem;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+        .logo-container img {
+            width: 120px;
+            opacity: 0.9;
+        }
+        .sidebar .sidebar-content {
+            background: #002B5C;
+            color: white;
+        }
+        .sidebar .sidebar-content h1,
+        .sidebar .sidebar-content p {
+            color: white;
+        }
+        .stButton>button {
+            background: #0078D4;
+            color: white;
+            border-radius: 5px;
+            border: none;
+        }
+        .stSelectbox, .stMultiselect {
+            background: #f0f2f6;
+            border-radius: 5px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
+    # En-tête personnalisé
+    st.markdown("""
+    <div class="main-header">
+        <div class="logo-container">
+            <img src="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png" alt="Paris FC Logo">
+        </div>
+        <h1>Pôle vidéo/data CDFF</h1>
+        <p>Saison 2025-26</p>
+    </div>
+    """, unsafe_allow_html=True)
 
+    # Chargement des permissions et des données
+    permissions = load_permissions()
+    if not permissions:
+        st.error("Impossible de charger les permissions. Vérifiez que le fichier 'Classeurs permissions streamlit.xlsx' est présent dans le dossier Google Drive.")
+        st.stop()
 
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    if "user_profile" not in st.session_state:
+        st.session_state.user_profile = None
 
+    # Logique d'authentification (inchangée)
+    if not st.session_state.authenticated:
+        with st.form("login_form"):
+            username = st.text_input("Nom d'utilisateur (profil)")
+            password = st.text_input("Mot de passe", type="password")
+            submitted = st.form_submit_button("Valider")
+            if submitted:
+                if username in permissions and password == permissions[username]["password"]:
+                    st.session_state.authenticated = True
+                    st.session_state.user_profile = username
+                    st.rerun()
+                else:
+                    st.error("Nom d'utilisateur ou mot de passe incorrect")
+        st.stop()
+
+    # Chargement des données
+    try:
+        pfc_kpi, edf_kpi = collect_data()
+    except Exception as e:
+        st.error(f"Erreur lors du chargement des données: {e}")
+        pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
+
+    # Appel de la fonction principale de l'interface
+    script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
