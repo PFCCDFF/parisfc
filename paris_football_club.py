@@ -13,10 +13,12 @@ from unidecode import unidecode
 
 warnings.filterwarnings('ignore')
 
-# Configuration de la page
+# =============================================
+# CONFIGURATION DE LA PAGE
+# =============================================
 st.set_page_config(
-    page_title="Pôle vidéo/data CDFF",
-    page_icon=":soccer:",
+    page_title="Paris FC - Centre de Formation Féminin",
+    page_icon="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png",
     layout="wide"
 )
 
@@ -51,6 +53,14 @@ st.markdown(
         background-color: #002A48;
         color: white;
     }
+    .logo-container {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+    }
+    .logo-container img {
+        width: 90px;
+    }
     </style>
     """,
     unsafe_allow_html=True
@@ -78,6 +88,7 @@ def download_file(service, file_id, file_name, output_folder):
     file_path = os.path.join(output_folder, file_name)
     with open(file_path, 'wb') as f:
         f.write(fh.getbuffer())
+    print(f"Fichier téléchargé : {file_path}")
 
 def list_files_in_folder(service, folder_id):
     """Liste les fichiers dans un dossier Google Drive."""
@@ -94,14 +105,15 @@ def download_google_drive():
         os.makedirs(output_folder, exist_ok=True)
         files = list_files_in_folder(service, folder_id)
         if not files:
-            st.warning("Aucun fichier trouvé dans le dossier.")
+            print("Aucun fichier trouvé dans le dossier.")
         else:
             for file in files:
                 if file['name'].endswith(('.csv', '.xlsx')) and file['name'] != "Classeurs permissions streamlit.xlsx":
-                    st.write(f"Téléchargement de : {file['name']}...")
+                    print(f"Téléchargement de : {file['name']}...")
                     download_file(service, file['id'], file['name'], output_folder)
     except Exception as e:
         st.error(f"Erreur lors du téléchargement des fichiers: {e}")
+        raise e
 
 def download_permissions_file():
     """Télécharge le fichier des permissions depuis Google Drive."""
@@ -464,109 +476,6 @@ def create_poste(df):
                       df['Finition'] * 5) / 13
     return df
 
-@st.cache_data
-def collect_data():
-    """Collecte et traite les données depuis Google Drive."""
-    try:
-        download_google_drive()
-        pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
-        data_folder = "data"
-        if not os.path.exists(data_folder):
-            st.error(f"Le dossier '{data_folder}' n'existe pas.")
-            return pfc_kpi, edf_kpi
-        fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx')) and f != "Classeurs permissions streamlit.xlsx"]
-        if not fichiers:
-            st.warning(f"Aucun fichier de données trouvé dans '{data_folder}'.")
-            return pfc_kpi, edf_kpi
-        # Traitement des données EDF
-        edf_joueuses_path = os.path.join(data_folder, "EDF_Joueuses.xlsx")
-        if os.path.exists(edf_joueuses_path):
-            edf_joueuses = pd.read_excel(edf_joueuses_path)
-            if 'Player' not in edf_joueuses.columns or 'Poste' not in edf_joueuses.columns or 'Temps de jeu' not in edf_joueuses.columns:
-                st.error("Les colonnes 'Player', 'Poste' ou 'Temps de jeu' sont manquantes dans le fichier EDF_Joueuses.xlsx.")
-                return pfc_kpi, edf_kpi
-            edf_joueuses['Player'] = edf_joueuses['Player'].apply(nettoyer_nom_joueuse)
-            matchs_csv = [f for f in fichiers if f.startswith('EDF_U19_Match') and f.endswith('.csv')]
-            if matchs_csv:
-                all_edf_data = []
-                for csv_file in matchs_csv:
-                    match_data = pd.read_csv(os.path.join(data_folder, csv_file))
-                    if 'Row' not in match_data.columns:
-                        st.error(f"La colonne 'Row' est manquante dans le fichier {csv_file}.")
-                        continue
-                    match_data['Player'] = match_data['Row'].apply(nettoyer_nom_joueuse)
-                    match_data = match_data.merge(edf_joueuses, on='Player', how='left')
-                    if match_data.empty:
-                        st.warning(f"Aucune donnée valide trouvée dans le fichier {csv_file} après fusion.")
-                        continue
-                    df = create_data(match_data, match_data, True)
-                    if not df.empty:
-                        all_edf_data.append(df)
-                if all_edf_data:
-                    edf_kpi = pd.concat(all_edf_data)
-                    if 'Poste' in edf_kpi.columns:
-                        edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
-                        edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
-                    else:
-                        st.warning("Colonne 'Poste' manquante dans les données EDF.")
-                else:
-                    st.warning("Aucune donnée EDF valide trouvée.")
-            else:
-                st.warning("Aucun fichier CSV EDF trouvé.")
-        else:
-            st.warning("Fichier Excel EDF_Joueuses.xlsx introuvable.")
-        # Traitement des données PFC
-        for filename in fichiers:
-            path = os.path.join(data_folder, filename)
-            try:
-                if filename.endswith('.csv') and 'PFC' in filename:
-                    parts = filename.split('.')[0].split('_')
-                    if len(parts) < 6:
-                        st.warning(f"Le nom du fichier {filename} ne suit pas le format attendu.")
-                        continue
-                    try:
-                        equipe_domicile = parts[0]
-                        equipe_exterieur = parts[2]
-                        journee = parts[3]
-                        categorie = parts[4]
-                        date = parts[5]
-                        data = pd.read_csv(path)
-                        if 'Row' not in data.columns:
-                            st.error(f"La colonne 'Row' est manquante dans le fichier {filename}.")
-                            continue
-                        match, joueurs = pd.DataFrame(), pd.DataFrame()
-                        for i in range(len(data)):
-                            if data['Row'].iloc[i] in [equipe_domicile, equipe_exterieur]:
-                                match = pd.concat([match, data.iloc[i:i+1]], ignore_index=True)
-                            elif not any(str(x) in str(data['Row'].iloc[i]) for x in ['Corner', 'Coup-franc', 'Penalty', 'Carton']):
-                                joueurs = pd.concat([joueurs, data.iloc[i:i+1]], ignore_index=True)
-                        if not joueurs.empty:
-                            joueurs['Player'] = joueurs['Row'].apply(nettoyer_nom_joueuse)
-                            df = create_data(match, joueurs, False)
-                            if not df.empty:
-                                for index, row in df.iterrows():
-                                    time_played = row['Temps de jeu (en minutes)']
-                                    for col in df.columns:
-                                        if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
-                                            df.loc[index, col] = row[col] * (90 / time_played)
-                                df = create_metrics(df)
-                                df = create_kpis(df)
-                                df = create_poste(df)
-                                adversaire = equipe_exterieur if equipe_domicile == 'PFC' else equipe_domicile
-                                df.insert(1, 'Adversaire', f'{adversaire} - {journee}')
-                                df.insert(2, 'Journée', journee)
-                                df.insert(3, 'Catégorie', categorie)
-                                df.insert(4, 'Date', date)
-                                pfc_kpi = pd.concat([pfc_kpi, df])
-                    except Exception as e:
-                        st.error(f"Erreur lors du traitement du fichier {filename}: {e}")
-            except Exception as e:
-                st.error(f"Erreur lors du traitement du fichier {filename}: {e}")
-        return pfc_kpi, edf_kpi
-    except Exception as e:
-        st.error(f"Erreur lors de la collecte des données: {e}")
-        return pd.DataFrame(), pd.DataFrame()
-
 def create_data(match, joueurs, is_edf):
     """Crée un dataframe complet à partir des données brutes."""
     try:
@@ -661,6 +570,9 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     ).round().astype(int).reset_index()
     return aggregated_data
 
+# =============================================
+# FONCTIONS DE VISUALISATION
+# =============================================
 def create_individual_radar(df):
     """Crée un radar individuel pour une joueuse."""
     if df.empty or 'Player' not in df.columns:
@@ -680,22 +592,22 @@ def create_individual_radar(df):
         player = df.iloc[0]
         pizza = PyPizza(
             params=available_columns,
-            background_color='#001C30',
+            background_color='#0e1117',
             straight_line_color='#FFFFFF',
             last_circle_color='#FFFFFF'
         )
         fig, _ = pizza.make_pizza(
-            figsize=(8, 8),
+            figsize=(3, 3),
             values=[player[col] for col in available_columns],
             slice_colors=colors[:len(available_columns)],
             kwargs_values=dict(
                 color='#FFFFFF',
-                fontsize=9,
-                bbox=dict(edgecolor='#FFFFFF', facecolor='#001C30', boxstyle='round, pad=0.2', lw=1)
+                fontsize=3.5,
+                bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117', boxstyle='round, pad=0.2', lw=1)
             ),
-            kwargs_params=dict(color='#FFFFFF', fontsize=10, fontproperties='monospace')
+            kwargs_params=dict(color='#FFFFFF', fontsize=3.5, fontproperties='monospace')
         )
-        fig.set_facecolor('#001C30')
+        fig.set_facecolor('#0e1117')
         return fig
     except Exception as e:
         st.error(f"Erreur lors de la création du radar: {e}")
@@ -740,8 +652,8 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         radar.setup_axis(ax=axs['radar'], facecolor='None')
         radar.draw_circles(
             ax=axs['radar'],
-            facecolor='#002A48',
-            edgecolor='#0078D4',
+            facecolor='#28252c',
+            edgecolor='#39353f',
             lw=1.5
         )
         player_values_1 = df.iloc[0][available_metrics].values
@@ -750,18 +662,18 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
             player_values_1,
             player_values_2,
             ax=axs['radar'],
-            kwargs_radar={'facecolor': '#0078D4', 'alpha': 0.6},
-            kwargs_compare={'facecolor': '#FF9470', 'alpha': 0.6}
+            kwargs_radar={'facecolor': '#00f2c1', 'alpha': 0.6},
+            kwargs_compare={'facecolor': '#d80499', 'alpha': 0.6}
         )
         radar.draw_range_labels(
             ax=axs['radar'],
-            fontsize=25,
+            fontsize=18,
             color='#fcfcfc',
             fontproperties=robotto_thin.prop
         )
         radar.draw_param_labels(
             ax=axs['radar'],
-            fontsize=25,
+            fontsize=18,
             color='#fcfcfc',
             fontproperties=robotto_thin.prop
         )
@@ -770,8 +682,8 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         axs['title'].text(
             0.01, 0.65,
             player1_label,
-            fontsize=25,
-            color='#0078D4',
+            fontsize=18,
+            color='#01c49d',
             fontproperties=robotto_bold.prop,
             ha='left',
             va='center'
@@ -779,18 +691,21 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         axs['title'].text(
             0.99, 0.65,
             player2_label,
-            fontsize=25,
+            fontsize=18,
             fontproperties=robotto_bold.prop,
             ha='right',
             va='center',
-            color='#FF9470'
+            color='#d80499'
         )
-        fig.set_facecolor('#001C30')
+        fig.set_facecolor('#0e1117')
         return fig
     except Exception as e:
         st.error(f"Erreur lors de la création du radar de comparaison: {e}")
         return None
 
+# =============================================
+# GESTION DES PROFILS ET PERMISSIONS
+# =============================================
 def check_permission(user_profile, required_permission, permissions):
     """Vérifie si un profil a une permission spécifique."""
     if user_profile not in permissions:
@@ -805,16 +720,105 @@ def get_player_for_profile(profile, permissions):
         return permissions[profile].get("player", None)
     return None
 
+# =============================================
+# FONCTIONS DE COLLECTE DES DONNÉES
+# =============================================
+@st.cache_data
+def collect_data():
+    """Collecte et traite les données depuis Google Drive."""
+    try:
+        download_google_drive()
+        pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
+        data_folder = "data"
+        if not os.path.exists(data_folder):
+            return pfc_kpi, edf_kpi
+        fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx')) and f != "Classeurs permissions streamlit.xlsx"]
+        if not fichiers:
+            return pfc_kpi, edf_kpi
+        edf_joueuses_path = os.path.join(data_folder, "EDF_Joueuses.xlsx")
+        if os.path.exists(edf_joueuses_path):
+            edf_joueuses = pd.read_excel(edf_joueuses_path)
+            if 'Player' not in edf_joueuses.columns or 'Poste' not in edf_joueuses.columns or 'Temps de jeu' not in edf_joueuses.columns:
+                return pfc_kpi, edf_kpi
+            edf_joueuses['Player'] = edf_joueuses['Player'].apply(nettoyer_nom_joueuse)
+            matchs_csv = [f for f in fichiers if f.startswith('EDF_U19_Match') and f.endswith('.csv')]
+            if matchs_csv:
+                all_edf_data = []
+                for csv_file in matchs_csv:
+                    match_data = pd.read_csv(os.path.join(data_folder, csv_file))
+                    if 'Row' not in match_data.columns:
+                        continue
+                    match_data['Player'] = match_data['Row'].apply(nettoyer_nom_joueuse)
+                    match_data = match_data.merge(edf_joueuses, on='Player', how='left')
+                    if match_data.empty:
+                        continue
+                    df = create_data(match_data, match_data, True)
+                    if not df.empty:
+                        all_edf_data.append(df)
+                if all_edf_data:
+                    edf_kpi = pd.concat(all_edf_data)
+                    if 'Poste' in edf_kpi.columns:
+                        edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
+                        edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
+        for filename in fichiers:
+            path = os.path.join(data_folder, filename)
+            try:
+                if filename.endswith('.csv') and 'PFC' in filename:
+                    parts = filename.split('.')[0].split('_')
+                    if len(parts) < 6:
+                        continue
+                    try:
+                        equipe_domicile = parts[0]
+                        equipe_exterieur = parts[2]
+                        journee = parts[3]
+                        categorie = parts[4]
+                        date = parts[5]
+                        data = pd.read_csv(path)
+                        if 'Row' not in data.columns:
+                            continue
+                        match, joueurs = pd.DataFrame(), pd.DataFrame()
+                        for i in range(len(data)):
+                            if data['Row'].iloc[i] in [equipe_domicile, equipe_exterieur]:
+                                match = pd.concat([match, data.iloc[i:i+1]], ignore_index=True)
+                            elif not any(str(x) in str(data['Row'].iloc[i]) for x in ['Corner', 'Coup-franc', 'Penalty', 'Carton']):
+                                joueurs = pd.concat([joueurs, data.iloc[i:i+1]], ignore_index=True)
+                        if not joueurs.empty:
+                            joueurs['Player'] = joueurs['Row'].apply(nettoyer_nom_joueuse)
+                            df = create_data(match, joueurs, False)
+                            if not df.empty:
+                                for index, row in df.iterrows():
+                                    time_played = row['Temps de jeu (en minutes)']
+                                    for col in df.columns:
+                                        if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
+                                            df.loc[index, col] = row[col] * (90 / time_played)
+                                df = create_metrics(df)
+                                df = create_kpis(df)
+                                df = create_poste(df)
+                                adversaire = equipe_exterieur if equipe_domicile == 'PFC' else equipe_domicile
+                                df.insert(1, 'Adversaire', f'{adversaire} - {journee}')
+                                df.insert(2, 'Journée', journee)
+                                df.insert(3, 'Catégorie', categorie)
+                                df.insert(4, 'Date', date)
+                                pfc_kpi = pd.concat([pfc_kpi, df])
+                    except Exception as e:
+                        pass
+            except Exception as e:
+                pass
+        return pfc_kpi, edf_kpi
+    except Exception as e:
+        return pd.DataFrame(), pd.DataFrame()
+
+# =============================================
+# INTERFACE STREAMLIT
+# =============================================
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     """Interface principale adaptée aux permissions et filtrée par joueuse."""
     logo_pfc = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        st.image(logo_pfc, width=150)
-    with col2:
-        st.markdown("<h1 style='color: white;'>Pôle vidéo/data CDFF</h1>", unsafe_allow_html=True)
-        st.markdown("<h3 style='color: white;'>Saison 2025-26</h3>", unsafe_allow_html=True)
+    st.sidebar.markdown(f"<div style='display: flex; justify-content: center;'><img src='{logo_pfc}' width='100'></div>", unsafe_allow_html=True)
     player_name = get_player_for_profile(user_profile, permissions)
+    st.sidebar.title(f"Connecté en tant que: {user_profile}")
+    if player_name:
+        st.sidebar.write(f"Joueuse associée: {player_name}")
     if st.sidebar.button("🔒 Déconnexion"):
         st.session_state.authenticated = False
         st.session_state.user_profile = None
@@ -835,12 +839,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     if check_permission(user_profile, "all", permissions):
         available_options.append("Gestion")
     with st.sidebar:
-        logo_certifie_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
-        st.image(logo_certifie_paris, width=150)
         page = option_menu(
-            menu_title="Menu",
+            menu_title="",
             options=available_options,
-            icons=["graph-up", "people", "gear"],
+            icons=["graph-up-arrow", "people", "gear"][:len(available_options)],
             menu_icon="cast",
             default_index=0,
             orientation="vertical",
@@ -851,13 +853,25 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 "nav-link-selected": {"background-color": "#0078D4", "color": "white"}
             }
         )
+    logo_certifie_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
+    st.sidebar.markdown(
+        f"""
+        <div style='display: flex; flex-direction: column; height: 100vh; justify-content: space-between;'>
+            <div></div>
+            <div style='text-align: center; margin-bottom: 300px;'>
+                <img src='{logo_certifie_paris}' width='200'>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
     if page == "Statistiques":
-        st.markdown("<h2 style='color: white;'>Statistiques</h2>", unsafe_allow_html=True)
+        st.header("Statistiques")
         if pfc_kpi.empty:
             st.warning("Aucune donnée disponible pour votre profil.")
         else:
             if player_name:
-                st.markdown(f"<h3 style='color: white;'>Statistiques pour {player_name}</h3>", unsafe_allow_html=True)
+                st.subheader(f"Statistiques pour {player_name}")
                 if 'Adversaire' in pfc_kpi.columns:
                     unique_matches = pfc_kpi['Adversaire'].unique()
                     if len(unique_matches) > 0:
@@ -877,9 +891,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             ).round().astype(int).reset_index()
                             time_played, goals = st.columns(2)
                             with time_played:
-                                st.markdown(f"<h4 style='color: white;'>Temps de jeu: {aggregated_data['Temps de jeu (en minutes)'].iloc[0]} minutes</h4>", unsafe_allow_html=True)
+                                st.metric("Temps de jeu", f"{aggregated_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
                             with goals:
-                                st.markdown(f"<h4 style='color: white;'>Buts: {aggregated_data['Buts'].iloc[0]}</h4>", unsafe_allow_html=True)
+                                st.metric("Buts", f"{aggregated_data['Buts'].iloc[0]}")
                             tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
                             with tab1:
                                 fig = create_individual_radar(aggregated_data)
@@ -888,20 +902,20 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             with tab2:
                                 if 'Rigueur' in aggregated_data.columns:
                                     col1, col2, col3, col4, col5 = st.columns(5)
-                                    with col1: st.markdown(f"<h4 style='color: white;'>Rigueur: {aggregated_data['Rigueur'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                    with col2: st.markdown(f"<h4 style='color: white;'>Récupération: {aggregated_data['Récupération'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                    with col3: st.markdown(f"<h4 style='color: white;'>Distribution: {aggregated_data['Distribution'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                    with col4: st.markdown(f"<h4 style='color: white;'>Percussion: {aggregated_data['Percussion'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                    with col5: st.markdown(f"<h4 style='color: white;'>Finition: {aggregated_data['Finition'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+                                    with col1: st.metric("Rigueur", f"{aggregated_data['Rigueur'].iloc[0]}/100")
+                                    with col2: st.metric("Récupération", f"{aggregated_data['Récupération'].iloc[0]}/100")
+                                    with col3: st.metric("Distribution", f"{aggregated_data['Distribution'].iloc[0]}/100")
+                                    with col4: st.metric("Percussion", f"{aggregated_data['Percussion'].iloc[0]}/100")
+                                    with col5: st.metric("Finition", f"{aggregated_data['Finition'].iloc[0]}/100")
                             with tab3:
                                 if 'Défenseur central' in aggregated_data.columns:
                                     col1, col2, col3, col4, col5, col6 = st.columns(6)
-                                    with col1: st.markdown(f"<h4 style='color: white;'>Défenseur central: {aggregated_data['Défenseur central'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                    with col2: st.markdown(f"<h4 style='color: white;'>Défenseur latéral: {aggregated_data['Défenseur latéral'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                    with col3: st.markdown(f"<h4 style='color: white;'>Milieu défensif: {aggregated_data['Milieu défensif'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                    with col4: st.markdown(f"<h4 style='color: white;'>Milieu relayeur: {aggregated_data['Milieu relayeur'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                    with col5: st.markdown(f"<h4 style='color: white;'>Milieu offensif: {aggregated_data['Milieu offensif'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                    with col6: st.markdown(f"<h4 style='color: white;'>Attaquant: {aggregated_data['Attaquant'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+                                    with col1: st.metric("Défenseur central", f"{aggregated_data['Défenseur central'].iloc[0]}/100")
+                                    with col2: st.metric("Défenseur latéral", f"{aggregated_data['Défenseur latéral'].iloc[0]}/100")
+                                    with col3: st.metric("Milieu défensif", f"{aggregated_data['Milieu défensif'].iloc[0]}/100")
+                                    with col4: st.metric("Milieu relayeur", f"{aggregated_data['Milieu relayeur'].iloc[0]}/100")
+                                    with col5: st.metric("Milieu offensif", f"{aggregated_data['Milieu offensif'].iloc[0]}/100")
+                                    with col6: st.metric("Attaquant", f"{aggregated_data['Attaquant'].iloc[0]}/100")
                         else:
                             st.warning("Aucune donnée disponible pour les matchs sélectionnés.")
                     else:
@@ -930,9 +944,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                 ).round().astype(int).reset_index()
                                 time_played, goals = st.columns(2)
                                 with time_played:
-                                    st.markdown(f"<h4 style='color: white;'>Temps de jeu: {aggregated_data['Temps de jeu (en minutes)'].iloc[0]} minutes</h4>", unsafe_allow_html=True)
+                                    st.metric("Temps de jeu", f"{aggregated_data['Temps de jeu (en minutes)'].iloc[0]} minutes")
                                 with goals:
-                                    st.markdown(f"<h4 style='color: white;'>Buts: {aggregated_data['Buts'].iloc[0]}</h4>", unsafe_allow_html=True)
+                                    st.metric("Buts", f"{aggregated_data['Buts'].iloc[0]}")
                                 tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
                                 with tab1:
                                     fig = create_individual_radar(aggregated_data)
@@ -941,30 +955,28 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                 with tab2:
                                     if 'Rigueur' in aggregated_data.columns:
                                         col1, col2, col3, col4, col5 = st.columns(5)
-                                        with col1: st.markdown(f"<h4 style='color: white;'>Rigueur: {aggregated_data['Rigueur'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                        with col2: st.markdown(f"<h4 style='color: white;'>Récupération: {aggregated_data['Récupération'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                        with col3: st.markdown(f"<h4 style='color: white;'>Distribution: {aggregated_data['Distribution'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                        with col4: st.markdown(f"<h4 style='color: white;'>Percussion: {aggregated_data['Percussion'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                        with col5: st.markdown(f"<h4 style='color: white;'>Finition: {aggregated_data['Finition'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+                                        with col1: st.metric("Rigueur", f"{aggregated_data['Rigueur'].iloc[0]}/100")
+                                        with col2: st.metric("Récupération", f"{aggregated_data['Récupération'].iloc[0]}/100")
+                                        with col3: st.metric("Distribution", f"{aggregated_data['Distribution'].iloc[0]}/100")
+                                        with col4: st.metric("Percussion", f"{aggregated_data['Percussion'].iloc[0]}/100")
+                                        with col5: st.metric("Finition", f"{aggregated_data['Finition'].iloc[0]}/100")
                                 with tab3:
                                     if 'Défenseur central' in aggregated_data.columns:
                                         col1, col2, col3, col4, col5, col6 = st.columns(6)
-                                        with col1: st.markdown(f"<h4 style='color: white;'>Défenseur central: {aggregated_data['Défenseur central'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                        with col2: st.markdown(f"<h4 style='color: white;'>Défenseur latéral: {aggregated_data['Défenseur latéral'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                        with col3: st.markdown(f"<h4 style='color: white;'>Milieu défensif: {aggregated_data['Milieu défensif'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                        with col4: st.markdown(f"<h4 style='color: white;'>Milieu relayeur: {aggregated_data['Milieu relayeur'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                        with col5: st.markdown(f"<h4 style='color: white;'>Milieu offensif: {aggregated_data['Milieu offensif'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-                                        with col6: st.markdown(f"<h4 style='color: white;'>Attaquant: {aggregated_data['Attaquant'].iloc[0]}/100</h4>", unsafe_allow_html=True)
-            else:
-                st.warning("Aucune donnée disponible.")
+                                        with col1: st.metric("Défenseur central", f"{aggregated_data['Défenseur central'].iloc[0]}/100")
+                                        with col2: st.metric("Défenseur latéral", f"{aggregated_data['Défenseur latéral'].iloc[0]}/100")
+                                        with col3: st.metric("Milieu défensif", f"{aggregated_data['Milieu défensif'].iloc[0]}/100")
+                                        with col4: st.metric("Milieu relayeur", f"{aggregated_data['Milieu relayeur'].iloc[0]}/100")
+                                        with col5: st.metric("Milieu offensif", f"{aggregated_data['Milieu offensif'].iloc[0]}/100")
+                                        with col6: st.metric("Attaquant", f"{aggregated_data['Attaquant'].iloc[0]}/100")
     elif page == "Comparaison":
-        st.markdown("<h2 style='color: white;'>Comparaison</h2>", unsafe_allow_html=True)
+        st.header("Comparaison")
         if player_name:
-            st.markdown(f"<h3 style='color: white;'>Comparaison pour {player_name}</h3>", unsafe_allow_html=True)
+            st.subheader(f"Comparaison pour {player_name}")
             if pfc_kpi.empty:
                 st.warning(f"Aucune donnée disponible pour {player_name}.")
             else:
-                st.markdown("<h4 style='color: white;'>1. Comparez vos performances sur différents matchs</h4>", unsafe_allow_html=True)
+                st.write("### 1. Comparez vos performances sur différents matchs")
                 if 'Adversaire' in pfc_kpi.columns:
                     unique_matches = pfc_kpi['Adversaire'].unique()
                     if len(unique_matches) >= 1:
@@ -1002,11 +1014,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                 st.warning("Pas assez de matchs sélectionnés avec des données valides.")
                         else:
                             st.warning("Veuillez sélectionner au moins 2 matchs pour la comparaison.")
-                    else:
-                        st.warning("Aucun match disponible pour cette joueuse.")
-                else:
-                    st.warning("Colonne 'Adversaire' manquante dans les données.")
-                st.markdown("<h4 style='color: white;'>2. Comparez-vous aux données EDF</h4>", unsafe_allow_html=True)
+                st.write("### 2. Comparez-vous aux données EDF")
                 if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
                     poste = st.selectbox(
                         "Sélectionnez un poste EDF pour comparaison",
@@ -1032,7 +1040,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         st.warning("Aucune donnée EDF disponible pour ce poste.")
                 else:
                     st.warning("Aucune donnée EDF disponible pour la comparaison.")
-                st.markdown("<h4 style='color: white;'>3. Comparez-vous à vos moyennes globales</h4>", unsafe_allow_html=True)
+                st.write("### 3. Comparez-vous à vos moyennes globales")
                 if not pfc_kpi.empty:
                     player_global_data = prepare_comparison_data(pfc_kpi, player_name)
                     if not player_global_data.empty:
@@ -1113,10 +1121,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             else:
                                 st.warning("Aucune donnée EDF disponible.")
     elif page == "Gestion":
-        st.markdown("<h2 style='color: white;'>Gestion des utilisateurs</h2>", unsafe_allow_html=True)
+        st.header("Gestion des utilisateurs")
         if check_permission(user_profile, "all", permissions):
             st.write("Cette page est réservée à la gestion des utilisateurs.")
-            st.markdown("<h3 style='color: white;'>Liste des utilisateurs</h3>", unsafe_allow_html=True)
+            st.subheader("Liste des utilisateurs")
             users_data = []
             for profile, info in permissions.items():
                 users_data.append({
@@ -1154,39 +1162,29 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 # POINT D'ENTRÉE PRINCIPAL
 # =============================================
 if __name__ == '__main__':
+    logo_monochrome = "https://i.postimg.cc/BQQ5K5tp/Monochrome.png"
+    st.markdown(f"<style>.logo-container{{position:absolute;top:10px;right:10px;}}.logo-container img{{width:90px;}}</style><div class='logo-container'><img src='{logo_monochrome}'></div>", unsafe_allow_html=True)
+    permissions = load_permissions()
+    if not permissions:
+        st.error("Impossible de charger les permissions. Vérifiez que le fichier 'Classeurs permissions streamlit.xlsx' est présent dans le dossier Google Drive.")
+        st.stop()
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if "user_profile" not in st.session_state:
         st.session_state.user_profile = None
     if not st.session_state.authenticated:
-        st.markdown(
-            """
-            <style>
-            .stApp {
-                background: linear-gradient(to bottom, #001C30 0%, #002A48 100%);
-                color: white;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
         with st.form("login_form"):
             st.markdown("<h1 style='color: white;'>Paris Football Club</h1>", unsafe_allow_html=True)
-            username = st.text_input("Nom d'utilisateur (profil)", key="username")
-            password = st.text_input("Mot de passe", type="password", key="password")
+            username = st.text_input("Nom d'utilisateur (profil)")
+            password = st.text_input("Mot de passe", type="password")
             submitted = st.form_submit_button("Valider")
             if submitted:
-                permissions = load_permissions()
                 if username in permissions and password == permissions[username]["password"]:
                     st.session_state.authenticated = True
                     st.session_state.user_profile = username
                     st.rerun()
                 else:
                     st.error("Nom d'utilisateur ou mot de passe incorrect")
-        st.stop()
-    permissions = load_permissions()
-    if not permissions:
-        st.error("Impossible de charger les permissions. Vérifiez que le fichier 'Classeurs permissions streamlit.xlsx' est présent dans le dossier Google Drive.")
         st.stop()
     try:
         pfc_kpi, edf_kpi = collect_data()
