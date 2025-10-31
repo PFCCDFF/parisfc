@@ -1309,5 +1309,6 @@ except Exception as e:
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     # Appel de la fonction principale de l'interface
-    script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
