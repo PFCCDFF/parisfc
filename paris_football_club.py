@@ -1301,32 +1301,6 @@ st.markdown("""
     </div>
     """, unsafe_allow_html=True)
 
-    # Chargement des permissions et des données
-   permissions = load_permissions()
-    if not permissions:
-        st.error("Impossible de charger les permissions. Vérifiez que le fichier 'Classeurs permissions streamlit.xlsx' est présent dans le dossier Google Drive.")
-        st.stop()
-
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-    if "user_profile" not in st.session_state:
-        st.session_state.user_profile = None
-
-    # Logique d'authentification (inchangée)
-    if not st.session_state.authenticated:
-        with st.form("login_form"):
-            username = st.text_input("Nom d'utilisateur (profil)")
-            password = st.text_input("Mot de passe", type="password")
-            submitted = st.form_submit_button("Valider")
-            if submitted:
-                if username in permissions and password == permissions[username]["password"]:
-                    st.session_state.authenticated = True
-                    st.session_state.user_profile = username
-                    st.rerun()
-                else:
-                    st.error("Nom d'utilisateur ou mot de passe incorrect")
-        st.stop()
-
     # Chargement des données
     try:
         pfc_kpi, edf_kpi = collect_data()
