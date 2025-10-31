@@ -635,7 +635,7 @@ def create_individual_radar(df):
             ),
             kwargs_params=dict(color='#FFFFFF', fontsize=3, fontproperties='monospace')
         )
-        fig.set_facecolor('#003A58')
+        fig.set_facecolor('#002B5C')
         return fig
     except Exception as e:
         st.error(f"Erreur lors de la création du radar: {e}")
@@ -1104,7 +1104,7 @@ if __name__ == '__main__':
     <style>
         /* Fond de l'application */
         .stApp {
-            background: linear-gradient(135deg, #002B5C 0%, #0047AB 100%);
+            background: linear-gradient(135deg, #002B5C 0%, #002B5C 100%);
             color: white;
         }
 
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
