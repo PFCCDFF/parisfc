@@ -1172,11 +1172,6 @@ if __name__ == '__main__':
         background-color: #002B5C;
         color: white;
     }
-    /* Fond bleu pour les conteneurs principaux */
-    .main .block-container {
-        background-color: #002B5C;
-        color: white;
-    }
         .main-header {
             background: linear-gradient(135deg, #002B5C 0%, #0047AB 100%);
             color: white;
@@ -1275,5 +1270,6 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
