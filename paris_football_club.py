@@ -1302,7 +1302,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
     # Chargement des permissions et des données
-    permissions = load_permissions()
+   permissions = load_permissions()
     if not permissions:
         st.error("Impossible de charger les permissions. Vérifiez que le fichier 'Classeurs permissions streamlit.xlsx' est présent dans le dossier Google Drive.")
         st.stop()
