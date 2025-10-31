@@ -1,13 +1,15 @@
 import pandas as pd
 import numpy as np
 import os
+from mplsoccer import PyPizza, Radar, FontManager, grid
 import streamlit as st
+from streamlit_option_menu import option_menu
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
 import warnings
-import unidecode
+from unidecode import unidecode
 
 warnings.filterwarnings('ignore')
 
@@ -57,7 +59,6 @@ st.markdown(
 # =============================================
 # FONCTIONS D'AUTHENTIFICATION ET GESTION DRIVE
 # =============================================
-
 def authenticate_google_drive():
     """Authentification avec Google Drive."""
     SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -143,11 +144,10 @@ def load_permissions():
 # =============================================
 # FONCTIONS UTILITAIRES
 # =============================================
-
 def nettoyer_nom_joueuse(nom):
     """Nettoie le nom d'une joueuse en supprimant les doublons et standardisant le format."""
     if isinstance(nom, str):
-        nom = unidecode.unidecode(nom.strip().upper())
+        nom = unidecode(nom.strip().upper())
         parts = [part.strip().upper() for part in nom.split(",")]
         if len(parts) > 1 and parts[0] == parts[1]:
             return parts[0]
@@ -157,7 +157,6 @@ def nettoyer_nom_joueuse(nom):
 # =============================================
 # FONCTIONS DE TRAITEMENT DES DONNÉES
 # =============================================
-
 def players_edf_duration(match):
     """Calcule la durée de jeu pour les joueuses EDF."""
     if 'Poste' not in match.columns or 'Temps de jeu' not in match.columns:
@@ -496,7 +495,6 @@ def collect_data():
                         st.error(f"La colonne 'Row' est manquante dans le fichier {csv_file}.")
                         continue
                     match_data['Player'] = match_data['Row'].apply(nettoyer_nom_joueuse)
-                    # Fusionner les données des fichiers CSV avec les données des joueuses (incluant le poste et le temps de jeu)
                     match_data = match_data.merge(edf_joueuses, on='Player', how='left')
                     if match_data.empty:
                         st.warning(f"Aucune donnée valide trouvée dans le fichier {csv_file} après fusion.")
@@ -663,6 +661,136 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     ).round().astype(int).reset_index()
     return aggregated_data
 
+def create_individual_radar(df):
+    """Crée un radar individuel pour une joueuse."""
+    if df.empty or 'Player' not in df.columns:
+        st.warning("Aucune donnée disponible pour créer le radar.")
+        return None
+    try:
+        columns_to_plot = [
+            'Timing', 'Force physique', 'Intelligence tactique',
+            'Technique 1', 'Technique 2', 'Technique 3',
+            'Explosivité', 'Prise de risque', 'Précision', 'Sang-froid'
+        ]
+        available_columns = [col for col in columns_to_plot if col in df.columns]
+        if not available_columns:
+            st.warning("Aucune colonne de métrique disponible pour le radar")
+            return None
+        colors = ['#6A7CD9', '#00BFFE', '#FF9470', '#F27979', '#BFBFBF'] * 2
+        player = df.iloc[0]
+        pizza = PyPizza(
+            params=available_columns,
+            background_color='#001C30',
+            straight_line_color='#FFFFFF',
+            last_circle_color='#FFFFFF'
+        )
+        fig, _ = pizza.make_pizza(
+            figsize=(8, 8),
+            values=[player[col] for col in available_columns],
+            slice_colors=colors[:len(available_columns)],
+            kwargs_values=dict(
+                color='#FFFFFF',
+                fontsize=9,
+                bbox=dict(edgecolor='#FFFFFF', facecolor='#001C30', boxstyle='round, pad=0.2', lw=1)
+            ),
+            kwargs_params=dict(color='#FFFFFF', fontsize=10, fontproperties='monospace')
+        )
+        fig.set_facecolor('#001C30')
+        return fig
+    except Exception as e:
+        st.error(f"Erreur lors de la création du radar: {e}")
+        return None
+
+def create_comparison_radar(df, player1_name=None, player2_name=None):
+    """Crée un radar de comparaison entre deux joueurs."""
+    if df.empty or len(df) < 2:
+        st.warning("Données insuffisantes pour créer une comparaison.")
+        return None
+    try:
+        metrics = [
+            'Timing', 'Force physique', 'Intelligence tactique',
+            'Technique 1', 'Technique 2', 'Technique 3',
+            'Explosivité', 'Prise de risque', 'Précision', 'Sang-froid'
+        ]
+        available_metrics = [m for m in metrics if m in df.columns]
+        if len(available_metrics) < 2:
+            st.warning("Pas assez de métriques disponibles pour la comparaison")
+            return None
+        low, high = (0,) * len(available_metrics), (100,) * len(available_metrics)
+        radar = Radar(
+            available_metrics,
+            low,
+            high,
+            num_rings=4,
+            ring_width=1,
+            center_circle_radius=1
+        )
+        URL1 = 'https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Thin.ttf'
+        URL2 = 'https://raw.githubusercontent.com/google/fonts/main/apache/robotoslab/RobotoSlab%5Bwght%5D.ttf'
+        robotto_thin, robotto_bold = FontManager(URL1), FontManager(URL2)
+        fig, axs = grid(
+            figheight=14,
+            grid_height=0.915,
+            title_height=0.06,
+            endnote_height=0.025,
+            title_space=0,
+            endnote_space=0,
+            grid_key='radar'
+        )
+        radar.setup_axis(ax=axs['radar'], facecolor='None')
+        radar.draw_circles(
+            ax=axs['radar'],
+            facecolor='#002A48',
+            edgecolor='#0078D4',
+            lw=1.5
+        )
+        player_values_1 = df.iloc[0][available_metrics].values
+        player_values_2 = df.iloc[1][available_metrics].values
+        radar.draw_radar_compare(
+            player_values_1,
+            player_values_2,
+            ax=axs['radar'],
+            kwargs_radar={'facecolor': '#0078D4', 'alpha': 0.6},
+            kwargs_compare={'facecolor': '#FF9470', 'alpha': 0.6}
+        )
+        radar.draw_range_labels(
+            ax=axs['radar'],
+            fontsize=25,
+            color='#fcfcfc',
+            fontproperties=robotto_thin.prop
+        )
+        radar.draw_param_labels(
+            ax=axs['radar'],
+            fontsize=25,
+            color='#fcfcfc',
+            fontproperties=robotto_thin.prop
+        )
+        player1_label = player1_name if player1_name else df.iloc[0]['Player']
+        player2_label = player2_name if player2_name else df.iloc[1]['Player']
+        axs['title'].text(
+            0.01, 0.65,
+            player1_label,
+            fontsize=25,
+            color='#0078D4',
+            fontproperties=robotto_bold.prop,
+            ha='left',
+            va='center'
+        )
+        axs['title'].text(
+            0.99, 0.65,
+            player2_label,
+            fontsize=25,
+            fontproperties=robotto_bold.prop,
+            ha='right',
+            va='center',
+            color='#FF9470'
+        )
+        fig.set_facecolor('#001C30')
+        return fig
+    except Exception as e:
+        st.error(f"Erreur lors de la création du radar de comparaison: {e}")
+        return None
+
 def check_permission(user_profile, required_permission, permissions):
     """Vérifie si un profil a une permission spécifique."""
     if user_profile not in permissions:
@@ -709,11 +837,19 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     with st.sidebar:
         logo_certifie_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
         st.image(logo_certifie_paris, width=150)
-        page = st.selectbox(
-            "Menu",
-            available_options,
-            index=0,
-            key="menu"
+        page = option_menu(
+            menu_title="Menu",
+            options=available_options,
+            icons=["graph-up", "people", "gear"],
+            menu_icon="cast",
+            default_index=0,
+            orientation="vertical",
+            styles={
+                "container": {"padding": "5!important", "background-color": "#002A48"},
+                "icon": {"color": "#0078D4", "font-size": "18px"},
+                "nav-link": {"font-size": "16px", "text-align": "left", "margin": "0px", "--hover-color": "#003A58"},
+                "nav-link-selected": {"background-color": "#0078D4", "color": "white"}
+            }
         )
     if page == "Statistiques":
         st.markdown("<h2 style='color: white;'>Statistiques</h2>", unsafe_allow_html=True)
@@ -746,7 +882,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                 st.markdown(f"<h4 style='color: white;'>Buts: {aggregated_data['Buts'].iloc[0]}</h4>", unsafe_allow_html=True)
                             tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
                             with tab1:
-                                st.write("Radar individuel (à implémenter avec mplsoccer)")
+                                fig = create_individual_radar(aggregated_data)
+                                if fig:
+                                    st.pyplot(fig)
                             with tab2:
                                 if 'Rigueur' in aggregated_data.columns:
                                     col1, col2, col3, col4, col5 = st.columns(5)
@@ -797,7 +935,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                     st.markdown(f"<h4 style='color: white;'>Buts: {aggregated_data['Buts'].iloc[0]}</h4>", unsafe_allow_html=True)
                                 tab1, tab2, tab3 = st.tabs(["Radar", "KPIs", "Postes"])
                                 with tab1:
-                                    st.write("Radar individuel (à implémenter avec mplsoccer)")
+                                    fig = create_individual_radar(aggregated_data)
+                                    if fig:
+                                        st.pyplot(fig)
                                 with tab2:
                                     if 'Rigueur' in aggregated_data.columns:
                                         col1, col2, col3, col4, col5 = st.columns(5)
@@ -815,6 +955,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         with col4: st.markdown(f"<h4 style='color: white;'>Milieu relayeur: {aggregated_data['Milieu relayeur'].iloc[0]}/100</h4>", unsafe_allow_html=True)
                                         with col5: st.markdown(f"<h4 style='color: white;'>Milieu offensif: {aggregated_data['Milieu offensif'].iloc[0]}/100</h4>", unsafe_allow_html=True)
                                         with col6: st.markdown(f"<h4 style='color: white;'>Attaquant: {aggregated_data['Attaquant'].iloc[0]}/100</h4>", unsafe_allow_html=True)
+            else:
+                st.warning("Aucune donnée disponible.")
     elif page == "Comparaison":
         st.markdown("<h2 style='color: white;'>Comparaison</h2>", unsafe_allow_html=True)
         if player_name:
@@ -851,7 +993,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                 players_data = pd.concat(comparison_data)
                                 if st.button("Comparer les matchs sélectionnés"):
                                     if len(players_data) >= 2:
-                                        st.write("Radar de comparaison (à implémenter avec mplsoccer)")
+                                        fig = create_comparison_radar(players_data)
+                                        if fig:
+                                            st.pyplot(fig)
                                     else:
                                         st.warning("Pas assez de données pour la comparaison.")
                             else:
@@ -875,7 +1019,13 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         if not player_data.empty:
                             if st.button("Comparer avec le poste EDF"):
                                 players_data = pd.concat([player_data, edf_data])
-                                st.write("Radar de comparaison (à implémenter avec mplsoccer)")
+                                fig = create_comparison_radar(
+                                    players_data,
+                                    player1_name=player_name,
+                                    player2_name=f"EDF {poste}"
+                                )
+                                if fig:
+                                    st.pyplot(fig)
                         else:
                             st.warning("Aucune donnée disponible pour cette joueuse.")
                     else:
@@ -906,7 +1056,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                 player_global_data['Player'] = f"{player_name} (Moyenne globale)"
                                 if st.button("Comparer avec mes moyennes"):
                                     players_data = pd.concat([match_aggregated, player_global_data])
-                                    st.write("Radar de comparaison (à implémenter avec mplsoccer)")
+                                    fig = create_comparison_radar(players_data)
+                                    if fig:
+                                        st.pyplot(fig)
                             else:
                                 st.warning("Aucune donnée disponible pour ce match.")
                         else:
@@ -942,7 +1094,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                             st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
                                         else:
                                             players_data = pd.concat([aggregated_player1_data, aggregated_player2_data])
-                                            st.write("Radar de comparaison (à implémenter avec mplsoccer)")
+                                            fig = create_comparison_radar(players_data)
+                                            if fig:
+                                                st.pyplot(fig)
                         with tab2:
                             if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
                                 st.subheader("Sélectionnez un poste de l'Équipe de France")
@@ -953,7 +1107,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         st.error("Veuillez sélectionner au moins un match pour la joueuse PFC.")
                                     else:
                                         players_data = pd.concat([aggregated_player1_data, player2_data])
-                                        st.write("Radar de comparaison (à implémenter avec mplsoccer)")
+                                        fig = create_comparison_radar(players_data)
+                                        if fig:
+                                            st.pyplot(fig)
                             else:
                                 st.warning("Aucune donnée EDF disponible.")
     elif page == "Gestion":
@@ -997,7 +1153,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 # =============================================
 # POINT D'ENTRÉE PRINCIPAL
 # =============================================
-
 if __name__ == '__main__':
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
