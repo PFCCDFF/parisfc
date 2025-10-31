@@ -1302,11 +1302,12 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
     # Chargement des données
-    try:
+try:
         pfc_kpi, edf_kpi = collect_data()
-    except Exception as e:
+except Exception as e:
         st.error(f"Erreur lors du chargement des données: {e}")
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
