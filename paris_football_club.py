@@ -1039,21 +1039,3 @@ if __name__ == '__main__':
         st.error(f"Erreur lors du chargement des données: {e}")
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
-
-# Génération du fichier requirements.txt
-requirements = """
-pandas==2.0.3
-numpy==1.24.3
-streamlit==1.28.0
-google-api-python-client==2.95.0
-google-auth-httplib2==0.1.0
-google-auth-oauthlib==1.0.0
-unidecode==1.3.6
-mplsoccer==1.0.0
-streamlit-option-menu==0.3.6
-"""
-
-with open('requirements.txt', 'w') as f:
-    f.write(requirements)
-
-{'script_corrected.py': open('script_corrected.py', 'r').read(), 'requirements.txt': requirements}
