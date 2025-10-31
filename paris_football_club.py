@@ -681,7 +681,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         radar.draw_circles(
             ax=axs['radar'],
             facecolor='#003A58',
-            edgecolor='#39353f',
+            edgecolor='#0047AB',
             lw=1.5
         )
         player_values_1 = df.iloc[0][available_metrics].values
@@ -696,13 +696,13 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         radar.draw_range_labels(
             ax=axs['radar'],
             fontsize=18,
-            color='#fcfcfc',
+            color='#FFFFFF',
             fontproperties=robotto_thin.prop
         )
         radar.draw_param_labels(
             ax=axs['radar'],
             fontsize=18,
-            color='#fcfcfc',
+            color='#FFFFFF',
             fontproperties=robotto_thin.prop
         )
         player1_label = player1_name if player1_name else df.iloc[0]['Player']
@@ -711,7 +711,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
             0.01, 0.65,
             player1_label,
             fontsize=18,
-            color='#01c49d',
+            color='#0047AB',
             fontproperties=robotto_bold.prop,
             ha='left',
             va='center'
@@ -723,9 +723,9 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
             fontproperties=robotto_bold.prop,
             ha='right',
             va='center',
-            color='#d80499'
+            color='#002B5C'
         )
-        fig.set_facecolor('#0e1117')
+        fig.set_facecolor('#003A58')
         return fig
     except Exception as e:
         st.error(f"Erreur lors de la création du radar de comparaison: {e}")
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
