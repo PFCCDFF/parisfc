@@ -1166,7 +1166,7 @@ if __name__ == '__main__':
 
     # CSS personnalisé pour le style
    st.markdown("""
-<style>
+    <style>
     /* Fond de l'application */
     .stApp {
         background: linear-gradient(135deg, #002B5C 0%, #0047AB 100%);
@@ -1335,4 +1335,5 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
