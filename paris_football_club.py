@@ -985,91 +985,27 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.warning("Aucune donnée disponible.")
 
     elif page == "Comparaison":
-        st.markdown("<h2 style='color: white;'>Comparaison</h2>", unsafe_allow_html=True)
-        if player_name:
-            st.markdown(f"<h3 style='color: white;'>Comparaison pour {player_name}</h3>", unsafe_allow_html=True)
-            if pfc_kpi.empty:
-                st.warning(f"Aucune donnée disponible pour {player_name}.")
-            else:
-                st.markdown("<h4 style='color: white;'>1. Comparez vos performances sur différents matchs</h4>", unsafe_allow_html=True)
-                if 'Adversaire' in pfc_kpi.columns:
-                    unique_matches = pfc_kpi['Adversaire'].unique()
-                    if len(unique_matches) >= 1:
-                        selected_matches = st.multiselect(
-                            "Sélectionnez les matchs à comparer (2 ou plus)",
-                            unique_matches,
-                            key='selected_matches'
-                        )
-                        if len(selected_matches) >= 2:
-                            comparison_data = []
-                            for match in selected_matches:
-                                match_data = pfc_kpi[pfc_kpi['Adversaire'] == match]
-                                if not match_data.empty:
-                                    aggregated = match_data.groupby('Player').agg({
-                                        'Temps de jeu (en minutes)': 'sum',
-                                        'Buts': 'sum',
-                                    }).join(
-                                        match_data.groupby('Player').mean(numeric_only=True).drop(
-                                            columns=['Temps de jeu (en minutes)', 'Buts'], errors='ignore'
-                                        )
-                                    ).round().astype(int).reset_index()
-                                    if not aggregated.empty:
-                                        aggregated['Player'] = f"{player_name} ({match})"
-                                        comparison_data.append(aggregated)
-                            if len(comparison_data) >= 2:
-                                players_data = pd.concat(comparison_data)
-                                if st.button("Comparer les matchs sélectionnés"):
-                                    if len(players_data) >= 2:
-                                        fig = create_comparison_radar(players_data)
-                                        if fig:
-                                            st.pyplot(fig)
-                                    else:
-                                        st.warning("Pas assez de données pour la comparaison.")
-                            else:
-                                st.warning("Pas assez de matchs sélectionnés avec des données valides.")
-                        else:
-                            st.warning("Veuillez sélectionner au moins 2 matchs pour la comparaison.")
-
-                st.markdown("<h4 style='color: white;'>2. Comparez-vous aux données EDF</h4>", unsafe_allow_html=True)
-                if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
-                    poste = st.selectbox(
-                        "Sélectionnez un poste EDF pour comparaison",
-                        edf_kpi['Poste'].unique(),
-                        key='edf_poste'
+    st.markdown("<h2 style='color: white;'>Comparaison</h2>", unsafe_allow_html=True)
+    if player_name:
+        st.markdown(f"<h3 style='color: white;'>Comparaison pour {player_name}</h3>", unsafe_allow_html=True)
+        if pfc_kpi.empty:
+            st.warning(f"Aucune donnée disponible pour {player_name}.")
+        else:
+            st.markdown("<h4 style='color: white;'>1. Comparez vos performances sur différents matchs</h4>", unsafe_allow_html=True)
+            if 'Adversaire' in pfc_kpi.columns:
+                unique_matches = pfc_kpi['Adversaire'].unique()
+                if len(unique_matches) >= 1:
+                    selected_matches = st.multiselect(
+                        "Sélectionnez les matchs à comparer (2 ou plus)",
+                        unique_matches,
+                        key='selected_matches'
                     )
-                    edf_data = edf_kpi[edf_kpi['Poste'] == poste].rename(columns={'Poste': 'Player'})
-                    if not edf_data.empty:
-                        player_data = prepare_comparison_data(pfc_kpi, player_name)
-                        if not player_data.empty:
-                            if st.button("Comparer avec le poste EDF"):
-                                players_data = pd.concat([player_data, edf_data])
-                                fig = create_comparison_radar(
-                                    players_data,
-                                    player1_name=player_name,
-                                    player2_name=f"EDF {poste}"
-                                )
-                                if fig:
-                                    st.pyplot(fig)
-                        else:
-                            st.warning("Aucune donnée disponible pour cette joueuse.")
-                    else:
-                        st.warning("Aucune donnée EDF disponible pour ce poste.")
-                else:
-                    st.warning("Aucune donnée EDF disponible pour la comparaison.")
-
-                st.markdown("<h4 style='color: white;'>3. Comparez-vous à vos moyennes globales</h4>", unsafe_allow_html=True)
-                if not pfc_kpi.empty:
-                    player_global_data = prepare_comparison_data(pfc_kpi, player_name)
-                    if not player_global_data.empty:
-                        if 'Adversaire' in pfc_kpi.columns:
-                            selected_match = st.selectbox(
-                                "Sélectionnez un match spécifique à comparer",
-                                pfc_kpi['Adversaire'].unique(),
-                                key='specific_match'
-                            )
-                            match_data = pfc_kpi[pfc_kpi['Adversaire'] == selected_match]
+                    if len(selected_matches) >= 2:
+                        comparison_data = []
+                        for match in selected_matches:
+                            match_data = pfc_kpi[pfc_kpi['Adversaire'] == match]
                             if not match_data.empty:
-                                match_aggregated = match_data.groupby('Player').agg({
+                                aggregated = match_data.groupby('Player').agg({
                                     'Temps de jeu (en minutes)': 'sum',
                                     'Buts': 'sum',
                                 }).join(
@@ -1077,66 +1013,135 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         columns=['Temps de jeu (en minutes)', 'Buts'], errors='ignore'
                                     )
                                 ).round().astype(int).reset_index()
-                                match_aggregated['Player'] = f"{player_name} ({selected_match})"
-                                player_global_data['Player'] = f"{player_name} (Moyenne globale)"
-                                if st.button("Comparer avec mes moyennes"):
-                                    players_data = pd.concat([match_aggregated, player_global_data])
+                                if not aggregated.empty:
+                                    aggregated['Player'] = f"{player_name} ({match})"
+                                    comparison_data.append(aggregated)
+                        if len(comparison_data) >= 2:
+                            players_data = pd.concat(comparison_data)
+                            if st.button("Comparer les matchs sélectionnés"):
+                                if len(players_data) >= 2:
                                     fig = create_comparison_radar(players_data)
                                     if fig:
                                         st.pyplot(fig)
-                            else:
-                                st.warning("Aucune donnée disponible pour ce match.")
+                                else:
+                                    st.warning("Pas assez de données pour la comparaison.")
                         else:
-                            st.warning("Colonne 'Adversaire' manquante dans les données.")
+                            st.warning("Pas assez de matchs sélectionnés avec des données valides.")
+                    else:
+                        st.warning("Veuillez sélectionner au moins 2 matchs pour la comparaison.")
+                else:
+                    st.warning("Aucun match disponible pour cette joueuse.")
+            else:
+                st.warning("Colonne 'Adversaire' manquante dans les données.")
+
+            st.markdown("<h4 style='color: white;'>2. Comparez-vous aux données EDF</h4>", unsafe_allow_html=True)
+            if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
+                poste = st.selectbox(
+                    "Sélectionnez un poste EDF pour comparaison",
+                    edf_kpi['Poste'].unique(),
+                    key='edf_poste'
+                )
+                edf_data = edf_kpi[edf_kpi['Poste'] == poste].rename(columns={'Poste': 'Player'})
+                if not edf_data.empty:
+                    player_data = prepare_comparison_data(pfc_kpi, player_name)
+                    if not player_data.empty:
+                        if st.button("Comparer avec le poste EDF"):
+                            players_data = pd.concat([player_data, edf_data])
+                            fig = create_comparison_radar(
+                                players_data,
+                                player1_name=player_name,
+                                player2_name=f"EDF {poste}"
+                            )
+                            if fig:
+                                st.pyplot(fig)
                     else:
                         st.warning("Aucune donnée disponible pour cette joueuse.")
-        else:
-            st.subheader("Sélectionnez une joueuse du Paris FC")
-            if not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
-                player1 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_1')
-                player1_data = pfc_kpi[pfc_kpi['Player'] == player1]
-                if player1_data.empty:
-                    st.error("Aucune donnée disponible pour cette joueuse.")
                 else:
-                    if 'Adversaire' in player1_data.columns:
-                        game1 = st.multiselect("Choisissez un ou plusieurs matchs", player1_data['Adversaire'].unique(), key='games_1')
-                        filtered_player1_data = player1_data[player1_data['Adversaire'].isin(game1)] if game1 else player1_data
-                        aggregated_player1_data = filtered_player1_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
-                        tab1, tab2 = st.tabs(["Comparaison (PFC)", "Comparaison (EDF)"])
-                        with tab1:
-                            st.subheader("Sélectionnez une autre joueuse du Paris FC")
-                            player2 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_2_pfc')
-                            player2_data = pfc_kpi[pfc_kpi['Player'] == player2]
-                            if player2_data.empty:
-                                st.error("Aucune donnée disponible pour cette joueuse.")
-                            else:
-                                if 'Adversaire' in player2_data.columns:
-                                    game2 = st.multiselect("Choisissez un ou plusieurs matchs", player2_data['Adversaire'].unique(), key='games_2_pfc')
-                                    filtered_player2_data = player2_data[player2_data['Adversaire'].isin(game2)] if game2 else player2_data
-                                    aggregated_player2_data = filtered_player2_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
-                                    if st.button("Afficher le radar", key='button_pfc'):
-                                        if aggregated_player1_data.empty or aggregated_player2_data.empty:
-                                            st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
-                                        else:
-                                            players_data = pd.concat([aggregated_player1_data, aggregated_player2_data])
-                                            fig = create_comparison_radar(players_data)
-                                            if fig:
-                                                st.pyplot(fig)
-                        with tab2:
-                            if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
-                                st.subheader("Sélectionnez un poste de l'Équipe de France")
-                                player2 = st.selectbox("Choisissez un poste de comparaison", edf_kpi['Poste'].unique(), key='player_2_edf')
-                                player2_data = edf_kpi[edf_kpi['Poste'] == player2].rename(columns={'Poste': 'Player'})
-                                if st.button("Afficher le radar", key='button_edf'):
-                                    if aggregated_player1_data.empty:
-                                        st.error("Veuillez sélectionner au moins un match pour la joueuse PFC.")
+                    st.warning("Aucune donnée EDF disponible pour ce poste.")
+            else:
+                st.warning("Aucune donnée EDF disponible pour la comparaison.")
+
+            st.markdown("<h4 style='color: white;'>3. Comparez-vous à vos moyennes globales</h4>", unsafe_allow_html=True)
+            if not pfc_kpi.empty:
+                player_global_data = prepare_comparison_data(pfc_kpi, player_name)
+                if not player_global_data.empty:
+                    if 'Adversaire' in pfc_kpi.columns:
+                        selected_match = st.selectbox(
+                            "Sélectionnez un match spécifique à comparer",
+                            pfc_kpi['Adversaire'].unique(),
+                            key='specific_match'
+                        )
+                        match_data = pfc_kpi[pfc_kpi['Adversaire'] == selected_match]
+                        if not match_data.empty:
+                            match_aggregated = match_data.groupby('Player').agg({
+                                'Temps de jeu (en minutes)': 'sum',
+                                'Buts': 'sum',
+                            }).join(
+                                match_data.groupby('Player').mean(numeric_only=True).drop(
+                                    columns=['Temps de jeu (en minutes)', 'Buts'], errors='ignore'
+                                )
+                            ).round().astype(int).reset_index()
+                            match_aggregated['Player'] = f"{player_name} ({selected_match})"
+                            player_global_data['Player'] = f"{player_name} (Moyenne globale)"
+                            if st.button("Comparer avec mes moyennes"):
+                                players_data = pd.concat([match_aggregated, player_global_data])
+                                fig = create_comparison_radar(players_data)
+                                if fig:
+                                    st.pyplot(fig)
+                        else:
+                            st.warning("Aucune donnée disponible pour ce match.")
+                    else:
+                        st.warning("Colonne 'Adversaire' manquante dans les données.")
+                else:
+                    st.warning("Aucune donnée disponible pour cette joueuse.")
+    else:
+        st.subheader("Sélectionnez une joueuse du Paris FC")
+        if not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
+            player1 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_1')
+            player1_data = pfc_kpi[pfc_kpi['Player'] == player1]
+            if player1_data.empty:
+                st.error("Aucune donnée disponible pour cette joueuse.")
+            else:
+                if 'Adversaire' in player1_data.columns:
+                    game1 = st.multiselect("Choisissez un ou plusieurs matchs", player1_data['Adversaire'].unique(), key='games_1')
+                    filtered_player1_data = player1_data[player1_data['Adversaire'].isin(game1)] if game1 else player1_data
+                    aggregated_player1_data = filtered_player1_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
+                    tab1, tab2 = st.tabs(["Comparaison (PFC)", "Comparaison (EDF)"])
+                    with tab1:
+                        st.subheader("Sélectionnez une autre joueuse du Paris FC")
+                        player2 = st.selectbox("Choisissez un joueur", pfc_kpi['Player'].unique(), key='player_2_pfc')
+                        player2_data = pfc_kpi[pfc_kpi['Player'] == player2]
+                        if player2_data.empty:
+                            st.error("Aucune donnée disponible pour cette joueuse.")
+                        else:
+                            if 'Adversaire' in player2_data.columns:
+                                game2 = st.multiselect("Choisissez un ou plusieurs matchs", player2_data['Adversaire'].unique(), key='games_2_pfc')
+                                filtered_player2_data = player2_data[player2_data['Adversaire'].isin(game2)] if game2 else player2_data
+                                aggregated_player2_data = filtered_player2_data.groupby('Player').mean(numeric_only=True).round().astype(int).reset_index()
+                                if st.button("Afficher le radar", key='button_pfc'):
+                                    if aggregated_player1_data.empty or aggregated_player2_data.empty:
+                                        st.error("Veuillez sélectionner au moins un match pour chaque joueur.")
                                     else:
-                                        players_data = pd.concat([aggregated_player1_data, player2_data])
+                                        players_data = pd.concat([aggregated_player1_data, aggregated_player2_data])
                                         fig = create_comparison_radar(players_data)
                                         if fig:
                                             st.pyplot(fig)
-                            else:
-                                st.warning("Aucune donnée EDF disponible.")
+                    with tab2:
+                        if not edf_kpi.empty and 'Poste' in edf_kpi.columns:
+                            st.subheader("Sélectionnez un poste de l'Équipe de France")
+                            player2 = st.selectbox("Choisissez un poste de comparaison", edf_kpi['Poste'].unique(), key='player_2_edf')
+                            player2_data = edf_kpi[edf_kpi['Poste'] == player2].rename(columns={'Poste': 'Player'})
+                            if st.button("Afficher le radar", key='button_edf'):
+                                if aggregated_player1_data.empty:
+                                    st.error("Veuillez sélectionner au moins un match pour la joueuse PFC.")
+                                else:
+                                    players_data = pd.concat([aggregated_player1_data, player2_data])
+                                    fig = create_comparison_radar(players_data)
+                                    if fig:
+                                        st.pyplot(fig)
+                        else:
+                            st.warning("Aucune donnée EDF disponible.")
+
     elif page == "Gestion":
         st.markdown("<h2 style='color: white;'>Gestion des utilisateurs</h2>", unsafe_allow_html=True)
         if check_permission(user_profile, "all", permissions):
@@ -1223,3 +1228,4 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
