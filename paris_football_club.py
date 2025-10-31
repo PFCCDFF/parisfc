@@ -680,8 +680,8 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         radar.setup_axis(ax=axs['radar'], facecolor='None')
         radar.draw_circles(
             ax=axs['radar'],
-            facecolor='#003A58',
-            edgecolor='#0047AB',
+            facecolor='#002B5C',
+            edgecolor='#002B5C',
             lw=1.5
         )
         player_values_1 = df.iloc[0][available_metrics].values
@@ -725,7 +725,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
             va='center',
             color='#0078D4'
         )
-        fig.set_facecolor('#003A58')
+        fig.set_facecolor('#002B5C')
         return fig
     except Exception as e:
         st.error(f"Erreur lors de la création du radar de comparaison: {e}")
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
