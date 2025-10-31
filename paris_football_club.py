@@ -1165,133 +1165,62 @@ if __name__ == '__main__':
     )
 
     # CSS personnalisé pour le style
-st.markdown("""
-<style>
-    /* Fond de l'application */
-    .stApp {
-        background: linear-gradient(135deg, #002B5C 0%, #0047AB 100%);
-        color: white;
-    }
-
-    /* Fond du conteneur principal */
-    .main .block-container {
-        background: linear-gradient(135deg, #0047AB 0%, #0078D4 100%);
-        border-radius: 10px;
-        padding: 20px;
-        color: white;
-    }
-
-    /* Sidebar */
-    .sidebar .sidebar-content {
-        background: #002B5C;
-        color: white;
-        border-right: 1px solid #0078D4;
-    }
-
-    /* En-tête de la sidebar */
-    .sidebar .sidebar-content h1,
-    .sidebar .sidebar-content p {
-        color: white;
-    }
-
-    /* Boutons */
-    .stButton>button {
-        background-color: #0078D4;
-        color: white;
-        border-radius: 5px;
-        border: none;
-        padding: 8px 16px;
-    }
-
-    /* Sélecteurs */
-    .stSelectbox>div>div, .stMultiselect>div>div {
-        background-color: #003A58;
-        color: white;
-        border-radius: 5px;
-        border: 1px solid #0078D4;
-    }
-
-    /* Champs de texte */
-    .stTextInput>div>div>input {
-        background-color: #003A58;
-        color: white;
-        border-radius: 5px;
-        border: 1px solid #0078D4;
-    }
-
-    /* Onglets */
-    .stTabs [data-baseweb="tab-list"] {
-        background-color: #003A58;
-        gap: 0;
-        border-radius: 5px;
-    }
-
-    /* Onglet actif */
-    .stTabs [aria-selected="true"] {
-        background-color: #0078D4;
-        color: white;
-    }
-
-    /* Métriques */
-    .stMetric {
-        background-color: #003A58;
-        border-radius: 5px;
-        padding: 10px;
-        color: white;
-    }
-
-    /* DataFrames */
-    .stDataFrame {
-        background-color: white;
-        color: black;
-        border-radius: 5px;
-    }
-
-    /* Messages d'erreur */
-    .stAlert {
-        background-color: #d32f2f;
-        color: white;
-        border-radius: 5px;
-    }
-
-    /* Messages de succès */
-    [data-baseweb="notification"] .stAlert {
-        background-color: #388e3c;
-        color: white;
-        border-radius: 5px;
-    }
-
-    /* Conteneurs de colonnes */
-    [data-testid="column"] {
-        background-color: rgba(0, 71, 171, 0.3);
-        border-radius: 5px;
-        padding: 10px;
-        margin: 5px;
-    }
-
-    /* Espacement des éléments */
-    [data-testid="stVerticalBlock"] {
-        gap: 1rem;
-    }
-
-    /* Logo dans la sidebar */
-    .sidebar-logo {
-        display: flex;
-        justify-content: center;
-        margin-bottom: 20px;
-    }
-
-    /* Logo dans la sidebar (image) */
-    .sidebar-logo img {
-        width: 80px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-
+    st.markdown("""
+    <style>
+        .main-header {
+            background: linear-gradient(135deg, #002B5C 0%, #0047AB 100%);
+            color: white;
+            padding: 2rem;
+            border-radius: 10px;
+            margin-bottom: 2rem;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .main-header h1 {
+            font-size: 3rem;
+            font-weight: bold;
+            margin: 0;
+            font-family: 'Arial', sans-serif;
+        }
+        .main-header p {
+            font-size: 1.2rem;
+            margin-top: 0.5rem;
+            font-family: 'Arial', sans-serif;
+        }
+        .logo-container {
+            position: absolute;
+            left: 1rem;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+        .logo-container img {
+            width: 120px;
+            opacity: 0.9;
+        }
+        .sidebar .sidebar-content {
+            background: #002B5C;
+            color: white;
+        }
+        .sidebar .sidebar-content h1,
+        .sidebar .sidebar-content p {
+            color: white;
+        }
+        .stButton>button {
+            background: #0078D4;
+            color: white;
+            border-radius: 5px;
+            border: none;
+        }
+        .stSelectbox, .stMultiselect {
+            background: #f0f2f6;
+            border-radius: 5px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
     # En-tête personnalisé
-st.markdown("""
+    st.markdown("""
     <div class="main-header">
         <div class="logo-container">
             <img src="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png" alt="Paris FC Logo">
@@ -1301,7 +1230,7 @@ st.markdown("""
     </div>
     """, unsafe_allow_html=True)
 
-     # Chargement des permissions et des données
+    # Chargement des permissions et des données
     permissions = load_permissions()
     if not permissions:
         st.error("Impossible de charger les permissions. Vérifiez que le fichier 'Classeurs permissions streamlit.xlsx' est présent dans le dossier Google Drive.")
@@ -1336,3 +1265,5 @@ st.markdown("""
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
+
