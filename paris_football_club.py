@@ -620,7 +620,7 @@ def create_individual_radar(df):
         player = df.iloc[0]
         pizza = PyPizza(
             params=available_columns,
-            background_color='#0e1117',
+            background_color='#0047AB',
             straight_line_color='#FFFFFF',
             last_circle_color='#FFFFFF'
         )
@@ -1332,5 +1332,6 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
