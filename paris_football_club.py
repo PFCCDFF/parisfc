@@ -1291,8 +1291,8 @@ st.markdown("""
 
 
     # En-tête personnalisé
-    st.markdown("""
-    <div class="main-header">
+st.markdown("""
+<div class="main-header">
         <div class="logo-container">
             <img src="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png" alt="Paris FC Logo">
         </div>
@@ -1336,6 +1336,7 @@ st.markdown("""
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
