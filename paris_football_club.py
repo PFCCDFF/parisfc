@@ -702,7 +702,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         radar.draw_param_labels(
             ax=axs['radar'],
             fontsize=18,
-            color='#003A58',
+            color='#FFFFFF',
             fontproperties=robotto_thin.prop
         )
         player1_label = player1_name if player1_name else df.iloc[0]['Player']
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
