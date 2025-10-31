@@ -1159,7 +1159,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 # =============================================
 if __name__ == '__main__':
     st.set_page_config(
-        page_title="Paris FC - Pôle vidéo/data CDFF",
+        page_title="Paris FC - Centre de Formation Féminin",
         page_icon="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png",
         layout="wide"
     )
@@ -1265,3 +1265,4 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
