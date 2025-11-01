@@ -625,13 +625,13 @@ def create_individual_radar(df):
             last_circle_color='#FFFFFF'
         )
         fig, _ = pizza.make_pizza(
-            figsize=(2, 2),
+            figsize=(3, 3),
             values=[player[col] for col in available_columns],
             slice_colors=colors[:len(available_columns)],
             kwargs_values=dict(
                 color='#FFFFFF',
                 fontsize=3,
-                bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117', boxstyle='round, pad=0.2', lw=1)
+                bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117', boxstyle='round, pad=0.1', lw=1)
             ),
             kwargs_params=dict(color='#FFFFFF', fontsize=3, fontproperties='monospace')
         )
@@ -662,8 +662,8 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
             low,
             high,
             num_rings=4,
-            ring_width=1,
-            center_circle_radius=1
+            ring_width=0.5,
+            center_circle_radius=0.5
         )
         URL1 = 'https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Thin.ttf'
         URL2 = 'https://raw.githubusercontent.com/google/fonts/main/apache/robotoslab/RobotoSlab%5Bwght%5D.ttf'
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
