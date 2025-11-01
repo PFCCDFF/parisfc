@@ -623,23 +623,18 @@ def create_individual_radar(df):
             background_color='#002B5C',
             straight_line_color='#FFFFFF',
             last_circle_color='#FFFFFF'
+    )
+        fig, _ = pizza.make_pizza(
+            figsize=(3, 3),
+            values=[player[col] for col in available_columns],
+            slice_colors=colors[:len(available_columns)],
+            kwargs_values=dict(
+                color='#FFFFFF',
+                fontsize=3.5,
+                bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117', boxstyle='round, pad=0.2', lw=1)
+            ),
+            kwargs_params=dict(color='#FFFFFF', fontsize=3.5, fontproperties='monospace')
         )
-percentiles = {
-    'p25': [df_ref[col].quantile(0.25) for col in available_columns],
-    'p50': [df_ref[col].quantile(0.50) for col in available_columns],
-    'p75': [df_ref[col].quantile(0.75) for col in available_columns],
-}
-
-# Ajouter les percentiles comme cercles de référence dans PyPizza
-fig, _ = pizza.make_pizza(
-    figsize=(3, 3),
-    values=[player[col] for col in available_columns],
-    reference_values=[percentiles['p25'], percentiles['p50'], percentiles['p75']],  # À implémenter
-    slice_colors=colors[:len(available_columns)],
-    kwargs_values=dict(color='#FFFFFF', fontsize=3, bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117', boxstyle='round, pad=0.5', lw=1)),
-    kwargs_params=dict(color='#FFFFFF', fontsize=3, fontproperties='monospace'),
-    kwargs_reference=dict(color='#AAAAAA', linestyle='--', linewidth=0.5)  # Style des percentiles
-)
         fig.set_facecolor('#002B5C')
         return fig
     except Exception as e:
@@ -1337,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
