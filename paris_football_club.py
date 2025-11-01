@@ -616,7 +616,7 @@ def create_individual_radar(df):
         if not available_columns:
             st.warning("Aucune colonne de métrique disponible pour le radar")
             return None
-        colors = ['#6A7CD9','#6A7CD9','#00BFFE','#00BFFE','#00BFFE','#F27979','#F27979','#FFFFFF','#FFFFFF']
+        colors =  ['#6A7CD9', '#00BFFE', '#FF9470', '#F27979', '#BFBFBF'] * 2
         player = df.iloc[0]
         pizza = PyPizza(
             params=available_columns,
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
