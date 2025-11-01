@@ -631,7 +631,7 @@ def create_individual_radar(df):
             kwargs_values=dict(
                 color='#FFFFFF',
                 fontsize=3.5,
-                bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117', boxstyle='round, pad=0.2', lw=1)
+                bbox=dict(edgecolor='#FFFFFF', facecolor='#002B5C', boxstyle='round, pad=0.5', lw=1)
             ),
             kwargs_params=dict(color='#FFFFFF', fontsize=3.5, fontproperties='monospace')
         )
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
