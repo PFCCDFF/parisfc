@@ -624,7 +624,14 @@ def create_individual_radar(df):
             straight_line_color='#FFFFFF',
             last_circle_color='#FFFFFF'
         )
-        fig, _ = pizza.make_pizza(
+percentiles = {
+    'p25': [df_ref[col].quantile(0.25) for col in available_columns],
+    'p50': [df_ref[col].quantile(0.50) for col in available_columns],
+    'p75': [df_ref[col].quantile(0.75) for col in available_columns],
+}
+
+# Ajouter les percentiles comme cercles de référence dans PyPizza
+fig, _ = pizza.make_pizza(
     figsize=(3, 3),
     values=[player[col] for col in available_columns],
     reference_values=[percentiles['p25'], percentiles['p50'], percentiles['p75']],  # À implémenter
@@ -1330,6 +1337,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
