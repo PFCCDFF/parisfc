@@ -625,13 +625,14 @@ def create_individual_radar(df):
             last_circle_color='#FFFFFF'
         )
         fig, _ = pizza.make_pizza(
-            figsize=(3, 3),
-            values=[player[col] for col in available_columns],
-            slice_colors=colors[:len(available_columns)],
-            kwargs_values=dict(color='#FFFFFF', fontsize=3, bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117', boxstyle='round, pad=0.5', lw=1)),
-            kwargs_params=dict(color='#FFFFFF', fontsize=3, fontproperties='monospace'),
-            kwargs_reference=dict(color='#AAAAAA', linestyle='--', linewidth=0.5)  # Style des percentiles
-        )
+    figsize=(3, 3),
+    values=[player[col] for col in available_columns],
+    reference_values=[percentiles['p25'], percentiles['p50'], percentiles['p75']],  # À implémenter
+    slice_colors=colors[:len(available_columns)],
+    kwargs_values=dict(color='#FFFFFF', fontsize=3, bbox=dict(edgecolor='#FFFFFF', facecolor='#0e1117', boxstyle='round, pad=0.5', lw=1)),
+    kwargs_params=dict(color='#FFFFFF', fontsize=3, fontproperties='monospace'),
+    kwargs_reference=dict(color='#AAAAAA', linestyle='--', linewidth=0.5)  # Style des percentiles
+)
         fig.set_facecolor('#002B5C')
         return fig
     except Exception as e:
@@ -1329,6 +1330,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
