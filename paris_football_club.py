@@ -630,10 +630,10 @@ def create_individual_radar(df):
             slice_colors=colors[:len(available_columns)],
             kwargs_values=dict(
                 color='#FFFFFF',
-                fontsize=1,
-                bbox=dict(edgecolor='#FFFFFF', facecolor='#FFFFFF', boxstyle='round, pad=0.5', lw=1)
+                fontsize=3,
+                bbox=dict(edgecolor='#FFFFFF', facecolor='#002B5C', boxstyle='round, pad=0.5', lw=1)
             ),
-            kwargs_params=dict(color='#FFFFFF', fontsize=3, fontproperties='monospace')
+            kwargs_params=dict(color='#FFFFFF', fontsize=1, fontproperties='monospace')
         )
         fig.set_facecolor('#002B5C')
         return fig
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
