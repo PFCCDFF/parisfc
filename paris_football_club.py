@@ -662,8 +662,8 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
             low,
             high,
             num_rings=4,
-            ring_width=0.5,
-            center_circle_radius=0.5
+            ring_width=1,
+            center_circle_radius=1
         )
         URL1 = 'https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Thin.ttf'
         URL2 = 'https://raw.githubusercontent.com/google/fonts/main/apache/robotoslab/RobotoSlab%5Bwght%5D.ttf'
@@ -680,8 +680,8 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         radar.setup_axis(ax=axs['radar'], facecolor='None')
         radar.draw_circles(
             ax=axs['radar'],
-            facecolor='#002B5C',
-            edgecolor='#FFFFFF',
+            facecolor='#28252c',
+            edgecolor='#39353f',
             lw=1.5
         )
         player_values_1 = df.iloc[0][available_metrics].values
@@ -691,18 +691,18 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
             player_values_2,
             ax=axs['radar'],
             kwargs_radar={'facecolor': '#00f2c1', 'alpha': 0.6},
-            kwargs_compare={'facecolor': '#0078D4', 'alpha': 0.6}
+            kwargs_compare={'facecolor': '#d80499', 'alpha': 0.6}
         )
         radar.draw_range_labels(
             ax=axs['radar'],
             fontsize=18,
-            color='#FFFFFF',
+            color='#fcfcfc',
             fontproperties=robotto_thin.prop
         )
         radar.draw_param_labels(
             ax=axs['radar'],
             fontsize=18,
-            color='#FFFFFF',
+            color='#fcfcfc',
             fontproperties=robotto_thin.prop
         )
         player1_label = player1_name if player1_name else df.iloc[0]['Player']
@@ -711,7 +711,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
             0.01, 0.65,
             player1_label,
             fontsize=18,
-            color='#0047AB',
+            color='#01c49d',
             fontproperties=robotto_bold.prop,
             ha='left',
             va='center'
@@ -723,9 +723,9 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
             fontproperties=robotto_bold.prop,
             ha='right',
             va='center',
-            color='#0078D4'
+            color='#d80499'
         )
-        fig.set_facecolor('#002B5C')
+        fig.set_facecolor('#0e1117')
         return fig
     except Exception as e:
         st.error(f"Erreur lors de la création du radar de comparaison: {e}")
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
