@@ -649,7 +649,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
     try:
         metrics = [
             'Timing', 'Force physique', 'Intelligence tactique',
-            'Technique 1\n Passes', 'Technique 2\n Passes Courtes', 'Technique 3\n Passes Longues',
+            'Technique 1', 'Technique 2', 'Technique 3',
             'Explosivité', 'Prise de risque', 'Précision', 'Sang-froid'
         ]
         available_metrics = [m for m in metrics if m in df.columns]
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
