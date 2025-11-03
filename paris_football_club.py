@@ -680,8 +680,8 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         radar.setup_axis(ax=axs['radar'], facecolor='None')
         radar.draw_circles(
             ax=axs['radar'],
-            facecolor='#035daf',
-            edgecolor='#0b4e8c',
+            facecolor='#FFFFFF',
+            edgecolor='#fcfcfc',
             lw=1.5
         )
         player_values_1 = df.iloc[0][available_metrics].values
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
