@@ -517,8 +517,8 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     return aggregated_data
 
 @st.cache_data
-def collect_data():
-    """Collecte et traite les données depuis Google Drive."""
+def collect_data(selected_season=None):
+    """Collecte et traite les données depuis Google Drive, avec un filtre par saison."""
     try:
         download_google_drive()
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
@@ -528,6 +528,11 @@ def collect_data():
         fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx')) and f != "Classeurs permissions streamlit.xlsx"]
         if not fichiers:
             return pfc_kpi, edf_kpi
+
+        # Filtrer les fichiers par saison si une saison est sélectionnée
+        if selected_season:
+            fichiers = [f for f in fichiers if f"{selected_season}" in f]
+
         edf_joueuses_path = os.path.join(data_folder, "EDF_Joueuses.xlsx")
         if os.path.exists(edf_joueuses_path):
             edf_joueuses = pd.read_excel(edf_joueuses_path)
@@ -553,6 +558,8 @@ def collect_data():
                     if 'Poste' in edf_kpi.columns:
                         edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
                         edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
+
+        # Traitement des données PFC
         for filename in fichiers:
             path = os.path.join(data_folder, filename)
             try:
@@ -600,6 +607,7 @@ def collect_data():
         return pfc_kpi, edf_kpi
     except Exception as e:
         return pd.DataFrame(), pd.DataFrame()
+
 
 def create_individual_radar(df):
     """Crée un radar individuel pour une joueuse."""
@@ -746,32 +754,47 @@ def get_player_for_profile(profile, permissions):
     return None
 
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
-    """Interface principale adaptée aux permissions et filtrée par joueuse."""
+    """Interface principale adaptée aux permissions et filtrée par joueuse et saison."""
     logo_pfc = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
     st.sidebar.markdown(f"<div style='display: flex; justify-content: center;'><img src='{logo_pfc}' width='100'></div>", unsafe_allow_html=True)
     player_name = get_player_for_profile(user_profile, permissions)
     st.sidebar.title(f"Connecté en tant que: {user_profile}")
     if player_name:
         st.sidebar.write(f"Joueuse associée: {player_name}")
+
+    # Ajout de la boîte de dialogue pour sélectionner la saison
+    saison_options = ["Toutes les saisons", "2425", "2526"]
+    selected_saison = st.sidebar.selectbox("Sélectionnez une saison", saison_options)
+
     if st.sidebar.button("🔒 Déconnexion"):
         st.session_state.authenticated = False
         st.session_state.user_profile = None
         st.rerun()
+
     if check_permission(user_profile, "update_data", permissions) or check_permission(user_profile, "all", permissions):
         if st.sidebar.button("Mettre à jour la base de données"):
             with st.spinner("Mise à jour des données en cours..."):
                 download_google_drive()
             st.success("✅ Mise à jour terminée")
             st.cache_data.clear()
+
+    # Recharger les données en fonction de la saison sélectionnée
+    if selected_saison != "Toutes les saisons":
+        pfc_kpi, edf_kpi = collect_data(selected_saison)
+    else:
+        pfc_kpi, edf_kpi = collect_data()
+
     if player_name and not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
         pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
         if pfc_kpi.empty:
             st.warning(f"Aucune donnée disponible pour la joueuse {player_name}")
+
     available_options = ["Statistiques"]
     if check_permission(user_profile, "compare_players", permissions) or check_permission(user_profile, "all", permissions) or player_name:
         available_options.append("Comparaison")
     if check_permission(user_profile, "all", permissions):
         available_options.append("Gestion")
+
     with st.sidebar:
         page = option_menu(
             menu_title="",
@@ -787,6 +810,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 "nav-link-selected": {"background-color": "#0078D4", "color": "white"}
             }
         )
+
     logo_certifie_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
     st.sidebar.markdown(
         f"""
@@ -799,6 +823,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         """,
         unsafe_allow_html=True
     )
+
     if page == "Statistiques":
         st.header("Statistiques")
         if pfc_kpi.empty:
@@ -1332,6 +1357,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
