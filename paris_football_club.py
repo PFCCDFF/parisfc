@@ -528,11 +528,9 @@ def collect_data(selected_season=None):
         fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx')) and f != "Classeurs permissions streamlit.xlsx"]
         if not fichiers:
             return pfc_kpi, edf_kpi
-
         # Filtrer les fichiers par saison si une saison est sélectionnée
         if selected_season:
             fichiers = [f for f in fichiers if f"{selected_season}" in f]
-
         edf_joueuses_path = os.path.join(data_folder, "EDF_Joueuses.xlsx")
         if os.path.exists(edf_joueuses_path):
             edf_joueuses = pd.read_excel(edf_joueuses_path)
@@ -558,7 +556,6 @@ def collect_data(selected_season=None):
                     if 'Poste' in edf_kpi.columns:
                         edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
                         edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
-
         # Traitement des données PFC
         for filename in fichiers:
             path = os.path.join(data_folder, filename)
@@ -608,7 +605,6 @@ def collect_data(selected_season=None):
     except Exception as e:
         return pd.DataFrame(), pd.DataFrame()
 
-
 def create_individual_radar(df):
     """Crée un radar individuel pour une joueuse."""
     if df.empty or 'Player' not in df.columns:
@@ -631,7 +627,7 @@ def create_individual_radar(df):
             background_color='#002B5C',
             straight_line_color='#FFFFFF',
             last_circle_color='#FFFFFF'
-    )
+        )
         fig, _ = pizza.make_pizza(
             figsize=(3, 3),
             values=[player[col] for col in available_columns],
@@ -795,11 +791,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     if check_permission(user_profile, "all", permissions):
         available_options.append("Gestion")
 
+    # Ajout de l'onglet "Données Physiques"
+    available_options.append("Données Physiques")
+
     with st.sidebar:
         page = option_menu(
             menu_title="",
             options=available_options,
-            icons=["graph-up-arrow", "people", "gear"][:len(available_options)],
+            icons=["graph-up-arrow", "people", "gear", "activity"][:len(available_options)],
             menu_icon="cast",
             default_index=0,
             orientation="vertical",
@@ -928,6 +927,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         with col4: st.metric("Milieu relayeur", f"{aggregated_data['Milieu relayeur'].iloc[0]}/100")
                                         with col5: st.metric("Milieu offensif", f"{aggregated_data['Milieu offensif'].iloc[0]}/100")
                                         with col6: st.metric("Attaquant", f"{aggregated_data['Attaquant'].iloc[0]}/100")
+
     elif page == "Comparaison":
         st.header("Comparaison")
         if player_name:
@@ -1079,6 +1079,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                             st.pyplot(fig)
                             else:
                                 st.warning("Aucune donnée EDF disponible.")
+
     elif page == "Gestion":
         st.header("Gestion des utilisateurs")
         if check_permission(user_profile, "all", permissions):
@@ -1117,6 +1118,110 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         else:
             st.error("Vous n'avez pas la permission d'accéder à cette page.")
 
+    elif page == "Données Physiques":
+        st.header("📊 Données Physiques")
+        st.markdown("""
+        <style>
+            .physique-container {
+                background: rgba(0, 58, 88, 0.3);
+                border-radius: 10px;
+                padding: 20px;
+                margin-bottom: 20px;
+            }
+            .physique-title {
+                color: white;
+                font-size: 1.5rem;
+                margin-bottom: 15px;
+                border-bottom: 1px solid #0078D4;
+                padding-bottom: 10px;
+            }
+            .construction-badge {
+                background: #ff9800;
+                color: white;
+                padding: 5px 10px;
+                border-radius: 5px;
+                font-size: 0.9rem;
+                display: inline-block;
+                margin-left: 10px;
+            }
+            .chart-placeholder {
+                background: rgba(0, 58, 88, 0.2);
+                border-radius: 5px;
+                padding: 20px;
+                text-align: center;
+                margin: 10px 0;
+                color: #aaa;
+            }
+        </style>
+        """, unsafe_allow_html=True)
+
+        st.markdown("<div class='physique-container'>", unsafe_allow_html=True)
+        st.markdown("<h2 class='physique-title'>Suivi Physique <span class='construction-badge'>En construction</span></h2>", unsafe_allow_html=True)
+
+        if not player_name and not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
+            player_name = st.selectbox("Sélectionnez une joueuse", pfc_kpi['Player'].unique())
+
+        if player_name:
+            st.subheader(f"Données pour {player_name}")
+
+            # Onglets pour séparer Entraînements et Matchs
+            tab1, tab2 = st.tabs(["🏋️ Entraînements", "⚽ Matchs"])
+
+            with tab1:
+                st.markdown("<div class='physique-container'>", unsafe_allow_html=True)
+                st.markdown("<h3 class='physique-title'>Entraînements</h3>", unsafe_allow_html=True)
+                st.write("""
+                **Fonctionnalités prévues :**
+                - Suivi des charges d'entraînement (distance, intensité, durée).
+                - Évolution des performances physiques (vitesse, endurance, force).
+                - Visualisation des tendances sur la saison.
+                - Comparaison avec les moyennes de l'équipe.
+                """)
+
+                # Exemple de placeholder pour un graphique futur
+                st.markdown("<div class='chart-placeholder'>", unsafe_allow_html=True)
+                st.write("**Exemple : Charge d'entraînement (km) par semaine**")
+                st.write("Un graphique sera affiché ici pour montrer l'évolution de la charge d'entraînement.")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                # Exemple de placeholder pour un tableau futur
+                st.markdown("<div class='chart-placeholder'>", unsafe_allow_html=True)
+                st.write("**Exemple : Performances physiques par séance**")
+                st.write("Un tableau comparatif sera affiché ici pour chaque séance d'entraînement.")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                st.markdown("</div>", unsafe_allow_html=True)
+
+            with tab2:
+                st.markdown("<div class='physique-container'>", unsafe_allow_html=True)
+                st.markdown("<h3 class='physique-title'>Matchs</h3>", unsafe_allow_html=True)
+                st.write("""
+                **Fonctionnalités prévues :**
+                - Distance parcourue pendant les matchs.
+                - Intensité moyenne et maximale (vitesse, accélérations).
+                - Récupération post-match (fatigue, temps de récupération).
+                - Comparaison des performances entre les matchs.
+                """)
+
+                # Exemple de placeholder pour un graphique futur
+                st.markdown("<div class='chart-placeholder'>", unsafe_allow_html=True)
+                st.write("**Exemple : Distance parcourue par match**")
+                st.write("Un graphique sera affiché ici pour montrer la distance parcourue lors de chaque match.")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                # Exemple de placeholder pour un tableau futur
+                st.markdown("<div class='chart-placeholder'>", unsafe_allow_html=True)
+                st.write("**Exemple : Performances physiques par match**")
+                st.write("Un tableau comparatif sera affiché ici pour chaque match.")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                st.markdown("</div>", unsafe_allow_html=True)
+
+        else:
+            st.warning("Aucune joueuse sélectionnée ou associée à votre profil.")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
 if __name__ == '__main__':
     st.set_page_config(
         page_title="Paris FC - Centre de Formation Féminin",
@@ -1132,7 +1237,6 @@ if __name__ == '__main__':
             background: linear-gradient(135deg, #002B5C 0%, #002B5C 100%);
             color: white;
         }
-
         /* Fond du conteneur principal */
         .main .block-container {
             background: linear-gradient(135deg, #003A58 0%, #0047AB 100%);
@@ -1140,7 +1244,6 @@ if __name__ == '__main__':
             padding: 20px;
             color: white;
         }
-
         /* En-tête */
         .main-header {
             background: linear-gradient(135deg, #002B5C 0%, #0047AB 100%);
@@ -1152,7 +1255,6 @@ if __name__ == '__main__':
             position: relative;
             overflow: hidden;
         }
-
         .main-header h1 {
             font-size: 3rem;
             font-weight: bold;
@@ -1160,14 +1262,12 @@ if __name__ == '__main__':
             font-family: 'Arial', sans-serif;
             color: white;
         }
-
         .main-header p {
             font-size: 1.2rem;
             margin-top: 0.5rem;
             font-family: 'Arial', sans-serif;
             color: white;
         }
-
         /* Logo */
         .logo-container {
             position: absolute;
@@ -1175,19 +1275,16 @@ if __name__ == '__main__':
             top: 50%;
             transform: translateY(-50%);
         }
-
         .logo-container img {
             width: 120px;
             opacity: 0.9;
         }
-
         /* Sidebar */
         .sidebar .sidebar-content {
             background: linear-gradient(135deg, #002B5C 0%, #003A58 100%);
             color: white;
             border-right: 1px solid #0078D4;
         }
-
         /* Texte dans la sidebar */
         .sidebar .sidebar-content h1,
         .sidebar .sidebar-content p,
@@ -1195,7 +1292,6 @@ if __name__ == '__main__':
         .sidebar .sidebar-content div {
             color: white !important;
         }
-
         /* Boutons */
         .stButton>button {
             background-color: #0078D4;
@@ -1204,7 +1300,6 @@ if __name__ == '__main__':
             border: none;
             padding: 8px 16px;
         }
-
         /* Sélecteurs */
         .stSelectbox>div>div,
         .stMultiselect>div>div {
@@ -1213,7 +1308,6 @@ if __name__ == '__main__':
             border-radius: 5px;
             border: 1px solid #0078D4;
         }
-
         /* Champs de texte */
         .stTextInput>div>div>input,
         .stTextInput>div>div>textarea {
@@ -1222,20 +1316,17 @@ if __name__ == '__main__':
             border-radius: 5px;
             border: 1px solid #0078D4;
         }
-
         /* Onglets */
         .stTabs [data-baseweb="tab-list"] {
             background-color: #003A58;
             gap: 0;
             border-radius: 5px;
         }
-
         /* Onglet actif */
         .stTabs [aria-selected="true"] {
             background-color: #0078D4;
             color: white;
         }
-
         /* Métriques */
         .stMetric {
             background-color: rgba(0, 71, 171, 0.4);
@@ -1243,28 +1334,24 @@ if __name__ == '__main__':
             padding: 10px;
             color: white;
         }
-
         /* DataFrames */
         .stDataFrame {
             background-color: rgba(255, 255, 255, 0.1);
             color: white;
             border-radius: 5px;
         }
-
         /* Messages d'erreur */
         .stAlert {
             background-color: #d32f2f;
             color: white;
             border-radius: 5px;
         }
-
         /* Messages de succès */
         [data-baseweb="notification"] .stAlert {
             background-color: #388e3c;
             color: white;
             border-radius: 5px;
         }
-
         /* Conteneurs de colonnes */
         [data-testid="column"] {
             background-color: rgba(0, 58, 88, 0.3);
@@ -1272,37 +1359,30 @@ if __name__ == '__main__':
             padding: 10px;
             margin: 5px;
         }
-
         /* Espacement des éléments */
         [data-testid="stVerticalBlock"] {
             gap: 1rem;
         }
-
         /* Menu de navigation */
         .st-emotion-cache-1v0mbdj {
             background-color: #003A58 !important;
         }
-
         /* Texte dans les onglets */
         .st-emotion-cache-1v0mbdj p {
             color: white !important;
         }
-
         /* Texte dans les métriques */
         .st-emotion-cache-16idsys p {
             color: white !important;
         }
-
         /* Texte dans les labels */
         .st-emotion-cache-16idsys label {
             color: white !important;
         }
-
         /* Texte dans les DataFrames */
         .stDataFrame table {
             color: white !important;
         }
-
         /* Texte dans les DataFrames (en-tête) */
         .stDataFrame thead {
             color: white !important;
@@ -1357,47 +1437,3 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
