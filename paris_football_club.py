@@ -725,7 +725,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
             va='center',
             color='#d80499'
         )
-        fig.set_facecolor('#0e1117')
+        fig.set_facecolor('#002B5C')
         return fig
     except Exception as e:
         st.error(f"Erreur lors de la création du radar de comparaison: {e}")
@@ -1332,6 +1332,7 @@ if __name__ == '__main__':
 
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
