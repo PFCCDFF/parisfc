@@ -9,6 +9,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
 import warnings
+from datetime import datetime
 
 warnings.filterwarnings('ignore')
 
@@ -517,23 +518,24 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     ).round().astype(int).reset_index()
     return aggregated_data
 
-def save_pfc_kpi_to_excel(pfc_kpi, filename="data/pfc_kpi_compiled.xlsx"):
-    """Sauvegarde les données compilées des joueuses du Paris FC dans un fichier Excel."""
+def generate_synthesis_excel(pfc_kpi, filename="data/synthese_statistiques_joueuses.xlsx"):
+    """Génère un fichier Excel de synthèse des statistiques et KPIs des joueuses."""
     try:
         os.makedirs("data", exist_ok=True)
-        pfc_kpi.to_excel(filename, index=False)
-        print(f"Fichier Excel sauvegardé : {filename}")
+        with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+            # Filtrer les joueuses uniques
+            joueuses = pfc_kpi['Player'].unique()
+            for joueuse in joueuses:
+                # Filtrer les données pour la joueuse
+                data_joueuse = pfc_kpi[pfc_kpi['Player'] == joueuse]
+                if not data_joueuse.empty:
+                    # Ajouter une feuille Excel pour chaque joueuse
+                    data_joueuse.to_excel(writer, sheet_name=joueuse[:30], index=False)
+        print(f"Fichier Excel de synthèse généré : {filename}")
+        st.success(f"Fichier Excel de synthèse généré : {filename}")
     except Exception as e:
-        st.error(f"Erreur lors de la sauvegarde du fichier Excel : {e}")
-
-def load_compiled_pfc_kpi(filename="data/pfc_kpi_compiled.xlsx"):
-    """Charge les données compilées depuis un fichier Excel si disponible."""
-    if os.path.exists(filename):
-        try:
-            return pd.read_excel(filename)
-        except Exception as e:
-            st.warning(f"Erreur lors du chargement du fichier Excel compilé : {e}")
-    return pd.DataFrame()
+        print(f"Erreur lors de la génération du fichier Excel de synthèse : {e}")
+        st.error(f"Erreur lors de la génération du fichier Excel de synthèse : {e}")
 
 @st.cache_data
 def collect_data(selected_season=None):
@@ -788,9 +790,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             with st.spinner("Mise à jour des données en cours..."):
                 download_google_drive()
                 pfc_kpi, edf_kpi = collect_data(selected_saison)
-                save_pfc_kpi_to_excel(pfc_kpi)
-            st.success("✅ Mise à jour terminée et données sauvegardées dans un fichier Excel")
+            st.success("✅ Mise à jour terminée")
             st.cache_data.clear()
+    if check_permission(user_profile, "all", permissions):
+        if st.sidebar.button("Update"):
+            with st.spinner("Génération du fichier de synthèse en cours..."):
+                pfc_kpi, _ = collect_data()
+                generate_synthesis_excel(pfc_kpi)
+            st.success("✅ Fichier de synthèse généré avec succès")
     # Recharger les données en fonction de la saison sélectionnée
     if selected_saison != "Toutes les saisons":
         pfc_kpi, edf_kpi = collect_data(selected_saison)
@@ -1423,11 +1430,7 @@ if __name__ == '__main__':
         st.stop()
     # Chargement des données
     try:
-        pfc_kpi = load_compiled_pfc_kpi()
-        if pfc_kpi.empty:
-            pfc_kpi, edf_kpi = collect_data()
-        else:
-            edf_kpi = pd.DataFrame()
+        pfc_kpi, edf_kpi = collect_data()
     except Exception as e:
         st.error(f"Erreur lors du chargement des données: {e}")
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
