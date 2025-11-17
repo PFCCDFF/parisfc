@@ -517,22 +517,22 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     ).round().astype(int).reset_index()
     return aggregated_data
 
-def save_pfc_kpi_to_file(pfc_kpi, filename="data/pfc_kpi_compiled.csv"):
-    """Sauvegarde les données compilées des joueuses du Paris FC dans un fichier CSV."""
+def save_pfc_kpi_to_excel(pfc_kpi, filename="data/pfc_kpi_compiled.xlsx"):
+    """Sauvegarde les données compilées des joueuses du Paris FC dans un fichier Excel."""
     try:
         os.makedirs("data", exist_ok=True)
-        pfc_kpi.to_csv(filename, index=False)
-        print(f"Fichier sauvegardé : {filename}")
+        pfc_kpi.to_excel(filename, index=False)
+        print(f"Fichier Excel sauvegardé : {filename}")
     except Exception as e:
-        st.error(f"Erreur lors de la sauvegarde du fichier : {e}")
+        st.error(f"Erreur lors de la sauvegarde du fichier Excel : {e}")
 
-def load_compiled_pfc_kpi(filename="data/pfc_kpi_compiled.csv"):
-    """Charge les données compilées depuis un fichier CSV si disponible."""
+def load_compiled_pfc_kpi(filename="data/pfc_kpi_compiled.xlsx"):
+    """Charge les données compilées depuis un fichier Excel si disponible."""
     if os.path.exists(filename):
         try:
-            return pd.read_csv(filename)
+            return pd.read_excel(filename)
         except Exception as e:
-            st.warning(f"Erreur lors du chargement du fichier compilé : {e}")
+            st.warning(f"Erreur lors du chargement du fichier Excel compilé : {e}")
     return pd.DataFrame()
 
 @st.cache_data
@@ -788,8 +788,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             with st.spinner("Mise à jour des données en cours..."):
                 download_google_drive()
                 pfc_kpi, edf_kpi = collect_data(selected_saison)
-                save_pfc_kpi_to_file(pfc_kpi)
-            st.success("✅ Mise à jour terminée et données sauvegardées")
+                save_pfc_kpi_to_excel(pfc_kpi)
+            st.success("✅ Mise à jour terminée et données sauvegardées dans un fichier Excel")
             st.cache_data.clear()
     # Recharger les données en fonction de la saison sélectionnée
     if selected_saison != "Toutes les saisons":
