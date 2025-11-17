@@ -1,0 +1,576 @@
+import pandas as pd
+import numpy as np
+import os
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+import io
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# =============================================
+# FONCTIONS D'AUTHENTIFICATION ET GESTION DRIVE
+# =============================================
+def authenticate_google_drive():
+    """Authentification avec Google Drive."""
+    SCOPES = ['https://www.googleapis.com/auth/drive']
+    service_account_info = {
+        "type": "service_account",
+        "project_id": "votre-project-id",
+        "private_key_id": "votre-private-key-id",
+        "private_key": "-----BEGIN PRIVATE KEY-----\nvotre-cle-privee\n-----END PRIVATE KEY-----\n",
+        "client_email": "votre-service-account@votre-project-id.iam.gserviceaccount.com",
+        "client_id": "votre-client-id",
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/votre-service-account%40votre-project-id.iam.gserviceaccount.com"
+    }
+    creds = service_account.Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
+    service = build('drive', 'v3', credentials=creds)
+    return service
+
+def download_file(service, file_id, file_name, output_folder):
+    """Télécharge un fichier depuis Google Drive."""
+    request = service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        status, done = downloader.next_chunk()
+    file_path = os.path.join(output_folder, file_name)
+    with open(file_path, 'wb') as f:
+        f.write(fh.getbuffer())
+    print(f"Fichier téléchargé : {file_path}")
+
+def list_files_in_folder(service, folder_id):
+    """Liste les fichiers dans un dossier Google Drive."""
+    query = f"'{folder_id}' in parents and trashed=false"
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    return results.get('files', [])
+
+def download_google_drive():
+    """Télécharge les données depuis Google Drive."""
+    try:
+        service = authenticate_google_drive()
+        folder_id = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
+        output_folder = "data"
+        os.makedirs(output_folder, exist_ok=True)
+        files = list_files_in_folder(service, folder_id)
+        if not files:
+            print("Aucun fichier trouvé dans le dossier.")
+        else:
+            for file in files:
+                if file['name'].endswith(('.csv', '.xlsx')) and file['name'] != "Classeurs permissions streamlit.xlsx":
+                    print(f"Téléchargement de : {file['name']}...")
+                    download_file(service, file['id'], file['name'], output_folder)
+    except Exception as e:
+        print(f"Erreur lors du téléchargement des fichiers: {e}")
+        raise e
+
+def upload_file_to_drive(service, file_path, folder_id, file_name):
+    """Upload un fichier vers Google Drive."""
+    file_metadata = {
+        'name': file_name,
+        'parents': [folder_id]
+    }
+    media = MediaIoBaseUpload(io.BytesIO(open(file_path, 'rb').read()), mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print(f"Fichier uploadé : {file.get('id')}")
+
+# =============================================
+# FONCTIONS UTILITAIRES
+# =============================================
+def nettoyer_nom_joueuse(nom):
+    """Nettoie le nom d'une joueuse en supprimant les doublons et standardisant le format."""
+    if isinstance(nom, str):
+        nom = nom.strip().upper()
+        nom = nom.replace("É", "E").replace("È", "E").replace("Ê", "E").replace("À", "A").replace("Ù", "U")
+        parts = [part.strip().upper() for part in nom.split(",")]
+        if len(parts) > 1 and parts[0] == parts[1]:
+            return parts[0]
+        return nom
+    return nom
+
+# =============================================
+# FONCTIONS DE TRAITEMENT DES DONNÉES
+# =============================================
+def players_edf_duration(match):
+    """Calcule la durée de jeu pour les joueuses EDF."""
+    if 'Poste' not in match.columns or 'Temps de jeu' not in match.columns:
+        print("Colonnes manquantes pour calculer la durée de jeu EDF")
+        return pd.DataFrame()
+    df_filtered = match.loc[match['Poste'] != 'Gardienne']
+    if df_filtered.empty:
+        return pd.DataFrame()
+    df_duration = pd.DataFrame({
+        'Player': df_filtered['Player'].apply(nettoyer_nom_joueuse),
+        'Temps de jeu (en minutes)': df_filtered['Temps de jeu']
+    })
+    return df_duration
+
+def players_duration(match):
+    """Calcule la durée de jeu pour les joueuses PFC."""
+    if 'Duration' not in match.columns:
+        print("Colonne 'Duration' manquante pour calculer la durée de jeu")
+        return pd.DataFrame()
+    players_duration = {}
+    list_of_players = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']
+    available_posts = [poste for poste in list_of_players if poste in match.columns]
+    if not available_posts:
+        print("Aucune colonne de poste disponible pour calculer la durée de jeu")
+        return pd.DataFrame()
+    for i in range(len(match)):
+        duration = match.iloc[i]['Duration']
+        for poste in available_posts:
+            if poste in match.columns:
+                player = nettoyer_nom_joueuse(str(match.iloc[i][poste]))
+                if player:
+                    if player in players_duration:
+                        players_duration[player] += duration
+                    else:
+                        players_duration[player] = duration
+    if not players_duration:
+        return pd.DataFrame()
+    for player in players_duration:
+        players_duration[player] /= 60
+    df_duration = pd.DataFrame({
+        'Player': list(players_duration.keys()),
+        'Temps de jeu (en minutes)': list(players_duration.values())
+    })
+    df_duration = df_duration.sort_values(by='Temps de jeu (en minutes)', ascending=False)
+    return df_duration
+
+def players_shots(joueurs):
+    """Calcule les statistiques de tirs."""
+    if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        print("Colonnes manquantes pour calculer les statistiques de tirs")
+        return pd.DataFrame()
+    players_shots, players_shots_on_target, players_goals = {}, {}, {}
+    for i in range(len(joueurs)):
+        action = joueurs.iloc[i]['Action']
+        if isinstance(action, str) and 'Tir' in action:
+            player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
+            players_shots[player] = players_shots.get(player, 0) + action.count('Tir')
+            if 'Tir' in joueurs.columns:
+                is_successful = joueurs.iloc[i]['Tir']
+                if isinstance(is_successful, str):
+                    if 'Tir Cadré' in is_successful or 'But' in is_successful:
+                        players_shots_on_target[player] = players_shots_on_target.get(player, 0) + is_successful.count('Tir Cadré') + is_successful.count('But')
+                    if 'But' in is_successful:
+                        players_goals[player] = players_goals.get(player, 0) + 1
+    if not players_shots:
+        return pd.DataFrame()
+    return pd.DataFrame({
+        'Player': list(players_shots.keys()),
+        'Tirs': list(players_shots.values()),
+        'Tirs cadrés': [players_shots_on_target.get(player, 0) for player in players_shots],
+        'Buts': [players_goals.get(player, 0) for player in players_shots]
+    }).sort_values(by='Tirs', ascending=False)
+
+def players_passes(joueurs):
+    """Calcule les statistiques de passes."""
+    if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        print("Colonnes manquantes pour calculer les statistiques de passes")
+        return pd.DataFrame()
+    player_short_passes, player_long_passes = {}, {}
+    players_successful_short_passes, players_successful_long_passes = {}, {}
+    for i in range(len(joueurs)):
+        action = joueurs.iloc[i]['Action']
+        if isinstance(action, str) and 'Passe' in action:
+            player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
+            if 'Passe' in joueurs.columns:
+                passe = joueurs.iloc[i]['Passe']
+                if isinstance(passe, str):
+                    if 'Courte' in passe:
+                        player_short_passes[player] = player_short_passes.get(player, 0) + passe.count('Courte')
+                        if 'Réussie' in passe:
+                            players_successful_short_passes[player] = players_successful_short_passes.get(player, 0) + passe.count('Réussie')
+                    if 'Longue' in passe:
+                        player_long_passes[player] = player_long_passes.get(player, 0) + passe.count('Longue')
+                        if 'Réussie' in passe:
+                            players_successful_long_passes[player] = players_successful_long_passes.get(player, 0) + passe.count('Réussie')
+    if not player_short_passes:
+        return pd.DataFrame()
+    df_passes = pd.DataFrame({
+        'Player': list(player_short_passes.keys()),
+        'Passes courtes': [player_short_passes.get(player, 0) for player in player_short_passes],
+        'Passes longues': [player_long_passes.get(player, 0) for player in player_short_passes],
+        'Passes réussies (courtes)': [players_successful_short_passes.get(player, 0) for player in player_short_passes],
+        'Passes réussies (longues)': [players_successful_long_passes.get(player, 0) for player in player_short_passes]
+    })
+    if not df_passes.empty:
+        df_passes['Passes'] = df_passes['Passes courtes'] + df_passes['Passes longues']
+        df_passes['Passes réussies'] = df_passes['Passes réussies (courtes)'] + df_passes['Passes réussies (longues)']
+        df_passes['Pourcentage de passes réussies'] = (df_passes['Passes réussies'] / df_passes['Passes'] * 100).fillna(0)
+    return df_passes.sort_values(by='Passes courtes', ascending=False)
+
+def players_dribbles(joueurs):
+    """Calcule les statistiques de dribbles."""
+    if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        print("Colonnes manquantes pour calculer les statistiques de dribbles")
+        return pd.DataFrame()
+    players_dribbles, players_successful_dribbles = {}, {}
+    for i in range(len(joueurs)):
+        action = joueurs.iloc[i]['Action']
+        if isinstance(action, str) and 'Dribble' in action:
+            player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
+            players_dribbles[player] = players_dribbles.get(player, 0) + action.count('Dribble')
+            if 'Dribble' in joueurs.columns:
+                is_successful = joueurs.iloc[i]['Dribble']
+                if isinstance(is_successful, str) and 'Réussi' in is_successful:
+                    players_successful_dribbles[player] = players_successful_dribbles.get(player, 0) + is_successful.count('Réussi')
+    if not players_dribbles:
+        return pd.DataFrame()
+    df_dribbles = pd.DataFrame({
+        'Player': list(players_dribbles.keys()),
+        'Dribbles': list(players_dribbles.values()),
+        'Dribbles réussis': [players_successful_dribbles.get(player, 0) for player in players_dribbles]
+    })
+    if not df_dribbles.empty:
+        df_dribbles['Pourcentage de dribbles réussis'] = (df_dribbles['Dribbles réussis'] / df_dribbles['Dribbles'] * 100).fillna(0)
+    return df_dribbles.sort_values(by='Dribbles', ascending=False)
+
+def players_defensive_duels(joueurs):
+    """Calcule les statistiques de duels défensifs."""
+    if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        print("Colonnes manquantes pour calculer les statistiques de duels défensifs")
+        return pd.DataFrame()
+    players_defensive_duels, players_successful_defensive_duels, players_faults = {}, {}, {}
+    duels_col = 'Duel défensifs' if 'Duel défensifs' in joueurs.columns else ('Duel défensif' if 'Duel défensif' in joueurs.columns else None)
+    for i in range(len(joueurs)):
+        action = joueurs.iloc[i]['Action']
+        if isinstance(action, str) and 'Duel défensif' in action:
+            player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
+            players_defensive_duels[player] = players_defensive_duels.get(player, 0) + action.count('Duel défensif')
+            if duels_col and duels_col in joueurs.columns:
+                is_successful = joueurs.iloc[i][duels_col]
+                if isinstance(is_successful, str):
+                    if 'Gagné' in is_successful:
+                        players_successful_defensive_duels[player] = players_successful_defensive_duels.get(player, 0) + is_successful.count('Gagné')
+                    if 'Faute' in is_successful:
+                        players_faults[player] = players_faults.get(player, 0) + is_successful.count('Faute')
+    if not players_defensive_duels:
+        return pd.DataFrame()
+    df_duels_defensifs = pd.DataFrame({
+        'Player': list(players_defensive_duels.keys()),
+        'Duels défensifs': list(players_defensive_duels.values()),
+        'Duels défensifs gagnés': [players_successful_defensive_duels.get(player, 0) for player in players_defensive_duels],
+        'Fautes': [players_faults.get(player, 0) for player in players_defensive_duels]
+    })
+    if not df_duels_defensifs.empty and 'Duels défensifs' in df_duels_defensifs.columns:
+        df_duels_defensifs['Pourcentage de duels défensifs gagnés'] = (
+            df_duels_defensifs['Duels défensifs gagnés'] / df_duels_defensifs['Duels défensifs'] * 100
+        ).fillna(0)
+    return df_duels_defensifs.sort_values(by='Duels défensifs', ascending=False)
+
+def players_interceptions(joueurs):
+    """Calcule les statistiques d'interceptions."""
+    if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        print("Colonnes manquantes pour calculer les statistiques d'interceptions")
+        return pd.DataFrame()
+    players_interceptions = {}
+    for i in range(len(joueurs)):
+        action = joueurs.iloc[i]['Action']
+        if isinstance(action, str) and 'Interception' in action:
+            player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
+            players_interceptions[player] = players_interceptions.get(player, 0) + action.count('Interception')
+    if not players_interceptions:
+        return pd.DataFrame()
+    return pd.DataFrame({
+        'Player': list(players_interceptions.keys()),
+        'Interceptions': list(players_interceptions.values())
+    }).sort_values(by='Interceptions', ascending=False)
+
+def players_ball_losses(joueurs):
+    """Calcule les statistiques de pertes de balle."""
+    if 'Action' not in joueurs.columns or 'Row' not in joueurs.columns:
+        print("Colonnes manquantes pour calculer les statistiques de pertes de balle")
+        return pd.DataFrame()
+    players_ball_losses = {}
+    for i in range(len(joueurs)):
+        action = joueurs.iloc[i]['Action']
+        if isinstance(action, str) and 'Perte de balle' in action:
+            player = nettoyer_nom_joueuse(joueurs.iloc[i]['Row'])
+            players_ball_losses[player] = players_ball_losses.get(player, 0) + action.count('Perte de balle')
+    if not players_ball_losses:
+        return pd.DataFrame()
+    return pd.DataFrame({
+        'Player': list(players_ball_losses.keys()),
+        'Pertes de balle': list(players_ball_losses.values())
+    }).sort_values(by='Pertes de balle', ascending=False)
+
+def create_metrics(df):
+    """Crée les métriques à partir des données brutes."""
+    if df.empty:
+        return df
+    required_cols = {
+        'Timing': ['Duels défensifs', 'Fautes'],
+        'Force physique': ['Duels défensifs', 'Duels défensifs gagnés'],
+        'Intelligence tactique': ['Interceptions'],
+        'Technique 1': ['Passes'],
+        'Technique 2': ['Passes courtes', 'Passes réussies (courtes)'],
+        'Technique 3': ['Passes longues', 'Passes réussies (longues)'],
+        'Explosivité': ['Dribbles', 'Dribbles réussis'],
+        'Prise de risque': ['Dribbles'],
+        'Précision': ['Tirs', 'Tirs cadrés'],
+        'Sang-froid': ['Tirs']
+    }
+    for metric, cols in required_cols.items():
+        if all(col in df.columns for col in cols):
+            if metric == 'Timing':
+                df[metric] = np.where(df[cols[0]] > 0,
+                                    (df[cols[0]] - df.get(cols[1], 0)) / df[cols[0]], 0)
+            elif metric == 'Force physique':
+                df[metric] = np.where(df[cols[0]] > 0,
+                                    df.get(cols[1], 0) / df[cols[0]], 0)
+            elif metric == 'Intelligence tactique':
+                if df[cols[0]].max() > 0:
+                    df[metric] = np.where(df[cols[0]] > 0,
+                                        df[cols[0]] / df[cols[0]].max(), 0)
+            elif metric == 'Technique 1':
+                if df[cols[0]].max() > 0:
+                    df[metric] = np.where(df[cols[0]] > 0,
+                                        df[cols[0]] / df[cols[0]].max(), 0)
+            elif metric == 'Technique 2':
+                df[metric] = np.where(df[cols[0]] > 0,
+                                    df.get(cols[1], 0) / df[cols[0]], 0)
+            elif metric == 'Technique 3':
+                df[metric] = np.where(df[cols[0]] > 0,
+                                    df.get(cols[1], 0) / df[cols[0]], 0)
+            elif metric == 'Explosivité':
+                df[metric] = np.where(df[cols[0]] > 0,
+                                    df.get(cols[1], 0) / df[cols[0]], 0)
+            elif metric == 'Prise de risque':
+                if df[cols[0]].max() > 0:
+                    df[metric] = np.where(df[cols[0]] > 0,
+                                        df[cols[0]] / df[cols[0]].max(), 0)
+            elif metric == 'Précision':
+                df[metric] = np.where(df[cols[0]] > 0,
+                                    df.get(cols[1], 0) / df[cols[0]], 0)
+            elif metric == 'Sang-froid':
+                if df[cols[0]].max() > 0:
+                    df[metric] = np.where(df[cols[0]] > 0,
+                                        df[cols[0]] / df[cols[0]].max(), 0)
+    for metric in required_cols.keys():
+        if metric in df.columns:
+            df[metric] = (df[metric].rank(pct=True) * 100).fillna(0)
+    return df
+
+def create_kpis(df):
+    """Crée les KPIs à partir des métriques."""
+    if df.empty:
+        return df
+    if 'Timing' in df.columns and 'Force physique' in df.columns:
+        df['Rigueur'] = (df['Timing'] + df['Force physique']) / 2
+    if 'Intelligence tactique' in df.columns:
+        df['Récupération'] = df['Intelligence tactique']
+    tech_metrics = [m for m in ['Technique 1', 'Technique 2', 'Technique 3'] if m in df.columns]
+    if len(tech_metrics) > 0:
+        df['Distribution'] = df[tech_metrics].mean(axis=1)
+    if 'Explosivité' in df.columns and 'Prise de risque' in df.columns:
+        df['Percussion'] = (df['Explosivité'] + df['Prise de risque']) / 2
+    if 'Précision' in df.columns and 'Sang-froid' in df.columns:
+        df['Finition'] = (df['Précision'] + df['Sang-froid']) / 2
+    return df
+
+def create_poste(df):
+    """Crée les notes par poste."""
+    if df.empty:
+        return df
+    required_kpis = ['Rigueur', 'Récupération', 'Distribution', 'Percussion', 'Finition']
+    available_kpis = [kpi for kpi in required_kpis if kpi in df.columns]
+    if len(available_kpis) < 5:
+        return df
+    df['Défenseur central'] = (df['Rigueur'] * 5 + df['Récupération'] * 5 +
+                              df['Distribution'] * 5 + df['Percussion'] * 1 +
+                              df['Finition'] * 1) / 17
+    df['Défenseur latéral'] = (df['Rigueur'] * 3 + df['Récupération'] * 3 +
+                              df['Distribution'] * 3 + df['Percussion'] * 3 +
+                              df['Finition'] * 3) / 15
+    df['Milieu défensif'] = (df['Rigueur'] * 4 + df['Récupération'] * 4 +
+                            df['Distribution'] * 4 + df['Percussion'] * 2 +
+                            df['Finition'] * 2) / 16
+    df['Milieu relayeur'] = (df['Rigueur'] * 3 + df['Récupération'] * 3 +
+                            df['Distribution'] * 3 + df['Percussion'] * 3 +
+                            df['Finition'] * 3) / 15
+    df['Milieu offensif'] = (df['Rigueur'] * 2 + df['Récupération'] * 2 +
+                            df['Distribution'] * 2 + df['Percussion'] * 4 +
+                            df['Finition'] * 4) / 14
+    df['Attaquant'] = (df['Rigueur'] * 1 + df['Récupération'] * 1 +
+                      df['Distribution'] * 1 + df['Percussion'] * 5 +
+                      df['Finition'] * 5) / 13
+    return df
+
+def create_data(match, joueurs, is_edf):
+    """Crée un dataframe complet à partir des données brutes."""
+    try:
+        if is_edf:
+            if 'Player' not in joueurs.columns:
+                print("La colonne 'Player' est manquante dans les données EDF.")
+                return pd.DataFrame()
+            joueurs['Player'] = joueurs['Player'].apply(nettoyer_nom_joueuse)
+            if 'Poste' not in joueurs.columns or 'Temps de jeu' not in joueurs.columns:
+                print("Les colonnes 'Poste' ou 'Temps de jeu' sont manquantes dans les données EDF.")
+                return pd.DataFrame()
+            df_duration = pd.DataFrame({
+                'Player': joueurs['Player'],
+                'Temps de jeu (en minutes)': joueurs['Temps de jeu'],
+                'Poste': joueurs['Poste']
+            })
+        else:
+            df_duration = players_duration(match)
+        dfs = [df_duration]
+        calc_functions = [
+            ('tirs', players_shots),
+            ('passes', players_passes),
+            ('dribbles', players_dribbles),
+            ('duels', players_defensive_duels),
+            ('interceptions', players_interceptions),
+            ('pertes', players_ball_losses)
+        ]
+        for name, func in calc_functions:
+            try:
+                result = func(joueurs)
+                if not result.empty:
+                    dfs.append(result)
+            except Exception as e:
+                print(f"Erreur lors du calcul des {name}: {e}")
+        valid_dfs = []
+        for df in dfs:
+            if not df.empty and 'Player' in df.columns:
+                df['Player'] = df['Player'].apply(nettoyer_nom_joueuse)
+                valid_dfs.append(df)
+        if not valid_dfs:
+            return pd.DataFrame()
+        df = valid_dfs[0]
+        for other_df in valid_dfs[1:]:
+            df = df.merge(other_df, on='Player', how='outer')
+        if not df.empty:
+            df.fillna(0, inplace=True)
+            df = df[(df.iloc[:, 1:] != 0).any(axis=1)]
+            if 'Temps de jeu (en minutes)' in df.columns:
+                df = df[df['Temps de jeu (en minutes)'] >= 10]
+            try:
+                df = create_metrics(df)
+                df = create_kpis(df)
+                df = create_poste(df)
+            except Exception as e:
+                print(f"Erreur lors du calcul des métriques: {e}")
+        return df
+    except Exception as e:
+        print(f"Erreur lors de la création des données: {e}")
+        return pd.DataFrame()
+
+def collect_data(selected_season=None):
+    """Collecte et traite les données depuis Google Drive, avec un filtre par saison."""
+    try:
+        download_google_drive()
+        pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
+        data_folder = "data"
+        if not os.path.exists(data_folder):
+            return pfc_kpi, edf_kpi
+        fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx')) and f != "Classeurs permissions streamlit.xlsx"]
+        if not fichiers:
+            return pfc_kpi, edf_kpi
+        # Filtrer les fichiers par saison si une saison est sélectionnée
+        if selected_season:
+            fichiers = [f for f in fichiers if f"{selected_season}" in f]
+        edf_joueuses_path = os.path.join(data_folder, "EDF_Joueuses.xlsx")
+        if os.path.exists(edf_joueuses_path):
+            edf_joueuses = pd.read_excel(edf_joueuses_path)
+            if 'Player' not in edf_joueuses.columns or 'Poste' not in edf_joueuses.columns or 'Temps de jeu' not in edf_joueuses.columns:
+                return pfc_kpi, edf_kpi
+            edf_joueuses['Player'] = edf_joueuses['Player'].apply(nettoyer_nom_joueuse)
+            matchs_csv = [f for f in fichiers if f.startswith('EDF_U19_Match') and f.endswith('.csv')]
+            if matchs_csv:
+                all_edf_data = []
+                for csv_file in matchs_csv:
+                    match_data = pd.read_csv(os.path.join(data_folder, csv_file))
+                    if 'Row' not in match_data.columns:
+                        continue
+                    match_data['Player'] = match_data['Row'].apply(nettoyer_nom_joueuse)
+                    match_data = match_data.merge(edf_joueuses, on='Player', how='left')
+                    if match_data.empty:
+                        continue
+                    df = create_data(match_data, match_data, True)
+                    if not df.empty:
+                        all_edf_data.append(df)
+                if all_edf_data:
+                    edf_kpi = pd.concat(all_edf_data)
+                    if 'Poste' in edf_kpi.columns:
+                        edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
+                        edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
+        # Traitement des données PFC
+        for filename in fichiers:
+            path = os.path.join(data_folder, filename)
+            try:
+                if filename.endswith('.csv') and 'PFC' in filename:
+                    parts = filename.split('.')[0].split('_')
+                    if len(parts) < 6:
+                        continue
+                    try:
+                        equipe_domicile = parts[0]
+                        equipe_exterieur = parts[2]
+                        journee = parts[3]
+                        categorie = parts[4]
+                        date = parts[5]
+                        data = pd.read_csv(path)
+                        if 'Row' not in data.columns:
+                            continue
+                        match, joueurs = pd.DataFrame(), pd.DataFrame()
+                        for i in range(len(data)):
+                            if data['Row'].iloc[i] in [equipe_domicile, equipe_exterieur]:
+                                match = pd.concat([match, data.iloc[i:i+1]], ignore_index=True)
+                            elif not any(str(x) in str(data['Row'].iloc[i]) for x in ['Corner', 'Coup-franc', 'Penalty', 'Carton']):
+                                joueurs = pd.concat([joueurs, data.iloc[i:i+1]], ignore_index=True)
+                        if not joueurs.empty:
+                            joueurs['Player'] = joueurs['Row'].apply(nettoyer_nom_joueuse)
+                            df = create_data(match, joueurs, False)
+                            if not df.empty:
+                                for index, row in df.iterrows():
+                                    time_played = row['Temps de jeu (en minutes)']
+                                    for col in df.columns:
+                                        if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
+                                            df.loc[index, col] = row[col] * (90 / time_played)
+                                df = create_metrics(df)
+                                df = create_kpis(df)
+                                df = create_poste(df)
+                                adversaire = equipe_exterieur if equipe_domicile == 'PFC' else equipe_domicile
+                                df.insert(1, 'Adversaire', f'{adversaire} - {journee}')
+                                df.insert(2, 'Journée', journee)
+                                df.insert(3, 'Catégorie', categorie)
+                                df.insert(4, 'Date', date)
+                                pfc_kpi = pd.concat([pfc_kpi, df])
+                    except Exception as e:
+                        print(f"Erreur lors du traitement de {filename}: {e}")
+            except Exception as e:
+                print(f"Erreur lors de la lecture de {filename}: {e}")
+        return pfc_kpi, edf_kpi
+    except Exception as e:
+        print(f"Erreur lors de la collecte des données: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
+def export_to_excel(pfc_kpi, edf_kpi):
+    """Exporte les données vers un fichier Excel dans Google Drive."""
+    try:
+        service = authenticate_google_drive()
+        folder_id = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
+        output_file = "Statistiques joueuses à Jour.xlsx"
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            if not pfc_kpi.empty:
+                pfc_kpi.to_excel(writer, sheet_name='PFC', index=False)
+            if not edf_kpi.empty:
+                edf_kpi.to_excel(writer, sheet_name='EDF', index=False)
+        upload_file_to_drive(service, output_file, folder_id, output_file)
+        print(f"Fichier {output_file} exporté avec succès dans Google Drive.")
+    except Exception as e:
+        print(f"Erreur lors de l'export vers Excel: {e}")
+
+if __name__ == '__main__':
+    # Collecte des données
+    pfc_kpi, edf_kpi = collect_data()
+    # Export vers Excel
+    export_to_excel(pfc_kpi, edf_kpi)
+
