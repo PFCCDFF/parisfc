@@ -518,18 +518,17 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     return aggregated_data
 
 def generate_synthesis_excel(pfc_kpi):
-    """Génère un fichier Excel de synthèse des statistiques et KPIs des joueuses et retourne les bytes du fichier."""
+    """Génère un fichier Excel de synthèse avec toutes les données dans un seul onglet, avec le nom de la joueuse en colonne A."""
     try:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Filtrer les joueuses uniques
-            joueuses = pfc_kpi['Player'].unique()
-            for joueuse in joueuses:
-                # Filtrer les données pour la joueuse
-                data_joueuse = pfc_kpi[pfc_kpi['Player'] == joueuse]
-                if not data_joueuse.empty:
-                    # Ajouter une feuille Excel pour chaque joueuse
-                    data_joueuse.to_excel(writer, sheet_name=joueuse[:30], index=False)
+            # Ajouter toutes les données dans un seul DataFrame
+            if not pfc_kpi.empty:
+                # Ajouter une colonne "Joueuse" en première colonne
+                pfc_kpi_inserted = pfc_kpi.copy()
+                pfc_kpi_inserted.insert(0, 'Joueuse', pfc_kpi['Player'])
+                # Écrire dans l'onglet "Synthèse"
+                pfc_kpi_inserted.to_excel(writer, sheet_name="Synthèse", index=False)
         # Récupérer les bytes du fichier Excel
         excel_bytes = output.getvalue()
         return excel_bytes
@@ -537,6 +536,7 @@ def generate_synthesis_excel(pfc_kpi):
         print(f"Erreur lors de la génération du fichier Excel de synthèse : {e}")
         st.error(f"Erreur lors de la génération du fichier Excel de synthèse : {e}")
         return None
+
 
 @st.cache_data
 def collect_data(selected_season=None):
@@ -1444,3 +1444,4 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
