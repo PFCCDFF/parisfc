@@ -9,6 +9,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
 import warnings
+
 warnings.filterwarnings('ignore')
 
 # =============================================
@@ -516,6 +517,24 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     ).round().astype(int).reset_index()
     return aggregated_data
 
+def save_pfc_kpi_to_file(pfc_kpi, filename="data/pfc_kpi_compiled.csv"):
+    """Sauvegarde les données compilées des joueuses du Paris FC dans un fichier CSV."""
+    try:
+        os.makedirs("data", exist_ok=True)
+        pfc_kpi.to_csv(filename, index=False)
+        print(f"Fichier sauvegardé : {filename}")
+    except Exception as e:
+        st.error(f"Erreur lors de la sauvegarde du fichier : {e}")
+
+def load_compiled_pfc_kpi(filename="data/pfc_kpi_compiled.csv"):
+    """Charge les données compilées depuis un fichier CSV si disponible."""
+    if os.path.exists(filename):
+        try:
+            return pd.read_csv(filename)
+        except Exception as e:
+            st.warning(f"Erreur lors du chargement du fichier compilé : {e}")
+    return pd.DataFrame()
+
 @st.cache_data
 def collect_data(selected_season=None):
     """Collecte et traite les données depuis Google Drive, avec un filtre par saison."""
@@ -757,43 +776,37 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     st.sidebar.title(f"Connecté en tant que: {user_profile}")
     if player_name:
         st.sidebar.write(f"Joueuse associée: {player_name}")
-
     # Ajout de la boîte de dialogue pour sélectionner la saison
     saison_options = ["Toutes les saisons", "2425", "2526"]
     selected_saison = st.sidebar.selectbox("Sélectionnez une saison", saison_options)
-
     if st.sidebar.button("🔒 Déconnexion"):
         st.session_state.authenticated = False
         st.session_state.user_profile = None
         st.rerun()
-
     if check_permission(user_profile, "update_data", permissions) or check_permission(user_profile, "all", permissions):
         if st.sidebar.button("Mettre à jour la base de données"):
             with st.spinner("Mise à jour des données en cours..."):
                 download_google_drive()
-            st.success("✅ Mise à jour terminée")
+                pfc_kpi, edf_kpi = collect_data(selected_saison)
+                save_pfc_kpi_to_file(pfc_kpi)
+            st.success("✅ Mise à jour terminée et données sauvegardées")
             st.cache_data.clear()
-
     # Recharger les données en fonction de la saison sélectionnée
     if selected_saison != "Toutes les saisons":
         pfc_kpi, edf_kpi = collect_data(selected_saison)
     else:
         pfc_kpi, edf_kpi = collect_data()
-
     if player_name and not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
         pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
         if pfc_kpi.empty:
             st.warning(f"Aucune donnée disponible pour la joueuse {player_name}")
-
     available_options = ["Statistiques"]
     if check_permission(user_profile, "compare_players", permissions) or check_permission(user_profile, "all", permissions) or player_name:
         available_options.append("Comparaison")
     if check_permission(user_profile, "all", permissions):
         available_options.append("Gestion")
-
     # Ajout de l'onglet "Données Physiques"
     available_options.append("Données Physiques")
-
     with st.sidebar:
         page = option_menu(
             menu_title="",
@@ -809,7 +822,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 "nav-link-selected": {"background-color": "#0078D4", "color": "white"}
             }
         )
-
     logo_certifie_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
     st.sidebar.markdown(
         f"""
@@ -822,7 +834,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         """,
         unsafe_allow_html=True
     )
-
     if page == "Statistiques":
         st.header("Statistiques")
         if pfc_kpi.empty:
@@ -927,7 +938,12 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         with col4: st.metric("Milieu relayeur", f"{aggregated_data['Milieu relayeur'].iloc[0]}/100")
                                         with col5: st.metric("Milieu offensif", f"{aggregated_data['Milieu offensif'].iloc[0]}/100")
                                         with col6: st.metric("Attaquant", f"{aggregated_data['Attaquant'].iloc[0]}/100")
-
+                            else:
+                                st.warning("Aucune donnée disponible pour les matchs sélectionnés.")
+                        else:
+                            st.warning("Aucun match disponible pour cette joueuse.")
+                else:
+                    st.warning("Colonne 'Adversaire' manquante dans les données.")
     elif page == "Comparaison":
         st.header("Comparaison")
         if player_name:
@@ -1079,7 +1095,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                             st.pyplot(fig)
                             else:
                                 st.warning("Aucune donnée EDF disponible.")
-
     elif page == "Gestion":
         st.header("Gestion des utilisateurs")
         if check_permission(user_profile, "all", permissions):
@@ -1117,7 +1132,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             st.success(f"Profil {new_profile} créé avec succès!")
         else:
             st.error("Vous n'avez pas la permission d'accéder à cette page.")
-
     elif page == "Données Physiques":
         st.header("📊 Données Physiques")
         st.markdown("""
@@ -1154,19 +1168,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             }
         </style>
         """, unsafe_allow_html=True)
-
         st.markdown("<div class='physique-container'>", unsafe_allow_html=True)
         st.markdown("<h2 class='physique-title'>Suivi Physique <span class='construction-badge'>En construction</span></h2>", unsafe_allow_html=True)
-
         if not player_name and not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
             player_name = st.selectbox("Sélectionnez une joueuse", pfc_kpi['Player'].unique())
-
         if player_name:
             st.subheader(f"Données pour {player_name}")
-
             # Onglets pour séparer Entraînements et Matchs
             tab1, tab2 = st.tabs(["🏋️ Entraînements", "⚽ Matchs"])
-
             with tab1:
                 st.markdown("<div class='physique-container'>", unsafe_allow_html=True)
                 st.markdown("<h3 class='physique-title'>Entraînements</h3>", unsafe_allow_html=True)
@@ -1177,21 +1186,17 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 - Visualisation des tendances sur la saison.
                 - Comparaison avec les moyennes de l'équipe.
                 """)
-
                 # Exemple de placeholder pour un graphique futur
                 st.markdown("<div class='chart-placeholder'>", unsafe_allow_html=True)
                 st.write("**Exemple : Charge d'entraînement (km) par semaine**")
                 st.write("Un graphique sera affiché ici pour montrer l'évolution de la charge d'entraînement.")
                 st.markdown("</div>", unsafe_allow_html=True)
-
                 # Exemple de placeholder pour un tableau futur
                 st.markdown("<div class='chart-placeholder'>", unsafe_allow_html=True)
                 st.write("**Exemple : Performances physiques par séance**")
                 st.write("Un tableau comparatif sera affiché ici pour chaque séance d'entraînement.")
                 st.markdown("</div>", unsafe_allow_html=True)
-
                 st.markdown("</div>", unsafe_allow_html=True)
-
             with tab2:
                 st.markdown("<div class='physique-container'>", unsafe_allow_html=True)
                 st.markdown("<h3 class='physique-title'>Matchs</h3>", unsafe_allow_html=True)
@@ -1202,24 +1207,19 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 - Récupération post-match (fatigue, temps de récupération).
                 - Comparaison des performances entre les matchs.
                 """)
-
                 # Exemple de placeholder pour un graphique futur
                 st.markdown("<div class='chart-placeholder'>", unsafe_allow_html=True)
                 st.write("**Exemple : Distance parcourue par match**")
                 st.write("Un graphique sera affiché ici pour montrer la distance parcourue lors de chaque match.")
                 st.markdown("</div>", unsafe_allow_html=True)
-
                 # Exemple de placeholder pour un tableau futur
                 st.markdown("<div class='chart-placeholder'>", unsafe_allow_html=True)
                 st.write("**Exemple : Performances physiques par match**")
                 st.write("Un tableau comparatif sera affiché ici pour chaque match.")
                 st.markdown("</div>", unsafe_allow_html=True)
-
                 st.markdown("</div>", unsafe_allow_html=True)
-
         else:
             st.warning("Aucune joueuse sélectionnée ou associée à votre profil.")
-
         st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == '__main__':
@@ -1227,7 +1227,6 @@ if __name__ == '__main__':
         page_title="Paris FC - Centre de Formation Féminin",
         layout="wide"
     )
-
     # CSS personnalisé pour le style bleu foncé et texte blanc
     st.markdown("""
     <style>
@@ -1389,7 +1388,6 @@ if __name__ == '__main__':
         }
     </style>
     """, unsafe_allow_html=True)
-
     # En-tête personnalisé
     st.markdown("""
     <div class="main-header">
@@ -1400,18 +1398,15 @@ if __name__ == '__main__':
         <p>Data Center</p>
     </div>
     """, unsafe_allow_html=True)
-
     # Chargement des permissions et des données
     permissions = load_permissions()
     if not permissions:
         st.error("Impossible de charger les permissions. Vérifiez que le fichier 'Classeurs permissions streamlit.xlsx' est présent dans le dossier Google Drive.")
         st.stop()
-
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if "user_profile" not in st.session_state:
         st.session_state.user_profile = None
-
     # Logique d'authentification
     if not st.session_state.authenticated:
         with st.form("login_form"):
@@ -1426,14 +1421,15 @@ if __name__ == '__main__':
                 else:
                     st.error("Nom d'utilisateur ou mot de passe incorrect")
         st.stop()
-
     # Chargement des données
     try:
-        pfc_kpi, edf_kpi = collect_data()
+        pfc_kpi = load_compiled_pfc_kpi()
+        if pfc_kpi.empty:
+            pfc_kpi, edf_kpi = collect_data()
+        else:
+            edf_kpi = pd.DataFrame()
     except Exception as e:
         st.error(f"Erreur lors du chargement des données: {e}")
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
-
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
-
