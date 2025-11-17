@@ -1,15 +1,14 @@
 import pandas as pd
 import numpy as np
 import os
+import io
 from mplsoccer import PyPizza, Radar, FontManager, grid
 import streamlit as st
 from streamlit_option_menu import option_menu
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-import io
 import warnings
-from datetime import datetime
 
 warnings.filterwarnings('ignore')
 
@@ -518,11 +517,11 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     ).round().astype(int).reset_index()
     return aggregated_data
 
-def generate_synthesis_excel(pfc_kpi, filename="data/synthese_statistiques_joueuses.xlsx"):
-    """Génère un fichier Excel de synthèse des statistiques et KPIs des joueuses."""
+def generate_synthesis_excel(pfc_kpi):
+    """Génère un fichier Excel de synthèse des statistiques et KPIs des joueuses et retourne les bytes du fichier."""
     try:
-        os.makedirs("data", exist_ok=True)
-        with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
             # Filtrer les joueuses uniques
             joueuses = pfc_kpi['Player'].unique()
             for joueuse in joueuses:
@@ -531,11 +530,13 @@ def generate_synthesis_excel(pfc_kpi, filename="data/synthese_statistiques_joueu
                 if not data_joueuse.empty:
                     # Ajouter une feuille Excel pour chaque joueuse
                     data_joueuse.to_excel(writer, sheet_name=joueuse[:30], index=False)
-        print(f"Fichier Excel de synthèse généré : {filename}")
-        st.success(f"Fichier Excel de synthèse généré : {filename}")
+        # Récupérer les bytes du fichier Excel
+        excel_bytes = output.getvalue()
+        return excel_bytes
     except Exception as e:
         print(f"Erreur lors de la génération du fichier Excel de synthèse : {e}")
         st.error(f"Erreur lors de la génération du fichier Excel de synthèse : {e}")
+        return None
 
 @st.cache_data
 def collect_data(selected_season=None):
@@ -793,11 +794,18 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.success("✅ Mise à jour terminée")
             st.cache_data.clear()
     if check_permission(user_profile, "all", permissions):
-        if st.sidebar.button("Update"):
+        if st.sidebar.button("Télécharger la synthèse des statistiques"):
             with st.spinner("Génération du fichier de synthèse en cours..."):
                 pfc_kpi, _ = collect_data()
-                generate_synthesis_excel(pfc_kpi)
-            st.success("✅ Fichier de synthèse généré avec succès")
+                excel_bytes = generate_synthesis_excel(pfc_kpi)
+                if excel_bytes:
+                    st.sidebar.download_button(
+                        label="⬇️ Télécharger le fichier Excel",
+                        data=excel_bytes,
+                        file_name="synthese_statistiques_joueuses.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    st.success("✅ Fichier Excel prêt à être téléchargé !")
     # Recharger les données en fonction de la saison sélectionnée
     if selected_saison != "Toutes les saisons":
         pfc_kpi, edf_kpi = collect_data(selected_saison)
