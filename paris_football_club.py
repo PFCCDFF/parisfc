@@ -518,17 +518,32 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     return aggregated_data
 
 def generate_synthesis_excel(pfc_kpi):
-    """Génère un fichier Excel de synthèse avec toutes les données dans un seul onglet, avec le nom de la joueuse en colonne A."""
+    """Génère un fichier Excel de synthèse avec toutes les données dans un seul onglet, avec le nom de la joueuse et son numéro de personne en colonnes."""
     try:
+        # Nettoyer les noms des joueuses dans pfc_kpi
+        pfc_kpi['Player_clean'] = pfc_kpi['Player'].apply(nettoyer_nom_joueuse)
+
+        # Associer les numéros de personne
+        numero_personnes = {}
+        for _, row in df_numero_personnes.iterrows():
+            nom_joueuse = nettoyer_nom_joueuse(row['Nom de joueuse'])
+            numero_personnes[nom_joueuse] = row['Numéro de personne']
+
+        # Ajouter la colonne "Numéro de personne"
+        pfc_kpi['Numéro de personne'] = pfc_kpi['Player_clean'].map(numero_personnes)
+
+        # Supprimer la colonne temporaire
+        pfc_kpi.drop(columns=['Player_clean'], inplace=True, errors='ignore')
+
+        # Préparer le DataFrame pour l'export
+        pfc_kpi_inserted = pfc_kpi.copy()
+        pfc_kpi_inserted.insert(0, 'Joueuse', pfc_kpi['Player'])
+
+        # Exporter dans un fichier Excel
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Ajouter toutes les données dans un seul DataFrame
-            if not pfc_kpi.empty:
-                # Ajouter une colonne "Joueuse" en première colonne
-                pfc_kpi_inserted = pfc_kpi.copy()
-                pfc_kpi_inserted.insert(0, 'Joueuse', pfc_kpi['Player'])
-                # Écrire dans l'onglet "Synthèse"
-                pfc_kpi_inserted.to_excel(writer, sheet_name="Synthèse", index=False)
+            pfc_kpi_inserted.to_excel(writer, sheet_name="Synthèse", index=False)
+
         # Récupérer les bytes du fichier Excel
         excel_bytes = output.getvalue()
         return excel_bytes
@@ -536,7 +551,6 @@ def generate_synthesis_excel(pfc_kpi):
         print(f"Erreur lors de la génération du fichier Excel de synthèse : {e}")
         st.error(f"Erreur lors de la génération du fichier Excel de synthèse : {e}")
         return None
-
 
 @st.cache_data
 def collect_data(selected_season=None):
@@ -1444,4 +1458,5 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
