@@ -826,10 +826,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.success("✅ Mise à jour terminée")
             st.cache_data.clear()
     if check_permission(user_profile, "all", permissions):
-        if st.sidebar.button("Télécharger la synthèse des statistiques"):
-            with st.spinner("Génération du fichier de synthèse en cours..."):
-                pfc_kpi, _ = collect_data()
-                excel_bytes = generate_synthesis_excel(pfc_kpi)
+    if st.sidebar.button("Télécharger la synthèse des statistiques"):
+        with st.spinner("Génération du fichier de synthèse en cours..."):
+            pfc_kpi, _ = collect_data()
+            df_numero_personnes = load_numero_personnes()
+            if df_numero_personnes.empty:
+                st.error("Le fichier des numéros de personne est vide ou introuvable.")
+            else:
+                excel_bytes = generate_synthesis_excel(pfc_kpi, df_numero_personnes)
                 if excel_bytes:
                     st.sidebar.download_button(
                         label="⬇️ Télécharger le fichier Excel",
@@ -838,6 +842,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                     st.success("✅ Fichier Excel prêt à être téléchargé !")
+
     # Recharger les données en fonction de la saison sélectionnée
     if selected_saison != "Toutes les saisons":
         pfc_kpi, edf_kpi = collect_data(selected_saison)
@@ -1476,6 +1481,7 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
