@@ -15,6 +15,7 @@ warnings.filterwarnings('ignore')
 # =============================================
 # FONCTIONS D'AUTHENTIFICATION ET GESTION DRIVE
 # =============================================
+
 def authenticate_google_drive():
     """Authentification avec Google Drive."""
     SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -43,7 +44,7 @@ def list_files_in_folder(service, folder_id):
     return results.get('files', [])
 
 def download_google_drive():
-    """Télécharge les données depuis Google Drive."""
+    """Télécharge les données depuis Google Drive, y compris le fichier des numéros de personne."""
     try:
         service = authenticate_google_drive()
         folder_id = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
@@ -54,7 +55,7 @@ def download_google_drive():
             print("Aucun fichier trouvé dans le dossier.")
         else:
             for file in files:
-                if file['name'].endswith(('.csv', '.xlsx')) and file['name'] != "Classeurs permissions streamlit.xlsx":
+                if file['name'].endswith(('.csv', '.xlsx')):
                     print(f"Téléchargement de : {file['name']}...")
                     download_file(service, file['id'], file['name'], output_folder)
     except Exception as e:
@@ -99,9 +100,25 @@ def load_permissions():
         st.error(f"Erreur lors du chargement des permissions: {e}")
         return {}
 
+def load_numero_personnes():
+    """Charge le fichier des numéros de personne depuis le dossier data."""
+    try:
+        data_folder = "data"
+        numero_personnes_path = os.path.join(data_folder, "Numéro de personnes Paris FC.xlsx")
+        if os.path.exists(numero_personnes_path):
+            df_numero_personnes = pd.read_excel(numero_personnes_path)
+            return df_numero_personnes
+        else:
+            st.error("Le fichier 'Numéro de personnes Paris FC.xlsx' n'a pas été trouvé dans le dossier data.")
+            return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erreur lors du chargement du fichier des numéros de personne: {e}")
+        return pd.DataFrame()
+
 # =============================================
 # FONCTIONS UTILITAIRES
 # =============================================
+
 def nettoyer_nom_joueuse(nom):
     """Nettoie le nom d'une joueuse en supprimant les doublons et standardisant le format."""
     if isinstance(nom, str):
@@ -116,6 +133,7 @@ def nettoyer_nom_joueuse(nom):
 # =============================================
 # FONCTIONS DE TRAITEMENT DES DONNÉES
 # =============================================
+
 def players_edf_duration(match):
     """Calcule la durée de jeu pour les joueuses EDF."""
     if 'Poste' not in match.columns or 'Temps de jeu' not in match.columns:
@@ -517,7 +535,7 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     ).round().astype(int).reset_index()
     return aggregated_data
 
-def generate_synthesis_excel(pfc_kpi):
+def generate_synthesis_excel(pfc_kpi, df_numero_personnes):
     """Génère un fichier Excel de synthèse avec toutes les données dans un seul onglet, avec le nom de la joueuse et son numéro de personne en colonnes."""
     try:
         # Nettoyer les noms des joueuses dans pfc_kpi
@@ -1458,5 +1476,6 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
