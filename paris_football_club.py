@@ -15,7 +15,6 @@ warnings.filterwarnings('ignore')
 # =============================================
 # FONCTIONS D'AUTHENTIFICATION ET GESTION DRIVE
 # =============================================
-
 def authenticate_google_drive():
     """Authentification avec Google Drive."""
     SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -44,7 +43,7 @@ def list_files_in_folder(service, folder_id):
     return results.get('files', [])
 
 def download_google_drive():
-    """Télécharge les données depuis Google Drive, y compris le fichier des numéros de personne."""
+    """Télécharge les données depuis Google Drive."""
     try:
         service = authenticate_google_drive()
         folder_id = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
@@ -55,7 +54,7 @@ def download_google_drive():
             print("Aucun fichier trouvé dans le dossier.")
         else:
             for file in files:
-                if file['name'].endswith(('.csv', '.xlsx')):
+                if file['name'].endswith(('.csv', '.xlsx')) and file['name'] != "Classeurs permissions streamlit.xlsx":
                     print(f"Téléchargement de : {file['name']}...")
                     download_file(service, file['id'], file['name'], output_folder)
     except Exception as e:
@@ -100,25 +99,9 @@ def load_permissions():
         st.error(f"Erreur lors du chargement des permissions: {e}")
         return {}
 
-def load_numero_personnes():
-    """Charge le fichier des numéros de personne depuis le dossier data."""
-    try:
-        data_folder = "data"
-        numero_personnes_path = os.path.join(data_folder, "Numéro de personnes Paris FC.xlsx")
-        if os.path.exists(numero_personnes_path):
-            df_numero_personnes = pd.read_excel(numero_personnes_path)
-            return df_numero_personnes
-        else:
-            st.error("Le fichier 'Numéro de personnes Paris FC.xlsx' n'a pas été trouvé dans le dossier data.")
-            return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Erreur lors du chargement du fichier des numéros de personne: {e}")
-        return pd.DataFrame()
-
 # =============================================
 # FONCTIONS UTILITAIRES
 # =============================================
-
 def nettoyer_nom_joueuse(nom):
     """Nettoie le nom d'une joueuse en supprimant les doublons et standardisant le format."""
     if isinstance(nom, str):
@@ -133,7 +116,6 @@ def nettoyer_nom_joueuse(nom):
 # =============================================
 # FONCTIONS DE TRAITEMENT DES DONNÉES
 # =============================================
-
 def players_edf_duration(match):
     """Calcule la durée de jeu pour les joueuses EDF."""
     if 'Poste' not in match.columns or 'Temps de jeu' not in match.columns:
@@ -535,33 +517,18 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     ).round().astype(int).reset_index()
     return aggregated_data
 
-def generate_synthesis_excel(pfc_kpi, df_numero_personnes):
-    """Génère un fichier Excel de synthèse avec toutes les données dans un seul onglet, avec le nom de la joueuse et son numéro de personne en colonnes."""
+def generate_synthesis_excel(pfc_kpi):
+    """Génère un fichier Excel de synthèse avec toutes les données dans un seul onglet, avec le nom de la joueuse en colonne A."""
     try:
-        # Nettoyer les noms des joueuses dans pfc_kpi
-        pfc_kpi['Player_clean'] = pfc_kpi['Player'].apply(nettoyer_nom_joueuse)
-
-        # Associer les numéros de personne
-        numero_personnes = {}
-        for _, row in df_numero_personnes.iterrows():
-            nom_joueuse = nettoyer_nom_joueuse(row['Nom de joueuse'])
-            numero_personnes[nom_joueuse] = row['Numéro de personne']
-
-        # Ajouter la colonne "Numéro de personne"
-        pfc_kpi['Numéro de personne'] = pfc_kpi['Player_clean'].map(numero_personnes)
-
-        # Supprimer la colonne temporaire
-        pfc_kpi.drop(columns=['Player_clean'], inplace=True, errors='ignore')
-
-        # Préparer le DataFrame pour l'export
-        pfc_kpi_inserted = pfc_kpi.copy()
-        pfc_kpi_inserted.insert(0, 'Joueuse', pfc_kpi['Player'])
-
-        # Exporter dans un fichier Excel
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            pfc_kpi_inserted.to_excel(writer, sheet_name="Synthèse", index=False)
-
+            # Ajouter toutes les données dans un seul DataFrame
+            if not pfc_kpi.empty:
+                # Ajouter une colonne "Joueuse" en première colonne
+                pfc_kpi_inserted = pfc_kpi.copy()
+                pfc_kpi_inserted.insert(0, 'Joueuse', pfc_kpi['Player'])
+                # Écrire dans l'onglet "Synthèse"
+                pfc_kpi_inserted.to_excel(writer, sheet_name="Synthèse", index=False)
         # Récupérer les bytes du fichier Excel
         excel_bytes = output.getvalue()
         return excel_bytes
@@ -569,6 +536,7 @@ def generate_synthesis_excel(pfc_kpi, df_numero_personnes):
         print(f"Erreur lors de la génération du fichier Excel de synthèse : {e}")
         st.error(f"Erreur lors de la génération du fichier Excel de synthèse : {e}")
         return None
+
 
 @st.cache_data
 def collect_data(selected_season=None):
@@ -826,14 +794,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.success("✅ Mise à jour terminée")
             st.cache_data.clear()
     if check_permission(user_profile, "all", permissions):
-    if st.sidebar.button("Télécharger la synthèse des statistiques"):
-        with st.spinner("Génération du fichier de synthèse en cours..."):
-            pfc_kpi, _ = collect_data()
-            df_numero_personnes = load_numero_personnes()
-            if df_numero_personnes.empty:
-                st.error("Le fichier des numéros de personne est vide ou introuvable.")
-            else:
-                excel_bytes = generate_synthesis_excel(pfc_kpi, df_numero_personnes)
+        if st.sidebar.button("Télécharger la synthèse des statistiques"):
+            with st.spinner("Génération du fichier de synthèse en cours..."):
+                pfc_kpi, _ = collect_data()
+                excel_bytes = generate_synthesis_excel(pfc_kpi)
                 if excel_bytes:
                     st.sidebar.download_button(
                         label="⬇️ Télécharger le fichier Excel",
@@ -842,7 +806,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                     st.success("✅ Fichier Excel prêt à être téléchargé !")
-
     # Recharger les données en fonction de la saison sélectionnée
     if selected_saison != "Toutes les saisons":
         pfc_kpi, edf_kpi = collect_data(selected_saison)
@@ -1481,7 +1444,3 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
-
-
-
-
