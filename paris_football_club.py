@@ -135,30 +135,41 @@ def players_duration(match):
     if 'Duration' not in match.columns:
         st.warning("Colonne 'Duration' manquante pour calculer la durée de jeu")
         return pd.DataFrame()
-    players_duration = {}
+
     list_of_players = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']
     available_posts = [poste for poste in list_of_players if poste in match.columns]
+
     if not available_posts:
         st.warning("Aucune colonne de poste disponible pour calculer la durée de jeu")
         return pd.DataFrame()
+
+    players_duration = {}
+
     for i in range(len(match)):
         duration = match.iloc[i]['Duration']
+        players_in_this_row = set()  # Pour éviter de compter plusieurs fois la même joueuse dans la même ligne
+
         for poste in available_posts:
-            if poste in match.columns:
-                player = nettoyer_nom_joueuse(str(match.iloc[i][poste]))
-                if player:
-                    if player in players_duration:
-                        players_duration[player] += duration
-                    else:
-                        players_duration[player] = duration
+            player = nettoyer_nom_joueuse(str(match.iloc[i][poste]))
+            if player and player not in players_in_this_row:
+                players_in_this_row.add(player)
+                if player in players_duration:
+                    players_duration[player] += duration
+                else:
+                    players_duration[player] = duration
+
     if not players_duration:
         return pd.DataFrame()
+
+    # Conversion en minutes (si Duration est en secondes)
     for player in players_duration:
         players_duration[player] /= 60
+
     df_duration = pd.DataFrame({
         'Player': list(players_duration.keys()),
         'Temps de jeu (en minutes)': list(players_duration.values())
     })
+
     df_duration = df_duration.sort_values(by='Temps de jeu (en minutes)', ascending=False)
     return df_duration
 
@@ -1444,3 +1455,4 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
     # Appel de la fonction principale de l'interface
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
