@@ -476,7 +476,7 @@ def create_data(match, joueurs, is_edf):
             for poste in ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']:
                 if poste in joueurs.columns:
                     joueurs_pfc.extend(joueurs[poste].dropna().unique())
-            joueurs_pfc = list(set(joueurs_pfc))  # Supprimer les doublons
+            joueurs_pfc = list(set([nettoyer_nom_joueuse(joueur) for joueur in joueurs_pfc]))  # Supprimer les doublons et nettoyer les noms
             df_duration = players_duration(match, joueurs_pfc)
 
         dfs = [df_duration]
@@ -635,50 +635,51 @@ def collect_data(selected_season=None):
                         edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
                         edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
 
-        for filename in fichiers:
-            path = os.path.join(data_folder, filename)
+for filename in fichiers:
+    path = os.path.join(data_folder, filename)
+    try:
+        if filename.endswith('.csv') and 'PFC' in filename:
+            parts = filename.split('.')[0].split('_')
+            if len(parts) < 6:
+                continue
             try:
-                if filename.endswith('.csv') and 'PFC' in filename:
-                    parts = filename.split('.')[0].split('_')
-                    if len(parts) < 6:
-                        continue
-                    try:
-                        equipe_domicile = parts[0]
-                        equipe_exterieur = parts[2]
-                        journee = parts[3]
-                        categorie = parts[4]
-                        date = parts[5]
-                        data = pd.read_csv(path)
-                        if 'Row' not in data.columns:
-                            continue
-                        match, joueurs = pd.DataFrame(), pd.DataFrame()
-                        for i in range(len(data)):
-                            if data['Row'].iloc[i] in [equipe_domicile, equipe_exterieur]:
-                                match = pd.concat([match, data.iloc[i:i+1]], ignore_index=True)
-                            elif not any(str(x) in str(data['Row'].iloc[i]) for x in ['Corner', 'Coup-franc', 'Penalty', 'Carton']):
-                                joueurs = pd.concat([joueurs, data.iloc[i:i+1]], ignore_index=True)
-                        if not joueurs.empty:
-                            joueurs['Player'] = joueurs['Row'].apply(nettoyer_nom_joueuse)
-                            df = create_data(match, joueurs, False, equipe_domicile, equipe_exterieur)
-                            if not df.empty:
-                                for index, row in df.iterrows():
-                                    time_played = row['Temps de jeu (en minutes)']
-                                    for col in df.columns:
-                                        if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
-                                            df.loc[index, col] = row[col] * (90 / time_played)
-                                df = create_metrics(df)
-                                df = create_kpis(df)
-                                df = create_poste(df)
-                                adversaire = equipe_exterieur if equipe_domicile == 'PFC' else equipe_domicile
-                                df.insert(1, 'Adversaire', f'{adversaire} - {journee}')
-                                df.insert(2, 'Journée', journee)
-                                df.insert(3, 'Catégorie', categorie)
-                                df.insert(4, 'Date', date)
-                                pfc_kpi = pd.concat([pfc_kpi, df])
-                    except Exception as e:
-                        print(f"Error processing {filename}: {e}")
+                equipe_domicile = parts[0]
+                equipe_exterieur = parts[2]
+                journee = parts[3]
+                categorie = parts[4]
+                date = parts[5]
+                data = pd.read_csv(path)
+                if 'Row' not in data.columns:
+                    continue
+                match, joueurs = pd.DataFrame(), pd.DataFrame()
+                for i in range(len(data)):
+                    if data['Row'].iloc[i] in [equipe_domicile, equipe_exterieur]:
+                        match = pd.concat([match, data.iloc[i:i+1]], ignore_index=True)
+                    elif not any(str(x) in str(data['Row'].iloc[i]) for x in ['Corner', 'Coup-franc', 'Penalty', 'Carton']):
+                        joueurs = pd.concat([joueurs, data.iloc[i:i+1]], ignore_index=True)
+                if not joueurs.empty:
+                    joueurs['Player'] = joueurs['Row'].apply(nettoyer_nom_joueuse)
+                    df = create_data(match, joueurs, False)
+                    if not df.empty:
+                        for index, row in df.iterrows():
+                            time_played = row['Temps de jeu (en minutes)']
+                            for col in df.columns:
+                                if col not in ['Player', 'Temps de jeu (en minutes)', 'Buts'] and 'Pourcentage' not in col:
+                                    df.loc[index, col] = row[col] * (90 / time_played)
+                        df = create_metrics(df)
+                        df = create_kpis(df)
+                        df = create_poste(df)
+                        adversaire = equipe_exterieur if equipe_domicile == 'PFC' else equipe_domicile
+                        df.insert(1, 'Adversaire', f'{adversaire} - {journee}')
+                        df.insert(2, 'Journée', journee)
+                        df.insert(3, 'Catégorie', categorie)
+                        df.insert(4, 'Date', date)
+                        pfc_kpi = pd.concat([pfc_kpi, df])
             except Exception as e:
                 print(f"Error processing {filename}: {e}")
+    except Exception as e:
+        print(f"Error processing {filename}: {e}")
+
         return pfc_kpi, edf_kpi
     except Exception as e:
         print(f"Error in collect_data: {e}")
@@ -1235,6 +1236,7 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
