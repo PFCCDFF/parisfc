@@ -132,22 +132,20 @@ def nettoyer_nom_joueuse(nom):
 # FONCTIONS DE TRAITEMENT DES DONNÉES
 # =============================================
 def players_duration(match):
-    """Calcule la durée de jeu pour les joueuses PFC."""
+    """Calcule la durée de jeu pour les joueuses PFC et l'adversaire."""
     if 'Duration' not in match.columns:
         st.warning("Colonne 'Duration' manquante pour calculer la durée de jeu")
         return pd.DataFrame()
 
     players_duration = {}
     list_of_players = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']
-    available_posts = [poste for poste in list_of_players if poste in match.columns]
-
-    if not available_posts:
-        st.warning("Aucune colonne de poste disponible pour calculer la durée de jeu")
-        return pd.DataFrame()
 
     for i in range(len(match)):
         duration = match.iloc[i]['Duration']
-        for poste in available_posts:
+        row = match.iloc[i]['Row']
+
+        # Vérifier si la ligne contient une joueuse du PFC
+        for poste in list_of_players:
             if poste in match.columns:
                 player = nettoyer_nom_joueuse(str(match.iloc[i][poste]))
                 if player:
@@ -155,6 +153,15 @@ def players_duration(match):
                         players_duration[player] += duration
                     else:
                         players_duration[player] = duration
+
+        # Vérifier si la ligne contient une joueuse de l'adversaire
+        if row not in ['PFC'] + list_of_players and not any(str(x) in str(row) for x in ['Corner', 'Coup-franc', 'Penalty', 'Carton']):
+            player = nettoyer_nom_joueuse(str(row))
+            if player:
+                if player in players_duration:
+                    players_duration[player] += duration
+                else:
+                    players_duration[player] = duration
 
     if not players_duration:
         return pd.DataFrame()
@@ -169,6 +176,7 @@ def players_duration(match):
 
     df_duration = df_duration.sort_values(by='Temps de jeu (en minutes)', ascending=False)
     return df_duration
+
 
 def players_edf_duration(match):
     """Calcule la durée de jeu pour les joueuses EDF."""
@@ -1219,3 +1227,4 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
