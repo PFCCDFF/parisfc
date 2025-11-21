@@ -131,7 +131,7 @@ def nettoyer_nom_joueuse(nom):
 # =============================================
 # FONCTIONS DE TRAITEMENT DES DONNÉES
 # =============================================
-def players_duration(match):
+def players_duration(match, equipe_domicile, equipe_exterieur):
     """Calcule la durée de jeu pour les joueuses PFC et l'adversaire."""
     if 'Duration' not in match.columns:
         st.warning("Colonne 'Duration' manquante pour calculer la durée de jeu")
@@ -155,7 +155,7 @@ def players_duration(match):
                         players_duration[player] = duration
 
         # Vérifier si la ligne contient une joueuse de l'adversaire
-        if row not in ['PFC'] + list_of_players and not any(str(x) in str(row) for x in ['Corner', 'Coup-franc', 'Penalty', 'Carton']):
+        if row != equipe_domicile and row != equipe_exterieur and not any(str(x) in str(row) for x in ['Corner', 'Coup-franc', 'Penalty', 'Carton']):
             player = nettoyer_nom_joueuse(str(row))
             if player:
                 if player in players_duration:
@@ -176,7 +176,6 @@ def players_duration(match):
 
     df_duration = df_duration.sort_values(by='Temps de jeu (en minutes)', ascending=False)
     return df_duration
-
 
 def players_edf_duration(match):
     """Calcule la durée de jeu pour les joueuses EDF."""
@@ -453,7 +452,7 @@ def create_poste(df):
                       df['Finition'] * 5) / 13
     return df
 
-def create_data(match, joueurs, is_edf):
+def create_data(match, joueurs, is_edf, equipe_domicile=None, equipe_exterieur=None):
     """Crée un dataframe complet à partir des données brutes."""
     try:
         if is_edf:
@@ -470,7 +469,7 @@ def create_data(match, joueurs, is_edf):
                 'Poste': joueurs['Poste']
             })
         else:
-            df_duration = players_duration(match)
+            df_duration = players_duration(match, equipe_domicile, equipe_exterieur)
 
         dfs = [df_duration]
         calc_functions = [
@@ -651,7 +650,7 @@ def collect_data(selected_season=None):
                                 joueurs = pd.concat([joueurs, data.iloc[i:i+1]], ignore_index=True)
                         if not joueurs.empty:
                             joueurs['Player'] = joueurs['Row'].apply(nettoyer_nom_joueuse)
-                            df = create_data(match, joueurs, False)
+                            df = create_data(match, joueurs, False, equipe_domicile, equipe_exterieur)
                             if not df.empty:
                                 for index, row in df.iterrows():
                                     time_played = row['Temps de jeu (en minutes)']
@@ -1227,4 +1226,5 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
