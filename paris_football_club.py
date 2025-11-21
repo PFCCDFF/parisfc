@@ -131,8 +131,8 @@ def nettoyer_nom_joueuse(nom):
 # =============================================
 # FONCTIONS DE TRAITEMENT DES DONNÉES
 # =============================================
-def players_duration(match, equipe_domicile, equipe_exterieur):
-    """Calcule la durée de jeu pour les joueuses PFC et l'adversaire."""
+def players_duration(match, joueurs_pfc):
+    """Calcule la durée de jeu pour les joueuses PFC, y compris dans les lignes de l'adversaire."""
     if 'Duration' not in match.columns:
         st.warning("Colonne 'Duration' manquante pour calculer la durée de jeu")
         return pd.DataFrame()
@@ -140,11 +140,14 @@ def players_duration(match, equipe_domicile, equipe_exterieur):
     players_duration = {}
     list_of_players = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']
 
+    # Nettoyer les noms des joueuses du PFC
+    joueurs_pfc_clean = [nettoyer_nom_joueuse(joueur) for joueur in joueurs_pfc]
+
     for i in range(len(match)):
         duration = match.iloc[i]['Duration']
         row = match.iloc[i]['Row']
 
-        # Vérifier si la ligne contient une joueuse du PFC
+        # Vérifier si la ligne contient une joueuse du PFC via les colonnes de poste
         for poste in list_of_players:
             if poste in match.columns:
                 player = nettoyer_nom_joueuse(str(match.iloc[i][poste]))
@@ -154,14 +157,13 @@ def players_duration(match, equipe_domicile, equipe_exterieur):
                     else:
                         players_duration[player] = duration
 
-        # Vérifier si la ligne contient une joueuse de l'adversaire
-        if row != equipe_domicile and row != equipe_exterieur and not any(str(x) in str(row) for x in ['Corner', 'Coup-franc', 'Penalty', 'Carton']):
-            player = nettoyer_nom_joueuse(str(row))
-            if player:
-                if player in players_duration:
-                    players_duration[player] += duration
-                else:
-                    players_duration[player] = duration
+        # Vérifier si la ligne contient une joueuse du PFC dans la colonne Row
+        player_row = nettoyer_nom_joueuse(str(row))
+        if player_row in joueurs_pfc_clean:
+            if player_row in players_duration:
+                players_duration[player_row] += duration
+            else:
+                players_duration[player_row] = duration
 
     if not players_duration:
         return pd.DataFrame()
@@ -452,7 +454,7 @@ def create_poste(df):
                       df['Finition'] * 5) / 13
     return df
 
-def create_data(match, joueurs, is_edf, equipe_domicile=None, equipe_exterieur=None):
+def create_data(match, joueurs, is_edf):
     """Crée un dataframe complet à partir des données brutes."""
     try:
         if is_edf:
@@ -469,7 +471,13 @@ def create_data(match, joueurs, is_edf, equipe_domicile=None, equipe_exterieur=N
                 'Poste': joueurs['Poste']
             })
         else:
-            df_duration = players_duration(match, equipe_domicile, equipe_exterieur)
+            # Extraire les noms des joueuses du PFC
+            joueurs_pfc = []
+            for poste in ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']:
+                if poste in joueurs.columns:
+                    joueurs_pfc.extend(joueurs[poste].dropna().unique())
+            joueurs_pfc = list(set(joueurs_pfc))  # Supprimer les doublons
+            df_duration = players_duration(match, joueurs_pfc)
 
         dfs = [df_duration]
         calc_functions = [
@@ -518,6 +526,7 @@ def create_data(match, joueurs, is_edf, equipe_domicile=None, equipe_exterieur=N
     except Exception as e:
         st.error(f"Erreur lors de la création des données: {e}")
         return pd.DataFrame()
+
 
 def filter_data_by_player(df, player_name):
     """Filtre les données pour une joueuse spécifique."""
@@ -1226,5 +1235,6 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
