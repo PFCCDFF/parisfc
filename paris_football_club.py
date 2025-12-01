@@ -44,20 +44,22 @@ def list_files_in_folder(service, folder_id):
 def download_passerelle_files(service):
     """Télécharge le fichier 'Liste Joueuses Passerelles.xlsx' depuis le dossier 'Passerelle'."""
     try:
-        folder_id = "19_ZU-FsAiNKxCfTw_WKzhTcuPDsGoVhL"  # Remplacez par l'ID du dossier "Passerelle"
+        folder_id = "19_ZU-FsAiNKxCfTw_WKzhTcuPDsGoVhL"  # ID du dossier "Passerelle"
         output_folder = "data/passerelle"
         os.makedirs(output_folder, exist_ok=True)
 
         # Lister les fichiers dans le dossier "Passerelle"
         files = list_files_in_folder(service, folder_id)
         if not files:
-            st.warning("Aucun fichier trouvé dans le dossier 'Passerelle'.")
+            st.error("Aucun fichier trouvé dans le dossier 'Passerelle'.")
         else:
+            st.write(f"Fichiers trouvés dans le dossier 'Passerelle' : {files}")
             for file in files:
                 if file['name'] == "Liste Joueuses Passerelles.xlsx":
                     st.write(f"Téléchargement de : {file['name']}...")
                     download_file(service, file['id'], file['name'], output_folder)
-                    break  # On ne télécharge que ce fichier
+                    st.success(f"Fichier '{file['name']}' téléchargé avec succès dans '{output_folder}'.")
+                    break
     except Exception as e:
         st.error(f"Erreur lors du téléchargement du fichier 'Liste Joueuses Passerelles.xlsx': {e}")
         raise e
@@ -140,8 +142,9 @@ def load_passerelle_data():
     passerelle_data = {}
     passerelle_file = "data/passerelle/Liste Joueuses Passerelles.xlsx"
 
+    st.write(f"Chemin du fichier attendu : {os.path.abspath(passerelle_file)}")
     if not os.path.exists(passerelle_file):
-        st.warning(f"Le fichier '{passerelle_file}' n'existe pas.")
+        st.error(f"Le fichier '{passerelle_file}' n'existe pas.")
         return passerelle_data
 
     try:
@@ -161,6 +164,7 @@ def load_passerelle_data():
                     "Pied Fort": row.get('Pied Fort', ''),
                     "Taille": row.get('Taille', '')
                 }
+        st.success(f"Données chargées avec succès pour {len(passerelle_data)} joueuses.")
     except Exception as e:
         st.error(f"Erreur lors de la lecture du fichier 'Liste Joueuses Passerelles.xlsx': {e}")
 
