@@ -41,6 +41,24 @@ def list_files_in_folder(service, folder_id):
     results = service.files().list(q=query, fields="files(id, name)").execute()
     return results.get('files', [])
 
+def download_passerelle_files(service):
+    """Télécharge les fichiers du dossier 'Passerelle' depuis Google Drive."""
+    try:
+        folder_id = "ID_DU_DOSSIER_PASSERELLE"  # Remplacez par l'ID du dossier "Passerelle"
+        output_folder = "data/passerelle"
+        os.makedirs(output_folder, exist_ok=True)
+        files = list_files_in_folder(service, folder_id)
+        if not files:
+            print("Aucun fichier trouvé dans le dossier 'Passerelle'.")
+        else:
+            for file in files:
+                if file['name'].endswith('.xlsx'):
+                    print(f"Téléchargement de : {file['name']}...")
+                    download_file(service, file['id'], file['name'], output_folder)
+    except Exception as e:
+        st.error(f"Erreur lors du téléchargement des fichiers du dossier 'Passerelle': {e}")
+        raise e
+
 def download_google_drive():
     """Télécharge les données depuis Google Drive."""
     try:
@@ -56,6 +74,8 @@ def download_google_drive():
                 if file['name'].endswith(('.csv', '.xlsx')):
                     print(f"Téléchargement de : {file['name']}...")
                     download_file(service, file['id'], file['name'], output_folder)
+        # Télécharger les fichiers du dossier "Passerelle"
+        download_passerelle_files(service)
     except Exception as e:
         st.error(f"Erreur lors du téléchargement des fichiers: {e}")
         raise e
@@ -111,6 +131,32 @@ def nettoyer_nom_joueuse(nom):
             return parts[0]
         return nom
     return nom
+
+def load_passerelle_data():
+    """Charge les données des joueuses depuis le dossier 'Passerelle'."""
+    passerelle_data = {}
+    passerelle_folder = "data/passerelle"
+    if not os.path.exists(passerelle_folder):
+        return passerelle_data
+    for filename in os.listdir(passerelle_folder):
+        if filename.endswith('.xlsx'):
+            file_path = os.path.join(passerelle_folder, filename)
+            try:
+                df = pd.read_excel(file_path)
+                if 'Nom' in df.columns:
+                    nom = df['Nom'].iloc[0]
+                    passerelle_data[nom] = {
+                        "Prénom": df.get('Prénom', [''])[0],
+                        "Photo": df.get('Photo', [''])[0],
+                        "Date de naissance": df.get('Date de naissance', [''])[0],
+                        "Poste 1": df.get('Poste 1', [''])[0],
+                        "Poste 2": df.get('Poste 2', [''])[0],
+                        "Pied Fort": df.get('Pied Fort', [''])[0],
+                        "Taille": df.get('Taille', [''])[0]
+                    }
+            except Exception as e:
+                st.error(f"Erreur lors de la lecture du fichier {filename}: {e}")
+    return passerelle_data
 
 # =============================================
 # FONCTIONS DE TRAITEMENT DES DONNÉES
@@ -1252,23 +1298,48 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 border-bottom: 1px solid #0078D4;
                 padding-bottom: 10px;
             }
+            .identity-container {
+                background: rgba(0, 58, 88, 0.3);
+                border-radius: 10px;
+                padding: 20px;
+                margin-bottom: 20px;
+            }
+            .identity-title {
+                color: white;
+                font-size: 1.5rem;
+                margin-bottom: 15px;
+                border-bottom: 1px solid #0078D4;
+                padding-bottom: 10px;
+            }
         </style>
         """, unsafe_allow_html=True)
 
-        st.markdown("<div class='passerelles-container'>", unsafe_allow_html=True)
-        st.markdown("<h2 class='passerelles-title'>Liste des joueuses passerelles</h2>", unsafe_allow_html=True)
+        passerelle_data = load_passerelle_data()
+        if not passerelle_data:
+            st.warning("Aucune donnée de joueuse passerelle disponible.")
+        else:
+            selected_joueuse = st.selectbox("Sélectionnez une joueuse", list(passerelle_data.keys()))
 
-        try:
-            passerelles_path = os.path.join("data", "Liste Joueuses Passerelles.xlsx")
-            if os.path.exists(passerelles_path):
-                df_passerelles = pd.read_excel(passerelles_path)
-                st.dataframe(df_passerelles)
-            else:
-                st.warning("Le fichier 'Liste Joueuses Passerelles.xlsx' n'a pas été trouvé dans le dossier 'data'.")
-        except Exception as e:
-            st.error(f"Erreur lors du chargement du fichier : {e}")
+            st.markdown("<div class='identity-container'>", unsafe_allow_html=True)
+            st.markdown("<h2 class='identity-title'>Identité</h2>", unsafe_allow_html=True)
 
-        st.markdown("</div>", unsafe_allow_html=True)
+            joueuse_info = passerelle_data[selected_joueuse]
+            if joueuse_info["Prénom"]:
+                st.write(f"**Prénom :** {joueuse_info['Prénom']}")
+            if joueuse_info["Photo"]:
+                st.image(joueuse_info["Photo"], width=150, caption="Photo")
+            if joueuse_info["Date de naissance"]:
+                st.write(f"**Date de naissance :** {joueuse_info['Date de naissance']}")
+            if joueuse_info["Poste 1"]:
+                st.write(f"**Poste 1 :** {joueuse_info['Poste 1']}")
+            if joueuse_info["Poste 2"]:
+                st.write(f"**Poste 2 :** {joueuse_info['Poste 2']}")
+            if joueuse_info["Pied Fort"]:
+                st.write(f"**Pied Fort :** {joueuse_info['Pied Fort']}")
+            if joueuse_info["Taille"]:
+                st.write(f"**Taille :** {joueuse_info['Taille']}")
+
+            st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == '__main__':
     st.set_page_config(
