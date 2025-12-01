@@ -42,21 +42,24 @@ def list_files_in_folder(service, folder_id):
     return results.get('files', [])
 
 def download_passerelle_files(service):
-    """Télécharge les fichiers du dossier 'Passerelle' depuis Google Drive."""
+    """Télécharge le fichier 'Liste Joueuses Passerelles.xlsx' depuis le dossier 'Passerelle'."""
     try:
         folder_id = "ID_DU_DOSSIER_PASSERELLE"  # Remplacez par l'ID du dossier "Passerelle"
         output_folder = "data/passerelle"
         os.makedirs(output_folder, exist_ok=True)
+
+        # Lister les fichiers dans le dossier "Passerelle"
         files = list_files_in_folder(service, folder_id)
         if not files:
-            print("Aucun fichier trouvé dans le dossier 'Passerelle'.")
+            st.warning("Aucun fichier trouvé dans le dossier 'Passerelle'.")
         else:
             for file in files:
-                if file['name'].endswith('.xlsx'):
-                    print(f"Téléchargement de : {file['name']}...")
+                if file['name'] == "Liste Joueuses Passerelles.xlsx":
+                    st.write(f"Téléchargement de : {file['name']}...")
                     download_file(service, file['id'], file['name'], output_folder)
+                    break  # On ne télécharge que ce fichier
     except Exception as e:
-        st.error(f"Erreur lors du téléchargement des fichiers du dossier 'Passerelle': {e}")
+        st.error(f"Erreur lors du téléchargement du fichier 'Liste Joueuses Passerelles.xlsx': {e}")
         raise e
 
 def download_google_drive():
@@ -74,7 +77,7 @@ def download_google_drive():
                 if file['name'].endswith(('.csv', '.xlsx')):
                     print(f"Téléchargement de : {file['name']}...")
                     download_file(service, file['id'], file['name'], output_folder)
-        # Télécharger les fichiers du dossier "Passerelle"
+        # Télécharger le fichier "Liste Joueuses Passerelles.xlsx"
         download_passerelle_files(service)
     except Exception as e:
         st.error(f"Erreur lors du téléchargement des fichiers: {e}")
@@ -133,29 +136,34 @@ def nettoyer_nom_joueuse(nom):
     return nom
 
 def load_passerelle_data():
-    """Charge les données des joueuses depuis le dossier 'Passerelle'."""
+    """Charge les données des joueuses depuis le fichier 'Liste Joueuses Passerelles.xlsx'."""
     passerelle_data = {}
-    passerelle_folder = "data/passerelle"
-    if not os.path.exists(passerelle_folder):
+    passerelle_file = "data/passerelle/Liste Joueuses Passerelles.xlsx"
+
+    if not os.path.exists(passerelle_file):
+        st.warning(f"Le fichier '{passerelle_file}' n'existe pas.")
         return passerelle_data
-    for filename in os.listdir(passerelle_folder):
-        if filename.endswith('.xlsx'):
-            file_path = os.path.join(passerelle_folder, filename)
-            try:
-                df = pd.read_excel(file_path)
-                if 'Nom' in df.columns:
-                    nom = df['Nom'].iloc[0]
-                    passerelle_data[nom] = {
-                        "Prénom": df.get('Prénom', [''])[0],
-                        "Photo": df.get('Photo', [''])[0],
-                        "Date de naissance": df.get('Date de naissance', [''])[0],
-                        "Poste 1": df.get('Poste 1', [''])[0],
-                        "Poste 2": df.get('Poste 2', [''])[0],
-                        "Pied Fort": df.get('Pied Fort', [''])[0],
-                        "Taille": df.get('Taille', [''])[0]
-                    }
-            except Exception as e:
-                st.error(f"Erreur lors de la lecture du fichier {filename}: {e}")
+
+    try:
+        df = pd.read_excel(passerelle_file)
+        st.write(f"Colonnes trouvées dans le fichier : {df.columns.tolist()}")
+
+        # Supposons que chaque ligne du fichier correspond à une joueuse
+        for _, row in df.iterrows():
+            nom = row.get('Nom', None)
+            if nom:
+                passerelle_data[nom] = {
+                    "Prénom": row.get('Prénom', ''),
+                    "Photo": row.get('Photo', ''),
+                    "Date de naissance": row.get('Date de naissance', ''),
+                    "Poste 1": row.get('Poste 1', ''),
+                    "Poste 2": row.get('Poste 2', ''),
+                    "Pied Fort": row.get('Pied Fort', ''),
+                    "Taille": row.get('Taille', '')
+                }
+    except Exception as e:
+        st.error(f"Erreur lors de la lecture du fichier 'Liste Joueuses Passerelles.xlsx': {e}")
+
     return passerelle_data
 
 # =============================================
