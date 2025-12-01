@@ -138,7 +138,7 @@ def nettoyer_nom_joueuse(nom):
 def load_passerelle_data():
     """Charge les données des joueuses depuis le fichier 'Liste Joueuses Passerelles.xlsx'."""
     passerelle_data = {}
-    passerelle_file = "data/passerelle/Liste Joueuses Passerelles.xlsx"
+    passerelle_file = "Liste Joueuses Passerelles.xlsx"
 
     if not os.path.exists(passerelle_file):
         st.warning(f"Le fichier '{passerelle_file}' n'existe pas.")
@@ -1534,3 +1534,4 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
