@@ -9,7 +9,6 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import warnings
-
 warnings.filterwarnings('ignore')
 
 # =============================================
@@ -54,7 +53,7 @@ def download_google_drive():
             print("Aucun fichier trouvé dans le dossier.")
         else:
             for file in files:
-                if file['name'].endswith(('.csv', '.xlsx')) and file['name'] != "Classeurs permissions streamlit.xlsx":
+                if file['name'].endswith(('.csv', '.xlsx')):
                     print(f"Téléchargement de : {file['name']}...")
                     download_file(service, file['id'], file['name'], output_folder)
     except Exception as e:
@@ -522,21 +521,16 @@ def generate_synthesis_excel(pfc_kpi):
     try:
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Ajouter toutes les données dans un seul DataFrame
             if not pfc_kpi.empty:
-                # Ajouter une colonne "Joueuse" en première colonne
                 pfc_kpi_inserted = pfc_kpi.copy()
                 pfc_kpi_inserted.insert(0, 'Joueuse', pfc_kpi['Player'])
-                # Écrire dans l'onglet "Synthèse"
                 pfc_kpi_inserted.to_excel(writer, sheet_name="Synthèse", index=False)
-        # Récupérer les bytes du fichier Excel
         excel_bytes = output.getvalue()
         return excel_bytes
     except Exception as e:
         print(f"Erreur lors de la génération du fichier Excel de synthèse : {e}")
         st.error(f"Erreur lors de la génération du fichier Excel de synthèse : {e}")
         return None
-
 
 @st.cache_data
 def collect_data(selected_season=None):
@@ -550,7 +544,6 @@ def collect_data(selected_season=None):
         fichiers = [f for f in os.listdir(data_folder) if f.endswith(('.csv', '.xlsx')) and f != "Classeurs permissions streamlit.xlsx"]
         if not fichiers:
             return pfc_kpi, edf_kpi
-        # Filtrer les fichiers par saison si une saison est sélectionnée
         if selected_season:
             fichiers = [f for f in fichiers if f"{selected_season}" in f]
         edf_joueuses_path = os.path.join(data_folder, "EDF_Joueuses.xlsx")
@@ -578,7 +571,6 @@ def collect_data(selected_season=None):
                     if 'Poste' in edf_kpi.columns:
                         edf_kpi = edf_kpi.groupby('Poste').mean(numeric_only=True).reset_index()
                         edf_kpi['Poste'] = edf_kpi['Poste'] + ' moyenne (EDF)'
-        # Traitement des données PFC
         for filename in fichiers:
             path = os.path.join(data_folder, filename)
             try:
@@ -779,13 +771,15 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     st.sidebar.title(f"Connecté en tant que: {user_profile}")
     if player_name:
         st.sidebar.write(f"Joueuse associée: {player_name}")
-    # Ajout de la boîte de dialogue pour sélectionner la saison
+
     saison_options = ["Toutes les saisons", "2425", "2526"]
     selected_saison = st.sidebar.selectbox("Sélectionnez une saison", saison_options)
+
     if st.sidebar.button("🔒 Déconnexion"):
         st.session_state.authenticated = False
         st.session_state.user_profile = None
         st.rerun()
+
     if check_permission(user_profile, "update_data", permissions) or check_permission(user_profile, "all", permissions):
         if st.sidebar.button("Mettre à jour la base de données"):
             with st.spinner("Mise à jour des données en cours..."):
@@ -793,6 +787,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 pfc_kpi, edf_kpi = collect_data(selected_saison)
             st.success("✅ Mise à jour terminée")
             st.cache_data.clear()
+
     if check_permission(user_profile, "all", permissions):
         if st.sidebar.button("Télécharger la synthèse des statistiques"):
             with st.spinner("Génération du fichier de synthèse en cours..."):
@@ -806,27 +801,30 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                     st.success("✅ Fichier Excel prêt à être téléchargé !")
-    # Recharger les données en fonction de la saison sélectionnée
+
     if selected_saison != "Toutes les saisons":
         pfc_kpi, edf_kpi = collect_data(selected_saison)
     else:
         pfc_kpi, edf_kpi = collect_data()
+
     if player_name and not pfc_kpi.empty and 'Player' in pfc_kpi.columns:
         pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
         if pfc_kpi.empty:
             st.warning(f"Aucune donnée disponible pour la joueuse {player_name}")
+
     available_options = ["Statistiques"]
     if check_permission(user_profile, "compare_players", permissions) or check_permission(user_profile, "all", permissions) or player_name:
         available_options.append("Comparaison")
     if check_permission(user_profile, "all", permissions):
         available_options.append("Gestion")
-    # Ajout de l'onglet "Données Physiques"
     available_options.append("Données Physiques")
+    available_options.append("Joueuses Passerelles")
+
     with st.sidebar:
         page = option_menu(
             menu_title="",
             options=available_options,
-            icons=["graph-up-arrow", "people", "gear", "activity"][:len(available_options)],
+            icons=["graph-up-arrow", "people", "gear", "activity", "people-fill"],
             menu_icon="cast",
             default_index=0,
             orientation="vertical",
@@ -837,6 +835,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 "nav-link-selected": {"background-color": "#0078D4", "color": "white"}
             }
         )
+
     logo_certifie_paris = "https://i.postimg.cc/2SZj5JdZ/Certifie-Paris-Blanc.png"
     st.sidebar.markdown(
         f"""
@@ -849,6 +848,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         """,
         unsafe_allow_html=True
     )
+
     if page == "Statistiques":
         st.header("Statistiques")
         if pfc_kpi.empty:
@@ -959,6 +959,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             st.warning("Aucun match disponible pour cette joueuse.")
                 else:
                     st.warning("Colonne 'Adversaire' manquante dans les données.")
+
     elif page == "Comparaison":
         st.header("Comparaison")
         if player_name:
@@ -1110,6 +1111,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                             st.pyplot(fig)
                             else:
                                 st.warning("Aucune donnée EDF disponible.")
+
     elif page == "Gestion":
         st.header("Gestion des utilisateurs")
         if check_permission(user_profile, "all", permissions):
@@ -1147,6 +1149,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             st.success(f"Profil {new_profile} créé avec succès!")
         else:
             st.error("Vous n'avez pas la permission d'accéder à cette page.")
+
     elif page == "Données Physiques":
         st.header("📊 Données Physiques")
         st.markdown("""
@@ -1189,7 +1192,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             player_name = st.selectbox("Sélectionnez une joueuse", pfc_kpi['Player'].unique())
         if player_name:
             st.subheader(f"Données pour {player_name}")
-            # Onglets pour séparer Entraînements et Matchs
             tab1, tab2 = st.tabs(["🏋️ Entraînements", "⚽ Matchs"])
             with tab1:
                 st.markdown("<div class='physique-container'>", unsafe_allow_html=True)
@@ -1201,12 +1203,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 - Visualisation des tendances sur la saison.
                 - Comparaison avec les moyennes de l'équipe.
                 """)
-                # Exemple de placeholder pour un graphique futur
                 st.markdown("<div class='chart-placeholder'>", unsafe_allow_html=True)
                 st.write("**Exemple : Charge d'entraînement (km) par semaine**")
                 st.write("Un graphique sera affiché ici pour montrer l'évolution de la charge d'entraînement.")
                 st.markdown("</div>", unsafe_allow_html=True)
-                # Exemple de placeholder pour un tableau futur
                 st.markdown("<div class='chart-placeholder'>", unsafe_allow_html=True)
                 st.write("**Exemple : Performances physiques par séance**")
                 st.write("Un tableau comparatif sera affiché ici pour chaque séance d'entraînement.")
@@ -1222,12 +1222,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 - Récupération post-match (fatigue, temps de récupération).
                 - Comparaison des performances entre les matchs.
                 """)
-                # Exemple de placeholder pour un graphique futur
                 st.markdown("<div class='chart-placeholder'>", unsafe_allow_html=True)
                 st.write("**Exemple : Distance parcourue par match**")
                 st.write("Un graphique sera affiché ici pour montrer la distance parcourue lors de chaque match.")
                 st.markdown("</div>", unsafe_allow_html=True)
-                # Exemple de placeholder pour un tableau futur
                 st.markdown("<div class='chart-placeholder'>", unsafe_allow_html=True)
                 st.write("**Exemple : Performances physiques par match**")
                 st.write("Un tableau comparatif sera affiché ici pour chaque match.")
@@ -1237,27 +1235,59 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.warning("Aucune joueuse sélectionnée ou associée à votre profil.")
         st.markdown("</div>", unsafe_allow_html=True)
 
+    elif page == "Joueuses Passerelles":
+        st.header("🔄 Joueuses Passerelles")
+        st.markdown("""
+        <style>
+            .passerelles-container {
+                background: rgba(0, 58, 88, 0.3);
+                border-radius: 10px;
+                padding: 20px;
+                margin-bottom: 20px;
+            }
+            .passerelles-title {
+                color: white;
+                font-size: 1.5rem;
+                margin-bottom: 15px;
+                border-bottom: 1px solid #0078D4;
+                padding-bottom: 10px;
+            }
+        </style>
+        """, unsafe_allow_html=True)
+
+        st.markdown("<div class='passerelles-container'>", unsafe_allow_html=True)
+        st.markdown("<h2 class='passerelles-title'>Liste des joueuses passerelles</h2>", unsafe_allow_html=True)
+
+        try:
+            passerelles_path = os.path.join("data", "Liste Joueuses Passerelles.xlsx")
+            if os.path.exists(passerelles_path):
+                df_passerelles = pd.read_excel(passerelles_path)
+                st.dataframe(df_passerelles)
+            else:
+                st.warning("Le fichier 'Liste Joueuses Passerelles.xlsx' n'a pas été trouvé dans le dossier 'data'.")
+        except Exception as e:
+            st.error(f"Erreur lors du chargement du fichier : {e}")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
 if __name__ == '__main__':
     st.set_page_config(
         page_title="Paris FC - Centre de Formation Féminin",
         layout="wide"
     )
-    # CSS personnalisé pour le style bleu foncé et texte blanc
+
     st.markdown("""
     <style>
-        /* Fond de l'application */
         .stApp {
             background: linear-gradient(135deg, #002B5C 0%, #002B5C 100%);
             color: white;
         }
-        /* Fond du conteneur principal */
         .main .block-container {
             background: linear-gradient(135deg, #003A58 0%, #0047AB 100%);
             border-radius: 10px;
             padding: 20px;
             color: white;
         }
-        /* En-tête */
         .main-header {
             background: linear-gradient(135deg, #002B5C 0%, #0047AB 100%);
             color: white;
@@ -1281,7 +1311,6 @@ if __name__ == '__main__':
             font-family: 'Arial', sans-serif;
             color: white;
         }
-        /* Logo */
         .logo-container {
             position: absolute;
             left: 1rem;
@@ -1292,20 +1321,17 @@ if __name__ == '__main__':
             width: 120px;
             opacity: 0.9;
         }
-        /* Sidebar */
         .sidebar .sidebar-content {
             background: linear-gradient(135deg, #002B5C 0%, #003A58 100%);
             color: white;
             border-right: 1px solid #0078D4;
         }
-        /* Texte dans la sidebar */
         .sidebar .sidebar-content h1,
         .sidebar .sidebar-content p,
         .sidebar .sidebar-content label,
         .sidebar .sidebar-content div {
             color: white !important;
         }
-        /* Boutons */
         .stButton>button {
             background-color: #0078D4;
             color: white;
@@ -1313,7 +1339,6 @@ if __name__ == '__main__':
             border: none;
             padding: 8px 16px;
         }
-        /* Sélecteurs */
         .stSelectbox>div>div,
         .stMultiselect>div>div {
             background-color: #003A58;
@@ -1321,7 +1346,6 @@ if __name__ == '__main__':
             border-radius: 5px;
             border: 1px solid #0078D4;
         }
-        /* Champs de texte */
         .stTextInput>div>div>input,
         .stTextInput>div>div>textarea {
             background-color: #003A58;
@@ -1329,81 +1353,67 @@ if __name__ == '__main__':
             border-radius: 5px;
             border: 1px solid #0078D4;
         }
-        /* Onglets */
         .stTabs [data-baseweb="tab-list"] {
             background-color: #003A58;
             gap: 0;
             border-radius: 5px;
         }
-        /* Onglet actif */
         .stTabs [aria-selected="true"] {
             background-color: #0078D4;
             color: white;
         }
-        /* Métriques */
         .stMetric {
             background-color: rgba(0, 71, 171, 0.4);
             border-radius: 5px;
             padding: 10px;
             color: white;
         }
-        /* DataFrames */
         .stDataFrame {
             background-color: rgba(255, 255, 255, 0.1);
             color: white;
             border-radius: 5px;
         }
-        /* Messages d'erreur */
         .stAlert {
             background-color: #d32f2f;
             color: white;
             border-radius: 5px;
         }
-        /* Messages de succès */
         [data-baseweb="notification"] .stAlert {
             background-color: #388e3c;
             color: white;
             border-radius: 5px;
         }
-        /* Conteneurs de colonnes */
         [data-testid="column"] {
             background-color: rgba(0, 58, 88, 0.3);
             border-radius: 5px;
             padding: 10px;
             margin: 5px;
         }
-        /* Espacement des éléments */
         [data-testid="stVerticalBlock"] {
             gap: 1rem;
         }
-        /* Menu de navigation */
         .st-emotion-cache-1v0mbdj {
             background-color: #003A58 !important;
         }
-        /* Texte dans les onglets */
         .st-emotion-cache-1v0mbdj p {
             color: white !important;
         }
-        /* Texte dans les métriques */
         .st-emotion-cache-16idsys p {
             color: white !important;
         }
-        /* Texte dans les labels */
         .st-emotion-cache-16idsys label {
             color: white !important;
         }
-        /* Texte dans les DataFrames */
         .stDataFrame table {
             color: white !important;
         }
-        /* Texte dans les DataFrames (en-tête) */
         .stDataFrame thead {
             color: white !important;
             background-color: rgba(0, 71, 171, 0.6) !important;
         }
     </style>
     """, unsafe_allow_html=True)
-    # En-tête personnalisé
+
     st.markdown("""
     <div class="main-header">
         <div class="logo-container">
@@ -1413,16 +1423,17 @@ if __name__ == '__main__':
         <p>Data Center</p>
     </div>
     """, unsafe_allow_html=True)
-    # Chargement des permissions et des données
+
     permissions = load_permissions()
     if not permissions:
         st.error("Impossible de charger les permissions. Vérifiez que le fichier 'Classeurs permissions streamlit.xlsx' est présent dans le dossier Google Drive.")
         st.stop()
+
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if "user_profile" not in st.session_state:
         st.session_state.user_profile = None
-    # Logique d'authentification
+
     if not st.session_state.authenticated:
         with st.form("login_form"):
             username = st.text_input("Nom d'utilisateur (profil)")
@@ -1436,11 +1447,11 @@ if __name__ == '__main__':
                 else:
                     st.error("Nom d'utilisateur ou mot de passe incorrect")
         st.stop()
-    # Chargement des données
+
     try:
         pfc_kpi, edf_kpi = collect_data()
     except Exception as e:
         st.error(f"Erreur lors du chargement des données: {e}")
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
-    # Appel de la fonction principale de l'interface
+
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
