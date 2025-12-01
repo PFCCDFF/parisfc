@@ -44,7 +44,7 @@ def list_files_in_folder(service, folder_id):
 def download_passerelle_files(service):
     """Télécharge le fichier 'Liste Joueuses Passerelles.xlsx' depuis le dossier 'Passerelle'."""
     try:
-        folder_id = "ID_DU_DOSSIER_PASSERELLE"  # Remplacez par l'ID du dossier "Passerelle"
+        folder_id = "19_ZU-FsAiNKxCfTw_WKzhTcuPDsGoVhL"  # Remplacez par l'ID du dossier "Passerelle"
         output_folder = "data/passerelle"
         os.makedirs(output_folder, exist_ok=True)
 
@@ -138,7 +138,7 @@ def nettoyer_nom_joueuse(nom):
 def load_passerelle_data():
     """Charge les données des joueuses depuis le fichier 'Liste Joueuses Passerelles.xlsx'."""
     passerelle_data = {}
-    passerelle_file = "Liste Joueuses Passerelles.xlsx"
+    passerelle_file = "data/passerelle/Liste Joueuses Passerelles.xlsx"
 
     if not os.path.exists(passerelle_file):
         st.warning(f"Le fichier '{passerelle_file}' n'existe pas.")
@@ -1534,4 +1534,3 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
-
