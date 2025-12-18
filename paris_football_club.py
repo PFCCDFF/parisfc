@@ -190,10 +190,11 @@ def players_edf_duration(match):
 def players_duration(match):
     """
     Calcule la durée de jeu cumulée pour chaque joueuse,
-    uniquement pour les lignes où la colonne 'Adversaire' contient "Adversaire".
+    en additionnant la colonne 'Duration' pour toutes les lignes où le nom de la joueuse
+    apparaît dans l'une des colonnes de poste.
     """
-    if 'Duration' not in match.columns or 'Adversaire' not in match.columns:
-        st.warning("Colonnes 'Duration' ou 'Adversaire' manquantes pour calculer la durée de jeu")
+    if 'Duration' not in match.columns:
+        st.warning("Colonne 'Duration' manquante pour calculer la durée de jeu")
         return pd.DataFrame()
 
     # Liste des colonnes de poste à vérifier
@@ -207,11 +208,8 @@ def players_duration(match):
     # Dictionnaire pour stocker la durée cumulée par joueuse
     players_duration = {}
 
-    # Parcourir uniquement les lignes où 'Adversaire' == "Adversaire"
+    # Parcourir toutes les lignes du DataFrame
     for i, row in match.iterrows():
-        if row['Adversaire'] != "Adversaire":
-            continue  # Ignorer les lignes où 'Adversaire' n'est pas "Adversaire"
-
         duration = row['Duration']
 
         # Parcourir chaque colonne de poste disponible
@@ -240,7 +238,6 @@ def players_duration(match):
     df_duration = df_duration.sort_values(by='Temps de jeu (en minutes)', ascending=False)
 
     return df_duration
-
 
 def players_shots(joueurs):
     """Calcule les statistiques de tirs."""
@@ -1561,6 +1558,7 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
