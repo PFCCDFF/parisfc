@@ -999,18 +999,34 @@ def collect_data(selected_season=None):
     st.session_state["gps_raw_df"] = gps_raw
 
     # ======================================================
-    # EDF (référentiel par poste) ✅ RESTAURÉ
+    # EDF (référentiel par poste) ✅ ROBUSTE via référentiel
     # ======================================================
     edf_path = os.path.join(DATA_FOLDER, EDF_JOUEUSES_FILENAME)
     if os.path.exists(edf_path):
         try:
             edf_joueuses = read_excel_auto(edf_path)
 
+            if isinstance(edf_joueuses, dict):
+                edf_joueuses = list(edf_joueuses.values())[0] if len(edf_joueuses) else pd.DataFrame()
+
             needed = {"Player", "Poste", "Temps de jeu"}
-            if needed.issubset(set(edf_joueuses.columns)):
+            if not needed.issubset(set(edf_joueuses.columns)):
+                st.warning(f"EDF_Joueuses.xlsx: colonnes manquantes, trouvé: {edf_joueuses.columns.tolist()}")
+            else:
+                # 1) Canoniser les joueuses EDF via référentiel
+                edf_j = edf_joueuses.copy()
+                edf_j["Player_raw"] = edf_j["Player"].astype(str)
 
-                edf_joueuses["Player"] = edf_joueuses["Player"].apply(nettoyer_nom_joueuse)
+                canon_list = []
+                for v in edf_j["Player_raw"].tolist():
+                    canon, _, _ = map_player_name(v, ref_set, alias_to_canon, fuzzy_cutoff=0.93)
+                    canon_list.append(canon)
+                edf_j["PlayerCanon"] = canon_list
 
+                # Temps de jeu en minutes (sécurise)
+                edf_j["Temps de jeu"] = pd.to_numeric(edf_j["Temps de jeu"], errors="coerce").fillna(0)
+
+                # 2) Charger tous les EDF_U19_Match*.csv
                 matchs_csv = [f for f in fichiers if f.startswith("EDF_U19_Match") and f.endswith(".csv")]
                 all_edf_rows = []
 
@@ -1019,18 +1035,71 @@ def collect_data(selected_season=None):
                     if "Row" not in d.columns:
                         continue
 
-                    # EDF: Row = nom joueuse => Player
-                    d["Player"] = d["Row"].apply(nettoyer_nom_joueuse)
+                    # Canoniser les noms venant du match EDF (Row)
+                    d = d.copy()
+                    d["Player_raw"] = d["Row"].astype(str)
 
-                    # Enrichit avec Poste + Temps de jeu
-                    d = d.merge(edf_joueuses[["Player", "Poste", "Temps de jeu"]], on="Player", how="left")
-                    if d.empty:
+                    canon_d = []
+                    for v in d["Player_raw"].tolist():
+                        canon, _, _ = map_player_name(v, ref_set, alias_to_canon, fuzzy_cutoff=0.93)
+                        canon_d.append(canon)
+                    d["PlayerCanon"] = canon_d
+
+                    # Merge sur PlayerCanon (robuste)
+                    d = d.merge(
+                        edf_j[["PlayerCanon", "Poste", "Temps de jeu"]],
+                        on="PlayerCanon",
+                        how="left"
+                    )
+
+                    # Si Poste est très vide => diagnostic (mismatch référentiel)
+                    if "Poste" not in d.columns or d["Poste"].isna().mean() > 0.9:
+                        # On skip ce fichier mais on garde un warning utile
+                        st.warning(f"EDF: merge faible sur {csv_file} (Poste NaN {d['Poste'].isna().mean():.0%}). Vérifie les noms EDF vs référentiel.")
                         continue
 
-                    df_edf = create_data(match=d, joueurs=d, is_edf=True)
+                    # 3) Construire un DF EDF "propre" :
+                    # - df_duration depuis edf_j (unique par joueuse)
+                    df_duration = edf_j[["PlayerCanon", "Poste", "Temps de jeu"]].copy()
+                    df_duration = df_duration.rename(columns={"PlayerCanon": "Player"})
+                    df_duration["Temps de jeu (en minutes)"] = df_duration["Temps de jeu"]
+                    df_duration = df_duration.drop(columns=["Temps de jeu"])
+
+                    # - stats actions depuis d (mais en forçant Row à être Player canon)
+                    joueurs_edf = d.copy()
+                    joueurs_edf["Row"] = joueurs_edf["PlayerCanon"]
+                    joueurs_edf["Player"] = joueurs_edf["PlayerCanon"]
+
+                    dfs = [df_duration]
+
+                    for func in [players_shots, players_passes, players_dribbles,
+                                players_defensive_duels, players_interceptions, players_ball_losses]:
+                        try:
+                            res = func(joueurs_edf)
+                            if res is not None and not res.empty:
+                                dfs.append(res)
+                        except Exception:
+                            pass
+
+                    # Merge final
+                    df_edf = dfs[0]
+                    for other in dfs[1:]:
+                        df_edf = df_edf.merge(other, on="Player", how="outer")
+
+                    df_edf.fillna(0, inplace=True)
+
+                    # Filtre temps de jeu >= 10
+                    df_edf = df_edf[df_edf["Temps de jeu (en minutes)"] >= 10].copy()
+
+                    # Metrics/KPIs/Postes
+                    df_edf = create_metrics(df_edf)
+                    df_edf = create_kpis(df_edf)
+                    df_edf = create_poste(df_edf)
+
                     if not df_edf.empty and "Poste" in df_edf.columns:
                         all_edf_rows.append(df_edf)
 
+                # 4) Référentiel = moyenne par poste
                 if all_edf_rows:
                     edf_full = pd.concat(all_edf_rows, ignore_index=True)
                     edf_kpi = edf_full.groupby("Poste").mean(numeric_only=True).reset_index()
@@ -1038,6 +1107,7 @@ def collect_data(selected_season=None):
 
         except Exception as e:
             st.warning(f"EDF: erreur chargement/calcul référentiel: {e}")
+
 
     # ======================================================
     # PFC Matchs
@@ -1554,3 +1624,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
