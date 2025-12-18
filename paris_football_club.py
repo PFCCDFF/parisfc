@@ -1,14 +1,16 @@
 # ============================================================
 # PARIS FC - DATA CENTER (MATCH + EDF U19 + REFERENTIEL NOMS + GPS)
-# Intègre :
-# - Téléchargement Drive (CSV/XLS/XLSX + permissions + EDF + référentiel noms + passerelles)
-# - Robustesse Unicode (ex: "Prénoms" avec accent combiné)
-# - Référentiel "Noms Prénoms Paris FC.xlsx" = source de vérité pour les noms
-# - Normalisation noms dans Row + colonnes postes (+ reporting fuzzy/unmatched)
-# - Temps de jeu via segments Duration (XI PFC-only sur toutes les lignes match)
-# - Fix ValueError astype(int) : conversion uniquement colonnes numériques
-# - Onglet Comparaison conservé (matchs + référentiel EDF U19)
-# - GPS : lecture "Data GPS", synthèse hebdo + daily, affichage tableaux + graphiques filtrables
+#
+# ✅ Intègre l'ajout du dossier Drive GPS : 1v4Iit4JlEDNACp2QWQVrP89j66zBqMFH
+# ✅ Supporte les exports GPS entrainement nommés comme :
+#    "GF1 S20 séance 89 - 12.12.25.xls"
+#    -> le script télécharge ces fichiers et les détecte même sans "gps" dans le nom.
+#
+# Notes :
+# - Le script essaye de lire en priorité un "dashboard" (si présent),
+#   sinon il concatène les fichiers GF1*.xls/.xlsx et tente une standardisation.
+# - Si les colonnes GPS ne correspondent pas, un diagnostic affichera :
+#   fichiers détectés, feuilles, colonnes.
 # ============================================================
 
 import os
@@ -18,13 +20,13 @@ import unicodedata
 import warnings
 from typing import Dict, List, Optional, Set, Tuple
 from difflib import get_close_matches
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 
 import streamlit as st
 from streamlit_option_menu import option_menu
-
 import matplotlib.pyplot as plt
 
 from mplsoccer import PyPizza, Radar, FontManager, grid
@@ -44,11 +46,14 @@ PASSERELLE_FOLDER = "data/passerelle"
 DRIVE_MAIN_FOLDER_ID = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
 DRIVE_PASSERELLE_FOLDER_ID = "19_ZU-FsAiNKxCfTw_WKzhTcuPDsGoVhL"
 
+# ✅ NOUVEAU : dossier Drive où sont stockés les exports GPS
+DRIVE_GPS_FOLDER_ID = "1v4Iit4JlEDNACp2QWQVrP89j66zBqMFH"
+
 PERMISSIONS_FILENAME = "Classeurs permissions streamlit.xlsx"
 EDF_JOUEUSES_FILENAME = "EDF_Joueuses.xlsx"
 PASSERELLE_FILENAME = "Liste Joueuses Passerelles.xlsx"
 
-# Recherche du référentiel sans dépendre du nom exact (accents combinés)
+# Référentiel noms (source de vérité)
 REFERENTIEL_FILENAME = "Noms Prénoms Paris FC.xlsx"
 
 POST_COLS = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']
@@ -56,8 +61,8 @@ POST_COLS = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 
 BAD_TOKENS = {"CORNER", "COUP-FRANC", "COUP FRANC", "PENALTY", "CARTON", "CARTONS", "PFC", "GB", "GARDIENNE", "GARDIEN"}
 
 # GPS
-GPS_KEYWORDS = ["gps", "dashboard"]  # on cherche un xlsx qui contient ces mots (normalisés)
-GPS_SHEET_RAW = "Data GPS"
+GPS_SHEET_RAW = "Data GPS"  # si dashboard
+GPS_GF1_PREFIX = "GF1"      # exports entrainement type GF1...
 
 
 # =========================
@@ -103,7 +108,7 @@ def safe_int_numeric_only(df: pd.DataFrame, round_first: bool = True) -> pd.Data
 
 def nettoyer_nom_joueuse(nom):
     if not isinstance(nom, str):
-        return nom
+        nom = str(nom) if nom is not None else ""
     s = nom.strip().upper()
     s = (s.replace("É", "E").replace("È", "E").replace("Ê", "E")
            .replace("À", "A").replace("Ù", "U")
@@ -149,6 +154,22 @@ def split_if_comma(cell: str) -> List[str]:
     parts = [p.strip() for p in s.split(",") if p.strip()]
     return parts if len(parts) > 1 else [s]
 
+def parse_date_from_gf1_filename(fn: str) -> Optional[datetime]:
+    """
+    Ex: "GF1 S20 séance 89 - 12.12.25.xls" -> 12/12/2025
+    """
+    base = os.path.basename(fn)
+    m = re.search(r"(\d{2})\.(\d{2})\.(\d{2,4})", base)
+    if not m:
+        return None
+    d, mo, y = m.group(1), m.group(2), m.group(3)
+    if len(y) == 2:
+        y = "20" + y
+    try:
+        return datetime(int(y), int(mo), int(d))
+    except Exception:
+        return None
+
 
 # =========================
 # GOOGLE DRIVE
@@ -176,52 +197,55 @@ def download_file(service, file_id, file_name, output_folder):
     with open(path, "wb") as f:
         f.write(fh.getbuffer())
 
-def download_from_folder_by_names(service, folder_id: str, output_folder: str, filenames: Set[str]):
-    files = list_files_in_folder(service, folder_id)
-    found = set()
-    for f in files:
-        if f["name"] in filenames:
-            download_file(service, f["id"], f["name"], output_folder)
-            found.add(f["name"])
-    return found
-
 def download_google_drive():
     """
     Télécharge :
-    - Tous les fichiers .csv/.xlsx/.xls du dossier principal (inclut le dashboard GPS)
+    - Tous les fichiers .csv/.xlsx/.xls du dossier principal
     - Passerelles depuis son dossier
-    - Référentiel noms (recherche normalisée)
+    - Référentiel noms (match unicode/accents)
+    - ✅ Tous les fichiers GPS (.xls/.xlsx) depuis le dossier GPS dédié
     """
     service = authenticate_google_drive()
     os.makedirs(DATA_FOLDER, exist_ok=True)
     os.makedirs(PASSERELLE_FOLDER, exist_ok=True)
 
+    # 1) Dossier principal
     files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
     for f in files:
         if f["name"].endswith((".csv", ".xlsx", ".xls")):
             download_file(service, f["id"], f["name"], DATA_FOLDER)
 
+    # 2) Dossier passerelles
     files_pass = list_files_in_folder(service, DRIVE_PASSERELLE_FOLDER_ID)
     for f in files_pass:
         if f["name"] == PASSERELLE_FILENAME:
             download_file(service, f["id"], f["name"], PASSERELLE_FOLDER)
             break
 
-    # Référentiel noms : match unicode/accents
+    # 3) Référentiel noms
     target_norm = normalize_str(REFERENTIEL_FILENAME)
     for f in files:
         if f["name"].endswith((".xlsx", ".xls")) and normalize_str(f["name"]) == target_norm:
             download_file(service, f["id"], f["name"], DATA_FOLDER)
             break
 
+    # 4) ✅ Dossier GPS dédié
+    try:
+        gps_files = list_files_in_folder(service, DRIVE_GPS_FOLDER_ID)
+        for f in gps_files:
+            if f["name"].endswith((".xlsx", ".xls")):
+                download_file(service, f["id"], f["name"], DATA_FOLDER)
+    except Exception as e:
+        st.warning(f"Impossible de télécharger les fichiers GPS depuis le dossier GPS: {e}")
+
 def download_permissions_file():
     try:
         service = authenticate_google_drive()
-        found = download_from_folder_by_names(
-            service, DRIVE_MAIN_FOLDER_ID, DATA_FOLDER, filenames={PERMISSIONS_FILENAME}
-        )
-        if PERMISSIONS_FILENAME in found:
-            return os.path.join(DATA_FOLDER, PERMISSIONS_FILENAME)
+        files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
+        for f in files:
+            if f["name"] == PERMISSIONS_FILENAME:
+                download_file(service, f["id"], f["name"], DATA_FOLDER)
+                return os.path.join(DATA_FOLDER, PERMISSIONS_FILENAME)
         return find_local_file_by_normalized_name(DATA_FOLDER, PERMISSIONS_FILENAME)
     except Exception as e:
         st.error(f"Erreur téléchargement permissions: {e}")
@@ -295,10 +319,7 @@ def normalize_players_in_df(df: pd.DataFrame,
             mapped, status, raw = map_player_name(v, ref_set, alias_to_canon, fuzzy_cutoff=fuzzy_cutoff)
             if status in {"fuzzy", "unmatched"} and str(v).strip():
                 report.append({"file": filename, "column": col, "raw": raw, "mapped": mapped, "status": status})
-            if looks_like_player(mapped):
-                new_vals.append(mapped)
-            else:
-                new_vals.append(v)
+            new_vals.append(mapped if looks_like_player(mapped) else v)
         out[col] = new_vals
     return out
 
@@ -398,10 +419,6 @@ def extract_lineup_from_row(row: pd.Series, available_posts: List[str]) -> Set[s
     return players
 
 def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.DataFrame:
-    """
-    Colonnes postes = XI PFC même quand Row == adversaire.
-    => On crédite le XI lu sur la ligne sur TOUTES les lignes match (PFC + ADV).
-    """
     if match is None or match.empty or "Duration" not in match.columns or "Row" not in match.columns:
         return pd.DataFrame()
 
@@ -736,57 +753,191 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     ).reset_index()
     return safe_int_numeric_only(aggregated)
 
-def generate_synthesis_excel(pfc_kpi):
+
+# =========================
+# GPS : détection + standardisation
+# =========================
+def detect_gps_raw_sheet(path: str) -> Optional[str]:
+    """Retrouve automatiquement une feuille brute GPS si dashboard."""
     try:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            if not pfc_kpi.empty:
-                tmp = pfc_kpi.copy()
-                tmp.insert(0, "Joueuse", tmp["Player"])
-                tmp.to_excel(writer, sheet_name="Synthèse", index=False)
-        return output.getvalue()
+        xls = pd.ExcelFile(path)
+        sheets = xls.sheet_names
     except Exception:
         return None
 
+    target = normalize_str("Data GPS")
+    for s in sheets:
+        if normalize_str(s) == target:
+            return s
 
-# =========================
-# GPS : chargement + synthèses
-# =========================
-def find_gps_dashboard_file_local() -> Optional[str]:
-    if not os.path.exists(DATA_FOLDER):
-        return None
-    candidates = [f for f in os.listdir(DATA_FOLDER) if f.lower().endswith((".xlsx", ".xls"))]
-    for fn in candidates:
-        n = normalize_str(fn)
-        if all(k in n for k in GPS_KEYWORDS):
-            return os.path.join(DATA_FOLDER, fn)
+    for s in sheets:
+        ns = normalize_str(s)
+        if "gps" in ns and ("data" in ns or "donnee" in ns or "donnees" in ns):
+            return s
+
+    for s in sheets:
+        if "gps" in normalize_str(s):
+            return s
+
     return None
 
+def list_excel_files_local() -> List[str]:
+    if not os.path.exists(DATA_FOLDER):
+        return []
+    return [os.path.join(DATA_FOLDER, f) for f in os.listdir(DATA_FOLDER) if f.lower().endswith((".xlsx", ".xls"))]
+
+def find_dashboard_candidate(files: List[str]) -> Optional[str]:
+    # dashboard = souvent .xlsx avec "dashboard" ou "gps" et feuille Data GPS
+    for p in files:
+        fn = normalize_str(os.path.basename(p))
+        if "dashboard" in fn or ("gps" in fn and p.lower().endswith(".xlsx")):
+            if detect_gps_raw_sheet(p):
+                return p
+    # fallback : le plus gros qui contient une feuille gps
+    scored = []
+    for p in files:
+        sh = detect_gps_raw_sheet(p)
+        if sh:
+            scored.append((os.path.getsize(p), p))
+    if scored:
+        scored.sort(reverse=True)
+        return scored[0][1]
+    return None
+
+def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
+    """
+    Standardise au mieux les exports GF1 en colonnes "style dashboard".
+    Si on ne reconnait pas, on renvoie df tel quel.
+    """
+    if df is None or df.empty:
+        return df
+
+    # mapping heuristique via noms normalisés
+    colmap = {}
+    for c in df.columns:
+        nc = normalize_str(c)
+        if nc in {"nom", "name", "joueur", "joueuse"}:
+            colmap[c] = "NOM"
+        elif "date" == nc:
+            colmap[c] = "DATE"
+        elif "semaine" in nc or nc in {"week"}:
+            colmap[c] = "SEMAINE"
+        elif "type" in nc and "session" in nc:
+            colmap[c] = "Type Session"
+        elif "duree" in nc or "durée" in nc:
+            colmap[c] = "Durée"
+        elif "distance" in nc and "(m)" in nc:
+            colmap[c] = "Distance (m)"
+        elif "distance" in nc and "hid" in nc and "13" in nc:
+            colmap[c] = "Distance HID (>13 km/h)"
+        elif "distance" in nc and "hid" in nc and "19" in nc:
+            colmap[c] = "Distance HID (>19 km/h)"
+        elif "acc" in nc and "dec" in nc:
+            colmap[c] = "# Acc/Dec"
+        elif "charge" == nc:
+            colmap[c] = "CHARGE"
+        elif "rpe" == nc:
+            colmap[c] = "RPE"
+
+    out = df.rename(columns=colmap).copy()
+
+    # Si Type Session absent pour GF1 : on force "Entrainement"
+    if "Type Session" not in out.columns:
+        out["Type Session"] = "Entrainement"
+
+    # Si DATE absent, on tente depuis le nom de fichier
+    if "DATE" not in out.columns:
+        d = parse_date_from_gf1_filename(filename)
+        if d:
+            out["DATE"] = pd.Timestamp(d.date())
+
+    # SEMAINE si absent, on calcule depuis DATE
+    if "SEMAINE" not in out.columns and "DATE" in out.columns:
+        out["DATE"] = pd.to_datetime(out["DATE"], errors="coerce")
+        out["SEMAINE"] = out["DATE"].dt.isocalendar().week.astype("Int64")
+
+    return out
+
 def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFrame:
-    gps_path = find_gps_dashboard_file_local()
-    if not gps_path or not os.path.exists(gps_path):
-        return pd.DataFrame()
-    try:
-        df = pd.read_excel(gps_path, sheet_name=GPS_SHEET_RAW)
-    except Exception:
-        return pd.DataFrame()
-
-    required = {"DATE", "SEMAINE", "Type Session", "NOM"}
-    if not required.issubset(set(df.columns)):
+    """
+    Stratégie :
+    1) si un dashboard avec feuille 'Data GPS' est présent -> on le lit
+    2) sinon on concatène tous les fichiers GF1*.xls/.xlsx et on standardise
+    """
+    files = list_excel_files_local()
+    if not files:
         return pd.DataFrame()
 
-    df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
+    dashboard = find_dashboard_candidate(files)
+    if dashboard:
+        sheet = detect_gps_raw_sheet(dashboard)
+        try:
+            df = pd.read_excel(dashboard, sheet_name=sheet)
+        except Exception:
+            df = pd.DataFrame()
+    else:
+        gf1_files = [p for p in files if normalize_str(os.path.basename(p)).startswith(normalize_str(GPS_GF1_PREFIX))]
+        # si rien ne commence par GF1, on tente ceux qui contiennent "seance"
+        if not gf1_files:
+            gf1_files = [p for p in files if "seance" in normalize_str(os.path.basename(p))]
+        if not gf1_files:
+            return pd.DataFrame()
 
+        # trier par date dans le nom si possible (du + ancien au + récent)
+        gf1_files_sorted = []
+        for p in gf1_files:
+            d = parse_date_from_gf1_filename(os.path.basename(p))
+            gf1_files_sorted.append((d or datetime.min, p))
+        gf1_files_sorted.sort(key=lambda t: t[0])
+
+        frames = []
+        for _, p in gf1_files_sorted:
+            try:
+                dfp = pd.read_excel(p)
+                dfp = standardize_gps_columns(dfp, os.path.basename(p))
+                dfp["__source_file"] = os.path.basename(p)
+                frames.append(dfp)
+            except Exception:
+                continue
+        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    if df.empty:
+        return pd.DataFrame()
+
+    # Vérification colonnes minimales (souple)
+    # On accepte si on a au moins NOM + DATE (ou NOM + SEMAINE)
+    cols = set(df.columns)
+    if "NOM" not in cols:
+        return pd.DataFrame()
+
+    # Dates
+    if "DATE" in df.columns:
+        df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
+    else:
+        df["DATE"] = pd.NaT
+
+    # Semaine
+    if "SEMAINE" in df.columns:
+        df["SEMAINE"] = pd.to_numeric(df["SEMAINE"], errors="coerce")
+    else:
+        df["SEMAINE"] = df["DATE"].dt.isocalendar().week.astype("Int64") if "DATE" in df.columns else pd.Series([pd.NA]*len(df))
+
+    # Mapping NOM -> Player canonique
     mapped = []
     for v in df["NOM"].astype(str).tolist():
         m, _, _ = map_player_name(v, ref_set, alias_to_canon, fuzzy_cutoff=0.93)
         mapped.append(m)
     df["Player"] = mapped
 
-    # cast numériques usuels
-    for c in df.columns:
-        if isinstance(c, str) and any(k in normalize_str(c) for k in ["distance", "duree", "durée", "charge", "rpe", "acc", "dec", "vitesse", "sprint"]):
-            df[c] = pd.to_numeric(df[c], errors="ignore")
+    # Cast numériques principaux (si présents)
+    num_candidates = [
+        "Durée", "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+        "Distance par plage de vitesse (>25 km/h)", "# Acc/Dec", "CHARGE", "RPE"
+    ]
+    for c in num_candidates:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
     return df
 
 def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
@@ -802,12 +953,10 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
     else:
         d["Durée_min"] = np.nan
 
-    # CHARGE fallback
     if "CHARGE" not in d.columns and "RPE" in d.columns:
         d["CHARGE"] = pd.to_numeric(d["RPE"], errors="coerce").fillna(0) * d["Durée_min"].fillna(0)
 
     agg_map = {}
-    # colonnes possibles (selon ton dashboard)
     candidates = [
         "Distance (m)",
         "Distance HID (>13 km/h)",
@@ -822,7 +971,6 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
 
     out = d.groupby(["Player", "SEMAINE"], as_index=False).agg(agg_map)
 
-    # Distance relative
     if "Distance (m)" in d.columns:
         dur_week = d.groupby(["Player", "SEMAINE"], as_index=False)["Durée_min"].sum().rename(columns={"Durée_min": "_dur"})
         out = out.merge(dur_week, on=["Player", "SEMAINE"], how="left")
@@ -832,7 +980,6 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
         out["Durée hebdo (min)"] = 0.0
         out["Distance relative (m/min)"] = 0.0
 
-    # Monotonie / Contrainte + ACWR (hebdo)
     if "CHARGE" in d.columns and "CHARGE" in out.columns:
         d_day = d.groupby(["Player", "SEMAINE", "DATE"], as_index=False)["CHARGE"].sum()
         daily_stats = d_day.groupby(["Player", "SEMAINE"])["CHARGE"].agg(["mean", "std"]).reset_index()
@@ -851,7 +998,6 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
         out["Chronique"] = np.nan
         out["ACWR"] = np.nan
 
-    # renommages HID
     out.rename(columns={
         "Distance HID (>13 km/h)": "Distance HID >13 (m)",
         "Distance HID (>19 km/h)": "Distance HID >19 (m)",
@@ -887,7 +1033,6 @@ def compute_gps_daily_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
 
     out = d.groupby(["Player", "DATE"], as_index=False).agg(agg)
 
-    # Distance relative
     if "Distance (m)" in d.columns:
         mins = d.groupby(["Player", "DATE"], as_index=False)["Durée_min"].sum().rename(columns={"Durée_min": "_dur"})
         out = out.merge(mins, on=["Player", "DATE"], how="left")
@@ -897,7 +1042,6 @@ def compute_gps_daily_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
         out["Durée (min)"] = 0.0
         out["Distance relative (m/min)"] = 0.0
 
-    # ACWR daily (28 jours)
     if "CHARGE" in out.columns:
         out = out.sort_values(["Player", "DATE"])
         out["Aigue"] = out["CHARGE"]
@@ -924,26 +1068,18 @@ def compute_gps_daily_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
 def collect_data(selected_season=None):
     download_google_drive()
 
-    # ---- Référentiel (robuste Unicode) ----
     ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
     if not os.path.exists(ref_path):
         ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME)
 
     if not ref_path or not os.path.exists(ref_path):
         st.error(f"Référentiel introuvable dans '{DATA_FOLDER}'.")
-        try:
-            st.write("Fichiers présents:", os.listdir(DATA_FOLDER))
-        except Exception:
-            pass
         return pd.DataFrame(), pd.DataFrame()
 
     ref_set, alias_to_canon = build_referentiel_players(ref_path)
     name_report: List[dict] = []
 
     pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
-
-    if not os.path.exists(DATA_FOLDER):
-        return pfc_kpi, edf_kpi
 
     fichiers = [f for f in os.listdir(DATA_FOLDER)
                 if f.endswith((".csv", ".xlsx", ".xls")) and normalize_str(f) != normalize_str(PERMISSIONS_FILENAME)]
@@ -958,9 +1094,11 @@ def collect_data(selected_season=None):
         gps_day = compute_gps_daily_metrics(gps_raw)
         st.session_state["gps_weekly_df"] = gps_week
         st.session_state["gps_daily_df"] = gps_day
+        st.session_state["gps_raw_df"] = gps_raw
     except Exception:
         st.session_state["gps_weekly_df"] = pd.DataFrame()
         st.session_state["gps_daily_df"] = pd.DataFrame()
+        st.session_state["gps_raw_df"] = pd.DataFrame()
 
     # ---- EDF ----
     edf_path = os.path.join(DATA_FOLDER, EDF_JOUEUSES_FILENAME)
@@ -1021,7 +1159,6 @@ def collect_data(selected_season=None):
             if "Row" not in data.columns:
                 continue
 
-            # normalisation noms (Row + postes)
             cols_to_fix = ["Row"] + [c for c in POST_COLS if c in data.columns]
             data = normalize_players_in_df(
                 data, cols=cols_to_fix, ref_set=ref_set, alias_to_canon=alias_to_canon,
@@ -1069,7 +1206,7 @@ def collect_data(selected_season=None):
             if df.empty:
                 continue
 
-            # normalisation /90 (numériques uniquement, hors pourcentages)
+            # normalisation /90 (numériques uniquement)
             if "Temps de jeu (en minutes)" in df.columns:
                 num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != "Temps de jeu (en minutes)"]
                 for idx, r in df.iterrows():
@@ -1200,7 +1337,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
 
 
 # =========================
-# UI STREAMLIT
+# UI STREAMLIT : GRAPHIQUE GPS
 # =========================
 def plot_gps_evolution(base_df: pd.DataFrame, player_canon: str, granularity: str):
     if base_df is None or base_df.empty:
@@ -1289,6 +1426,9 @@ def plot_gps_evolution(base_df: pd.DataFrame, player_canon: str, granularity: st
         st.dataframe(dfp)
 
 
+# =========================
+# UI STREAMLIT
+# =========================
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     st.sidebar.markdown(
         "<div style='display:flex;justify-content:center;'><img src='https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png' width='100'></div>",
@@ -1316,28 +1456,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.cache_data.clear()
             st.success("✅ Mise à jour terminée")
             st.rerun()
-
-    rep_df = st.session_state.get("name_report_df", pd.DataFrame())
-    if isinstance(rep_df, pd.DataFrame) and not rep_df.empty:
-        st.sidebar.download_button(
-            "⬇️ Rapport mapping noms",
-            data=rep_df.to_csv(index=False).encode("utf-8"),
-            file_name="rapport_mapping_noms.csv",
-            mime="text/csv"
-        )
-
-    if check_permission(user_profile, "all", permissions):
-        if st.sidebar.button("Télécharger synthèse"):
-            with st.spinner("Génération..."):
-                p_all, _ = collect_data()
-                excel_bytes = generate_synthesis_excel(p_all)
-            if excel_bytes:
-                st.sidebar.download_button(
-                    label="⬇️ Télécharger le fichier Excel",
-                    data=excel_bytes,
-                    file_name="synthese_statistiques_joueuses.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
 
     if selected_saison != "Toutes les saisons":
         pfc_kpi, edf_kpi = collect_data(selected_saison)
@@ -1531,12 +1649,26 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     elif page == "Données Physiques":
         st.header("📊 Données Physiques")
 
-        # Sélection joueuse (si non connectée à un profil)
         gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
         gps_daily = st.session_state.get("gps_daily_df", pd.DataFrame())
+        gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
+
+        with st.expander("🛠 Diagnostic GPS", expanded=False):
+            st.write("Fichiers Excel détectés dans data/:")
+            try:
+                exc = [f for f in os.listdir(DATA_FOLDER) if f.lower().endswith((".xls", ".xlsx"))]
+                st.write(exc)
+            except Exception as e:
+                st.write("Impossible de lister data/:", e)
+
+            if isinstance(gps_raw, pd.DataFrame) and not gps_raw.empty:
+                st.write("Colonnes GPS brutes détectées:")
+                st.write(list(gps_raw.columns))
+                st.write("Aperçu (5 lignes):")
+                st.dataframe(gps_raw.head(5))
 
         if (gps_weekly is None or gps_weekly.empty) and (gps_daily is None or gps_daily.empty):
-            st.warning("Aucune donnée GPS trouvée (fichier dashboard GPS absent ou feuille 'Data GPS' manquante).")
+            st.warning("Aucune donnée GPS trouvée (vérifie le diagnostic ci-dessus : fichier/colonnes).")
             return
 
         all_players = []
@@ -1555,7 +1687,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         with tab1:
             st.subheader("Suivi GPS - Entraînement")
-
             granularity = st.radio("Granularité", ["Semaine", "Jour"], horizontal=True)
             base_df = gps_weekly if granularity == "Semaine" else gps_daily
 
@@ -1585,7 +1716,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.dataframe(dfp[cols_show].sort_values("DATE") if not dfp.empty else dfp)
 
         with tab2:
-            st.info("GPS Matchs : à brancher quand tu me donnes la structure de l’export GPS match (colonnes / feuille).")
+            st.info("GPS Matchs : à brancher quand tu me donnes la structure d’un export GPS match (colonnes / feuille).")
 
     elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
@@ -1606,10 +1737,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         if info.get("Pied Fort"): st.write(f"**Pied Fort :** {info['Pied Fort']}")
         if info.get("Taille"): st.write(f"**Taille :** {info['Taille']}")
 
-        # GPS passerelles
         gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
-        gps_daily = st.session_state.get("gps_daily_df", pd.DataFrame())
-
         if isinstance(gps_weekly, pd.DataFrame) and not gps_weekly.empty:
             prenom = str(info.get("Prénom", "")).strip()
             nom = str(selected).strip()
