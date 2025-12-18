@@ -1,9 +1,9 @@
 # ============================================================
-# PARIS FC - DATA CENTER
+# PARIS FC - DATA CENTER (Streamlit)
 # - PFC Matchs (CSV): stats + temps de jeu via segments Duration
-# - EDF U19: comparaison vs référentiel EDF
+# - EDF U19: comparaison vs référentiel EDF (moyenne par poste)
 # - Référentiel noms: "Noms Prénoms Paris FC.xlsx"
-# - GPS Entraînement: fichiers GF1 *.xls
+# - GPS Entraînement: fichiers "GF1 ... .xls/.xlsx" (lecture simple)
 # ============================================================
 
 import os
@@ -17,7 +17,6 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 import streamlit as st
 from streamlit_option_menu import option_menu
@@ -36,18 +35,21 @@ warnings.filterwarnings("ignore")
 DATA_FOLDER = "data"
 PASSERELLE_FOLDER = "data/passerelle"
 
+# Dossiers Drive
 DRIVE_MAIN_FOLDER_ID = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
 DRIVE_PASSERELLE_FOLDER_ID = "19_ZU-FsAiNKxCfTw_WKzhTcuPDsGoVhL"
 DRIVE_GPS_FOLDER_ID = "1v4Iit4JlEDNACp2QWQVrP89j66zBqMFH"
 
+# Fichiers attendus
 PERMISSIONS_FILENAME = "Classeurs permissions streamlit.xlsx"
 EDF_JOUEUSES_FILENAME = "EDF_Joueuses.xlsx"
 PASSERELLE_FILENAME = "Liste Joueuses Passerelles.xlsx"
 REFERENTIEL_FILENAME = "Noms Prénoms Paris FC.xlsx"
 
+# Colonnes "poste" dans les lignes match (lineups)
 POST_COLS = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']
-BAD_TOKENS = {"CORNER", "COUP-FRANC", "COUP FRANC", "PENALTY", "CARTON", "CARTONS", "PFC", "GB", "GARDIENNE", "GARDIEN"}
 
+BAD_TOKENS = {"CORNER", "COUP-FRANC", "COUP FRANC", "PENALTY", "CARTON", "CARTONS"}
 GPS_GF1_PREFIX = "GF1"
 
 
@@ -81,6 +83,7 @@ def safe_float(x, default=np.nan) -> float:
         return default
 
 def safe_int_numeric_only(df: pd.DataFrame, round_first: bool = True) -> pd.DataFrame:
+    """Evite les ValueError sur astype(int) si colonnes non-numériques."""
     if df is None or df.empty:
         return df
     out = df.copy()
@@ -127,6 +130,9 @@ def looks_like_player(name: str) -> bool:
         return False
     if any(tok in n for tok in BAD_TOKENS):
         return False
+    # Evite "PFC" / "LE MANS" etc si présent
+    if len(n) <= 2:
+        return False
     if re.search(r"\d", n):
         return False
     return True
@@ -155,7 +161,7 @@ def parse_date_from_gf1_filename(fn: str) -> Optional[datetime]:
 
 
 # =========================
-# ✅ EXCEL READER (sheet 0)
+# EXCEL READER
 # =========================
 def read_excel_auto(path: str, sheet_name=0) -> pd.DataFrame:
     ext = os.path.splitext(path)[1].lower()
@@ -186,6 +192,7 @@ def download_file(service, file_id, file_name, output_folder, mime_type=None):
     final_path = os.path.join(output_folder, file_name)
     tmp_path = final_path + ".tmp"
 
+    # Google Sheet -> export xlsx
     if mime_type == "application/vnd.google-apps.spreadsheet":
         request = service.files().export_media(
             fileId=file_id,
@@ -250,7 +257,7 @@ def load_permissions():
 
         permissions_df = read_excel_auto(permissions_path)
 
-        # sécurité si dict
+        # sécurité si dict (plusieurs feuilles)
         if isinstance(permissions_df, dict):
             if len(permissions_df) == 0:
                 return {}
@@ -326,15 +333,7 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str]]:
     if isinstance(ref, dict):
         if len(ref) == 0:
             raise ValueError("Référentiel vide (aucune feuille lisible).")
-        chosen = None
-        for _, sh_df in ref.items():
-            if not isinstance(sh_df, pd.DataFrame) or sh_df.empty:
-                continue
-            cols_norm = [normalize_str(c) for c in sh_df.columns]
-            if ("nom" in cols_norm) and ("prenom" in cols_norm or "prénom" in cols_norm):
-                chosen = sh_df
-                break
-        ref = chosen if chosen is not None else list(ref.values())[0]
+        ref = list(ref.values())[0]
 
     if not isinstance(ref, pd.DataFrame) or ref.empty:
         raise ValueError("Référentiel illisible ou vide.")
@@ -465,7 +464,7 @@ def infer_duration_unit(series: pd.Series) -> str:
     if s.empty:
         return "seconds"
     total = s.sum()
-    # Heuristique générale
+    # Heuristique:
     if 30 <= total <= 200:
         return "minutes"
     if 1500 <= total <= 20000:
@@ -489,7 +488,7 @@ def extract_lineup_from_row(row: pd.Series, available_posts: List[str]) -> Set[s
 def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.DataFrame:
     """
     ✅ CORRECTIF CLÉ :
-    on normalise 'Row' et les noms d'équipes (casse/accents/espaces) avant filtrage,
+    on normalise 'Row' et les noms d'équipes avant filtrage,
     sinon on perd souvent l'équipe adverse -> temps de jeu ÷2.
     """
     if match is None or match.empty or "Duration" not in match.columns or "Row" not in match.columns:
@@ -505,6 +504,7 @@ def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.
     away_clean = nettoyer_nom_equipe(away_team)
     m["Row_clean"] = m["Row"].astype(str).apply(nettoyer_nom_equipe)
 
+    # IMPORTANT : garder bien les 2 équipes
     m = m[m["Row_clean"].isin({home_clean, away_clean})].copy()
     if m.empty:
         return pd.DataFrame()
@@ -519,6 +519,7 @@ def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.
 
     played_seconds: Dict[str, float] = {}
 
+    # ordre si colonne de temps dispo
     for c in ["Start time", "StartTime", "Start", "Time", "Timestamp"]:
         if c in m.columns:
             m = m.sort_values(by=c, ascending=True)
@@ -827,6 +828,7 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
         filtered = filtered[filtered["Adversaire"].isin(selected_matches)]
     if filtered.empty:
         return pd.DataFrame()
+
     aggregated = filtered.groupby("Player").agg({
         "Temps de jeu (en minutes)": "sum",
         "Buts": "sum",
@@ -835,11 +837,12 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
             columns=["Temps de jeu (en minutes)", "Buts"], errors="ignore"
         )
     ).reset_index()
+
     return safe_int_numeric_only(aggregated)
 
 
 # =========================
-# GPS (lecture simple GF1)
+# GPS (lecture simple)
 # =========================
 def list_excel_files_local() -> List[str]:
     if not os.path.exists(DATA_FOLDER):
@@ -863,9 +866,9 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
             colmap[c] = "Durée"
         elif "distance" in nc and "(m)" in nc:
             colmap[c] = "Distance (m)"
-        elif "distance" in nc and "hid" in nc and "13" in nc:
+        elif "hid" in nc and "13" in nc:
             colmap[c] = "Distance HID (>13 km/h)"
-        elif "distance" in nc and "hid" in nc and "19" in nc:
+        elif "hid" in nc and "19" in nc:
             colmap[c] = "Distance HID (>19 km/h)"
         elif "charge" in nc:
             colmap[c] = "CHARGE"
@@ -905,7 +908,7 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFr
     frames = []
     for _, p in gf1_files_sorted:
         try:
-            dfp = read_excel_auto(p)  # sheet 0
+            dfp = read_excel_auto(p)
             dfp = standardize_gps_columns(dfp, os.path.basename(p))
             dfp["__source_file"] = os.path.basename(p)
             frames.append(dfp)
@@ -970,6 +973,7 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
 def collect_data(selected_season=None):
     download_google_drive()
 
+    # Référentiel
     ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
     if not os.path.exists(ref_path):
         ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME)
@@ -994,38 +998,50 @@ def collect_data(selected_season=None):
     st.session_state["gps_weekly_df"] = gps_week
     st.session_state["gps_raw_df"] = gps_raw
 
-    # EDF
+    # ======================================================
+    # EDF (référentiel par poste) ✅ RESTAURÉ
+    # ======================================================
     edf_path = os.path.join(DATA_FOLDER, EDF_JOUEUSES_FILENAME)
     if os.path.exists(edf_path):
         try:
             edf_joueuses = read_excel_auto(edf_path)
+
             needed = {"Player", "Poste", "Temps de jeu"}
             if needed.issubset(set(edf_joueuses.columns)):
+
                 edf_joueuses["Player"] = edf_joueuses["Player"].apply(nettoyer_nom_joueuse)
 
                 matchs_csv = [f for f in fichiers if f.startswith("EDF_U19_Match") and f.endswith(".csv")]
-                all_edf = []
+                all_edf_rows = []
+
                 for csv_file in matchs_csv:
                     d = pd.read_csv(os.path.join(DATA_FOLDER, csv_file))
                     if "Row" not in d.columns:
                         continue
+
+                    # EDF: Row = nom joueuse => Player
                     d["Player"] = d["Row"].apply(nettoyer_nom_joueuse)
-                    d = d.merge(edf_joueuses, on="Player", how="left")
+
+                    # Enrichit avec Poste + Temps de jeu
+                    d = d.merge(edf_joueuses[["Player", "Poste", "Temps de jeu"]], on="Player", how="left")
                     if d.empty:
                         continue
-                    df_edf = create_data(d, d, True)
-                    if not df_edf.empty:
-                        all_edf.append(df_edf)
 
-                if all_edf:
-                    edf_kpi = pd.concat(all_edf, ignore_index=True)
-                    if "Poste" in edf_kpi.columns:
-                        edf_kpi = edf_kpi.groupby("Poste").mean(numeric_only=True).reset_index()
-                        edf_kpi["Poste"] = edf_kpi["Poste"] + " moyenne (EDF)"
-        except Exception:
-            pass
+                    df_edf = create_data(match=d, joueurs=d, is_edf=True)
+                    if not df_edf.empty and "Poste" in df_edf.columns:
+                        all_edf_rows.append(df_edf)
 
+                if all_edf_rows:
+                    edf_full = pd.concat(all_edf_rows, ignore_index=True)
+                    edf_kpi = edf_full.groupby("Poste").mean(numeric_only=True).reset_index()
+                    edf_kpi["Poste"] = edf_kpi["Poste"].astype(str) + " moyenne (EDF)"
+
+        except Exception as e:
+            st.warning(f"EDF: erreur chargement/calcul référentiel: {e}")
+
+    # ======================================================
     # PFC Matchs
+    # ======================================================
     for filename in fichiers:
         if not (filename.endswith(".csv") and "PFC" in filename):
             continue
@@ -1045,35 +1061,25 @@ def collect_data(selected_season=None):
             if "Row" not in data.columns:
                 continue
 
-            # ⚠️ mapping joueurs sur colonnes posts + Row
             cols_to_fix = ["Row"] + [c for c in POST_COLS if c in data.columns]
             data = normalize_players_in_df(
                 data, cols=cols_to_fix, ref_set=ref_set, alias_to_canon=alias_to_canon,
                 filename=filename, report=name_report
             )
 
-            # Détection équipe PFC / ADV (robuste)
+            # Détection équipe PFC / ADV
             row_vals = data["Row"].astype(str).str.strip()
             unique_rows = set(row_vals.dropna().unique().tolist())
             equipe_pfc = "PFC" if "PFC" in unique_rows else str(parts[0]).strip()
 
-            # ADV via mode sur les lignes équipe (si colonne existe)
-            equipe_adv = None
-            if "Teamersaire" in data.columns:
-                adv_series = data.loc[row_vals.eq(equipe_pfc), "Teamersaire"].dropna().astype(str).str.strip()
-                if not adv_series.empty:
-                    equipe_adv = adv_series.mode().iloc[0]
-
-            if not equipe_adv:
-                counts = row_vals.value_counts()
-                candidates = [k for k in counts.index.tolist() if k and k != equipe_pfc]
-                if candidates:
-                    equipe_adv = candidates[0]
-
-            if not equipe_adv:
+            # ADV par valeur la plus fréquente autre que PFC
+            counts = row_vals.value_counts()
+            candidates = [k for k in counts.index.tolist() if k and k != equipe_pfc]
+            if not candidates:
                 continue
+            equipe_adv = candidates[0]
 
-            # Match = lignes équipes
+            # Match = lignes équipes (filtre robuste via Row_clean)
             d2 = data.copy()
             d2["Row_clean"] = d2["Row"].astype(str).apply(nettoyer_nom_equipe)
             home_clean = nettoyer_nom_equipe(equipe_pfc)
@@ -1083,7 +1089,7 @@ def collect_data(selected_season=None):
             if match.empty:
                 continue
 
-            # Joueurs = le reste (hors events)
+            # Joueurs = reste (hors events)
             mask_joueurs = ~d2["Row_clean"].str.contains("CORNER|COUP-FRANC|COUP FRANC|PENALTY|CARTON", na=False)
             mask_joueurs &= ~d2.index.isin(match.index)
             joueurs = d2[mask_joueurs].copy()
@@ -1094,7 +1100,7 @@ def collect_data(selected_season=None):
             if df.empty:
                 continue
 
-            # Normalisation per-90 (en gardant le temps de jeu)
+            # Normalisation per-90 (sauf temps de jeu / pourcentages)
             if "Temps de jeu (en minutes)" in df.columns:
                 num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != "Temps de jeu (en minutes)"]
                 for idx, r in df.iterrows():
@@ -1256,6 +1262,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     else:
         pfc_kpi, edf_kpi = collect_data()
 
+    # Filtre par joueuse si profil associé
     if player_name and not pfc_kpi.empty and "Player" in pfc_kpi.columns:
         pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
 
@@ -1279,6 +1286,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             }
         )
 
+    # =====================
+    # STATISTIQUES
+    # =====================
     if page == "Statistiques":
         st.header("Statistiques")
 
@@ -1356,6 +1366,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             else:
                 st.info("Notes de poste non disponibles sur cette sélection.")
 
+    # =====================
+    # COMPARAISON ✅ EDF RESTAURÉ
+    # =====================
     elif page == "Comparaison":
         st.header("Comparaison")
 
@@ -1363,17 +1376,24 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.warning("Aucune donnée PFC.")
             return
 
+        # --- Choix joueuse PFC (si pas associé)
         if player_name:
-            st.subheader(f"Comparaison pour {player_name}")
+            p_label = player_name
+        else:
+            p_label = st.selectbox("Joueuse PFC", pfc_kpi["Player"].unique(), key="pfc_player_compare")
 
-            st.write("### 1) Comparer des matchs")
-            if "Adversaire" in pfc_kpi.columns:
-                unique_matches = pfc_kpi["Adversaire"].unique()
-                selected_matches = st.multiselect("Sélectionnez au moins 2 matchs", unique_matches)
-                if len(selected_matches) >= 2 and st.button("Comparer les matchs sélectionnés"):
+        st.write("### 1) Comparer des matchs (PFC)")
+        if "Adversaire" in pfc_kpi.columns:
+            pfc_for_player = pfc_kpi[pfc_kpi["Player"].apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(p_label)].copy()
+            if pfc_for_player.empty:
+                st.warning("Aucune donnée pour cette joueuse.")
+            else:
+                unique_matches = pfc_for_player["Adversaire"].unique()
+                selected_matches = st.multiselect("Sélectionnez au moins 2 matchs", unique_matches, key="matches_compare")
+                if len(selected_matches) >= 2 and st.button("Comparer les matchs sélectionnés", key="btn_compare_matches"):
                     comp = []
                     for mlabel in selected_matches:
-                        md = pfc_kpi[pfc_kpi["Adversaire"] == mlabel]
+                        md = pfc_for_player[pfc_for_player["Adversaire"] == mlabel]
                         if md.empty:
                             continue
                         agg = md.groupby("Player").agg({
@@ -1386,7 +1406,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         ).reset_index()
                         agg = safe_int_numeric_only(agg)
                         if not agg.empty:
-                            agg["Player"] = f"{player_name} ({mlabel})"
+                            agg["Player"] = f"{p_label} ({mlabel})"
                             comp.append(agg)
                     if len(comp) >= 2:
                         players_data = pd.concat(comp, ignore_index=True)
@@ -1395,37 +1415,32 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             st.pyplot(fig)
                     else:
                         st.warning("Pas assez de données pour comparer ces matchs.")
-            else:
-                st.warning("Colonne 'Adversaire' manquante.")
+        else:
+            st.warning("Colonne 'Adversaire' manquante.")
 
-            st.write("### 2) Comparer au référentiel EDF U19")
-            if not edf_kpi.empty and "Poste" in edf_kpi.columns:
-                poste = st.selectbox("Poste EDF", edf_kpi["Poste"].unique())
-                edf_data = edf_kpi[edf_kpi["Poste"] == poste].rename(columns={"Poste": "Player"})
-                player_data = prepare_comparison_data(pfc_kpi, player_name)
-                if not player_data.empty and not edf_data.empty and st.button("Comparer avec EDF"):
-                    players_data = pd.concat([player_data, edf_data], ignore_index=True)
-                    fig = create_comparison_radar(players_data, player1_name=player_name, player2_name=f"EDF {poste}")
+        st.write("### 2) Comparer au référentiel EDF U19 (par poste)")
+        if edf_kpi is None or edf_kpi.empty or "Poste" not in edf_kpi.columns:
+            st.warning("Aucune donnée EDF disponible pour la comparaison (EDF_Joueuses.xlsx / EDF_U19_Match*.csv).")
+        else:
+            poste = st.selectbox("Poste EDF (référentiel)", edf_kpi["Poste"].unique(), key="edf_poste_ref")
+
+            edf_line = edf_kpi[edf_kpi["Poste"] == poste].copy()
+            edf_line = edf_line.rename(columns={"Poste": "Player"})
+
+            player_data = prepare_comparison_data(pfc_kpi, p_label)
+
+            if player_data.empty or edf_line.empty:
+                st.warning("Pas assez de données pour afficher la comparaison.")
+            else:
+                if st.button("Comparer avec EDF", key="btn_compare_edf"):
+                    players_data = pd.concat([player_data, edf_line], ignore_index=True)
+                    fig = create_comparison_radar(players_data, player1_name=p_label, player2_name=f"EDF {poste}")
                     if fig:
                         st.pyplot(fig)
-            else:
-                st.warning("Aucune donnée EDF disponible.")
-        else:
-            st.subheader("Comparaison PFC vs PFC")
-            p1 = st.selectbox("Joueuse 1", pfc_kpi["Player"].unique(), key="p1")
-            p2 = st.selectbox("Joueuse 2", pfc_kpi["Player"].unique(), key="p2")
 
-            agg1 = pfc_kpi[pfc_kpi["Player"] == p1].groupby("Player").mean(numeric_only=True).reset_index()
-            agg2 = pfc_kpi[pfc_kpi["Player"] == p2].groupby("Player").mean(numeric_only=True).reset_index()
-            agg1 = safe_int_numeric_only(agg1)
-            agg2 = safe_int_numeric_only(agg2)
-
-            if st.button("Afficher le radar"):
-                players_data = pd.concat([agg1, agg2], ignore_index=True)
-                fig = create_comparison_radar(players_data, player1_name=p1, player2_name=p2)
-                if fig:
-                    st.pyplot(fig)
-
+    # =====================
+    # GESTION
+    # =====================
     elif page == "Gestion":
         st.header("Gestion des utilisateurs")
         if not check_permission(user_profile, "all", permissions):
@@ -1440,10 +1455,12 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             })
         st.dataframe(pd.DataFrame(users_data))
 
+    # =====================
+    # DONNEES PHYSIQUES
+    # =====================
     elif page == "Données Physiques":
         st.header("📊 Données Physiques")
         gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
-        gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
 
         if gps_weekly.empty:
             st.warning("Aucune donnée GPS hebdo trouvée.")
@@ -1456,6 +1473,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         st.subheader("GPS - Hebdomadaire")
         st.dataframe(dfp.sort_values("SEMAINE"))
 
+    # =====================
+    # PASSERELLES
+    # =====================
     elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
         passerelle_data = load_passerelle_data()
