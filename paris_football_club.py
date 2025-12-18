@@ -186,19 +186,25 @@ def players_edf_duration(match):
         'Temps de jeu (en minutes)': df_filtered['Temps de jeu']
     })
     return df_duration
-
 def players_duration(match):
-    """Calcule la durée de jeu pour les joueuses PFC."""
-    if 'Duration' not in match.columns:
-        st.warning("Colonne 'Duration' manquante pour calculer la durée de jeu")
+    """Calcule la durée de jeu pour les joueuses PFC, en ignorant les lignes où 'Adversaire' = 'Adversaire'."""
+    if 'Duration' not in match.columns or 'Adversaire' not in match.columns:
+        st.warning("Colonnes 'Duration' ou 'Adversaire' manquantes pour calculer la durée de jeu")
         return pd.DataFrame()
+
     players_duration = {}
     list_of_players = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']
     available_posts = [poste for poste in list_of_players if poste in match.columns]
+
     if not available_posts:
         st.warning("Aucune colonne de poste disponible pour calculer la durée de jeu")
         return pd.DataFrame()
+
     for i in range(len(match)):
+        # Ignorer les lignes où 'Adversaire' = 'Adversaire' (en-tête ou métadonnée)
+        if match.iloc[i]['Adversaire'] == 'Adversaire':
+            continue
+
         duration = match.iloc[i]['Duration']
         for poste in available_posts:
             if poste in match.columns:
@@ -208,16 +214,21 @@ def players_duration(match):
                         players_duration[player] += duration
                     else:
                         players_duration[player] = duration
+
     if not players_duration:
         return pd.DataFrame()
+
+    # Conversion en minutes
     for player in players_duration:
         players_duration[player] /= 60
+
     df_duration = pd.DataFrame({
         'Player': list(players_duration.keys()),
         'Temps de jeu (en minutes)': list(players_duration.values())
     })
     df_duration = df_duration.sort_values(by='Temps de jeu (en minutes)', ascending=False)
     return df_duration
+
 
 def players_shots(joueurs):
     """Calcule les statistiques de tirs."""
@@ -1538,3 +1549,4 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
