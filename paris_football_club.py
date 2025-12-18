@@ -1,8 +1,10 @@
 # ============================================================
 # PARIS FC - DATA CENTER (MATCH + EDF U19 + REFERENTIEL NOMS + GPS)
-# ✅ Drive robuste (Google Sheets export + écritures .tmp)
-# ✅ GPS: lecture .xls (xlrd) + .xlsx (openpyxl)
-# ✅ Comparaison EDF conservée
+# - Drive robuste (Google Sheets export + écritures .tmp)
+# - GPS: lecture .xls (xlrd) + .xlsx (openpyxl)
+# - Comparaison EDF conservée
+# - ✅ Fix 1: read_excel_auto(sheet_name=0 par défaut)
+# - ✅ Fix 2: build_referentiel_players robuste (dict -> bonne feuille)
 # ============================================================
 
 import os
@@ -48,7 +50,6 @@ POST_COLS = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 
 BAD_TOKENS = {"CORNER", "COUP-FRANC", "COUP FRANC", "PENALTY", "CARTON", "CARTONS", "PFC", "GB", "GARDIENNE", "GARDIEN"}
 
 GPS_GF1_PREFIX = "GF1"  # exports entrainement
-GPS_SHEET_RAW = "Data GPS"
 
 # =========================
 # UTILS
@@ -153,12 +154,12 @@ def parse_date_from_gf1_filename(fn: str) -> Optional[datetime]:
         return None
 
 # =========================
-# EXCEL READER (FIX GPS .XLS)
+# ✅ EXCEL READER (FIX 1)
 # =========================
-def read_excel_auto(path: str, sheet_name=None) -> pd.DataFrame:
+def read_excel_auto(path: str, sheet_name=0) -> pd.DataFrame:
     """
-    Lire .xls avec xlrd (obligatoire sur Streamlit Cloud)
-    Lire .xlsx avec openpyxl
+    Lire .xls avec xlrd, .xlsx avec openpyxl.
+    ✅ Par défaut sheet_name=0 => évite tout retour en dict.
     """
     ext = os.path.splitext(path)[1].lower()
     if ext == ".xls":
@@ -243,7 +244,7 @@ def download_permissions_file():
         return None
 
 def load_permissions():
-    """Charge les permissions depuis le fichier Excel (robuste si plusieurs feuilles)."""
+    """Robuste: si plusieurs feuilles => prend la 1ère."""
     try:
         permissions_path = download_permissions_file()
         if not permissions_path or not os.path.exists(permissions_path):
@@ -251,7 +252,7 @@ def load_permissions():
 
         permissions_df = read_excel_auto(permissions_path)
 
-        # ✅ Si read_excel renvoie un dict (plusieurs feuilles), on prend la 1ère feuille
+        # si jamais un dict arrive quand même
         if isinstance(permissions_df, dict):
             if len(permissions_df) == 0:
                 return {}
@@ -260,8 +261,6 @@ def load_permissions():
         if not isinstance(permissions_df, pd.DataFrame) or permissions_df.empty:
             return {}
 
-        required_cols = {"Profil", "Mot de passe", "Permissions", "Joueuse"}
-        # on ne bloque pas si une colonne manque, mais on sécurise
         for col in ["Profil", "Mot de passe", "Permissions", "Joueuse"]:
             if col not in permissions_df.columns:
                 permissions_df[col] = np.nan
@@ -272,20 +271,17 @@ def load_permissions():
             if not profile:
                 continue
 
-            permissions_list = []
             raw_perm = row.get("Permissions", np.nan)
-            if pd.notna(raw_perm):
-                permissions_list = [p.strip() for p in str(raw_perm).split(",") if p.strip()]
+            perm_list = [p.strip() for p in str(raw_perm).split(",") if p.strip()] if pd.notna(raw_perm) else []
 
             player = row.get("Joueuse", np.nan)
             player = nettoyer_nom_joueuse(str(player)) if pd.notna(player) else None
 
             permissions[profile] = {
                 "password": str(row.get("Mot de passe", "")).strip(),
-                "permissions": permissions_list,
+                "permissions": perm_list,
                 "player": player
             }
-
         return permissions
 
     except Exception as e:
@@ -322,16 +318,45 @@ def download_google_drive():
         st.warning(f"Impossible de télécharger les fichiers GPS depuis le dossier GPS: {e}")
 
 # =========================
-# REFERENTIEL NOMS
+# REFERENTIEL NOMS (FIX 2)
 # =========================
 def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str]]:
+    """
+    ✅ Robuste même si un dict de feuilles arrive (cas rare).
+    - Cherche une feuille qui contient NOM + PRENOM
+    - Sinon prend la première feuille
+    """
     ref = read_excel_auto(ref_path)
-    cols = {c.strip().upper(): c for c in ref.columns}
-    col_nom = cols.get("NOM", None)
-    col_pre = cols.get("PRÉNOM", cols.get("PRENOM", None))
+
+    if isinstance(ref, dict):
+        if len(ref) == 0:
+            raise ValueError("Référentiel vide (aucune feuille lisible).")
+        chosen = None
+        for _, sh_df in ref.items():
+            if not isinstance(sh_df, pd.DataFrame) or sh_df.empty:
+                continue
+            cols_norm = [normalize_str(c) for c in sh_df.columns]
+            if ("nom" in cols_norm) and ("prenom" in cols_norm or "prénom" in cols_norm):
+                chosen = sh_df
+                break
+        ref = chosen if chosen is not None else list(ref.values())[0]
+
+    if not isinstance(ref, pd.DataFrame) or ref.empty:
+        raise ValueError("Référentiel illisible ou vide.")
+
+    cols = {str(c).strip().upper(): c for c in ref.columns}
+    col_nom = cols.get("NOM")
+    col_pre = cols.get("PRÉNOM") or cols.get("PRENOM")
+
+    if not col_nom or not col_pre:
+        cols_norm = {normalize_str(c): c for c in ref.columns}
+        col_nom = col_nom or cols_norm.get("nom")
+        col_pre = col_pre or cols_norm.get("prenom") or cols_norm.get("prénom")
+
     if not col_nom or not col_pre:
         raise ValueError(f"Référentiel: colonnes NOM/Prénom introuvables: {ref.columns.tolist()}")
 
+    ref = ref.copy()
     ref["CANON"] = (ref[col_nom].astype(str) + " " + ref[col_pre].astype(str)).apply(nettoyer_nom_joueuse)
     ref_set = set(ref["CANON"].dropna().unique().tolist())
 
@@ -346,6 +371,7 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str]]:
             alias_to_canon[nettoyer_nom_joueuse(f"{nom}, {prenom}")] = canon
             alias_to_canon[nettoyer_nom_joueuse(f"{nom} {prenom[0]}.")] = canon
             alias_to_canon[nettoyer_nom_joueuse(f"{nom} {prenom[0]}")] = canon
+
     return ref_set, alias_to_canon
 
 def map_player_name(raw_name: str,
@@ -828,22 +854,6 @@ def list_excel_files_local() -> List[str]:
         return []
     return [os.path.join(DATA_FOLDER, f) for f in os.listdir(DATA_FOLDER) if f.lower().endswith((".xlsx", ".xls"))]
 
-def find_dashboard_candidate(files: List[str]) -> Optional[str]:
-    for p in files:
-        fn = normalize_str(os.path.basename(p))
-        if "dashboard" in fn or ("gps" in fn and p.lower().endswith(".xlsx")):
-            if detect_gps_raw_sheet(p):
-                return p
-    scored = []
-    for p in files:
-        sh = detect_gps_raw_sheet(p)
-        if sh:
-            scored.append((os.path.getsize(p), p))
-    if scored:
-        scored.sort(reverse=True)
-        return scored[0][1]
-    return None
-
 def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     if df is None or df.empty:
         return df
@@ -895,43 +905,34 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFr
     if not files:
         return pd.DataFrame()
 
-    dashboard = find_dashboard_candidate(files)
+    gf1_files = [p for p in files if normalize_str(os.path.basename(p)).startswith(normalize_str(GPS_GF1_PREFIX))]
+    if not gf1_files:
+        gf1_files = [p for p in files if "seance" in normalize_str(os.path.basename(p))]
+    if not gf1_files:
+        st.session_state["gps_load_errors"] = [("Aucun fichier GF1", "Vérifie que les fichiers .xls sont bien téléchargés dans data/")]
+        return pd.DataFrame()
+
     errors = []
-    if dashboard:
-        sheet = detect_gps_raw_sheet(dashboard)
+    gf1_files_sorted = []
+    for p in gf1_files:
+        d = parse_date_from_gf1_filename(os.path.basename(p))
+        gf1_files_sorted.append((d or datetime.min, p))
+    gf1_files_sorted.sort(key=lambda t: t[0])
+
+    frames = []
+    for _, p in gf1_files_sorted:
         try:
-            df = read_excel_auto(dashboard, sheet_name=sheet)
+            dfp = read_excel_auto(p)  # ✅ sheet 0
+            dfp = standardize_gps_columns(dfp, os.path.basename(p))
+            dfp["__source_file"] = os.path.basename(p)
+            frames.append(dfp)
         except Exception as e:
-            errors.append((os.path.basename(dashboard), str(e)))
-            df = pd.DataFrame()
-    else:
-        gf1_files = [p for p in files if normalize_str(os.path.basename(p)).startswith(normalize_str(GPS_GF1_PREFIX))]
-        if not gf1_files:
-            gf1_files = [p for p in files if "seance" in normalize_str(os.path.basename(p))]
-        if not gf1_files:
-            st.session_state["gps_load_errors"] = [("Aucun fichier GF1", "Vérifie que les fichiers .xls sont bien téléchargés dans data/")]
-            return pd.DataFrame()
-
-        gf1_files_sorted = []
-        for p in gf1_files:
-            d = parse_date_from_gf1_filename(os.path.basename(p))
-            gf1_files_sorted.append((d or datetime.min, p))
-        gf1_files_sorted.sort(key=lambda t: t[0])
-
-        frames = []
-        for _, p in gf1_files_sorted:
-            try:
-                dfp = read_excel_auto(p)
-                dfp = standardize_gps_columns(dfp, os.path.basename(p))
-                dfp["__source_file"] = os.path.basename(p)
-                frames.append(dfp)
-            except Exception as e:
-                errors.append((os.path.basename(p), str(e)))
-                continue
-        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+            errors.append((os.path.basename(p), str(e)))
+            continue
 
     st.session_state["gps_load_errors"] = errors
 
+    df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     if df.empty:
         return pd.DataFrame()
 
@@ -1207,6 +1208,7 @@ def collect_data(selected_season=None):
             if df.empty:
                 continue
 
+            # normalisation / 90 min
             if "Temps de jeu (en minutes)" in df.columns:
                 num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != "Temps de jeu (en minutes)"]
                 for idx, r in df.iterrows():
@@ -1676,10 +1678,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             all_players += gps_daily["Player"].dropna().unique().tolist()
         all_players = sorted(set(all_players))
 
-        if not player_name:
-            player_name = st.selectbox("Sélectionnez une joueuse", all_players)
-
-        player_canon = nettoyer_nom_joueuse(player_name)
+        player_sel = player_name if player_name else st.selectbox("Sélectionnez une joueuse", all_players)
+        player_canon = nettoyer_nom_joueuse(player_sel)
 
         tab1, tab2 = st.tabs(["🏋️ Entraînements", "⚽ Matchs"])
 
@@ -1784,4 +1784,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
