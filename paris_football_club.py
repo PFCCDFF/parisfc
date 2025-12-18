@@ -243,25 +243,51 @@ def download_permissions_file():
         return None
 
 def load_permissions():
+    """Charge les permissions depuis le fichier Excel (robuste si plusieurs feuilles)."""
     try:
         permissions_path = download_permissions_file()
         if not permissions_path or not os.path.exists(permissions_path):
             return {}
+
         permissions_df = read_excel_auto(permissions_path)
+
+        # ✅ Si read_excel renvoie un dict (plusieurs feuilles), on prend la 1ère feuille
+        if isinstance(permissions_df, dict):
+            if len(permissions_df) == 0:
+                return {}
+            permissions_df = list(permissions_df.values())[0]
+
+        if not isinstance(permissions_df, pd.DataFrame) or permissions_df.empty:
+            return {}
+
+        required_cols = {"Profil", "Mot de passe", "Permissions", "Joueuse"}
+        # on ne bloque pas si une colonne manque, mais on sécurise
+        for col in ["Profil", "Mot de passe", "Permissions", "Joueuse"]:
+            if col not in permissions_df.columns:
+                permissions_df[col] = np.nan
 
         permissions = {}
         for _, row in permissions_df.iterrows():
             profile = str(row.get("Profil", "")).strip()
             if not profile:
                 continue
+
+            permissions_list = []
+            raw_perm = row.get("Permissions", np.nan)
+            if pd.notna(raw_perm):
+                permissions_list = [p.strip() for p in str(raw_perm).split(",") if p.strip()]
+
+            player = row.get("Joueuse", np.nan)
+            player = nettoyer_nom_joueuse(str(player)) if pd.notna(player) else None
+
             permissions[profile] = {
                 "password": str(row.get("Mot de passe", "")).strip(),
-                "permissions": [p.strip() for p in str(row.get("Permissions", "")).split(",")]
-                if pd.notna(row.get("Permissions", np.nan)) else [],
-                "player": nettoyer_nom_joueuse(str(row.get("Joueuse", "")).strip())
-                if pd.notna(row.get("Joueuse", np.nan)) else None
+                "permissions": permissions_list,
+                "player": player
             }
+
         return permissions
+
     except Exception as e:
         st.error(f"Erreur chargement permissions: {e}")
         return {}
@@ -1758,3 +1784,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
