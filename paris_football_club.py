@@ -499,49 +499,50 @@ def extract_lineup_from_row(row: pd.Series, available_posts: List[str]) -> Set[s
 
 def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.DataFrame:
     """
-    ✅ CORRECTIF CLÉ :
-    on normalise 'Row' et les noms d'équipes avant filtrage,
-    sinon on perd souvent l'équipe adverse -> temps de jeu ÷2.
+    Calcule le temps de jeu des joueuses à partir des segments Duration.
+    Correction clé : prise en compte correcte des lignes adversaires
+    (LOSC / Transition def LOSC / LOSC, LOSC).
     """
-    if match is None or match.empty or "Duration" not in match.columns or "Row" not in match.columns:
+    if match is None or match.empty:
         return pd.DataFrame()
 
-    available_posts = [p for p in POST_COLS if p in match.columns]
+    if "Duration" not in match.columns or "Row" not in match.columns:
+        return pd.DataFrame()
+
+    available_posts = [c for c in POST_COLS if c in match.columns]
     if not available_posts:
         return pd.DataFrame()
 
     m = match.copy()
 
-home_clean = nettoyer_nom_equipe(home_team)
-away_clean = nettoyer_nom_equipe(away_team)
+    # Normalisation des noms d'équipes
+    home_clean = nettoyer_nom_equipe(home_team)
+    away_clean = nettoyer_nom_equipe(away_team)
 
-# Canonise chaque valeur de Row côté match
-m["Row_team"] = m["Row"].astype(str).apply(nettoyer_nom_equipe)
+    m["Row_team"] = m["Row"].astype(str).apply(nettoyer_nom_equipe)
 
-# Filtrer sur les 2 équipes canoniques
-m = m[m["Row_team"].isin({home_clean, away_clean})].copy()
-if m.empty:
-    return pd.DataFrame()
+    # 🔑 garder lignes PFC + adversaire
+    m = m[m["Row_team"].isin({home_clean, away_clean})].copy()
+    if m.empty:
+        return pd.DataFrame()
 
+    # Détection unité Duration
     unit = infer_duration_unit(m["Duration"])
 
-    def to_seconds(d):
-        d = safe_float(d, default=np.nan)
-        if np.isnan(d) or d <= 0:
+    def to_seconds(x):
+        try:
+            x = float(x)
+        except Exception:
             return 0.0
-        return d * 60.0 if unit == "minutes" else d
+        if x <= 0:
+            return 0.0
+        return x * 60.0 if unit == "minutes" else x
 
-    played_seconds: Dict[str, float] = {}
-
-    # ordre si colonne de temps dispo
-    for c in ["Start time", "StartTime", "Start", "Time", "Timestamp"]:
-        if c in m.columns:
-            m = m.sort_values(by=c, ascending=True)
-            break
+    played_seconds = {}
 
     for _, row in m.iterrows():
-        dur = to_seconds(row.get("Duration", 0))
-        if dur <= 0:
+        dur_sec = to_seconds(row["Duration"])
+        if dur_sec <= 0:
             continue
 
         lineup = extract_lineup_from_row(row, available_posts)
@@ -549,19 +550,17 @@ if m.empty:
             continue
 
         for p in lineup:
-            played_seconds[p] = played_seconds.get(p, 0.0) + dur
+            played_seconds[p] = played_seconds.get(p, 0.0) + dur_sec
 
     if not played_seconds:
         return pd.DataFrame()
 
-    return (
-        pd.DataFrame({
-            "Player": list(played_seconds.keys()),
-            "Temps de jeu (en minutes)": [v / 60.0 for v in played_seconds.values()],
-        })
-        .sort_values("Temps de jeu (en minutes)", ascending=False)
-        .reset_index(drop=True)
-    )
+    df = pd.DataFrame({
+        "Player": list(played_seconds.keys()),
+        "Temps de jeu (en minutes)": [v / 60.0 for v in played_seconds.values()]
+    })
+
+    return df.sort_values("Temps de jeu (en minutes)", ascending=False).reset_index(drop=True)
 
 
 # =========================
@@ -1638,5 +1637,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
