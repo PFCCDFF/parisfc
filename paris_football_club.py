@@ -1,16 +1,9 @@
 # ============================================================
 # PARIS FC - DATA CENTER (MATCH + EDF U19 + REFERENTIEL NOMS + GPS)
-#
-# ✅ Intègre l'ajout du dossier Drive GPS : 1v4Iit4JlEDNACp2QWQVrP89j66zBqMFH
-# ✅ Supporte les exports GPS entrainement nommés comme :
-#    "GF1 S20 séance 89 - 12.12.25.xls"
-#    -> le script télécharge ces fichiers et les détecte même sans "gps" dans le nom.
-#
-# Notes :
-# - Le script essaye de lire en priorité un "dashboard" (si présent),
-#   sinon il concatène les fichiers GF1*.xls/.xlsx et tente une standardisation.
-# - Si les colonnes GPS ne correspondent pas, un diagnostic affichera :
-#   fichiers détectés, feuilles, colonnes.
+# ✅ Téléchargement Drive robuste (gère Google Sheets + évite .xlsx tronqués)
+# ✅ Dossier GPS Drive dédié : 1v4Iit4JlEDNACp2QWQVrP89j66zBqMFH
+# ✅ Exports GPS entrainement type : "GF1 S20 séance 89 - 12.12.25.xls"
+# ✅ Onglet Comparaison conservé (dont référentiel EDF U19)
 # ============================================================
 
 import os
@@ -45,25 +38,19 @@ PASSERELLE_FOLDER = "data/passerelle"
 
 DRIVE_MAIN_FOLDER_ID = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
 DRIVE_PASSERELLE_FOLDER_ID = "19_ZU-FsAiNKxCfTw_WKzhTcuPDsGoVhL"
-
-# ✅ NOUVEAU : dossier Drive où sont stockés les exports GPS
 DRIVE_GPS_FOLDER_ID = "1v4Iit4JlEDNACp2QWQVrP89j66zBqMFH"
 
 PERMISSIONS_FILENAME = "Classeurs permissions streamlit.xlsx"
 EDF_JOUEUSES_FILENAME = "EDF_Joueuses.xlsx"
 PASSERELLE_FILENAME = "Liste Joueuses Passerelles.xlsx"
-
-# Référentiel noms (source de vérité)
 REFERENTIEL_FILENAME = "Noms Prénoms Paris FC.xlsx"
 
 POST_COLS = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']
 
 BAD_TOKENS = {"CORNER", "COUP-FRANC", "COUP FRANC", "PENALTY", "CARTON", "CARTONS", "PFC", "GB", "GARDIENNE", "GARDIEN"}
 
-# GPS
 GPS_SHEET_RAW = "Data GPS"  # si dashboard
-GPS_GF1_PREFIX = "GF1"      # exports entrainement type GF1...
-
+GPS_GF1_PREFIX = "GF1"      # exports entrainement
 
 # =========================
 # UTILS
@@ -155,9 +142,6 @@ def split_if_comma(cell: str) -> List[str]:
     return parts if len(parts) > 1 else [s]
 
 def parse_date_from_gf1_filename(fn: str) -> Optional[datetime]:
-    """
-    Ex: "GF1 S20 séance 89 - 12.12.25.xls" -> 12/12/2025
-    """
     base = os.path.basename(fn)
     m = re.search(r"(\d{2})\.(\d{2})\.(\d{2,4})", base)
     if not m:
@@ -170,9 +154,8 @@ def parse_date_from_gf1_filename(fn: str) -> Optional[datetime]:
     except Exception:
         return None
 
-
 # =========================
-# GOOGLE DRIVE
+# GOOGLE DRIVE (ROBUSTE)
 # =========================
 def authenticate_google_drive():
     SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -181,29 +164,114 @@ def authenticate_google_drive():
     return build("drive", "v3", credentials=creds)
 
 def list_files_in_folder(service, folder_id):
+    """Liste les fichiers dans un dossier Google Drive (avec mimeType)."""
     query = f"'{folder_id}' in parents and trashed=false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
+    results = service.files().list(
+        q=query,
+        fields="files(id, name, mimeType, modifiedTime, size)"
+    ).execute()
     return results.get("files", [])
 
-def download_file(service, file_id, file_name, output_folder):
-    request = service.files().get_media(fileId=file_id)
+def download_file(service, file_id, file_name, output_folder, mime_type=None):
+    """
+    Télécharge un fichier depuis Google Drive.
+    - Si Google Sheet -> export en XLSX
+    - Écrit dans un .tmp puis remplace (évite .xlsx tronqués)
+    """
+    os.makedirs(output_folder, exist_ok=True)
+    final_path = os.path.join(output_folder, file_name)
+    tmp_path = final_path + ".tmp"
+
+    if mime_type == "application/vnd.google-apps.spreadsheet":
+        request = service.files().export_media(
+            fileId=file_id,
+            mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        if not final_path.lower().endswith(".xlsx"):
+            final_path = os.path.splitext(final_path)[0] + ".xlsx"
+            tmp_path = final_path + ".tmp"
+    else:
+        request = service.files().get_media(fileId=file_id)
+
     fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
+    downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
     done = False
     while not done:
         _, done = downloader.next_chunk()
-    os.makedirs(output_folder, exist_ok=True)
-    path = os.path.join(output_folder, file_name)
-    with open(path, "wb") as f:
-        f.write(fh.getbuffer())
+
+    fh.seek(0)
+    with open(tmp_path, "wb") as f:
+        f.write(fh.read())
+    os.replace(tmp_path, final_path)
+    return final_path
+
+def download_permissions_file():
+    """Télécharge le fichier des permissions depuis Google Drive (robuste)."""
+    try:
+        service = authenticate_google_drive()
+        files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
+
+        target = normalize_str(PERMISSIONS_FILENAME)
+        candidate = None
+        for f in files:
+            if normalize_str(f["name"]) == target:
+                candidate = f
+                break
+        if not candidate:
+            return None
+
+        path = download_file(
+            service, candidate["id"], candidate["name"], DATA_FOLDER, mime_type=candidate.get("mimeType")
+        )
+
+        # sanity check + retry once if corrupted
+        try:
+            _ = pd.read_excel(path)
+        except Exception:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+            path = download_file(
+                service, candidate["id"], candidate["name"], DATA_FOLDER, mime_type=candidate.get("mimeType")
+            )
+        return path
+
+    except Exception as e:
+        st.error(f"Erreur téléchargement permissions: {e}")
+        return None
+
+def load_permissions():
+    try:
+        permissions_path = download_permissions_file()
+        if not permissions_path or not os.path.exists(permissions_path):
+            return {}
+        permissions_df = pd.read_excel(permissions_path)
+        permissions = {}
+        for _, row in permissions_df.iterrows():
+            profile = str(row.get("Profil", "")).strip()
+            if not profile:
+                continue
+            permissions[profile] = {
+                "password": str(row.get("Mot de passe", "")).strip(),
+                "permissions": [p.strip() for p in str(row.get("Permissions", "")).split(",")]
+                if pd.notna(row.get("Permissions", np.nan)) else [],
+                "player": nettoyer_nom_joueuse(str(row.get("Joueuse", "")).strip())
+                if pd.notna(row.get("Joueuse", np.nan)) else None
+            }
+        return permissions
+    except Exception as e:
+        st.error(f"Erreur chargement permissions: {e}")
+        return {}
 
 def download_google_drive():
     """
     Télécharge :
-    - Tous les fichiers .csv/.xlsx/.xls du dossier principal
-    - Passerelles depuis son dossier
-    - Référentiel noms (match unicode/accents)
-    - ✅ Tous les fichiers GPS (.xls/.xlsx) depuis le dossier GPS dédié
+    - fichiers .csv/.xlsx/.xls (ou Google Sheets) du dossier principal
+    - fichier passerelle
+    - référentiel noms
+    - fichiers GPS du dossier GPS dédié
     """
     service = authenticate_google_drive()
     os.makedirs(DATA_FOLDER, exist_ok=True)
@@ -212,45 +280,33 @@ def download_google_drive():
     # 1) Dossier principal
     files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
     for f in files:
-        if f["name"].endswith((".csv", ".xlsx", ".xls")):
-            download_file(service, f["id"], f["name"], DATA_FOLDER)
+        is_sheet = f.get("mimeType") == "application/vnd.google-apps.spreadsheet"
+        if f["name"].endswith((".csv", ".xlsx", ".xls")) or is_sheet:
+            download_file(service, f["id"], f["name"], DATA_FOLDER, mime_type=f.get("mimeType"))
 
     # 2) Dossier passerelles
     files_pass = list_files_in_folder(service, DRIVE_PASSERELLE_FOLDER_ID)
     for f in files_pass:
-        if f["name"] == PASSERELLE_FILENAME:
-            download_file(service, f["id"], f["name"], PASSERELLE_FOLDER)
+        if normalize_str(f["name"]) == normalize_str(PASSERELLE_FILENAME):
+            download_file(service, f["id"], f["name"], PASSERELLE_FOLDER, mime_type=f.get("mimeType"))
             break
 
-    # 3) Référentiel noms
+    # 3) Référentiel noms (unicode/accents)
     target_norm = normalize_str(REFERENTIEL_FILENAME)
     for f in files:
-        if f["name"].endswith((".xlsx", ".xls")) and normalize_str(f["name"]) == target_norm:
-            download_file(service, f["id"], f["name"], DATA_FOLDER)
+        if normalize_str(f["name"]) == target_norm:
+            download_file(service, f["id"], f["name"], DATA_FOLDER, mime_type=f.get("mimeType"))
             break
 
-    # 4) ✅ Dossier GPS dédié
+    # 4) GPS folder (GF1*.xls / dashboard etc.)
     try:
         gps_files = list_files_in_folder(service, DRIVE_GPS_FOLDER_ID)
         for f in gps_files:
-            if f["name"].endswith((".xlsx", ".xls")):
-                download_file(service, f["id"], f["name"], DATA_FOLDER)
+            is_sheet = f.get("mimeType") == "application/vnd.google-apps.spreadsheet"
+            if f["name"].endswith((".xlsx", ".xls")) or is_sheet:
+                download_file(service, f["id"], f["name"], DATA_FOLDER, mime_type=f.get("mimeType"))
     except Exception as e:
         st.warning(f"Impossible de télécharger les fichiers GPS depuis le dossier GPS: {e}")
-
-def download_permissions_file():
-    try:
-        service = authenticate_google_drive()
-        files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
-        for f in files:
-            if f["name"] == PERMISSIONS_FILENAME:
-                download_file(service, f["id"], f["name"], DATA_FOLDER)
-                return os.path.join(DATA_FOLDER, PERMISSIONS_FILENAME)
-        return find_local_file_by_normalized_name(DATA_FOLDER, PERMISSIONS_FILENAME)
-    except Exception as e:
-        st.error(f"Erreur téléchargement permissions: {e}")
-        return None
-
 
 # =========================
 # REFERENTIEL NOMS
@@ -323,7 +379,6 @@ def normalize_players_in_df(df: pd.DataFrame,
         out[col] = new_vals
     return out
 
-
 # =========================
 # PASSERELLES
 # =========================
@@ -350,33 +405,9 @@ def load_passerelle_data():
         pass
     return passerelle_data
 
-
 # =========================
-# PERMISSIONS
+# PERMISSIONS HELPERS
 # =========================
-def load_permissions():
-    try:
-        permissions_path = download_permissions_file()
-        if not permissions_path or not os.path.exists(permissions_path):
-            return {}
-        permissions_df = pd.read_excel(permissions_path)
-        permissions = {}
-        for _, row in permissions_df.iterrows():
-            profile = str(row.get("Profil", "")).strip()
-            if not profile:
-                continue
-            permissions[profile] = {
-                "password": str(row.get("Mot de passe", "")).strip(),
-                "permissions": [p.strip() for p in str(row.get("Permissions", "")).split(",")]
-                if pd.notna(row.get("Permissions", np.nan)) else [],
-                "player": nettoyer_nom_joueuse(str(row.get("Joueuse", "")).strip())
-                if pd.notna(row.get("Joueuse", np.nan)) else None
-            }
-        return permissions
-    except Exception as e:
-        st.error(f"Erreur chargement permissions: {e}")
-        return {}
-
 def check_permission(user_profile, required_permission, permissions):
     if user_profile not in permissions:
         return False
@@ -388,7 +419,6 @@ def get_player_for_profile(profile, permissions):
     if profile in permissions:
         return permissions[profile].get("player", None)
     return None
-
 
 # =========================
 # TEMPS DE JEU (segments Duration)
@@ -464,7 +494,6 @@ def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.
         "Player": list(played_seconds.keys()),
         "Temps de jeu (en minutes)": [v / 60.0 for v in played_seconds.values()],
     }).sort_values("Temps de jeu (en minutes)", ascending=False).reset_index(drop=True))
-
 
 # =========================
 # STATS ACTIONS
@@ -603,7 +632,6 @@ def players_ball_losses(joueurs):
         return pd.DataFrame()
     return pd.DataFrame({"Player": list(losses.keys()), "Pertes de balle": list(losses.values())}).sort_values(by="Pertes de balle", ascending=False)
 
-
 # =========================
 # METRICS / KPI / POSTES
 # =========================
@@ -668,7 +696,6 @@ def create_poste(df):
     df["Milieu offensif"] = (df["Rigueur"] * 2 + df["Récupération"] * 2 + df["Distribution"] * 2 + df["Percussion"] * 4 + df["Finition"] * 4) / 14
     df["Attaquant"] = (df["Rigueur"] * 1 + df["Récupération"] * 1 + df["Distribution"] * 1 + df["Percussion"] * 5 + df["Finition"] * 5) / 13
     return df
-
 
 # =========================
 # CREATE DATA (PFC / EDF)
@@ -753,12 +780,10 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     ).reset_index()
     return safe_int_numeric_only(aggregated)
 
-
 # =========================
 # GPS : détection + standardisation
 # =========================
 def detect_gps_raw_sheet(path: str) -> Optional[str]:
-    """Retrouve automatiquement une feuille brute GPS si dashboard."""
     try:
         xls = pd.ExcelFile(path)
         sheets = xls.sheet_names
@@ -787,13 +812,11 @@ def list_excel_files_local() -> List[str]:
     return [os.path.join(DATA_FOLDER, f) for f in os.listdir(DATA_FOLDER) if f.lower().endswith((".xlsx", ".xls"))]
 
 def find_dashboard_candidate(files: List[str]) -> Optional[str]:
-    # dashboard = souvent .xlsx avec "dashboard" ou "gps" et feuille Data GPS
     for p in files:
         fn = normalize_str(os.path.basename(p))
         if "dashboard" in fn or ("gps" in fn and p.lower().endswith(".xlsx")):
             if detect_gps_raw_sheet(p):
                 return p
-    # fallback : le plus gros qui contient une feuille gps
     scored = []
     for p in files:
         sh = detect_gps_raw_sheet(p)
@@ -805,22 +828,17 @@ def find_dashboard_candidate(files: List[str]) -> Optional[str]:
     return None
 
 def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
-    """
-    Standardise au mieux les exports GF1 en colonnes "style dashboard".
-    Si on ne reconnait pas, on renvoie df tel quel.
-    """
     if df is None or df.empty:
         return df
 
-    # mapping heuristique via noms normalisés
     colmap = {}
     for c in df.columns:
         nc = normalize_str(c)
         if nc in {"nom", "name", "joueur", "joueuse"}:
             colmap[c] = "NOM"
-        elif "date" == nc:
+        elif nc == "date":
             colmap[c] = "DATE"
-        elif "semaine" in nc or nc in {"week"}:
+        elif "semaine" in nc or nc == "week":
             colmap[c] = "SEMAINE"
         elif "type" in nc and "session" in nc:
             colmap[c] = "Type Session"
@@ -834,24 +852,21 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
             colmap[c] = "Distance HID (>19 km/h)"
         elif "acc" in nc and "dec" in nc:
             colmap[c] = "# Acc/Dec"
-        elif "charge" == nc:
+        elif nc == "charge":
             colmap[c] = "CHARGE"
-        elif "rpe" == nc:
+        elif nc == "rpe":
             colmap[c] = "RPE"
 
     out = df.rename(columns=colmap).copy()
 
-    # Si Type Session absent pour GF1 : on force "Entrainement"
     if "Type Session" not in out.columns:
         out["Type Session"] = "Entrainement"
 
-    # Si DATE absent, on tente depuis le nom de fichier
     if "DATE" not in out.columns:
         d = parse_date_from_gf1_filename(filename)
         if d:
             out["DATE"] = pd.Timestamp(d.date())
 
-    # SEMAINE si absent, on calcule depuis DATE
     if "SEMAINE" not in out.columns and "DATE" in out.columns:
         out["DATE"] = pd.to_datetime(out["DATE"], errors="coerce")
         out["SEMAINE"] = out["DATE"].dt.isocalendar().week.astype("Int64")
@@ -859,11 +874,6 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return out
 
 def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFrame:
-    """
-    Stratégie :
-    1) si un dashboard avec feuille 'Data GPS' est présent -> on le lit
-    2) sinon on concatène tous les fichiers GF1*.xls/.xlsx et on standardise
-    """
     files = list_excel_files_local()
     if not files:
         return pd.DataFrame()
@@ -877,13 +887,11 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFr
             df = pd.DataFrame()
     else:
         gf1_files = [p for p in files if normalize_str(os.path.basename(p)).startswith(normalize_str(GPS_GF1_PREFIX))]
-        # si rien ne commence par GF1, on tente ceux qui contiennent "seance"
         if not gf1_files:
             gf1_files = [p for p in files if "seance" in normalize_str(os.path.basename(p))]
         if not gf1_files:
             return pd.DataFrame()
 
-        # trier par date dans le nom si possible (du + ancien au + récent)
         gf1_files_sorted = []
         for p in gf1_files:
             d = parse_date_from_gf1_filename(os.path.basename(p))
@@ -904,32 +912,25 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFr
     if df.empty:
         return pd.DataFrame()
 
-    # Vérification colonnes minimales (souple)
-    # On accepte si on a au moins NOM + DATE (ou NOM + SEMAINE)
-    cols = set(df.columns)
-    if "NOM" not in cols:
+    if "NOM" not in set(df.columns):
         return pd.DataFrame()
 
-    # Dates
     if "DATE" in df.columns:
         df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
     else:
         df["DATE"] = pd.NaT
 
-    # Semaine
     if "SEMAINE" in df.columns:
         df["SEMAINE"] = pd.to_numeric(df["SEMAINE"], errors="coerce")
     else:
         df["SEMAINE"] = df["DATE"].dt.isocalendar().week.astype("Int64") if "DATE" in df.columns else pd.Series([pd.NA]*len(df))
 
-    # Mapping NOM -> Player canonique
     mapped = []
     for v in df["NOM"].astype(str).tolist():
         m, _, _ = map_player_name(v, ref_set, alias_to_canon, fuzzy_cutoff=0.93)
         mapped.append(m)
     df["Player"] = mapped
 
-    # Cast numériques principaux (si présents)
     num_candidates = [
         "Durée", "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
         "Distance par plage de vitesse (>25 km/h)", "# Acc/Dec", "CHARGE", "RPE"
@@ -958,12 +959,8 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
 
     agg_map = {}
     candidates = [
-        "Distance (m)",
-        "Distance HID (>13 km/h)",
-        "Distance HID (>19 km/h)",
-        "Distance par plage de vitesse (>25 km/h)",
-        "# Acc/Dec",
-        "CHARGE",
+        "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+        "Distance par plage de vitesse (>25 km/h)", "# Acc/Dec", "CHARGE",
     ]
     for col in candidates:
         if col in d.columns:
@@ -1060,7 +1057,6 @@ def compute_gps_daily_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
-
 # =========================
 # COLLECT DATA
 # =========================
@@ -1087,7 +1083,7 @@ def collect_data(selected_season=None):
     if selected_season and selected_season != "Toutes les saisons":
         fichiers = [f for f in fichiers if f"{selected_season}" in f]
 
-    # ---- GPS (stocké en session) ----
+    # ---- GPS ----
     try:
         gps_raw = load_gps_raw(ref_set, alias_to_canon)
         gps_week = compute_gps_weekly_metrics(gps_raw)
@@ -1241,7 +1237,6 @@ def collect_data(selected_season=None):
 
     return pfc_kpi, edf_kpi
 
-
 # =========================
 # RADARS
 # =========================
@@ -1335,9 +1330,8 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
     fig.set_facecolor("#002B5C")
     return fig
 
-
 # =========================
-# UI STREAMLIT : GRAPHIQUE GPS
+# UI GPS PLOT
 # =========================
 def plot_gps_evolution(base_df: pd.DataFrame, player_canon: str, granularity: str):
     if base_df is None or base_df.empty:
@@ -1424,7 +1418,6 @@ def plot_gps_evolution(base_df: pd.DataFrame, player_canon: str, granularity: st
 
     with st.expander("Voir la table source"):
         st.dataframe(dfp)
-
 
 # =========================
 # UI STREAMLIT
@@ -1760,7 +1753,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 with st.expander("📈 Graphique (hebdo)"):
                     plot_gps_evolution(gps_weekly, player_canon=candidate, granularity="Semaine")
 
-
 # =========================
 # MAIN
 # =========================
@@ -1792,7 +1784,7 @@ def main():
 
     permissions = load_permissions()
     if not permissions:
-        st.error("Impossible de charger les permissions (vérifie le fichier de permissions sur Drive).")
+        st.error("Impossible de charger les permissions. Vérifie le fichier de permissions sur Drive.")
         st.stop()
 
     if "authenticated" not in st.session_state:
