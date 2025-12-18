@@ -191,7 +191,7 @@ def players_duration(match):
     """
     Calcule la durée de jeu cumulée pour chaque joueuse,
     en additionnant la colonne 'Duration' pour toutes les lignes où le nom de la joueuse
-    apparaît dans l'une des colonnes de poste.
+    apparaît dans l'une des colonnes de poste, qu'il s'agisse des lignes de ton équipe ou de l'adversaire.
     """
     if 'Duration' not in match.columns:
         st.warning("Colonne 'Duration' manquante pour calculer la durée de jeu")
@@ -1558,6 +1558,7 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
