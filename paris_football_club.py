@@ -1,9 +1,8 @@
 # ============================================================
 # PARIS FC - DATA CENTER (MATCH + EDF U19 + REFERENTIEL NOMS + GPS)
-# ✅ Téléchargement Drive robuste (gère Google Sheets + évite .xlsx tronqués)
-# ✅ Dossier GPS Drive dédié : 1v4Iit4JlEDNACp2QWQVrP89j66zBqMFH
-# ✅ Exports GPS entrainement type : "GF1 S20 séance 89 - 12.12.25.xls"
-# ✅ Onglet Comparaison conservé (dont référentiel EDF U19)
+# ✅ Drive robuste (Google Sheets export + écritures .tmp)
+# ✅ GPS: lecture .xls (xlrd) + .xlsx (openpyxl)
+# ✅ Comparaison EDF conservée
 # ============================================================
 
 import os
@@ -46,11 +45,10 @@ PASSERELLE_FILENAME = "Liste Joueuses Passerelles.xlsx"
 REFERENTIEL_FILENAME = "Noms Prénoms Paris FC.xlsx"
 
 POST_COLS = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']
-
 BAD_TOKENS = {"CORNER", "COUP-FRANC", "COUP FRANC", "PENALTY", "CARTON", "CARTONS", "PFC", "GB", "GARDIENNE", "GARDIEN"}
 
-GPS_SHEET_RAW = "Data GPS"  # si dashboard
-GPS_GF1_PREFIX = "GF1"      # exports entrainement
+GPS_GF1_PREFIX = "GF1"  # exports entrainement
+GPS_SHEET_RAW = "Data GPS"
 
 # =========================
 # UTILS
@@ -155,6 +153,19 @@ def parse_date_from_gf1_filename(fn: str) -> Optional[datetime]:
         return None
 
 # =========================
+# EXCEL READER (FIX GPS .XLS)
+# =========================
+def read_excel_auto(path: str, sheet_name=None) -> pd.DataFrame:
+    """
+    Lire .xls avec xlrd (obligatoire sur Streamlit Cloud)
+    Lire .xlsx avec openpyxl
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".xls":
+        return pd.read_excel(path, sheet_name=sheet_name, engine="xlrd")
+    return pd.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
+
+# =========================
 # GOOGLE DRIVE (ROBUSTE)
 # =========================
 def authenticate_google_drive():
@@ -164,7 +175,6 @@ def authenticate_google_drive():
     return build("drive", "v3", credentials=creds)
 
 def list_files_in_folder(service, folder_id):
-    """Liste les fichiers dans un dossier Google Drive (avec mimeType)."""
     query = f"'{folder_id}' in parents and trashed=false"
     results = service.files().list(
         q=query,
@@ -173,11 +183,6 @@ def list_files_in_folder(service, folder_id):
     return results.get("files", [])
 
 def download_file(service, file_id, file_name, output_folder, mime_type=None):
-    """
-    Télécharge un fichier depuis Google Drive.
-    - Si Google Sheet -> export en XLSX
-    - Écrit dans un .tmp puis remplace (évite .xlsx tronqués)
-    """
     os.makedirs(output_folder, exist_ok=True)
     final_path = os.path.join(output_folder, file_name)
     tmp_path = final_path + ".tmp"
@@ -206,7 +211,6 @@ def download_file(service, file_id, file_name, output_folder, mime_type=None):
     return final_path
 
 def download_permissions_file():
-    """Télécharge le fichier des permissions depuis Google Drive (robuste)."""
     try:
         service = authenticate_google_drive()
         files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
@@ -220,22 +224,18 @@ def download_permissions_file():
         if not candidate:
             return None
 
-        path = download_file(
-            service, candidate["id"], candidate["name"], DATA_FOLDER, mime_type=candidate.get("mimeType")
-        )
+        path = download_file(service, candidate["id"], candidate["name"], DATA_FOLDER, mime_type=candidate.get("mimeType"))
 
         # sanity check + retry once if corrupted
         try:
-            _ = pd.read_excel(path)
+            _ = read_excel_auto(path)
         except Exception:
             try:
                 if os.path.exists(path):
                     os.remove(path)
             except Exception:
                 pass
-            path = download_file(
-                service, candidate["id"], candidate["name"], DATA_FOLDER, mime_type=candidate.get("mimeType")
-            )
+            path = download_file(service, candidate["id"], candidate["name"], DATA_FOLDER, mime_type=candidate.get("mimeType"))
         return path
 
     except Exception as e:
@@ -247,7 +247,8 @@ def load_permissions():
         permissions_path = download_permissions_file()
         if not permissions_path or not os.path.exists(permissions_path):
             return {}
-        permissions_df = pd.read_excel(permissions_path)
+        permissions_df = read_excel_auto(permissions_path)
+
         permissions = {}
         for _, row in permissions_df.iterrows():
             profile = str(row.get("Profil", "")).strip()
@@ -266,13 +267,6 @@ def load_permissions():
         return {}
 
 def download_google_drive():
-    """
-    Télécharge :
-    - fichiers .csv/.xlsx/.xls (ou Google Sheets) du dossier principal
-    - fichier passerelle
-    - référentiel noms
-    - fichiers GPS du dossier GPS dédié
-    """
     service = authenticate_google_drive()
     os.makedirs(DATA_FOLDER, exist_ok=True)
     os.makedirs(PASSERELLE_FOLDER, exist_ok=True)
@@ -291,14 +285,7 @@ def download_google_drive():
             download_file(service, f["id"], f["name"], PASSERELLE_FOLDER, mime_type=f.get("mimeType"))
             break
 
-    # 3) Référentiel noms (unicode/accents)
-    target_norm = normalize_str(REFERENTIEL_FILENAME)
-    for f in files:
-        if normalize_str(f["name"]) == target_norm:
-            download_file(service, f["id"], f["name"], DATA_FOLDER, mime_type=f.get("mimeType"))
-            break
-
-    # 4) GPS folder (GF1*.xls / dashboard etc.)
+    # 3) GPS folder
     try:
         gps_files = list_files_in_folder(service, DRIVE_GPS_FOLDER_ID)
         for f in gps_files:
@@ -312,7 +299,7 @@ def download_google_drive():
 # REFERENTIEL NOMS
 # =========================
 def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str]]:
-    ref = pd.read_excel(ref_path)
+    ref = read_excel_auto(ref_path)
     cols = {c.strip().upper(): c for c in ref.columns}
     col_nom = cols.get("NOM", None)
     col_pre = cols.get("PRÉNOM", cols.get("PRENOM", None))
@@ -388,7 +375,7 @@ def load_passerelle_data():
     if not os.path.exists(passerelle_file):
         return passerelle_data
     try:
-        df = pd.read_excel(passerelle_file)
+        df = read_excel_auto(passerelle_file)
         for _, row in df.iterrows():
             nom = row.get("Nom", None)
             if nom:
@@ -785,7 +772,11 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
 # =========================
 def detect_gps_raw_sheet(path: str) -> Optional[str]:
     try:
-        xls = pd.ExcelFile(path)
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".xls":
+            xls = pd.ExcelFile(path, engine="xlrd")
+        else:
+            xls = pd.ExcelFile(path, engine="openpyxl")
         sheets = xls.sheet_names
     except Exception:
         return None
@@ -879,17 +870,20 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFr
         return pd.DataFrame()
 
     dashboard = find_dashboard_candidate(files)
+    errors = []
     if dashboard:
         sheet = detect_gps_raw_sheet(dashboard)
         try:
-            df = pd.read_excel(dashboard, sheet_name=sheet)
-        except Exception:
+            df = read_excel_auto(dashboard, sheet_name=sheet)
+        except Exception as e:
+            errors.append((os.path.basename(dashboard), str(e)))
             df = pd.DataFrame()
     else:
         gf1_files = [p for p in files if normalize_str(os.path.basename(p)).startswith(normalize_str(GPS_GF1_PREFIX))]
         if not gf1_files:
             gf1_files = [p for p in files if "seance" in normalize_str(os.path.basename(p))]
         if not gf1_files:
+            st.session_state["gps_load_errors"] = [("Aucun fichier GF1", "Vérifie que les fichiers .xls sont bien téléchargés dans data/")]
             return pd.DataFrame()
 
         gf1_files_sorted = []
@@ -901,13 +895,16 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFr
         frames = []
         for _, p in gf1_files_sorted:
             try:
-                dfp = pd.read_excel(p)
+                dfp = read_excel_auto(p)
                 dfp = standardize_gps_columns(dfp, os.path.basename(p))
                 dfp["__source_file"] = os.path.basename(p)
                 frames.append(dfp)
-            except Exception:
+            except Exception as e:
+                errors.append((os.path.basename(p), str(e)))
                 continue
         df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    st.session_state["gps_load_errors"] = errors
 
     if df.empty:
         return pd.DataFrame()
@@ -931,10 +928,7 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFr
         mapped.append(m)
     df["Player"] = mapped
 
-    num_candidates = [
-        "Durée", "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
-        "Distance par plage de vitesse (>25 km/h)", "# Acc/Dec", "CHARGE", "RPE"
-    ]
+    num_candidates = ["Durée", "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)", "# Acc/Dec", "CHARGE", "RPE"]
     for c in num_candidates:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -958,10 +952,7 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
         d["CHARGE"] = pd.to_numeric(d["RPE"], errors="coerce").fillna(0) * d["Durée_min"].fillna(0)
 
     agg_map = {}
-    candidates = [
-        "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
-        "Distance par plage de vitesse (>25 km/h)", "# Acc/Dec", "CHARGE",
-    ]
+    candidates = ["Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)", "# Acc/Dec", "CHARGE"]
     for col in candidates:
         if col in d.columns:
             agg_map[col] = "sum"
@@ -977,20 +968,12 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
         out["Durée hebdo (min)"] = 0.0
         out["Distance relative (m/min)"] = 0.0
 
-    if "CHARGE" in d.columns and "CHARGE" in out.columns:
-        d_day = d.groupby(["Player", "SEMAINE", "DATE"], as_index=False)["CHARGE"].sum()
-        daily_stats = d_day.groupby(["Player", "SEMAINE"])["CHARGE"].agg(["mean", "std"]).reset_index()
-        daily_stats["Monotonie"] = np.where(daily_stats["std"] > 0, daily_stats["mean"] / daily_stats["std"], np.nan)
-        out = out.merge(daily_stats[["Player", "SEMAINE", "Monotonie"]], on=["Player", "SEMAINE"], how="left")
-        out["Contrainte"] = out["CHARGE"] * out["Monotonie"]
-
+    if "CHARGE" in out.columns:
         out = out.sort_values(["Player", "SEMAINE"])
         out["Aigue"] = out["CHARGE"]
         out["Chronique"] = out.groupby("Player")["Aigue"].transform(lambda s: s.rolling(4, min_periods=1).mean())
         out["ACWR"] = np.where(out["Chronique"] > 0, out["Aigue"] / out["Chronique"], np.nan)
     else:
-        out["Monotonie"] = np.nan
-        out["Contrainte"] = np.nan
         out["Aigue"] = np.nan
         out["Chronique"] = np.nan
         out["ACWR"] = np.nan
@@ -998,7 +981,6 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
     out.rename(columns={
         "Distance HID (>13 km/h)": "Distance HID >13 (m)",
         "Distance HID (>19 km/h)": "Distance HID >19 (m)",
-        "Distance par plage de vitesse (>25 km/h)": "Distance >25 (m)",
     }, inplace=True)
 
     return out
@@ -1023,8 +1005,7 @@ def compute_gps_daily_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
         d["CHARGE"] = pd.to_numeric(d["RPE"], errors="coerce").fillna(0) * d["Durée_min"].fillna(0)
 
     agg = {}
-    for col in ["Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
-                "Distance par plage de vitesse (>25 km/h)", "# Acc/Dec", "CHARGE"]:
+    for col in ["Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)", "# Acc/Dec", "CHARGE"]:
         if col in d.columns:
             agg[col] = "sum"
 
@@ -1052,7 +1033,6 @@ def compute_gps_daily_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
     out.rename(columns={
         "Distance HID (>13 km/h)": "Distance HID >13 (m)",
         "Distance HID (>19 km/h)": "Distance HID >19 (m)",
-        "Distance par plage de vitesse (>25 km/h)": "Distance >25 (m)",
     }, inplace=True)
 
     return out
@@ -1100,7 +1080,7 @@ def collect_data(selected_season=None):
     edf_path = os.path.join(DATA_FOLDER, EDF_JOUEUSES_FILENAME)
     if os.path.exists(edf_path):
         try:
-            edf_joueuses = pd.read_excel(edf_path)
+            edf_joueuses = read_excel_auto(edf_path)
             needed = {"Player", "Poste", "Temps de jeu"}
             if needed.issubset(set(edf_joueuses.columns)):
                 edf_joueuses["Player"] = edf_joueuses["Player"].apply(nettoyer_nom_joueuse)
@@ -1163,7 +1143,6 @@ def collect_data(selected_season=None):
 
             row_vals = data["Row"].astype(str).str.strip()
             unique_rows = set(row_vals.dropna().unique().tolist())
-
             equipe_pfc = "PFC" if "PFC" in unique_rows else str(parts[0]).strip()
 
             equipe_adv = None
@@ -1202,7 +1181,6 @@ def collect_data(selected_season=None):
             if df.empty:
                 continue
 
-            # normalisation /90 (numériques uniquement)
             if "Temps de jeu (en minutes)" in df.columns:
                 num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != "Temps de jeu (en minutes)"]
                 for idx, r in df.iterrows():
@@ -1230,11 +1208,7 @@ def collect_data(selected_season=None):
         except Exception:
             continue
 
-    try:
-        st.session_state["name_report_df"] = pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
-    except Exception:
-        pass
-
+    st.session_state["name_report_df"] = pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
     return pfc_kpi, edf_kpi
 
 # =========================
@@ -1371,9 +1345,7 @@ def plot_gps_evolution(base_df: pd.DataFrame, player_canon: str, granularity: st
         return
 
     dist_col = "Distance (m)" if "Distance (m)" in dfp.columns else None
-    hid_col = "Distance HID >13 (m)" if "Distance HID >13 (m)" in dfp.columns else (
-        "Distance HID (>13 km/h)" if "Distance HID (>13 km/h)" in dfp.columns else None
-    )
+    hid_col = "Distance HID >13 (m)" if "Distance HID >13 (m)" in dfp.columns else ("Distance HID (>13 km/h)" if "Distance HID (>13 km/h)" in dfp.columns else None)
     acwr_col = "ACWR" if "ACWR" in dfp.columns else None
 
     choices = []
@@ -1645,8 +1617,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
         gps_daily = st.session_state.get("gps_daily_df", pd.DataFrame())
         gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
+        gps_errs = st.session_state.get("gps_load_errors", [])
 
-        with st.expander("🛠 Diagnostic GPS", expanded=False):
+        with st.expander("🛠 Diagnostic GPS", expanded=True):
             st.write("Fichiers Excel détectés dans data/:")
             try:
                 exc = [f for f in os.listdir(DATA_FOLDER) if f.lower().endswith((".xls", ".xlsx"))]
@@ -1654,14 +1627,20 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             except Exception as e:
                 st.write("Impossible de lister data/:", e)
 
+            if gps_errs:
+                st.write("Erreurs de lecture Excel (si présentes) :")
+                st.dataframe(pd.DataFrame(gps_errs, columns=["Fichier", "Erreur"]))
+
             if isinstance(gps_raw, pd.DataFrame) and not gps_raw.empty:
                 st.write("Colonnes GPS brutes détectées:")
                 st.write(list(gps_raw.columns))
                 st.write("Aperçu (5 lignes):")
                 st.dataframe(gps_raw.head(5))
+            else:
+                st.warning("GPS raw vide → vérifier xlrd dans requirements.txt + que les fichiers GF1 .xls sont bien téléchargés.")
 
         if (gps_weekly is None or gps_weekly.empty) and (gps_daily is None or gps_daily.empty):
-            st.warning("Aucune donnée GPS trouvée (vérifie le diagnostic ci-dessus : fichier/colonnes).")
+            st.warning("Aucune donnée GPS trouvée (vérifie le diagnostic ci-dessus : fichiers / erreurs / colonnes).")
             return
 
         all_players = []
@@ -1685,28 +1664,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
             st.markdown("### 📈 Évolution charge de travail (Distance / HID / ACWR)")
             plot_gps_evolution(base_df, player_canon=player_canon, granularity=granularity)
-
-            st.markdown("### Tableau synthèse")
-            if granularity == "Semaine":
-                dfp = gps_weekly[gps_weekly["Player"] == player_canon].copy()
-                cols_show = [
-                    "SEMAINE", "Durée hebdo (min)", "Distance (m)",
-                    "Distance HID >13 (m)", "Distance HID >19 (m)", "Distance >25 (m)",
-                    "Distance relative (m/min)", "# Acc/Dec",
-                    "Aigue", "Chronique", "ACWR", "Monotonie", "Contrainte"
-                ]
-                cols_show = [c for c in cols_show if c in dfp.columns]
-                st.dataframe(dfp[cols_show].sort_values("SEMAINE") if not dfp.empty else dfp)
-            else:
-                dfp = gps_daily[gps_daily["Player"] == player_canon].copy()
-                cols_show = [
-                    "DATE", "Durée (min)", "Distance (m)",
-                    "Distance HID >13 (m)", "Distance HID >19 (m)", "Distance >25 (m)",
-                    "Distance relative (m/min)", "# Acc/Dec",
-                    "Aigue", "Chronique", "ACWR"
-                ]
-                cols_show = [c for c in cols_show if c in dfp.columns]
-                st.dataframe(dfp[cols_show].sort_values("DATE") if not dfp.empty else dfp)
 
         with tab2:
             st.info("GPS Matchs : à brancher quand tu me donnes la structure d’un export GPS match (colonnes / feuille).")
@@ -1736,22 +1693,12 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             nom = str(selected).strip()
             candidate = nettoyer_nom_joueuse(f"{nom} {prenom}") if prenom else nettoyer_nom_joueuse(nom)
 
-            st.subheader("GPS - Entraînement (Metrics prioritaires)")
+            st.subheader("GPS - Entraînement (Hebdo)")
             dfp = gps_weekly[gps_weekly["Player"] == candidate].copy()
             if dfp.empty:
                 st.info("Aucune donnée GPS trouvée pour cette joueuse (ou joueuse non reconnue).")
             else:
-                cols_show = [
-                    "SEMAINE", "Durée hebdo (min)", "Distance (m)",
-                    "Distance HID >13 (m)", "Distance HID >19 (m)", "Distance >25 (m)",
-                    "Distance relative (m/min)", "# Acc/Dec",
-                    "Aigue", "Chronique", "ACWR"
-                ]
-                cols_show = [c for c in cols_show if c in dfp.columns]
-                st.dataframe(dfp[cols_show].sort_values("SEMAINE"))
-
-                with st.expander("📈 Graphique (hebdo)"):
-                    plot_gps_evolution(gps_weekly, player_canon=candidate, granularity="Semaine")
+                st.dataframe(dfp.sort_values("SEMAINE"))
 
 # =========================
 # MAIN
