@@ -200,33 +200,43 @@ def players_duration(match):
     # Liste des colonnes de poste à vérifier
     list_of_players = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']
     available_posts = [poste for poste in list_of_players if poste in match.columns]
-
     if not available_posts:
         st.warning("Aucune colonne de poste disponible pour calculer la durée de jeu")
         return pd.DataFrame()
 
-    # Dictionnaire pour stocker la durée cumulée par joueuse
     players_duration = {}
 
-    # Parcourir toutes les lignes du DataFrame
-    for i, row in match.iterrows():
-        duration = row['Duration']
-        players_in_line = set()  # Ensemble pour éviter les doublons sur une même ligne
+    for _, row in match.iterrows():
+        # Sécuriser la durée
+        try:
+            duration = float(row['Duration'])
+        except Exception:
+            continue
 
-        # Parcourir chaque colonne de poste disponible
+        players_in_line = set()
+
         for poste in available_posts:
-            player = nettoyer_nom_joueuse(str(row[poste]))
+            player = nettoyer_nom_joueuse(str(row.get(poste, "")))
 
-            # Si le nom de la joueuse est présent dans ce poste et n'a pas déjà été compté sur cette ligne
             if player and player not in ['NAN', 'NONE', ''] and player not in players_in_line:
                 players_in_line.add(player)
-                if player in players_duration:
-                    players_duration[player] += duration
-                else:
-                    players_duration[player] = duration
+                players_duration[player] = players_duration.get(player, 0) + duration
 
     if not players_duration:
         return pd.DataFrame()
+
+    # Conversion en minutes
+    for player in players_duration:
+        players_duration[player] /= 60.0
+
+    df_duration = pd.DataFrame({
+        'Player': list(players_duration.keys()),
+        'Temps de jeu (en minutes)': list(players_duration.values())
+    })
+    df_duration = df_duration.sort_values(by='Temps de jeu (en minutes)', ascending=False)
+
+    return df_duration
+
 
     # Conversion en minutes
     for player in players_duration:
@@ -1560,6 +1570,7 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
