@@ -1,14 +1,9 @@
 # ============================================================
-# PARIS FC - DATA CENTER (MATCH + EDF U19 + REFERENTIEL NOMS)
-# Script complet intégrant :
-# - Téléchargement Drive (CSV/XLS/XLSX + permissions + EDF + référentiel noms + passerelles)
-# - Robustesse Unicode (ex: "Prénoms" avec accent combiné)
-# - Référentiel "Noms Prénoms Paris FC.xlsx" = source de vérité pour tous les noms
-# - Normalisation des noms dans Row + colonnes postes (+ reporting fuzzy/unmatched)
-# - Temps de jeu fiable via segments Duration (XI PFC-only sur toutes les lignes match)
-# - Gestion fichiers "match-only" (sans lignes joueuses/actions)
-# - Fix ValueError astype(int) : conversion uniquement colonnes numériques
-# - Onglet Comparaison conservé (matchs + référentiel EDF U19)
+# PARIS FC - DATA CENTER
+# - PFC Matchs (CSV): stats + temps de jeu via segments Duration
+# - EDF U19: comparaison vs référentiel EDF
+# - Référentiel noms: "Noms Prénoms Paris FC.xlsx"
+# - GPS Entraînement: fichiers GF1 *.xls
 # ============================================================
 
 import os
@@ -18,9 +13,11 @@ import unicodedata
 import warnings
 from typing import Dict, List, Optional, Set, Tuple
 from difflib import get_close_matches
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 import streamlit as st
 from streamlit_option_menu import option_menu
@@ -34,35 +31,30 @@ from googleapiclient.http import MediaIoBaseDownload
 warnings.filterwarnings("ignore")
 
 # =========================
-# CONFIG / CONSTANTES
+# CONFIG
 # =========================
 DATA_FOLDER = "data"
 PASSERELLE_FOLDER = "data/passerelle"
 
-# Dossier Drive principal (celui de ton lien)
 DRIVE_MAIN_FOLDER_ID = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
-# Dossier Drive passerelles
 DRIVE_PASSERELLE_FOLDER_ID = "19_ZU-FsAiNKxCfTw_WKzhTcuPDsGoVhL"
+DRIVE_GPS_FOLDER_ID = "1v4Iit4JlEDNACp2QWQVrP89j66zBqMFH"
 
 PERMISSIONS_FILENAME = "Classeurs permissions streamlit.xlsx"
 EDF_JOUEUSES_FILENAME = "EDF_Joueuses.xlsx"
 PASSERELLE_FILENAME = "Liste Joueuses Passerelles.xlsx"
-
-# ⚠️ Le fichier réel sur Drive est "Noms Prénoms Paris FC.xlsx" (accent combiné).
-# On garde un nom “humain” ici : la recherche est NORMALISÉE (accents/espaces/casse).
 REFERENTIEL_FILENAME = "Noms Prénoms Paris FC.xlsx"
 
-# Colonnes postes match
 POST_COLS = ['ATT', 'DCD', 'DCG', 'DD', 'DG', 'GB', 'MCD', 'MCG', 'MD', 'MDef', 'MG']
-
 BAD_TOKENS = {"CORNER", "COUP-FRANC", "COUP FRANC", "PENALTY", "CARTON", "CARTONS", "PFC", "GB", "GARDIENNE", "GARDIEN"}
+
+GPS_GF1_PREFIX = "GF1"
 
 
 # =========================
 # UTILS
 # =========================
 def normalize_str(s: str) -> str:
-    """Normalise une chaîne pour comparaison (retire accents, espaces multiples, casse)."""
     if s is None:
         return ""
     s = str(s).strip()
@@ -72,7 +64,6 @@ def normalize_str(s: str) -> str:
     return s
 
 def find_local_file_by_normalized_name(folder: str, target_name: str) -> Optional[str]:
-    """Trouve un fichier local même si accents/composés diffèrent."""
     if not os.path.exists(folder):
         return None
     target_norm = normalize_str(target_name)
@@ -90,7 +81,6 @@ def safe_float(x, default=np.nan) -> float:
         return default
 
 def safe_int_numeric_only(df: pd.DataFrame, round_first: bool = True) -> pd.DataFrame:
-    """Convertit en int uniquement les colonnes numériques (évite ValueError)."""
     if df is None or df.empty:
         return df
     out = df.copy()
@@ -103,9 +93,8 @@ def safe_int_numeric_only(df: pd.DataFrame, round_first: bool = True) -> pd.Data
     return out
 
 def nettoyer_nom_joueuse(nom):
-    """Nettoyage canonique (identique partout)."""
     if not isinstance(nom, str):
-        return nom
+        nom = str(nom) if nom is not None else ""
     s = nom.strip().upper()
     s = (s.replace("É", "E").replace("È", "E").replace("Ê", "E")
            .replace("À", "A").replace("Ù", "U")
@@ -114,7 +103,6 @@ def nettoyer_nom_joueuse(nom):
            .replace("Â", "A").replace("Ä", "A")
            .replace("Ç", "C"))
     s = " ".join(s.split())
-    # doublons "X, X"
     parts = [p.strip().upper() for p in s.split(",") if p.strip()]
     if len(parts) > 1 and parts[0] == parts[1]:
         return parts[0]
@@ -144,7 +132,6 @@ def looks_like_player(name: str) -> bool:
     return True
 
 def split_if_comma(cell: str) -> List[str]:
-    """Découpe 'A, B' -> ['A','B'], sinon [cell]."""
     if cell is None:
         return []
     s = str(cell).strip()
@@ -152,6 +139,29 @@ def split_if_comma(cell: str) -> List[str]:
         return []
     parts = [p.strip() for p in s.split(",") if p.strip()]
     return parts if len(parts) > 1 else [s]
+
+def parse_date_from_gf1_filename(fn: str) -> Optional[datetime]:
+    base = os.path.basename(fn)
+    m = re.search(r"(\d{2})\.(\d{2})\.(\d{2,4})", base)
+    if not m:
+        return None
+    d, mo, y = m.group(1), m.group(2), m.group(3)
+    if len(y) == 2:
+        y = "20" + y
+    try:
+        return datetime(int(y), int(mo), int(d))
+    except Exception:
+        return None
+
+
+# =========================
+# ✅ EXCEL READER (sheet 0)
+# =========================
+def read_excel_auto(path: str, sheet_name=0) -> pd.DataFrame:
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".xls":
+        return pd.read_excel(path, sheet_name=sheet_name, engine="xlrd")
+    return pd.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
 
 
 # =========================
@@ -165,90 +175,183 @@ def authenticate_google_drive():
 
 def list_files_in_folder(service, folder_id):
     query = f"'{folder_id}' in parents and trashed=false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
+    results = service.files().list(
+        q=query,
+        fields="files(id, name, mimeType, modifiedTime, size)"
+    ).execute()
     return results.get("files", [])
 
-def download_file(service, file_id, file_name, output_folder):
-    request = service.files().get_media(fileId=file_id)
+def download_file(service, file_id, file_name, output_folder, mime_type=None):
+    os.makedirs(output_folder, exist_ok=True)
+    final_path = os.path.join(output_folder, file_name)
+    tmp_path = final_path + ".tmp"
+
+    if mime_type == "application/vnd.google-apps.spreadsheet":
+        request = service.files().export_media(
+            fileId=file_id,
+            mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        if not final_path.lower().endswith(".xlsx"):
+            final_path = os.path.splitext(final_path)[0] + ".xlsx"
+            tmp_path = final_path + ".tmp"
+    else:
+        request = service.files().get_media(fileId=file_id)
+
     fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
+    downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
     done = False
     while not done:
         _, done = downloader.next_chunk()
-    os.makedirs(output_folder, exist_ok=True)
-    path = os.path.join(output_folder, file_name)
-    with open(path, "wb") as f:
-        f.write(fh.getbuffer())
 
-def download_from_folder_by_names(service, folder_id: str, output_folder: str, filenames: Set[str]):
-    files = list_files_in_folder(service, folder_id)
-    found = set()
-    for f in files:
-        if f["name"] in filenames:
-            download_file(service, f["id"], f["name"], output_folder)
-            found.add(f["name"])
-    return found
-
-def download_google_drive():
-    """
-    Télécharge :
-    - Tous les fichiers .csv/.xlsx/.xls du dossier principal
-    - Passerelles depuis son dossier
-    - Permissions (si présent)
-    - Référentiel noms (recherche robuste Unicode)
-    """
-    service = authenticate_google_drive()
-    os.makedirs(DATA_FOLDER, exist_ok=True)
-    os.makedirs(PASSERELLE_FOLDER, exist_ok=True)
-
-    # 1) Tout le dossier principal
-    files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
-    for f in files:
-        if f["name"].endswith((".csv", ".xlsx", ".xls")):
-            download_file(service, f["id"], f["name"], DATA_FOLDER)
-
-    # 2) Passerelles
-    files_pass = list_files_in_folder(service, DRIVE_PASSERELLE_FOLDER_ID)
-    for f in files_pass:
-        if f["name"] == PASSERELLE_FILENAME:
-            download_file(service, f["id"], f["name"], PASSERELLE_FOLDER)
-            break
-
-    # 3) Référentiel noms : recherche normalisée (accents composés)
-    target_norm = normalize_str(REFERENTIEL_FILENAME)
-    for f in files:
-        if f["name"].endswith((".xlsx", ".xls")) and normalize_str(f["name"]) == target_norm:
-            download_file(service, f["id"], f["name"], DATA_FOLDER)
-            break
+    fh.seek(0)
+    with open(tmp_path, "wb") as f:
+        f.write(fh.read())
+    os.replace(tmp_path, final_path)
+    return final_path
 
 def download_permissions_file():
     try:
         service = authenticate_google_drive()
-        found = download_from_folder_by_names(
-            service, DRIVE_MAIN_FOLDER_ID, DATA_FOLDER, filenames={PERMISSIONS_FILENAME}
-        )
-        if PERMISSIONS_FILENAME in found:
-            return os.path.join(DATA_FOLDER, PERMISSIONS_FILENAME)
-        # fallback Unicode
-        p = find_local_file_by_normalized_name(DATA_FOLDER, PERMISSIONS_FILENAME)
-        return p
+        files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
+
+        target = normalize_str(PERMISSIONS_FILENAME)
+        candidate = None
+        for f in files:
+            if normalize_str(f["name"]) == target:
+                candidate = f
+                break
+        if not candidate:
+            return None
+
+        path = download_file(service, candidate["id"], candidate["name"], DATA_FOLDER, mime_type=candidate.get("mimeType"))
+
+        # retry once if corrupted
+        try:
+            _ = read_excel_auto(path)
+        except Exception:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+            path = download_file(service, candidate["id"], candidate["name"], DATA_FOLDER, mime_type=candidate.get("mimeType"))
+
+        return path
+
     except Exception as e:
         st.error(f"Erreur téléchargement permissions: {e}")
         return None
 
+def load_permissions():
+    try:
+        permissions_path = download_permissions_file()
+        if not permissions_path or not os.path.exists(permissions_path):
+            return {}
+
+        permissions_df = read_excel_auto(permissions_path)
+
+        # sécurité si dict
+        if isinstance(permissions_df, dict):
+            if len(permissions_df) == 0:
+                return {}
+            permissions_df = list(permissions_df.values())[0]
+
+        if not isinstance(permissions_df, pd.DataFrame) or permissions_df.empty:
+            return {}
+
+        for col in ["Profil", "Mot de passe", "Permissions", "Joueuse"]:
+            if col not in permissions_df.columns:
+                permissions_df[col] = np.nan
+
+        permissions = {}
+        for _, row in permissions_df.iterrows():
+            profile = str(row.get("Profil", "")).strip()
+            if not profile:
+                continue
+
+            raw_perm = row.get("Permissions", np.nan)
+            perm_list = [p.strip() for p in str(raw_perm).split(",") if p.strip()] if pd.notna(raw_perm) else []
+
+            player = row.get("Joueuse", np.nan)
+            player = nettoyer_nom_joueuse(str(player)) if pd.notna(player) else None
+
+            permissions[profile] = {
+                "password": str(row.get("Mot de passe", "")).strip(),
+                "permissions": perm_list,
+                "player": player
+            }
+        return permissions
+
+    except Exception as e:
+        st.error(f"Erreur chargement permissions: {e}")
+        return {}
+
+def download_google_drive():
+    service = authenticate_google_drive()
+    os.makedirs(DATA_FOLDER, exist_ok=True)
+    os.makedirs(PASSERELLE_FOLDER, exist_ok=True)
+
+    # Main folder
+    files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
+    for f in files:
+        is_sheet = f.get("mimeType") == "application/vnd.google-apps.spreadsheet"
+        if f["name"].endswith((".csv", ".xlsx", ".xls")) or is_sheet:
+            download_file(service, f["id"], f["name"], DATA_FOLDER, mime_type=f.get("mimeType"))
+
+    # Passerelle
+    files_pass = list_files_in_folder(service, DRIVE_PASSERELLE_FOLDER_ID)
+    for f in files_pass:
+        if normalize_str(f["name"]) == normalize_str(PASSERELLE_FILENAME):
+            download_file(service, f["id"], f["name"], PASSERELLE_FOLDER, mime_type=f.get("mimeType"))
+            break
+
+    # GPS folder
+    try:
+        gps_files = list_files_in_folder(service, DRIVE_GPS_FOLDER_ID)
+        for f in gps_files:
+            is_sheet = f.get("mimeType") == "application/vnd.google-apps.spreadsheet"
+            if f["name"].endswith((".xlsx", ".xls")) or is_sheet:
+                download_file(service, f["id"], f["name"], DATA_FOLDER, mime_type=f.get("mimeType"))
+    except Exception as e:
+        st.warning(f"Impossible de télécharger les fichiers GPS: {e}")
+
 
 # =========================
-# REFERENTIEL NOMS (source de vérité)
+# REFERENTIEL NOMS
 # =========================
 def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str]]:
-    ref = pd.read_excel(ref_path)
+    ref = read_excel_auto(ref_path)
 
-    cols = {c.strip().upper(): c for c in ref.columns}
-    col_nom = cols.get("NOM", None)
-    col_pre = cols.get("PRÉNOM", cols.get("PRENOM", None))
+    # sécurité si dict
+    if isinstance(ref, dict):
+        if len(ref) == 0:
+            raise ValueError("Référentiel vide (aucune feuille lisible).")
+        chosen = None
+        for _, sh_df in ref.items():
+            if not isinstance(sh_df, pd.DataFrame) or sh_df.empty:
+                continue
+            cols_norm = [normalize_str(c) for c in sh_df.columns]
+            if ("nom" in cols_norm) and ("prenom" in cols_norm or "prénom" in cols_norm):
+                chosen = sh_df
+                break
+        ref = chosen if chosen is not None else list(ref.values())[0]
+
+    if not isinstance(ref, pd.DataFrame) or ref.empty:
+        raise ValueError("Référentiel illisible ou vide.")
+
+    cols = {str(c).strip().upper(): c for c in ref.columns}
+    col_nom = cols.get("NOM")
+    col_pre = cols.get("PRÉNOM") or cols.get("PRENOM")
+
+    if not col_nom or not col_pre:
+        cols_norm = {normalize_str(c): c for c in ref.columns}
+        col_nom = col_nom or cols_norm.get("nom")
+        col_pre = col_pre or cols_norm.get("prenom") or cols_norm.get("prénom")
+
     if not col_nom or not col_pre:
         raise ValueError(f"Référentiel: colonnes NOM/Prénom introuvables: {ref.columns.tolist()}")
 
+    ref = ref.copy()
     ref["CANON"] = (ref[col_nom].astype(str) + " " + ref[col_pre].astype(str)).apply(nettoyer_nom_joueuse)
     ref_set = set(ref["CANON"].dropna().unique().tolist())
 
@@ -259,10 +362,11 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str]]:
         if len(parts) >= 2:
             prenom = parts[-1]
             nom = " ".join(parts[:-1])
-            alias_to_canon[nettoyer_nom_joueuse(f"{prenom} {nom}")] = canon  # PRENOM NOM
-            alias_to_canon[nettoyer_nom_joueuse(f"{nom}, {prenom}")] = canon  # NOM, PRENOM
-            alias_to_canon[nettoyer_nom_joueuse(f"{nom} {prenom[0]}.")] = canon  # NOM P.
-            alias_to_canon[nettoyer_nom_joueuse(f"{nom} {prenom[0]}")] = canon   # NOM P
+            alias_to_canon[nettoyer_nom_joueuse(f"{prenom} {nom}")] = canon
+            alias_to_canon[nettoyer_nom_joueuse(f"{nom}, {prenom}")] = canon
+            alias_to_canon[nettoyer_nom_joueuse(f"{nom} {prenom[0]}.")] = canon
+            alias_to_canon[nettoyer_nom_joueuse(f"{nom} {prenom[0]}")] = canon
+
     return ref_set, alias_to_canon
 
 def map_player_name(raw_name: str,
@@ -275,14 +379,12 @@ def map_player_name(raw_name: str,
     candidates = split_if_comma(raw_name)
     cleaned = [nettoyer_nom_joueuse(c) for c in candidates if c]
 
-    # exact/alias
     for c in cleaned:
         if c in ref_set:
             return c, "exact", str(raw_name)
         if c in alias_to_canon:
             return alias_to_canon[c], "alias", str(raw_name)
 
-    # fuzzy
     for c in cleaned:
         best = get_close_matches(c, list(ref_set), n=1, cutoff=fuzzy_cutoff)
         if best:
@@ -307,11 +409,7 @@ def normalize_players_in_df(df: pd.DataFrame,
             mapped, status, raw = map_player_name(v, ref_set, alias_to_canon, fuzzy_cutoff=fuzzy_cutoff)
             if status in {"fuzzy", "unmatched"} and str(v).strip():
                 report.append({"file": filename, "column": col, "raw": raw, "mapped": mapped, "status": status})
-            # remplacement uniquement si ça ressemble à une joueuse (évite de toucher aux équipes)
-            if looks_like_player(mapped):
-                new_vals.append(mapped)
-            else:
-                new_vals.append(v)
+            new_vals.append(mapped if looks_like_player(mapped) else v)
         out[col] = new_vals
     return out
 
@@ -325,7 +423,7 @@ def load_passerelle_data():
     if not os.path.exists(passerelle_file):
         return passerelle_data
     try:
-        df = pd.read_excel(passerelle_file)
+        df = read_excel_auto(passerelle_file)
         for _, row in df.iterrows():
             nom = row.get("Nom", None)
             if nom:
@@ -344,31 +442,8 @@ def load_passerelle_data():
 
 
 # =========================
-# PERMISSIONS
+# PERMISSIONS HELPERS
 # =========================
-def load_permissions():
-    try:
-        permissions_path = download_permissions_file()
-        if not permissions_path or not os.path.exists(permissions_path):
-            return {}
-        permissions_df = pd.read_excel(permissions_path)
-        permissions = {}
-        for _, row in permissions_df.iterrows():
-            profile = str(row.get("Profil", "")).strip()
-            if not profile:
-                continue
-            permissions[profile] = {
-                "password": str(row.get("Mot de passe", "")).strip(),
-                "permissions": [p.strip() for p in str(row.get("Permissions", "")).split(",")]
-                if pd.notna(row.get("Permissions", np.nan)) else [],
-                "player": nettoyer_nom_joueuse(str(row.get("Joueuse", "")).strip())
-                if pd.notna(row.get("Joueuse", np.nan)) else None
-            }
-        return permissions
-    except Exception as e:
-        st.error(f"Erreur chargement permissions: {e}")
-        return {}
-
 def check_permission(user_profile, required_permission, permissions):
     if user_profile not in permissions:
         return False
@@ -390,6 +465,7 @@ def infer_duration_unit(series: pd.Series) -> str:
     if s.empty:
         return "seconds"
     total = s.sum()
+    # Heuristique générale
     if 30 <= total <= 200:
         return "minutes"
     if 1500 <= total <= 20000:
@@ -412,9 +488,9 @@ def extract_lineup_from_row(row: pd.Series, available_posts: List[str]) -> Set[s
 
 def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.DataFrame:
     """
-    Règle clé (basée sur tes CSV) :
-    Les colonnes postes décrivent le XI PFC même quand Row == adversaire.
-    => On crédite le XI lu sur la ligne sur TOUTES les lignes match (PFC + ADV).
+    ✅ CORRECTIF CLÉ :
+    on normalise 'Row' et les noms d'équipes (casse/accents/espaces) avant filtrage,
+    sinon on perd souvent l'équipe adverse -> temps de jeu ÷2.
     """
     if match is None or match.empty or "Duration" not in match.columns or "Row" not in match.columns:
         return pd.DataFrame()
@@ -424,8 +500,12 @@ def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.
         return pd.DataFrame()
 
     m = match.copy()
-    m["Row_clean"] = m["Row"].astype(str).str.strip()
-    m = m[m["Row_clean"].isin({str(home_team).strip(), str(away_team).strip()})].copy()
+
+    home_clean = nettoyer_nom_equipe(home_team)
+    away_clean = nettoyer_nom_equipe(away_team)
+    m["Row_clean"] = m["Row"].astype(str).apply(nettoyer_nom_equipe)
+
+    m = m[m["Row_clean"].isin({home_clean, away_clean})].copy()
     if m.empty:
         return pd.DataFrame()
 
@@ -439,7 +519,6 @@ def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.
 
     played_seconds: Dict[str, float] = {}
 
-    # tri si possible
     for c in ["Start time", "StartTime", "Start", "Time", "Timestamp"]:
         if c in m.columns:
             m = m.sort_values(by=c, ascending=True)
@@ -449,19 +528,25 @@ def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.
         dur = to_seconds(row.get("Duration", 0))
         if dur <= 0:
             continue
+
         lineup = extract_lineup_from_row(row, available_posts)
         if not lineup:
             continue
+
         for p in lineup:
             played_seconds[p] = played_seconds.get(p, 0.0) + dur
 
     if not played_seconds:
         return pd.DataFrame()
 
-    return (pd.DataFrame({
-        "Player": list(played_seconds.keys()),
-        "Temps de jeu (en minutes)": [v / 60.0 for v in played_seconds.values()],
-    }).sort_values("Temps de jeu (en minutes)", ascending=False).reset_index(drop=True))
+    return (
+        pd.DataFrame({
+            "Player": list(played_seconds.keys()),
+            "Temps de jeu (en minutes)": [v / 60.0 for v in played_seconds.values()],
+        })
+        .sort_values("Temps de jeu (en minutes)", ascending=False)
+        .reset_index(drop=True)
+    )
 
 
 # =========================
@@ -632,6 +717,7 @@ def create_metrics(df):
             df[metric] = np.where(df[cols[0]] > 0, df[cols[0]] / mmax, 0) if mmax > 0 else 0
         else:
             df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
+
     for metric in required_cols.keys():
         if metric in df.columns:
             df[metric] = (df[metric].rank(pct=True) * 100).fillna(0)
@@ -669,7 +755,7 @@ def create_poste(df):
 
 
 # =========================
-# CREATE DATA (PFC / EDF)
+# CREATE DATA (PFC/EDF)
 # =========================
 def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
     if is_edf:
@@ -687,7 +773,6 @@ def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
         df_duration = players_duration(match, home_team=home_team, away_team=away_team)
         dfs = [df_duration]
 
-    # actions (si joueurs contient des actions)
     for func in [players_shots, players_passes, players_dribbles, players_defensive_duels, players_interceptions, players_ball_losses]:
         try:
             res = func(joueurs)
@@ -752,17 +837,130 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     ).reset_index()
     return safe_int_numeric_only(aggregated)
 
-def generate_synthesis_excel(pfc_kpi):
-    try:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            if not pfc_kpi.empty:
-                tmp = pfc_kpi.copy()
-                tmp.insert(0, "Joueuse", tmp["Player"])
-                tmp.to_excel(writer, sheet_name="Synthèse", index=False)
-        return output.getvalue()
-    except Exception:
-        return None
+
+# =========================
+# GPS (lecture simple GF1)
+# =========================
+def list_excel_files_local() -> List[str]:
+    if not os.path.exists(DATA_FOLDER):
+        return []
+    return [os.path.join(DATA_FOLDER, f) for f in os.listdir(DATA_FOLDER) if f.lower().endswith((".xlsx", ".xls"))]
+
+def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    colmap = {}
+    for c in df.columns:
+        nc = normalize_str(c)
+        if nc in {"nom", "name", "joueur", "joueuse"}:
+            colmap[c] = "NOM"
+        elif nc == "date":
+            colmap[c] = "DATE"
+        elif "semaine" in nc or nc == "week":
+            colmap[c] = "SEMAINE"
+        elif "duree" in nc or "durée" in nc:
+            colmap[c] = "Durée"
+        elif "distance" in nc and "(m)" in nc:
+            colmap[c] = "Distance (m)"
+        elif "distance" in nc and "hid" in nc and "13" in nc:
+            colmap[c] = "Distance HID (>13 km/h)"
+        elif "distance" in nc and "hid" in nc and "19" in nc:
+            colmap[c] = "Distance HID (>19 km/h)"
+        elif "charge" in nc:
+            colmap[c] = "CHARGE"
+        elif "rpe" in nc:
+            colmap[c] = "RPE"
+
+    out = df.rename(columns=colmap).copy()
+
+    if "DATE" not in out.columns:
+        d = parse_date_from_gf1_filename(filename)
+        if d:
+            out["DATE"] = pd.Timestamp(d.date())
+
+    if "SEMAINE" not in out.columns and "DATE" in out.columns:
+        out["DATE"] = pd.to_datetime(out["DATE"], errors="coerce")
+        out["SEMAINE"] = out["DATE"].dt.isocalendar().week.astype("Int64")
+
+    return out
+
+def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFrame:
+    files = list_excel_files_local()
+    if not files:
+        return pd.DataFrame()
+
+    gf1_files = [p for p in files if normalize_str(os.path.basename(p)).startswith(normalize_str(GPS_GF1_PREFIX))]
+    if not gf1_files:
+        gf1_files = [p for p in files if "seance" in normalize_str(os.path.basename(p))]
+    if not gf1_files:
+        return pd.DataFrame()
+
+    gf1_files_sorted = []
+    for p in gf1_files:
+        d = parse_date_from_gf1_filename(os.path.basename(p))
+        gf1_files_sorted.append((d or datetime.min, p))
+    gf1_files_sorted.sort(key=lambda t: t[0])
+
+    frames = []
+    for _, p in gf1_files_sorted:
+        try:
+            dfp = read_excel_auto(p)  # sheet 0
+            dfp = standardize_gps_columns(dfp, os.path.basename(p))
+            dfp["__source_file"] = os.path.basename(p)
+            frames.append(dfp)
+        except Exception:
+            continue
+
+    df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if df.empty or "NOM" not in df.columns:
+        return pd.DataFrame()
+
+    mapped = []
+    for v in df["NOM"].astype(str).tolist():
+        m, _, _ = map_player_name(v, ref_set, alias_to_canon, fuzzy_cutoff=0.93)
+        mapped.append(m)
+    df["Player"] = mapped
+
+    for c in ["Durée", "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)", "CHARGE", "RPE"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df["DATE"] = pd.to_datetime(df.get("DATE", pd.NaT), errors="coerce")
+    return df
+
+def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
+    if df_gps.empty:
+        return pd.DataFrame()
+
+    d = df_gps.copy()
+    if "SEMAINE" not in d.columns:
+        d["SEMAINE"] = d["DATE"].dt.isocalendar().week.astype("Int64")
+
+    if "Durée" in d.columns:
+        d["Durée_min"] = pd.to_numeric(d["Durée"], errors="coerce")
+    else:
+        d["Durée_min"] = np.nan
+
+    if "CHARGE" not in d.columns and "RPE" in d.columns:
+        d["CHARGE"] = pd.to_numeric(d["RPE"], errors="coerce").fillna(0) * d["Durée_min"].fillna(0)
+
+    agg_map = {}
+    for col in ["Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)", "CHARGE"]:
+        if col in d.columns:
+            agg_map[col] = "sum"
+
+    out = d.groupby(["Player", "SEMAINE"], as_index=False).agg(agg_map)
+
+    if "CHARGE" in out.columns:
+        out = out.sort_values(["Player", "SEMAINE"])
+        out["Aigue"] = out["CHARGE"]
+        out["Chronique"] = out.groupby("Player")["Aigue"].transform(lambda s: s.rolling(4, min_periods=1).mean())
+        out["ACWR"] = np.where(out["Chronique"] > 0, out["Aigue"] / out["Chronique"], np.nan)
+    else:
+        out["ACWR"] = np.nan
+
+    return out
 
 
 # =========================
@@ -772,17 +970,11 @@ def generate_synthesis_excel(pfc_kpi):
 def collect_data(selected_season=None):
     download_google_drive()
 
-    # ---- Référentiel (chargement robuste Unicode) ----
     ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
     if not os.path.exists(ref_path):
         ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME)
-
     if not ref_path or not os.path.exists(ref_path):
         st.error(f"Référentiel introuvable dans '{DATA_FOLDER}'.")
-        try:
-            st.write("Fichiers présents:", os.listdir(DATA_FOLDER))
-        except Exception:
-            pass
         return pd.DataFrame(), pd.DataFrame()
 
     ref_set, alias_to_canon = build_referentiel_players(ref_path)
@@ -790,30 +982,27 @@ def collect_data(selected_season=None):
 
     pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
-    if not os.path.exists(DATA_FOLDER):
-        return pfc_kpi, edf_kpi
-
-    fichiers = [f for f in os.listdir(DATA_FOLDER) if f.endswith((".csv", ".xlsx", ".xls")) and normalize_str(f) != normalize_str(PERMISSIONS_FILENAME)]
-    if not fichiers:
-        return pfc_kpi, edf_kpi
+    fichiers = [f for f in os.listdir(DATA_FOLDER)
+                if f.endswith((".csv", ".xlsx", ".xls")) and normalize_str(f) != normalize_str(PERMISSIONS_FILENAME)]
 
     if selected_season and selected_season != "Toutes les saisons":
         fichiers = [f for f in fichiers if f"{selected_season}" in f]
 
-    # ---- EDF ----
+    # GPS
+    gps_raw = load_gps_raw(ref_set, alias_to_canon)
+    gps_week = compute_gps_weekly_metrics(gps_raw)
+    st.session_state["gps_weekly_df"] = gps_week
+    st.session_state["gps_raw_df"] = gps_raw
+
+    # EDF
     edf_path = os.path.join(DATA_FOLDER, EDF_JOUEUSES_FILENAME)
     if os.path.exists(edf_path):
         try:
-            edf_joueuses = pd.read_excel(edf_path)
+            edf_joueuses = read_excel_auto(edf_path)
             needed = {"Player", "Poste", "Temps de jeu"}
             if needed.issubset(set(edf_joueuses.columns)):
                 edf_joueuses["Player"] = edf_joueuses["Player"].apply(nettoyer_nom_joueuse)
-                edf_joueuses = normalize_players_in_df(
-                    edf_joueuses, cols=["Player"], ref_set=ref_set, alias_to_canon=alias_to_canon,
-                    filename=EDF_JOUEUSES_FILENAME, report=name_report
-                )
 
-                # si tu as des CSV EDF_U19_Match*.csv
                 matchs_csv = [f for f in fichiers if f.startswith("EDF_U19_Match") and f.endswith(".csv")]
                 all_edf = []
                 for csv_file in matchs_csv:
@@ -821,10 +1010,6 @@ def collect_data(selected_season=None):
                     if "Row" not in d.columns:
                         continue
                     d["Player"] = d["Row"].apply(nettoyer_nom_joueuse)
-                    d = normalize_players_in_df(
-                        d, cols=["Player"], ref_set=ref_set, alias_to_canon=alias_to_canon,
-                        filename=csv_file, report=name_report
-                    )
                     d = d.merge(edf_joueuses, on="Player", how="left")
                     if d.empty:
                         continue
@@ -840,7 +1025,7 @@ def collect_data(selected_season=None):
         except Exception:
             pass
 
-    # ---- PFC MATCHS ----
+    # PFC Matchs
     for filename in fichiers:
         if not (filename.endswith(".csv") and "PFC" in filename):
             continue
@@ -860,19 +1045,19 @@ def collect_data(selected_season=None):
             if "Row" not in data.columns:
                 continue
 
-            # normalisation noms dans Row + colonnes postes via référentiel
+            # ⚠️ mapping joueurs sur colonnes posts + Row
             cols_to_fix = ["Row"] + [c for c in POST_COLS if c in data.columns]
             data = normalize_players_in_df(
                 data, cols=cols_to_fix, ref_set=ref_set, alias_to_canon=alias_to_canon,
                 filename=filename, report=name_report
             )
 
-            # équipes : on essaie d'abord Teamersaire (si dispo), sinon fallback
+            # Détection équipe PFC / ADV (robuste)
             row_vals = data["Row"].astype(str).str.strip()
             unique_rows = set(row_vals.dropna().unique().tolist())
-
             equipe_pfc = "PFC" if "PFC" in unique_rows else str(parts[0]).strip()
 
+            # ADV via mode sur les lignes équipe (si colonne existe)
             equipe_adv = None
             if "Teamersaire" in data.columns:
                 adv_series = data.loc[row_vals.eq(equipe_pfc), "Teamersaire"].dropna().astype(str).str.strip()
@@ -888,36 +1073,28 @@ def collect_data(selected_season=None):
             if not equipe_adv:
                 continue
 
-            # construction match/joueurs robuste
+            # Match = lignes équipes
+            d2 = data.copy()
+            d2["Row_clean"] = d2["Row"].astype(str).apply(nettoyer_nom_equipe)
             home_clean = nettoyer_nom_equipe(equipe_pfc)
             away_clean = nettoyer_nom_equipe(equipe_adv)
 
-            d2 = data.copy()
-            d2["Row_clean"] = d2["Row"].astype(str).str.strip().apply(nettoyer_nom_equipe)
-
-            # match = lignes où Row == équipes, avec fallback contains
             match = d2[d2["Row_clean"].isin({home_clean, away_clean})].copy()
-            if match.empty:
-                mask = d2["Row_clean"].str.contains(home_clean, na=False) | d2["Row_clean"].str.contains(away_clean, na=False)
-                match = d2[mask].copy()
             if match.empty:
                 continue
 
-            # joueurs = tout sauf catégories et sauf lignes match
+            # Joueurs = le reste (hors events)
             mask_joueurs = ~d2["Row_clean"].str.contains("CORNER|COUP-FRANC|COUP FRANC|PENALTY|CARTON", na=False)
             mask_joueurs &= ~d2.index.isin(match.index)
             joueurs = d2[mask_joueurs].copy()
-
-            # cas "match-only" (Poissy, etc.) : pas de joueurs -> on garde actions vides
             if joueurs.empty:
                 joueurs = pd.DataFrame(columns=["Row", "Action"])
 
-            # créer df complet (temps de jeu + actions)
             df = create_data(match, joueurs, False, home_team=equipe_pfc, away_team=equipe_adv)
             if df.empty:
                 continue
 
-            # normalisation /90 (colonnes numériques uniquement, hors pourcentages)
+            # Normalisation per-90 (en gardant le temps de jeu)
             if "Temps de jeu (en minutes)" in df.columns:
                 num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != "Temps de jeu (en minutes)"]
                 for idx, r in df.iterrows():
@@ -945,12 +1122,7 @@ def collect_data(selected_season=None):
         except Exception:
             continue
 
-    # Stocker rapport mapping dans session
-    try:
-        st.session_state["name_report_df"] = pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
-    except Exception:
-        pass
-
+    st.session_state["name_report_df"] = pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
     return pfc_kpi, edf_kpi
 
 
@@ -1049,7 +1221,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
 
 
 # =========================
-# UI STREAMLIT
+# UI
 # =========================
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     st.sidebar.markdown(
@@ -1070,7 +1242,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         st.session_state.user_profile = None
         st.rerun()
 
-    # update data
     if check_permission(user_profile, "update_data", permissions) or check_permission(user_profile, "all", permissions):
         if st.sidebar.button("Mettre à jour la base"):
             with st.spinner("Mise à jour..."):
@@ -1080,41 +1251,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.success("✅ Mise à jour terminée")
             st.rerun()
 
-    # rapport mapping noms
-    rep_df = st.session_state.get("name_report_df", pd.DataFrame())
-    if isinstance(rep_df, pd.DataFrame) and not rep_df.empty:
-        st.sidebar.download_button(
-            "⬇️ Rapport mapping noms",
-            data=rep_df.to_csv(index=False).encode("utf-8"),
-            file_name="rapport_mapping_noms.csv",
-            mime="text/csv"
-        )
-
-    # synthèse (admin)
-    if check_permission(user_profile, "all", permissions):
-        if st.sidebar.button("Télécharger synthèse"):
-            with st.spinner("Génération..."):
-                p_all, _ = collect_data()
-                excel_bytes = generate_synthesis_excel(p_all)
-            if excel_bytes:
-                st.sidebar.download_button(
-                    label="⬇️ Télécharger le fichier Excel",
-                    data=excel_bytes,
-                    file_name="synthese_statistiques_joueuses.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
-    # re-collect selon saison
     if selected_saison != "Toutes les saisons":
         pfc_kpi, edf_kpi = collect_data(selected_saison)
     else:
         pfc_kpi, edf_kpi = collect_data()
 
-    # filtre profil
     if player_name and not pfc_kpi.empty and "Player" in pfc_kpi.columns:
         pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
 
-    # menu
     options = ["Statistiques", "Comparaison", "Données Physiques", "Joueuses Passerelles"]
     if check_permission(user_profile, "all", permissions):
         options.insert(2, "Gestion")
@@ -1135,7 +1279,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             }
         )
 
-    # pages
     if page == "Statistiques":
         st.header("Statistiques")
 
@@ -1189,17 +1332,16 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.pyplot(fig)
 
         with tab2:
-            for k in ["Rigueur", "Récupération", "Distribution", "Percussion", "Finition"]:
-                if k not in aggregated.columns:
-                    st.info("KPIs non disponibles sur cette sélection.")
-                    break
-            else:
+            needed = ["Rigueur", "Récupération", "Distribution", "Percussion", "Finition"]
+            if all(k in aggregated.columns for k in needed):
                 col1, col2, col3, col4, col5 = st.columns(5)
                 with col1: st.metric("Rigueur", f"{int(aggregated['Rigueur'].iloc[0])}/100")
                 with col2: st.metric("Récupération", f"{int(aggregated['Récupération'].iloc[0])}/100")
                 with col3: st.metric("Distribution", f"{int(aggregated['Distribution'].iloc[0])}/100")
                 with col4: st.metric("Percussion", f"{int(aggregated['Percussion'].iloc[0])}/100")
                 with col5: st.metric("Finition", f"{int(aggregated['Finition'].iloc[0])}/100")
+            else:
+                st.info("KPIs non disponibles sur cette sélection.")
 
         with tab3:
             poste_cols = ["Défenseur central", "Défenseur latéral", "Milieu défensif", "Milieu relayeur", "Milieu offensif", "Attaquant"]
@@ -1228,7 +1370,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             if "Adversaire" in pfc_kpi.columns:
                 unique_matches = pfc_kpi["Adversaire"].unique()
                 selected_matches = st.multiselect("Sélectionnez au moins 2 matchs", unique_matches)
-
                 if len(selected_matches) >= 2 and st.button("Comparer les matchs sélectionnés"):
                     comp = []
                     for mlabel in selected_matches:
@@ -1269,7 +1410,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         st.pyplot(fig)
             else:
                 st.warning("Aucune donnée EDF disponible.")
-
         else:
             st.subheader("Comparaison PFC vs PFC")
             p1 = st.selectbox("Joueuse 1", pfc_kpi["Player"].unique(), key="p1")
@@ -1302,8 +1442,19 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
     elif page == "Données Physiques":
         st.header("📊 Données Physiques")
-        st.info("Prêt pour intégration GPS : les noms seront automatiquement alignés via le référentiel.")
-        st.write("➡️ Prochaine étape : lecture des exports GPS et merge sur la colonne Player canonique.")
+        gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
+        gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
+
+        if gps_weekly.empty:
+            st.warning("Aucune donnée GPS hebdo trouvée.")
+            return
+
+        all_players = sorted(set(gps_weekly["Player"].dropna().unique().tolist()))
+        player_sel = player_name if player_name else st.selectbox("Sélectionnez une joueuse", all_players)
+        dfp = gps_weekly[gps_weekly["Player"] == nettoyer_nom_joueuse(player_sel)].copy()
+
+        st.subheader("GPS - Hebdomadaire")
+        st.dataframe(dfp.sort_values("SEMAINE"))
 
     elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
@@ -1311,8 +1462,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         if not passerelle_data:
             st.warning("Aucune donnée passerelle.")
             return
+
         selected = st.selectbox("Sélectionnez une joueuse", list(passerelle_data.keys()))
         info = passerelle_data[selected]
+
         st.subheader("Identité")
         if info.get("Prénom"): st.write(f"**Prénom :** {info['Prénom']}")
         if info.get("Photo"): st.image(info["Photo"], width=150)
@@ -1354,7 +1507,7 @@ def main():
 
     permissions = load_permissions()
     if not permissions:
-        st.error("Impossible de charger les permissions (vérifie le fichier de permissions sur Drive).")
+        st.error("Impossible de charger les permissions. Vérifie le fichier de permissions sur Drive.")
         st.stop()
 
     if "authenticated" not in st.session_state:
