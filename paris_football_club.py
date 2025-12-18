@@ -187,7 +187,7 @@ def players_edf_duration(match):
     })
     return df_duration
 def players_duration(match):
-    """Calcule la durée de jeu pour les joueuses PFC, en ignorant les lignes où 'Adversaire' = 'Adversaire'."""
+    """Calcule la durée de jeu pour les joueuses PFC, uniquement si 'Adversaire' = 'Adversaire'."""
     if 'Duration' not in match.columns or 'Adversaire' not in match.columns:
         st.warning("Colonnes 'Duration' ou 'Adversaire' manquantes pour calculer la durée de jeu")
         return pd.DataFrame()
@@ -201,8 +201,8 @@ def players_duration(match):
         return pd.DataFrame()
 
     for i in range(len(match)):
-        # Ignorer les lignes où 'Adversaire' = 'Adversaire' (en-tête ou métadonnée)
-        if match.iloc[i]['Adversaire'] == 'Adversaire':
+        # Ne comptabiliser que si 'Adversaire' = 'Adversaire'
+        if match.iloc[i]['Adversaire'] != 'Adversaire':
             continue
 
         duration = match.iloc[i]['Duration']
@@ -1549,4 +1549,5 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
