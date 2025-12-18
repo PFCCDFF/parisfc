@@ -194,26 +194,14 @@ def load_passerelle_data():
 # =========================
 # TEMPS DE JEU
 # =========================
-def players_edf_duration(match):
-    if "Poste" not in match.columns or "Temps de jeu" not in match.columns:
-        st.warning("Colonnes manquantes pour calculer la durée de jeu EDF")
-        return pd.DataFrame()
-    df_filtered = match.loc[match["Poste"] != "Gardienne"].copy()
-    if df_filtered.empty:
-        return pd.DataFrame()
-    df_filtered["Player"] = df_filtered["Player"].apply(nettoyer_nom_joueuse)
-    df_filtered["Temps de jeu (en minutes)"] = pd.to_numeric(df_filtered["Temps de jeu"], errors="coerce").fillna(0)
-    return df_filtered[["Player", "Temps de jeu (en minutes)"]]
-
 def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.DataFrame:
     """
-    Calcule le temps de jeu (minutes) SUR LE TERRAIN à partir de segments (Duration) par équipe (Row).
-    - Duration correspond à un segment de jeu attribué à une équipe (souvent possession).
-    - Pour obtenir le temps de jeu "sur le terrain", on crédite CHAQUE segment aux 11 des DEUX équipes,
-      en utilisant le dernier 11 connu pour l’équipe qui n’a pas la possession sur ce segment.
+    Calcule le temps de jeu PFC à partir des segments (Duration).
+    IMPORTANT : dans ces CSV, les colonnes de postes (ATT, DG, etc.) décrivent le XI PFC,
+    y compris sur les lignes où Row == adversaire. On ne tente donc PAS de reconstruire l'XI adverse.
     """
-    if match is None or match.empty or "Duration" not in match.columns:
-        st.warning("Colonne 'Duration' manquante ou match vide pour calculer la durée de jeu")
+    if match is None or match.empty or "Duration" not in match.columns or "Row" not in match.columns:
+        st.warning("Match vide ou colonnes manquantes ('Duration'/'Row') pour calculer la durée de jeu")
         return pd.DataFrame()
 
     available_posts = [p for p in POST_COLS if p in match.columns]
@@ -221,7 +209,16 @@ def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.
         st.warning("Aucune colonne de poste disponible pour calculer la durée de jeu")
         return pd.DataFrame()
 
-    unit = infer_duration_unit(match["Duration"])
+    # On ne garde que les lignes 'match' (Row = une des deux équipes)
+    m = match.copy()
+    m["Row_clean"] = m["Row"].astype(str).str.strip()
+    m = m[m["Row_clean"].isin({str(home_team).strip(), str(away_team).strip()})].copy()
+    if m.empty:
+        st.warning("Aucune ligne match trouvée (Row != équipes) pour calculer la durée de jeu")
+        return pd.DataFrame()
+
+    # Détecter l'unité de Duration (secondes vs minutes)
+    unit = infer_duration_unit(m["Duration"])
 
     def to_seconds(d):
         d = safe_float(d, default=np.nan)
@@ -229,35 +226,26 @@ def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.
             return 0.0
         return d * 60.0 if unit == "minutes" else d
 
-    played_seconds: Dict[str, float] = {}
-    lineup: Dict[str, Set[str]] = {home_team: set(), away_team: set()}
+    # Trier par temps si dispo
+    if "Start time" in m.columns:
+        m = m.sort_values(by="Start time", ascending=True)
 
-    m = match.copy()
-    # tri si possible
-    for c in ["Start", "StartTime", "Time", "Timestamp"]:
-        if c in m.columns:
-            m = m.sort_values(by=c, ascending=True)
-            break
+    played_seconds: Dict[str, float] = {}
+    current_pfc_lineup: Set[str] = set()
 
     for _, row in m.iterrows():
-        duration_sec = to_seconds(row.get("Duration", 0))
-        if duration_sec <= 0:
+        dur_sec = to_seconds(row.get("Duration", 0))
+        if dur_sec <= 0:
             continue
 
-        team = str(row.get("Row", "")).strip()
+        # ⚠️ Les colonnes de postes décrivent le PFC même sur Row == adversaire
+        current_pfc_lineup = extract_lineup_from_row(row, available_posts)
 
-        # update du 11 de l'équipe "porteuse" du segment
-        if team == home_team:
-            lineup[home_team] = extract_lineup_from_row(row, available_posts)
-        elif team == away_team:
-            lineup[away_team] = extract_lineup_from_row(row, available_posts)
+        if not current_pfc_lineup:
+            continue
 
-        # crédit du segment aux 2 équipes (si lineup connu)
-        for side in (home_team, away_team):
-            if not lineup[side]:
-                continue
-            for p in lineup[side]:
-                played_seconds[p] = played_seconds.get(p, 0.0) + duration_sec
+        for p in current_pfc_lineup:
+            played_seconds[p] = played_seconds.get(p, 0.0) + dur_sec
 
     if not played_seconds:
         return pd.DataFrame()
@@ -266,6 +254,7 @@ def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.
         "Player": list(played_seconds.keys()),
         "Temps de jeu (en minutes)": [v / 60.0 for v in played_seconds.values()],
     }).sort_values("Temps de jeu (en minutes)", ascending=False).reset_index(drop=True)
+
     return df
 
 # =========================
@@ -1254,3 +1243,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
