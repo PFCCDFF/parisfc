@@ -115,14 +115,26 @@ def nettoyer_nom_equipe(nom: str) -> str:
     if nom is None:
         return ""
     s = str(nom).strip().upper()
-    s = (s.replace("É", "E").replace("È", "E").replace("Ê", "E")
-           .replace("À", "A").replace("Ù", "U")
-           .replace("Î", "I").replace("Ï", "I")
-           .replace("Ô", "O").replace("Ö", "O")
-           .replace("Â", "A").replace("Ä", "A")
-           .replace("Ç", "C"))
+
+    # Supprimer accents
+    s = (s.replace("É","E").replace("È","E").replace("Ê","E")
+           .replace("À","A").replace("Ù","U")
+           .replace("Î","I").replace("Ï","I")
+           .replace("Ô","O").replace("Ö","O")
+           .replace("Â","A").replace("Ä","A")
+           .replace("Ç","C"))
+
+    # Cas "LOSC, LOSC" (ou "XXXX, YYYY") : on prend le 1er token et on dédoublonne si répété
+    if "," in s:
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        if len(parts) >= 2 and parts[0] == parts[1]:
+            s = parts[0]
+        else:
+            s = parts[0]
+
     s = " ".join(s.split())
     return s
+
 
 def looks_like_player(name: str) -> bool:
     n = nettoyer_nom_joueuse(str(name)) if name is not None else ""
@@ -500,14 +512,16 @@ def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.
 
     m = match.copy()
 
-    home_clean = nettoyer_nom_equipe(home_team)
-    away_clean = nettoyer_nom_equipe(away_team)
-    m["Row_clean"] = m["Row"].astype(str).apply(nettoyer_nom_equipe)
+home_clean = nettoyer_nom_equipe(home_team)
+away_clean = nettoyer_nom_equipe(away_team)
 
-    # IMPORTANT : garder bien les 2 équipes
-    m = m[m["Row_clean"].isin({home_clean, away_clean})].copy()
-    if m.empty:
-        return pd.DataFrame()
+# Canonise chaque valeur de Row côté match
+m["Row_team"] = m["Row"].astype(str).apply(nettoyer_nom_equipe)
+
+# Filtrer sur les 2 équipes canoniques
+m = m[m["Row_team"].isin({home_clean, away_clean})].copy()
+if m.empty:
+    return pd.DataFrame()
 
     unit = infer_duration_unit(m["Duration"])
 
@@ -1624,4 +1638,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
