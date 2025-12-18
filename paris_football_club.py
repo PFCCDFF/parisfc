@@ -1163,12 +1163,19 @@ def script_streamlit(pfc_kpi: pd.DataFrame, edf_kpi: pd.DataFrame, permissions: 
                 filtered = player_data
 
             aggregated = filtered.groupby("Player", as_index=False).agg(
-                {"Temps de jeu (en minutes)": "sum", "Buts": "sum"}
-            ).merge(
-                filtered.groupby("Player").mean(numeric_only=True).drop(columns=["Temps de jeu (en minutes)", "Buts"], errors="ignore").reset_index(),
-                on="Player",
-                how="left",
-            ).round().fillna(0).astype(int)
+    {"Temps de jeu (en minutes)": "sum", "Buts": "sum"}
+).merge(
+    filtered.groupby("Player").mean(numeric_only=True).drop(
+        columns=["Temps de jeu (en minutes)", "Buts"], errors="ignore"
+    ).reset_index(),
+    on="Player",
+    how="left",
+)
+
+# ✅ Cast uniquement les colonnes numériques
+num_cols = aggregated.select_dtypes(include=[np.number]).columns
+aggregated[num_cols] = aggregated[num_cols].round().fillna(0).astype(int)
+
 
             time_played, goals = st.columns(2)
             time_played.metric("Temps de jeu", f"{aggregated['Temps de jeu (en minutes)'].iloc[0]} minutes")
@@ -1366,3 +1373,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
