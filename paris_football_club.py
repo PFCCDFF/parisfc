@@ -188,9 +188,12 @@ def players_edf_duration(match):
     return df_duration
 
 def players_duration(match):
-    """Calcule la durée de jeu cumulée pour chaque joueuse, en additionnant 'Duration' à chaque apparition dans un poste."""
-    if 'Duration' not in match.columns:
-        st.warning("Colonne 'Duration' manquante pour calculer la durée de jeu")
+    """
+    Calcule la durée de jeu cumulée pour chaque joueuse,
+    uniquement pour les lignes où la colonne 'Adversaire' contient "Adversaire".
+    """
+    if 'Duration' not in match.columns or 'Adversaire' not in match.columns:
+        st.warning("Colonnes 'Duration' ou 'Adversaire' manquantes pour calculer la durée de jeu")
         return pd.DataFrame()
 
     # Liste des colonnes de poste à vérifier
@@ -204,15 +207,19 @@ def players_duration(match):
     # Dictionnaire pour stocker la durée cumulée par joueuse
     players_duration = {}
 
-    for i in range(len(match)):
-        duration = match.iloc[i]['Duration']
+    # Parcourir uniquement les lignes où 'Adversaire' == "Adversaire"
+    for i, row in match.iterrows():
+        if row['Adversaire'] != "Adversaire":
+            continue  # Ignorer les lignes où 'Adversaire' n'est pas "Adversaire"
+
+        duration = row['Duration']
 
         # Parcourir chaque colonne de poste disponible
         for poste in available_posts:
-            player = nettoyer_nom_joueuse(str(match.iloc[i][poste]))
+            player = nettoyer_nom_joueuse(str(row[poste]))
 
             # Si le nom de la joueuse est présent dans ce poste
-            if player and player != 'nan' and player != 'None':
+            if player and player not in ['nan', 'None', '']:
                 if player in players_duration:
                     players_duration[player] += duration
                 else:
@@ -233,6 +240,7 @@ def players_duration(match):
     df_duration = df_duration.sort_values(by='Temps de jeu (en minutes)', ascending=False)
 
     return df_duration
+
 
 def players_shots(joueurs):
     """Calcule les statistiques de tirs."""
@@ -1553,6 +1561,7 @@ if __name__ == '__main__':
         pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+
 
 
 
