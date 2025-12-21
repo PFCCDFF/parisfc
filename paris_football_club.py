@@ -1452,7 +1452,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     # =====================
     # COMPARAISON ✅ EDF RESTAURÉ
     # =====================
-    elif page == "Comparaison":
+elif page == "Comparaison":
     st.header("Comparaison")
 
     if pfc_kpi.empty:
@@ -1782,6 +1782,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
