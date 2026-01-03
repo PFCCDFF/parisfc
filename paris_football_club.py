@@ -1452,18 +1452,18 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     # =====================
     # COMPARAISON ✅ EDF RESTAURÉ
     # =====================
-elif page == "Comparaison":
-    st.header("Comparaison")
+    elif page == "Comparaison":
+        st.header("Comparaison")
 
-    if pfc_kpi.empty:
+        if pfc_kpi.empty:
         st.warning("Aucune donnée PFC.")
         return
 
-    # --- Helpers locaux (petits outils UI)
-    def _player_selector(label: str, key: str):
+        # --- Helpers locaux (petits outils UI)
+        def _player_selector(label: str, key: str):
         return st.selectbox(label, sorted(pfc_kpi["Player"].dropna().unique().tolist()), key=key)
 
-    def _matches_for_player(pname: str):
+        def _matches_for_player(pname: str):
         if "Adversaire" not in pfc_kpi.columns:
             return []
         d = pfc_kpi[pfc_kpi["Player"].apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(pname)].copy()
@@ -1471,12 +1471,12 @@ elif page == "Comparaison":
             return []
         return sorted(d["Adversaire"].dropna().unique().tolist())
 
-    def _aggregate_player(pname: str, selected_matches=None):
+        def _aggregate_player(pname: str, selected_matches=None):
         # Utilise ta fonction existante (agrège temps de jeu + buts en sum et le reste en mean)
         return prepare_comparison_data(pfc_kpi, pname, selected_matches=selected_matches)
 
-    # --- Choix du MODE (liste déroulante)
-    mode = st.selectbox(
+        # --- Choix du MODE (liste déroulante)
+        mode = st.selectbox(
         "Mode de comparaison",
         [
             "Joueuse vs elle-même (matchs)",
@@ -1484,9 +1484,9 @@ elif page == "Comparaison":
             "Joueuse vs Référentiel EDF U19 (poste)",
         ],
         key="compare_mode_select"
-    )
+        )
 
-    st.divider()
+        st.divider()
 
     # =========================================================
     # 1) Joueuse vs elle-même (match A vs match B)
@@ -1782,8 +1782,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
