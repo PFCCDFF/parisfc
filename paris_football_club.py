@@ -95,67 +95,6 @@ def safe_int_numeric_only(df: pd.DataFrame, round_first: bool = True) -> pd.Data
         out[num_cols] = out[num_cols].astype(int)
     return out
 
-def _first_existing_col(df: pd.DataFrame, candidates):
-    for c in candidates:
-        if c in df.columns:
-            return c
-    return None
-
-
-def add_creativite_kpis(pfc_kpi: pd.DataFrame) -> pd.DataFrame:
-    """Ajoute uniquement les KPI:
-    - Créativité 1 = (Passe dans dernier 1/3 + 2*Passe Décisive) / Passes totales
-    - Créativité 2 = (Création de Deséquilibre joueuse) / (Création de Deséquilibre équipe sur le match)
-    Sans modifier l'affichage ou les autres calculs.
-    """
-    if pfc_kpi is None or pfc_kpi.empty:
-        return pfc_kpi
-
-    df = pfc_kpi.copy()
-
-    col_last_third = _first_existing_col(df, [
-        "Passe dans dernier 1/3", "Passe dans le dernier 1/3", "Passe dernier 1/3",
-        "Entrée dernier 1/3", "Entree dernier 1/3",
-    ])
-    col_assist = _first_existing_col(df, [
-        "Passe Décisive", "Passe décisive", "Passes décisives", "Passes decisives", "Assists",
-    ])
-    col_pass_total = _first_existing_col(df, [
-        "Passes totales", "Passe", "Passes tentées", "Passes tentees", "Passes",
-    ])
-    col_imbalance = _first_existing_col(df, [
-        "Création de Deséquilibre", "Création de Déséquilibre", "Creation de Desequilibre",
-        "Déséquilibres créés", "Desequilibres crees",
-    ])
-
-    def _as_count(series):
-        if series is None:
-            return pd.Series(0.0, index=df.index)
-        if pd.api.types.is_numeric_dtype(series):
-            return pd.to_numeric(series, errors="coerce").fillna(0).astype(float)
-        s = series.astype(str).str.strip()
-        return ((s != "") & (s.str.lower() != "nan")).astype(float)
-
-    last_third = _as_count(df[col_last_third]) if col_last_third else pd.Series(0.0, index=df.index)
-    assists = _as_count(df[col_assist]) if col_assist else pd.Series(0.0, index=df.index)
-    passes_total = _as_count(df[col_pass_total]) if col_pass_total else pd.Series(0.0, index=df.index)
-
-    denom = passes_total.replace(0, np.nan)
-    df["Créativité 1"] = (((last_third + 2.0 * assists) / denom).fillna(0) * 100).clip(0, 100)
-
-    if col_imbalance:
-        imbalance = _as_count(df[col_imbalance])
-        match_key = _first_existing_col(df, ["Timeline", "Match", "Match_ID", "ID Match", "Adversaire", "Date"])
-        if match_key:
-            team_total = df.groupby(match_key)[col_imbalance].transform(lambda x: _as_count(x).sum())
-            df["Créativité 2"] = ((imbalance / team_total.replace(0, np.nan)).fillna(0) * 100).clip(0, 100)
-        else:
-            df["Créativité 2"] = 0.0
-    else:
-        df["Créativité 2"] = 0.0
-
-    return df
-
 def nettoyer_nom_joueuse(nom):
     if not isinstance(nom, str):
         nom = str(nom) if nom is not None else ""
@@ -796,6 +735,43 @@ def create_metrics(df):
     for metric in required_cols.keys():
         if metric in df.columns:
             df[metric] = (df[metric].rank(pct=True) * 100).fillna(0)
+    # --- KPI Créativité (ajout) ---
+    # Créativité 1 = (passes dans dernier 1/3 + 2*passe décisive) / passes totales * 100
+    # Créativité 2 = déséquilibres joueuse / déséquilibres équipe (match) * 100
+    def _get_first_col(cols):
+        for c in cols:
+            if c in df.columns:
+                return c
+        return None
+    def _to_num_series(colname):
+        s = df[colname]
+        if pd.api.types.is_numeric_dtype(s):
+            return s.fillna(0)
+        # Colonnes "évènement"/texte : on compte 1 si non vide
+        return s.astype(str).replace('nan','').str.strip().ne('').astype(int)
+
+    col_last_third = _get_first_col(["Passe dans dernier 1/3", "Entrée dernier 1/3"])
+    col_assist = _get_first_col(["Passe Décisive", "Passe décisive", "Passes décisives", "Assists", "Assist"])
+    col_total_pass = _get_first_col(["Passes", "Passe", "Passes totales", "Passes tentées", "Passes tentees"])
+    if col_last_third and col_total_pass:
+        last_third = _to_num_series(col_last_third)
+        total_pass = _to_num_series(col_total_pass).replace(0, np.nan)
+        assists = _to_num_series(col_assist) if col_assist else 0
+        df["Créativité 1"] = ((last_third + (assists * 2)) / total_pass * 100).fillna(0)
+
+    col_dc = _get_first_col(["Création de Deséquilibre", "Création de Déséquilibre", "Desequilibre", "Déséquilibre"])
+    if col_dc:
+        dc = _to_num_series(col_dc)
+        # clé match : on essaye plusieurs colonnes (selon export)
+        match_key = _get_first_col(["Timeline", "Match", "Match_ID", "ID Match", "Adversaire", "Opposition", "Date"])
+        if match_key:
+            team_total = df.groupby(match_key)[col_dc].transform(lambda x: _to_num_series(col_dc).loc[x.index].sum())
+        else:
+            # fallback : total global (moins précis, mais évite de casser l'app)
+            team_total = dc.sum()
+        denom = team_total.replace(0, np.nan)
+        df["Créativité 2"] = (dc / denom * 100).fillna(0)
+
     return df
 
 def create_kpis(df):
@@ -1273,8 +1249,9 @@ def collect_data(selected_season=None):
             continue
 
     st.session_state["name_report_df"] = pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
-    pfc_kpi = add_creativite_kpis(pfc_kpi)
     return pfc_kpi, edf_kpi
+
+
 # =========================
 # RADARS
 # =========================
@@ -1285,8 +1262,7 @@ def create_individual_radar(df):
         "Timing", "Force physique", "Intelligence tactique",
         "Technique 1", "Technique 2", "Technique 3",
         "Explosivité", "Prise de risque", "Précision", "Sang-froid",
-        "Créativité 1",
-        "Créativité 2",
+        "Créativité 1", "Créativité 2",
     ]
     available = [c for c in columns_to_plot if c in df.columns]
     if not available:
@@ -1323,8 +1299,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         "Timing", "Force physique", "Intelligence tactique",
         "Technique 1", "Technique 2", "Technique 3",
         "Explosivité", "Prise de risque", "Précision", "Sang-froid",
-        "Créativité 1",
-        "Créativité 2",
+        "Créativité 1", "Créativité 2",
     ]
     available = [m for m in metrics if m in df.columns]
     if len(available) < 2:
@@ -1536,8 +1511,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             return sorted(d["Adversaire"].dropna().unique().tolist())
 
         def _aggregate_player(pname: str, selected_matches=None):
+            # Utilise ta fonction existante (agrège temps de jeu + buts en sum et le reste en mean)
             return prepare_comparison_data(pfc_kpi, pname, selected_matches=selected_matches)
 
+        # --- Choix du MODE (liste déroulante)
         mode = st.selectbox(
             "Mode de comparaison",
             [
@@ -1550,7 +1527,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         st.divider()
 
+        # =========================================================
+        # 1) Joueuse vs elle-même (match A vs match B)
+        # =========================================================
         if mode == "Joueuse vs elle-même (matchs)":
+            # Joueuse PFC (si profil associé -> imposé)
             if player_name:
                 p = player_name
                 st.info(f"Joueuse : {p}")
@@ -1573,6 +1554,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.info("Sélectionne au moins 2 matchs.")
                 return
 
+            # On construit un tableau agrégé par match (utile si tu sélectionnes >2)
             comp_rows = []
             for mlabel in selected_pool:
                 md = pfc_kpi[
@@ -1602,9 +1584,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
             players_data = pd.concat(comp_rows, ignore_index=True)
 
+            # Affiche tableau pour ergonomie (si >2 matchs)
             with st.expander("Voir le tableau (tous les matchs sélectionnés)"):
                 st.dataframe(players_data)
 
+            # Choix des 2 entrées à comparer au radar
             labels = players_data["Player"].tolist()
             c1, c2 = st.columns(2)
             with c1:
@@ -1614,6 +1598,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
             if st.button("Afficher le radar (Match A vs Match B)", key="btn_self_radar"):
                 df2 = players_data[players_data["Player"].isin([left, right])].copy()
+                # Pour être sûr de l'ordre (A puis B)
                 df2 = df2.set_index("Player").loc[[left, right]].reset_index()
                 fig = create_comparison_radar(df2, player1_name=left, player2_name=right)
                 if fig:
@@ -1621,7 +1606,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 else:
                     st.warning("Radar indisponible (données insuffisantes sur les métriques).")
 
+        # =========================================================
+        # 2) Joueuse vs autre joueuse
+        # =========================================================
         elif mode == "Joueuse vs une autre joueuse":
+            # Si profil associé : la joueuse A est imposée
             if player_name:
                 p1 = player_name
                 st.info(f"Joueuse A (profil) : {p1}")
@@ -1638,6 +1627,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                     key="p2_other_player"
                 )
 
+            # Optionnel : filtres de matchs
             if "Adversaire" in pfc_kpi.columns:
                 st.write("Filtres (optionnels) : tu peux limiter les matchs de chaque joueuse.")
                 colA, colB = st.columns(2)
@@ -1667,7 +1657,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 else:
                     st.warning("Radar indisponible (données insuffisantes sur les métriques).")
 
+        # =========================================================
+        # 3) Joueuse vs Référentiel EDF U19 (poste)
+        # =========================================================
         else:
+            # Joueuse PFC (si profil associé -> imposé)
             if player_name:
                 p = player_name
                 st.info(f"Joueuse : {p}")
@@ -1678,13 +1672,18 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.warning("Aucune donnée EDF disponible pour la comparaison (EDF_Joueuses.xlsx / EDF_U19_Match*.csv).")
                 return
 
-            postes_display = sorted(edf_kpi["Poste"].dropna().astype(str).unique().tolist())
+            # Nettoyage ergonomique du libellé poste (ton edf_kpi met souvent '... moyenne (EDF)')
+            postes_raw = edf_kpi["Poste"].dropna().astype(str).unique().tolist()
+            postes_display = sorted(postes_raw)
+
             poste = st.selectbox("Poste (référentiel EDF)", postes_display, key="edf_poste_ref")
 
+            # Ligne EDF correspondante
             edf_line = edf_kpi[edf_kpi["Poste"] == poste].copy()
-            edf_line = edf_line.rename(columns={"Poste": "Player"})
+            edf_line = edf_line.rename(columns={"Poste": "Player"})  # pour compat radar
             edf_label = f"EDF {poste}"
 
+            # Côté joueuse : possibilité de filtrer les matchs (optionnel)
             if "Adversaire" in pfc_kpi.columns:
                 matches = _matches_for_player(p)
                 sel = st.multiselect("Limiter à certains matchs (optionnel)", matches, default=[], key="edf_player_matches")
@@ -1704,6 +1703,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                     st.pyplot(fig)
                 else:
                     st.warning("Radar indisponible (données insuffisantes sur les métriques).")
+
+
+        # =====================
+        # GESTION
+        # =====================
     elif page == "Gestion":
         st.header("Gestion des utilisateurs")
         if not check_permission(user_profile, "all", permissions):
@@ -1817,3 +1821,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
