@@ -740,6 +740,10 @@ def create_metrics(df):
 def create_kpis(df):
     if df.empty:
         return df
+
+    # -------------------------
+    # KPI composites existants
+    # -------------------------
     if "Timing" in df.columns and "Force physique" in df.columns:
         df["Rigueur"] = (df["Timing"] + df["Force physique"]) / 2
     if "Intelligence tactique" in df.columns:
@@ -751,73 +755,108 @@ def create_kpis(df):
         df["Percussion"] = (df["Explosivité"] + df["Prise de risque"]) / 2
     if "Précision" in df.columns and "Sang-froid" in df.columns:
         df["Finition"] = (df["Précision"] + df["Sang-froid"]) / 2
-    return df
 
-def create_poste(df):
-    if df.empty:
-        return df
-    required = ["Rigueur", "Récupération", "Distribution", "Percussion", "Finition"]
-    if not all(k in df.columns for k in required):
-        return df
-    df["Défenseur central"] = (df["Rigueur"] * 5 + df["Récupération"] * 5 + df["Distribution"] * 5 + df["Percussion"] * 1 + df["Finition"] * 1) / 17
-    df["Défenseur latéral"] = (df["Rigueur"] * 3 + df["Récupération"] * 3 + df["Distribution"] * 3 + df["Percussion"] * 3 + df["Finition"] * 3) / 15
-    df["Milieu défensif"] = (df["Rigueur"] * 4 + df["Récupération"] * 4 + df["Distribution"] * 4 + df["Percussion"] * 2 + df["Finition"] * 2) / 16
-    df["Milieu relayeur"] = (df["Rigueur"] * 3 + df["Récupération"] * 3 + df["Distribution"] * 3 + df["Percussion"] * 3 + df["Finition"] * 3) / 15
-    df["Milieu offensif"] = (df["Rigueur"] * 2 + df["Récupération"] * 2 + df["Distribution"] * 2 + df["Percussion"] * 4 + df["Finition"] * 4) / 14
-    df["Attaquant"] = (df["Rigueur"] * 1 + df["Récupération"] * 1 + df["Distribution"] * 1 + df["Percussion"] * 5 + df["Finition"] * 5) / 13
-    return df
+    # -------------------------
+    # NOUVEAUX KPI : Créativité
+    # -------------------------
+    def _first_col(candidates):
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
 
 
-# =========================
-# CREATE DATA (PFC/EDF)
-# =========================
-def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
-    if is_edf:
-        if "Player" not in joueurs.columns or "Temps de jeu" not in joueurs.columns or "Poste" not in joueurs.columns:
-            return pd.DataFrame()
-        df_duration = pd.DataFrame({
-            "Player": joueurs["Player"].apply(nettoyer_nom_joueuse),
-            "Temps de jeu (en minutes)": pd.to_numeric(joueurs["Temps de jeu"], errors="coerce").fillna(0),
-            "Poste": joueurs["Poste"]
-        })
-        dfs = [df_duration]
+    def _to_count_series(series):
+        """Convertit une colonne potentiellement textuelle/flag en 'compte' numérique.
+        - numérique: cast direct
+        - texte: non-null => 1, sinon 0
+        """
+        s = series
+        if pd.api.types.is_numeric_dtype(s):
+            return pd.to_numeric(s, errors="coerce").fillna(0)
+        # Beaucoup d'exports taguent l'évènement via une chaîne non vide
+        return s.notna().astype(int)
+
+    # Créativité 1 = (Passes vers dernier tiers + (Passes décisives * 2)) / Passes totales
+    col_last_third = _first_col([
+        "Passes vers le dernier tiers",
+        "Passes dernier tiers",
+        "Passes vers dernier tiers",
+        "Passes dans le dernier tiers",
+        "Passes vers zone 3",
+    ])
+    col_assists = _first_col([
+        "Passe Décisive",
+        "Passe décisive",
+        "Passes décisives",
+        "Passes decisives",
+        "Assists",
+    ])
+    col_total_passes = _first_col([
+        "Passes",
+        "Passes tentées",
+        "Passes tentees",
+        "Passes totales",
+        # exports action-based
+        "Passe",
+    ])
+
+    if col_total_passes and (col_last_third or col_assists):
+        lt = _to_count_series(df[col_last_third]) if col_last_third else 0
+        ast = _to_count_series(df[col_assists]) if col_assists else 0
+        tot = _to_count_series(df[col_total_passes])
+
+        df["Créativité 1 (raw)"] = np.where(tot > 0, (lt + (ast * 2)) / tot, 0)
+        # Pour rester cohérent avec les autres axes du radar (0–100), on convertit en percentile
+        df["Créativité 1"] = (df["Créativité 1 (raw)"].rank(pct=True) * 100).fillna(0)
     else:
-        if not home_team or not away_team:
-            return pd.DataFrame()
-        df_duration = players_duration(match, home_team=home_team, away_team=away_team)
-        dfs = [df_duration]
+        df["Créativité 1 (raw)"] = np.nan
+        df["Créativité 1"] = np.nan
 
-    for func in [players_shots, players_passes, players_dribbles, players_defensive_duels, players_interceptions, players_ball_losses]:
-        try:
-            res = func(joueurs)
-            if res is not None and not res.empty:
-                dfs.append(res)
-        except Exception:
-            pass
+    # Créativité 2 = Déséquilibres créés (joueuse) / Déséquilibres créés (équipe sur le match)
+    col_imb_player = _first_col([
+        "Situations de déséquilibre créées",
+        "Situations de desequilibre creees",
+        "Déséquilibres créés",
+        "Desequilibres crees",
+        "Déséquilibres",
+        "Desequilibres",
+        "Déséquilibres créés (joueuse)",
+        # exports action-based
+        "Création de Deséquilibre",
+        "Creation de Desequilibre",
+        # some exports split by zones
+        "DCD", "DCG", "DD", "DG",
+    ])
+    col_imb_team = _first_col([
+        "Situations de déséquilibre créées équipe",
+        "Situations de desequilibre creees equipe",
+        "Déséquilibres créés équipe",
+        "Desequilibres crees equipe",
+        "Déséquilibres équipe",
+        "Desequilibres equipe",
+    ])
 
-    valid = []
-    for d in dfs:
-        if d is not None and not d.empty and "Player" in d.columns:
-            dd = d.copy()
-            dd["Player"] = dd["Player"].apply(nettoyer_nom_joueuse)
-            valid.append(dd)
+    if col_imb_player:
+        p_imb = pd.to_numeric(df[col_imb_player], errors="coerce").fillna(0)
 
-    if not valid:
-        return pd.DataFrame()
+        # Si on n'a pas la colonne équipe, on la reconstruit en sommant les déséquilibres des joueuses du match
+        if not col_imb_team:
+            match_key = _first_col(["Timeline", "Match", "ID Match", "Match_ID", "Adversaire", "Opposition", "Date"])
+            if match_key:
+                # p_imb est déjà une série de "comptes" par ligne (gère texte/flag ou numérique)
+                team_total = p_imb.groupby(df[match_key]).transform("sum")
+            else:
+                team_total = pd.Series([np.nan] * len(df), index=df.index)
+        else:
+            team_total = pd.to_numeric(df[col_imb_team], errors="coerce").fillna(0)
 
-    df = valid[0]
-    for other in valid[1:]:
-        df = df.merge(other, on="Player", how="outer")
+        df["Créativité 2 (raw)"] = np.where(team_total > 0, p_imb / team_total, 0)
+        df["Créativité 2"] = (df["Créativité 2 (raw)"].rank(pct=True) * 100).fillna(0)
+    else:
+        df["Créativité 2 (raw)"] = np.nan
+        df["Créativité 2"] = np.nan
 
-    df.fillna(0, inplace=True)
-    df = df[(df.iloc[:, 1:] != 0).any(axis=1)]
-
-    if "Temps de jeu (en minutes)" in df.columns:
-        df = df[df["Temps de jeu (en minutes)"] >= 10]
-
-    df = create_metrics(df)
-    df = create_kpis(df)
-    df = create_poste(df)
     return df
 
 def filter_data_by_player(df, player_name):
@@ -1318,6 +1357,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, zscore: bo
         "Timing", "Force physique", "Intelligence tactique",
         "Technique 1", "Technique 2", "Technique 3",
         "Explosivité", "Prise de risque", "Précision", "Sang-froid",
+        "Créativité 1", "Créativité 2",
     ]
     available = [m for m in metrics if m in df.columns]
     if len(available) < 2:
@@ -1881,7 +1921,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 
