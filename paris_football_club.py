@@ -141,14 +141,14 @@ def add_creativite_kpis(pfc_kpi: pd.DataFrame) -> pd.DataFrame:
     passes_total = _as_count(df[col_pass_total]) if col_pass_total else pd.Series(0.0, index=df.index)
 
     denom = passes_total.replace(0, np.nan)
-    df["Créativité 1"] = ((last_third + 2.0 * assists) / denom).fillna(0)
+    df["Créativité 1"] = (((last_third + 2.0 * assists) / denom).fillna(0) * 100).clip(0, 100)
 
     if col_imbalance:
         imbalance = _as_count(df[col_imbalance])
         match_key = _first_existing_col(df, ["Timeline", "Match", "Match_ID", "ID Match", "Adversaire", "Date"])
         if match_key:
             team_total = df.groupby(match_key)[col_imbalance].transform(lambda x: _as_count(x).sum())
-            df["Créativité 2"] = (imbalance / team_total.replace(0, np.nan)).fillna(0)
+            df["Créativité 2"] = ((imbalance / team_total.replace(0, np.nan)).fillna(0) * 100).clip(0, 100)
         else:
             df["Créativité 2"] = 0.0
     else:
@@ -1285,6 +1285,8 @@ def create_individual_radar(df):
         "Timing", "Force physique", "Intelligence tactique",
         "Technique 1", "Technique 2", "Technique 3",
         "Explosivité", "Prise de risque", "Précision", "Sang-froid",
+        "Créativité 1",
+        "Créativité 2",
     ]
     available = [c for c in columns_to_plot if c in df.columns]
     if not available:
@@ -1321,6 +1323,8 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         "Timing", "Force physique", "Intelligence tactique",
         "Technique 1", "Technique 2", "Technique 3",
         "Explosivité", "Prise de risque", "Précision", "Sang-froid",
+        "Créativité 1",
+        "Créativité 2",
     ]
     available = [m for m in metrics if m in df.columns]
     if len(available) < 2:
@@ -1813,9 +1817,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
