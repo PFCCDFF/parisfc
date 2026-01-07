@@ -706,16 +706,7 @@ def players_ball_losses(joueurs):
 # =========================
 def create_metrics(df):
     if df.empty:
-# --- KPI Créativité (ajout) ---
-# Règles demandées :
-#   Créativité 1 = ( #('Passe dans dernier 1/3' trouvé dans la colonne 'Passe')
-#                   + 2 * #('Passe Décisive' trouvé dans la colonne 'Passe') )
-#                 / #(passes totales = cases remplies dans 'Passe') * 100
-#
-#   Créativité 2 = #(cases remplies dans 'Création de Deséquilibre' pour la joueuse)
-#                 / #(cases remplies dans 'Création de Deséquilibre' pour l'équipe sur le match) * 100
-
-def _is_filled(series: pd.Series) -> pd.Series:
+        def _is_filled(series: pd.Series) -> pd.Series:
     s = series.astype(str)
     return series.notna() & (s.str.strip() != "") & (s.str.lower() != "nan")
 
@@ -1874,6 +1865,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
