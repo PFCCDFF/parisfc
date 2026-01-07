@@ -735,7 +735,7 @@ def create_metrics(df):
     for metric in required_cols.keys():
         if metric in df.columns:
             df[metric] = (df[metric].rank(pct=True) * 100).fillna(0)
-        # --- KPI Créativité (ajout) ---
+            # --- KPI Créativité (ajout) ---
     # Définition demandée :
     #   Créativité 1 = ( #('Passe dans dernier 1/3' dans la colonne 'Passe')
     #                   + 2 * #('Passe Décisive' dans la colonne 'Passe') )
@@ -748,22 +748,25 @@ def create_metrics(df):
         s = series.astype(str)
         return series.notna() & (s.str.strip() != "") & (s.str.lower() != "nan")
 
+    player_col = "Player" if "Player" in df.columns else ("ATT" if "ATT" in df.columns else None)
+
     # ---- Créativité 1 (colonne 'Passe')
-    if "Passe" in df.columns:
+    df["Créativité 1"] = 0
+    if player_col is not None and "Passe" in df.columns:
         passe_txt = df["Passe"].astype(str)
 
         total_passes = _is_filled(df["Passe"]).astype(int)
         passes_last_third = passe_txt.str.contains("Passe dans dernier 1/3", case=False, na=False).astype(int)
         assists = passe_txt.str.contains("Passe Décisive", case=False, na=False).astype(int)
 
-        # Si on a une clé match, on calcule par match (sinon global)
         match_key = None
         for c in ["Timeline", "Match", "Match_ID", "ID Match", "Adversaire", "Opposition", "Date"]:
             if c in df.columns:
                 match_key = c
                 break
 
-        group_cols = ["Player"] + ([match_key] if match_key else [])
+        group_cols = [player_col] + ([match_key] if match_key else [])
+
         agg_p = df.assign(
             __p_total=total_passes,
             __p_last=passes_last_third,
@@ -775,19 +778,20 @@ def create_metrics(df):
         ).reset_index()
 
         df = df.merge(agg_p, on=group_cols, how="left")
-        denom = df["__total_passes"].replace(0, np.nan)
-        df["Créativité 1"] = ((df["__last_third"] + 2 * df["__assists"]) / denom * 100).fillna(0)
-    else:
-        df["Créativité 1"] = 0
+
+        if "__total_passes" in df.columns:
+                        denom = df["__total_passes"].replace(0, np.nan)
+            df["Créativité 1"] = ((df.get("__last_third", 0) + 2 * df.get("__assists", 0)) / denom * 100).fillna(0)
 
     # ---- Créativité 2 (colonne 'Création de Deséquilibre')
+    df["Créativité 2"] = 0
     dc_col = None
     for c in ["Création de Deséquilibre", "Création de Déséquilibre", "Creation de Desequilibre"]:
         if c in df.columns:
             dc_col = c
             break
 
-    if dc_col:
+    if player_col is not None and dc_col is not None:
         match_key = None
         for c in ["Timeline", "Match", "Match_ID", "ID Match", "Adversaire", "Opposition", "Date"]:
             if c in df.columns:
@@ -797,7 +801,7 @@ def create_metrics(df):
         if match_key:
             dc_filled = _is_filled(df[dc_col]).astype(int)
 
-            agg_dc = df.assign(__dc=dc_filled).groupby(["Player", match_key], dropna=False).agg(
+            agg_dc = df.assign(__dc=dc_filled).groupby([player_col, match_key], dropna=False).agg(
                 __dc_player=("__dc", "sum"),
             ).reset_index()
 
@@ -805,15 +809,15 @@ def create_metrics(df):
                 columns={"__dc_player": "__dc_team"}
             )
             agg_dc = agg_dc.merge(team_total, on=match_key, how="left")
-            df = df.merge(agg_dc, on=["Player", match_key], how="left")
+            df = df.merge(agg_dc, on=[player_col, match_key], how="left")
 
-            denom2 = df["__dc_team"].replace(0, np.nan)
-            df["Créativité 2"] = (df["__dc_player"] / denom2 * 100).fillna(0)
-        else:
-            # Pas de clé match => pas de total équipe fiable
-            df["Créativité 2"] = 0
-    else:
-        df["Créativité 2"] = 0
+            if "__dc_team" in df.columns:
+                denom2 = df["__dc_team"].replace(0, np.nan)
+                df["Créativité 2"] = (df.get("__dc_player", 0) / denom2 * 100).fillna(0)
+
+    # Si on a utilisé ATT comme identifiant, on recopie dans Player si besoin (pour le reste du pipeline)
+    if "Player" not in df.columns and "ATT" in df.columns:
+        df["Player"] = df["ATT"]
 
     return df
 
