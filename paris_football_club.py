@@ -706,7 +706,7 @@ def players_ball_losses(joueurs):
 # =========================
 def create_metrics(df):
     if df.empty:
-        def _is_filled(series: pd.Series) -> pd.Series:
+    def _is_filled(series: pd.Series) -> pd.Series:
     s = series.astype(str)
     return series.notna() & (s.str.strip() != "") & (s.str.lower() != "nan")
 
@@ -1865,6 +1865,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
