@@ -735,42 +735,85 @@ def create_metrics(df):
     for metric in required_cols.keys():
         if metric in df.columns:
             df[metric] = (df[metric].rank(pct=True) * 100).fillna(0)
-    # --- KPI Créativité (ajout) ---
-    # Créativité 1 = (passes dans dernier 1/3 + 2*passe décisive) / passes totales * 100
-    # Créativité 2 = déséquilibres joueuse / déséquilibres équipe (match) * 100
-    def _get_first_col(cols):
-        for c in cols:
+        # --- KPI Créativité (ajout) ---
+    # Définition demandée :
+    #   Créativité 1 = ( #('Passe dans dernier 1/3' dans la colonne 'Passe')
+    #                   + 2 * #('Passe Décisive' dans la colonne 'Passe') )
+    #                 / #(passes totales = cellules non vides dans 'Passe') * 100
+    #
+    #   Créativité 2 = #(cellules remplies dans 'Création de Deséquilibre' pour la joueuse)
+    #                 / #(cellules remplies dans 'Création de Deséquilibre' pour l'équipe sur le match) * 100
+
+    def _is_filled(series: pd.Series) -> pd.Series:
+        s = series.astype(str)
+        return series.notna() & (s.str.strip() != "") & (s.str.lower() != "nan")
+
+    # ---- Créativité 1 (colonne 'Passe')
+    if "Passe" in df.columns:
+        passe_txt = df["Passe"].astype(str)
+
+        total_passes = _is_filled(df["Passe"]).astype(int)
+        passes_last_third = passe_txt.str.contains("Passe dans dernier 1/3", case=False, na=False).astype(int)
+        assists = passe_txt.str.contains("Passe Décisive", case=False, na=False).astype(int)
+
+        # Si on a une clé match, on calcule par match (sinon global)
+        match_key = None
+        for c in ["Timeline", "Match", "Match_ID", "ID Match", "Adversaire", "Opposition", "Date"]:
             if c in df.columns:
-                return c
-        return None
-    def _to_num_series(colname):
-        s = df[colname]
-        if pd.api.types.is_numeric_dtype(s):
-            return s.fillna(0)
-        # Colonnes "évènement"/texte : on compte 1 si non vide
-        return s.astype(str).replace('nan','').str.strip().ne('').astype(int)
+                match_key = c
+                break
 
-    col_last_third = _get_first_col(["Passe dans dernier 1/3", "Entrée dernier 1/3"])
-    col_assist = _get_first_col(["Passe Décisive", "Passe décisive", "Passes décisives", "Assists", "Assist"])
-    col_total_pass = _get_first_col(["Passes", "Passe", "Passes totales", "Passes tentées", "Passes tentees"])
-    if col_last_third and col_total_pass:
-        last_third = _to_num_series(col_last_third)
-        total_pass = _to_num_series(col_total_pass).replace(0, np.nan)
-        assists = _to_num_series(col_assist) if col_assist else 0
-        df["Créativité 1"] = ((last_third + (assists * 2)) / total_pass * 100).fillna(0)
+        group_cols = ["Player"] + ([match_key] if match_key else [])
+        agg_p = df.assign(
+            __p_total=total_passes,
+            __p_last=passes_last_third,
+            __p_ast=assists
+        ).groupby(group_cols, dropna=False).agg(
+            __total_passes=("__p_total", "sum"),
+            __last_third=("__p_last", "sum"),
+            __assists=("__p_ast", "sum"),
+        ).reset_index()
 
-    col_dc = _get_first_col(["Création de Deséquilibre", "Création de Déséquilibre", "Desequilibre", "Déséquilibre"])
-    if col_dc:
-        dc = _to_num_series(col_dc)
-        # clé match : on essaye plusieurs colonnes (selon export)
-        match_key = _get_first_col(["Timeline", "Match", "Match_ID", "ID Match", "Adversaire", "Opposition", "Date"])
+        df = df.merge(agg_p, on=group_cols, how="left")
+        denom = df["__total_passes"].replace(0, np.nan)
+        df["Créativité 1"] = ((df["__last_third"] + 2 * df["__assists"]) / denom * 100).fillna(0)
+    else:
+        df["Créativité 1"] = 0
+
+    # ---- Créativité 2 (colonne 'Création de Deséquilibre')
+    dc_col = None
+    for c in ["Création de Deséquilibre", "Création de Déséquilibre", "Creation de Desequilibre"]:
+        if c in df.columns:
+            dc_col = c
+            break
+
+    if dc_col:
+        match_key = None
+        for c in ["Timeline", "Match", "Match_ID", "ID Match", "Adversaire", "Opposition", "Date"]:
+            if c in df.columns:
+                match_key = c
+                break
+
         if match_key:
-            team_total = df.groupby(match_key)[col_dc].transform(lambda x: _to_num_series(col_dc).loc[x.index].sum())
+            dc_filled = _is_filled(df[dc_col]).astype(int)
+
+            agg_dc = df.assign(__dc=dc_filled).groupby(["Player", match_key], dropna=False).agg(
+                __dc_player=("__dc", "sum"),
+            ).reset_index()
+
+            team_total = agg_dc.groupby(match_key, dropna=False)["__dc_player"].sum().reset_index().rename(
+                columns={"__dc_player": "__dc_team"}
+            )
+            agg_dc = agg_dc.merge(team_total, on=match_key, how="left")
+            df = df.merge(agg_dc, on=["Player", match_key], how="left")
+
+            denom2 = df["__dc_team"].replace(0, np.nan)
+            df["Créativité 2"] = (df["__dc_player"] / denom2 * 100).fillna(0)
         else:
-            # fallback : total global (moins précis, mais évite de casser l'app)
-            team_total = dc.sum()
-        denom = team_total.replace(0, np.nan)
-        df["Créativité 2"] = (dc / denom * 100).fillna(0)
+            # Pas de clé match => pas de total équipe fiable
+            df["Créativité 2"] = 0
+    else:
+        df["Créativité 2"] = 0
 
     return df
 
@@ -808,6 +851,100 @@ def create_poste(df):
 # =========================
 # CREATE DATA (PFC/EDF)
 # =========================
+def players_creativite_events(match_df: pd.DataFrame) -> pd.DataFrame:
+    """Extrait des compteurs 'évènementiels' nécessaires aux KPI Créativité depuis le bloc 'match'.
+
+    Fonction robuste: si les colonnes attendues n'existent pas dans le CSV, elle renvoie un DF vide
+    sans casser le pipeline.
+    """
+    if match_df is None or match_df.empty:
+        return pd.DataFrame()
+
+    d = match_df.copy()
+
+    # Colonne porteuse du nom de la joueuse (dans tes exports évènementiels: 'ATT')
+    player_col = None
+    for c in ["ATT", "Player", "Joueur", "Joueuse", "Nom", "Name"]:
+        if c in d.columns:
+            player_col = c
+            break
+    if player_col is None:
+        return pd.DataFrame()
+
+    # Colonne action (pour identifier les passes)
+    action_col = None
+    for c in ["Action", "Type d'action", "Type action"]:
+        if c in d.columns:
+            action_col = c
+            break
+
+    # Colonnes clés
+    col_last_third = None
+    for c in ["Passe dans dernier 1/3", "Passe dans le dernier 1/3", "Entrée dernier 1/3"]:
+        if c in d.columns:
+            col_last_third = c
+            break
+
+    col_assist = None
+    for c in ["Passe Décisive", "Passe decisive", "Passes décisives", "Passes decisives", "Assist", "Assists"]:
+        if c in d.columns:
+            col_assist = c
+            break
+
+    col_dc = None
+    for c in ["Création de Deséquilibre", "Création de Déséquilibre", "Desequilibre", "Déséquilibre"]:
+        if c in d.columns:
+            col_dc = c
+            break
+
+    # helper non-vide => 1
+    def _flag_to_int(s: pd.Series) -> pd.Series:
+        if pd.api.types.is_numeric_dtype(s):
+            return pd.to_numeric(s, errors="coerce").fillna(0)
+        return s.astype(str).replace("nan", "").str.strip().ne("").astype(int)
+
+    # Normalise Player
+    d[player_col] = d[player_col].astype(str).apply(nettoyer_nom_joueuse)
+
+    # Total passes: on compte les lignes où l'action contient 'Passe'
+    if action_col is not None:
+        is_pass = d[action_col].astype(str).str.contains("Passe", case=False, na=False)
+        passes_total = is_pass.astype(int)
+    else:
+        # fallback: si on n'a pas Action, on ne peut pas compter les passes correctement
+        passes_total = pd.Series(0, index=d.index)
+
+    # Passes vers le dernier tiers: passe + flag dernier 1/3 non vide
+    if col_last_third is not None and action_col is not None:
+        last_third = (passes_total.astype(bool) & _flag_to_int(d[col_last_third]).astype(bool)).astype(int)
+    elif col_last_third is not None:
+        last_third = _flag_to_int(d[col_last_third])
+    else:
+        last_third = pd.Series(0, index=d.index)
+
+    # Assists: si la colonne existe, on compte les flags non vides
+    assists = _flag_to_int(d[col_assist]) if col_assist is not None else pd.Series(0, index=d.index)
+
+    # Déséquilibres créés: flags non vides
+    dc = _flag_to_int(d[col_dc]) if col_dc is not None else pd.Series(0, index=d.index)
+
+    tmp = pd.DataFrame({
+        "Player": d[player_col],
+        "Passe": passes_total,
+        "Entrée dernier 1/3": last_third,
+        "Passe Décisive": assists,
+        "Création de Deséquilibre": dc,
+    })
+
+    # Agrégation par joueuse (sur le match)
+    agg = tmp.groupby("Player", as_index=False).sum(numeric_only=True)
+
+    # Total équipe (sur le match) pour la créativité 2
+    team_total_dc = float(agg["Création de Deséquilibre"].sum()) if "Création de Deséquilibre" in agg.columns else 0.0
+    agg["Création de Deséquilibre équipe"] = team_total_dc
+
+    return agg
+
 def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
     if is_edf:
         if "Player" not in joueurs.columns or "Temps de jeu" not in joueurs.columns or "Poste" not in joueurs.columns:
@@ -823,6 +960,13 @@ def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
             return pd.DataFrame()
         df_duration = players_duration(match, home_team=home_team, away_team=away_team)
         dfs = [df_duration]
+        # Ajout compteurs évènementiels pour KPI Créativité
+        try:
+            df_crea_ev = players_creativite_events(match)
+            if df_crea_ev is not None and not df_crea_ev.empty:
+                dfs.append(df_crea_ev)
+        except Exception:
+            pass
 
     for func in [players_shots, players_passes, players_dribbles, players_defensive_duels, players_interceptions, players_ball_losses]:
         try:
@@ -1821,8 +1965,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
 
 
 
