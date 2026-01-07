@@ -1,3 +1,4 @@
+
 # ============================================================
 # PARIS FC - DATA CENTER (Streamlit)
 # - PFC Matchs (CSV): stats + temps de jeu via segments Duration
@@ -705,81 +706,9 @@ def players_ball_losses(joueurs):
 # METRICS / KPI / POSTES
 # =========================
 def create_metrics(df):
-    if df.empty:
-    def _is_filled(series: pd.Series) -> pd.Series:
-    s = series.astype(str)
-    return series.notna() & (s.str.strip() != "") & (s.str.lower() != "nan")
-
-player_col = "Player" if "Player" in df.columns else ("ATT" if "ATT" in df.columns else None)
-
-# ---- Créativité 1
-df["Créativité 1"] = 0
-if player_col is not None and "Passe" in df.columns:
-    passe_txt = df["Passe"].astype(str)
-
-    total_passes = _is_filled(df["Passe"]).astype(int)
-    passes_last_third = passe_txt.str.contains("Passe dans dernier 1/3", case=False, na=False).astype(int)
-    assists = passe_txt.str.contains("Passe Décisive", case=False, na=False).astype(int)
-
-    match_key = None
-    for c in ["Timeline", "Match", "Match_ID", "ID Match", "Adversaire", "Opposition", "Date"]:
-        if c in df.columns:
-            match_key = c
-            break
-
-    group_cols = [player_col] + ([match_key] if match_key else [])
-    agg_p = (
-        df.assign(__p_total=total_passes, __p_last=passes_last_third, __p_ast=assists)
-          .groupby(group_cols, dropna=False)
-          .agg(
-              __total_passes=("__p_total", "sum"),
-              __last_third=("__p_last", "sum"),
-              __assists=("__p_ast", "sum"),
-          )
-          .reset_index()
-    )
-
-    df = df.merge(agg_p, on=group_cols, how="left")
-    denom = df["__total_passes"].replace(0, np.nan)
-    df["Créativité 1"] = ((df["__last_third"] + 2 * df["__assists"]) / denom * 100).fillna(0)
-
-# ---- Créativité 2
-df["Créativité 2"] = 0
-dc_col = None
-for c in ["Création de Deséquilibre", "Création de Déséquilibre", "Creation de Desequilibre"]:
-    if c in df.columns:
-        dc_col = c
-        break
-
-if player_col is not None and dc_col is not None:
-    match_key = None
-    for c in ["Timeline", "Match", "Match_ID", "ID Match", "Adversaire", "Opposition", "Date"]:
-        if c in df.columns:
-            match_key = c
-            break
-
-    if match_key:
-        dc_filled = _is_filled(df[dc_col]).astype(int)
-
-        agg_dc = (
-            df.assign(__dc=dc_filled)
-              .groupby([player_col, match_key], dropna=False)
-              .agg(__dc_player=("__dc", "sum"))
-              .reset_index()
-        )
-        team_total = agg_dc.groupby(match_key, dropna=False)["__dc_player"].sum().reset_index().rename(
-            columns={"__dc_player": "__dc_team"}
-        )
-        agg_dc = agg_dc.merge(team_total, on=match_key, how="left")
-        df = df.merge(agg_dc, on=[player_col, match_key], how="left")
-
-        denom2 = df["__dc_team"].replace(0, np.nan)
-        df["Créativité 2"] = (df["__dc_player"] / denom2 * 100).fillna(0)
-
-if "Player" not in df.columns and "ATT" in df.columns:
-    df["Player"] = df["ATT"]
-
+    if df is None or df.empty:
         return df
+
     required_cols = {
         "Timing": ["Duels défensifs", "Fautes"],
         "Force physique": ["Duels défensifs", "Duels défensifs gagnés"],
@@ -792,25 +721,118 @@ if "Player" not in df.columns and "ATT" in df.columns:
         "Précision": ["Tirs", "Tirs cadrés"],
         "Sang-froid": ["Tirs"],
     }
+
+    # Calcul des métriques (0..1)
     for metric, cols in required_cols.items():
         if not all(c in df.columns for c in cols):
             continue
+
         if metric == "Timing":
+            # (duels - fautes) / duels
             df[metric] = np.where(df[cols[0]] > 0, (df[cols[0]] - df.get(cols[1], 0)) / df[cols[0]], 0)
+
         elif metric == "Force physique":
-            df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
-        elif metric in ["Intelligence tactique", "Technique 1", "Prise de risque", "Sang-froid"]:
-            mmax = df[cols[0]].max()
-            df[metric] = np.where(df[cols[0]] > 0, df[cols[0]] / mmax, 0) if mmax > 0 else 0
-        else:
+            # duels gagnés / duels
             df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
 
+        elif metric in ["Intelligence tactique", "Technique 1", "Prise de risque", "Sang-froid"]:
+            # normalisation par le max
+            mmax = df[cols[0]].max()
+            df[metric] = np.where(df[cols[0]] > 0, df[cols[0]] / mmax, 0) if mmax > 0 else 0
+
+        else:
+            # réussite / tentatives (ou équivalent)
+            df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
+
+    # Passage en percentile (0..100)
     for metric in required_cols.keys():
         if metric in df.columns:
             df[metric] = (df[metric].rank(pct=True) * 100).fillna(0)
+
+    # --- KPI Créativité (ajout) ---
+    # Définition demandée :
+    #   Créativité 1 = ( #('Passe dans dernier 1/3' dans la colonne 'Passe')
+    #                   + 2 * #('Passe Décisive' dans la colonne 'Passe') )
+    #                 / #(passes totales = cellules non vides dans 'Passe') * 100
+    #
+    #   Créativité 2 = #(cellules remplies dans 'Création de Deséquilibre' pour la joueuse)
+    #                 / #(cellules remplies dans 'Création de Deséquilibre' pour l'équipe sur le match) * 100
+
+    def _is_filled(series: pd.Series) -> pd.Series:
+        s = series.astype(str)
+        return series.notna() & (s.str.strip() != "") & (s.str.lower() != "nan")
+
+    player_col = "Player" if "Player" in df.columns else ("ATT" if "ATT" in df.columns else None)
+
+    # Créativité 1
+    df["Créativité 1"] = 0
+    if player_col is not None and "Passe" in df.columns:
+        passe_txt = df["Passe"].astype(str)
+        total_passes = _is_filled(df["Passe"]).astype(int)
+        passes_last_third = passe_txt.str.contains("Passe dans dernier 1/3", case=False, na=False).astype(int)
+        assists = passe_txt.str.contains("Passe Décisive", case=False, na=False).astype(int)
+
+        match_key = None
+        for c in ["Timeline", "Match", "Match_ID", "ID Match", "Adversaire", "Opposition", "Date"]:
+            if c in df.columns:
+                match_key = c
+                break
+
+        group_cols = [player_col] + ([match_key] if match_key else [])
+        agg_p = (
+            df.assign(__p_total=total_passes, __p_last=passes_last_third, __p_ast=assists)
+              .groupby(group_cols, dropna=False)
+              .agg(
+                  __total_passes=("__p_total", "sum"),
+                  __last_third=("__p_last", "sum"),
+                  __assists=("__p_ast", "sum"),
+              )
+              .reset_index()
+        )
+        df = df.merge(agg_p, on=group_cols, how="left")
+        denom = df["__total_passes"].replace(0, np.nan)
+        df["Créativité 1"] = ((df["__last_third"] + 2 * df["__assists"]) / denom * 100).fillna(0)
+
+    # Créativité 2
+    df["Créativité 2"] = 0
+    dc_col = None
+    for c in ["Création de Deséquilibre", "Création de Déséquilibre", "Creation de Desequilibre"]:
+        if c in df.columns:
+            dc_col = c
+            break
+
+    if player_col is not None and dc_col is not None:
+        match_key = None
+        for c in ["Timeline", "Match", "Match_ID", "ID Match", "Adversaire", "Opposition", "Date"]:
+            if c in df.columns:
+                match_key = c
+                break
+
+        if match_key:
+            dc_filled = _is_filled(df[dc_col]).astype(int)
+            agg_dc = (
+                df.assign(__dc=dc_filled)
+                  .groupby([player_col, match_key], dropna=False)
+                  .agg(__dc_player=("__dc", "sum"))
+                  .reset_index()
+            )
+            team_total = agg_dc.groupby(match_key, dropna=False)["__dc_player"].sum().reset_index().rename(
+                columns={"__dc_player": "__dc_team"}
+            )
+            agg_dc = agg_dc.merge(team_total, on=match_key, how="left")
+            df = df.merge(agg_dc, on=[player_col, match_key], how="left")
+
+            denom2 = df["__dc_team"].replace(0, np.nan)
+            df["Créativité 2"] = (df["__dc_player"] / denom2 * 100).fillna(0)
+
+    # Compat : si jamais df porte ATT et pas Player
+    if "Player" not in df.columns and "ATT" in df.columns:
+        df["Player"] = df["ATT"]
+
     return df
 
 def create_kpis(df):
+
     if df.empty:
         return df
     if "Timing" in df.columns and "Force physique" in df.columns:
@@ -1292,51 +1314,54 @@ def collect_data(selected_season=None):
 # RADARS
 # =========================
 def create_individual_radar(df):
-    if df.empty or "Player" not in df.columns:
+    if df is None or df.empty or "Player" not in df.columns:
         return None
+
     columns_to_plot = [
         "Timing", "Force physique", "Intelligence tactique",
         "Technique 1", "Technique 2", "Technique 3",
         "Explosivité", "Prise de risque", "Précision", "Sang-froid",
+        # Ajout possible des nouveaux KPI si présents
+        "Créativité 1", "Créativité 2",
     ]
-    available = [c for c in columns_to_plot if c in df.columns]
-    if not available:
+    params = [c for c in columns_to_plot if c in df.columns]
+    if not params:
         return None
 
-    colors = ["#6A7CD9", "#00BFFE", "#FF9470", "#F27979", "#BFBFBF"] * 2
     player = df.iloc[0]
+    values = [safe_float(player.get(c, 0), default=0) for c in params]
 
     pizza = PyPizza(
-        params=available,
+        params=params,
         background_color="#002B5C",
         straight_line_color="#FFFFFF",
         last_circle_color="#FFFFFF",
     )
-    fig, _ =     # Sécurisation : mplsoccer exige len(slice_colors) == len(params)
+
+    # mplsoccer exige len(slice_colors) == len(params)
     try:
         import matplotlib.pyplot as plt
-        _cycle = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["#1f77b4"])
-        slice_colors = [_cycle[i % len(_cycle)] for i in range(len(params))]
+        cycle = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["#1f77b4"])
+        slice_colors = [cycle[i % len(cycle)] for i in range(len(params))]
     except Exception:
-        if "slice_colors" in locals():
-            slice_colors = list(slice_colors)[:len(params)] if len(slice_colors) >= len(params) else list(slice_colors) + [list(slice_colors)[-1]] * (len(params) - len(slice_colors))
-        else:
-            slice_colors = ["#1f77b4"] * len(params)
-pizza.make_pizza(
-        figsize=(3, 3),
-        values=[player[c] for c in available],
-        slice_colors=colors[:len(available)],
+        slice_colors = ["#1f77b4"] * len(params)
+
+    fig, _ = pizza.make_pizza(
+        figsize=(6, 6),
+        values=values,
+        slice_colors=slice_colors,
         kwargs_values=dict(
             color="#FFFFFF",
-            fontsize=3.5,
-            bbox=dict(edgecolor="#FFFFFF", facecolor="#002B5C", boxstyle="round, pad=0.5", lw=1),
+            fontsize=10,
+            bbox=dict(edgecolor="#FFFFFF", facecolor="#002B5C", boxstyle="round,pad=0.3", lw=1),
         ),
-        kwargs_params=dict(color="#FFFFFF", fontsize=3.5, fontproperties="monospace"),
+        kwargs_params=dict(color="#FFFFFF", fontsize=10, fontproperties="monospace"),
     )
     fig.set_facecolor("#002B5C")
     return fig
 
 def create_comparison_radar(df, player1_name=None, player2_name=None):
+
     if df.empty or len(df) < 2:
         return None
 
@@ -1865,11 +1890,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
 
