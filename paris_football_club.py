@@ -750,14 +750,18 @@ def create_metrics(df):
 
     player_col = "Player" if "Player" in df.columns else ("ATT" if "ATT" in df.columns else None)
 
-    # ---- Créativité 1 (colonne 'Passe')
     df["Créativité 1"] = 0
+
     if player_col is not None and "Passe" in df.columns:
         passe_txt = df["Passe"].astype(str)
 
         total_passes = _is_filled(df["Passe"]).astype(int)
-        passes_last_third = passe_txt.str.contains("Passe dans dernier 1/3", case=False, na=False).astype(int)
-        assists = passe_txt.str.contains("Passe Décisive", case=False, na=False).astype(int)
+        passes_last_third = passe_txt.str.contains(
+            "Passe dans dernier 1/3", case=False, na=False
+        ).astype(int)
+        assists = passe_txt.str.contains(
+            "Passe Décisive", case=False, na=False
+        ).astype(int)
 
         match_key = None
         for c in ["Timeline", "Match", "Match_ID", "ID Match", "Adversaire", "Opposition", "Date"]:
@@ -767,21 +771,28 @@ def create_metrics(df):
 
         group_cols = [player_col] + ([match_key] if match_key else [])
 
-        agg_p = df.assign(
-            __p_total=total_passes,
-            __p_last=passes_last_third,
-            __p_ast=assists
-        ).groupby(group_cols, dropna=False).agg(
-            __total_passes=("__p_total", "sum"),
-            __last_third=("__p_last", "sum"),
-            __assists=("__p_ast", "sum"),
-        ).reset_index()
+        agg_p = (
+            df.assign(
+                __p_total=total_passes,
+                __p_last=passes_last_third,
+                __p_ast=assists,
+            )
+            .groupby(group_cols, dropna=False)
+            .agg(
+                __total_passes=("__p_total", "sum"),
+                __last_third=("__p_last", "sum"),
+                __assists=("__p_ast", "sum"),
+            )
+            .reset_index()
+        )
 
         df = df.merge(agg_p, on=group_cols, how="left")
 
         if "__total_passes" in df.columns:
-                        denom = df["__total_passes"].replace(0, np.nan)
-            df["Créativité 1"] = ((df.get("__last_third", 0) + 2 * df.get("__assists", 0)) / denom * 100).fillna(0)
+            denom = df["__total_passes"].replace(0, np.nan)
+            df["Créativité 1"] = (
+                (df["__last_third"] + 2 * df["__assists"]) / denom * 100
+            ).fillna(0)
 
     # ---- Créativité 2 (colonne 'Création de Deséquilibre')
     df["Créativité 2"] = 0
@@ -1971,6 +1982,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
