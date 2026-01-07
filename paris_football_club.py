@@ -1106,8 +1106,9 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFr
             dfp = standardize_gps_columns(dfp, os.path.basename(p))
             dfp["__source_file"] = os.path.basename(p)
             frames.append(dfp)
-        except Exception:
-            continue
+        except Exception as e:
+            st.error(f"Erreur traitement fichier {filename}: {e}")
+            raise
 
     df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     if df.empty or "NOM" not in df.columns:
@@ -1389,8 +1390,9 @@ def collect_data(selected_season=None):
 
             pfc_kpi = pd.concat([pfc_kpi, df], ignore_index=True)
 
-        except Exception:
-            continue
+        except Exception as e:
+            st.error(f"Erreur traitement fichier {filename}: {e}")
+            raise
 
     st.session_state["name_report_df"] = pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
     return pfc_kpi, edf_kpi
