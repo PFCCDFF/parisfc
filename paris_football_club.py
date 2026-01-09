@@ -94,6 +94,33 @@ def safe_int_numeric_only(df: pd.DataFrame, round_first: bool = True) -> pd.Data
         out[num_cols] = out[num_cols].astype(int)
     return out
 
+def build_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
+    """
+    Construit un fichier Excel en mémoire (bytes) avec une feuille par DataFrame.
+    Les noms de feuilles sont tronqués à 31 caractères (limite Excel).
+    """
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        used = set()
+        for name, df in sheets.items():
+            if df is None:
+                continue
+            sheet = (str(name) or "Sheet1")[:31]
+            # éviter doublons de noms de feuilles
+            base = sheet
+            k = 1
+            while sheet in used:
+                suffix = f"_{k}"
+                sheet = (base[:31-len(suffix)] + suffix)[:31]
+                k += 1
+            used.add(sheet)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                df.to_excel(writer, sheet_name=sheet, index=False)
+            else:
+                pd.DataFrame().to_excel(writer, sheet_name=sheet, index=False)
+    output.seek(0)
+    return output.read()
+
 
 def nettoyer_nom_joueuse(nom):
     if not isinstance(nom, str):
@@ -1569,9 +1596,49 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     else:
         pfc_kpi, edf_kpi = collect_data()
 
+
+    # Copies pour export (avant filtres éventuels)
+    pfc_kpi_all = pfc_kpi.copy() if isinstance(pfc_kpi, pd.DataFrame) else pd.DataFrame()
+    edf_kpi_all = edf_kpi.copy() if isinstance(edf_kpi, pd.DataFrame) else pd.DataFrame()
+
     # Filtre par joueuse si profil associé
     if player_name and pfc_kpi is not None and not pfc_kpi.empty and "Player" in pfc_kpi.columns:
         pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
+
+
+    # =========================
+    # EXPORT EXCEL (toute la base ou données filtrées)
+    # =========================
+    export_is_admin = check_permission(user_profile, "all", permissions)
+    export_pfc = pfc_kpi_all if export_is_admin else pfc_kpi
+    export_edf = edf_kpi_all if export_is_admin else edf_kpi
+    export_gps_week = st.session_state.get("gps_weekly_df", pd.DataFrame())
+    export_gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
+    export_names_report = st.session_state.get("name_report_df", pd.DataFrame())
+
+    with st.sidebar.expander("📤 Export Excel", expanded=False):
+        scope_label = "Toute la base" if export_is_admin else "Données (selon profil/filtres)"
+        st.caption(f"Contenu : {scope_label}")
+
+        if st.button("Générer le fichier Excel", key="btn_generate_export_xlsx"):
+            sheets = {
+                "PFC_KPI": export_pfc,
+                "EDF_Referentiel": export_edf,
+                "GPS_Hebdo": export_gps_week,
+                "GPS_Brut": export_gps_raw,
+                "Noms_Mapping_Report": export_names_report,
+            }
+            st.session_state["export_xlsx_bytes"] = build_excel_bytes(sheets)
+
+        if st.session_state.get("export_xlsx_bytes"):
+            fname = f"parisfc_data_export_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+            st.download_button(
+                "⬇️ Télécharger l'Excel",
+                data=st.session_state["export_xlsx_bytes"],
+                file_name=fname,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_export_xlsx",
+            )
 
     options = ["Statistiques", "Comparaison", "Données Physiques", "Joueuses Passerelles"]
     if check_permission(user_profile, "all", permissions):
