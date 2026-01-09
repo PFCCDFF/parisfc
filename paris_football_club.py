@@ -1619,7 +1619,16 @@ def collect_data(selected_season=None):
     ]
 
     if selected_season and selected_season != "Toutes les saisons":
-        fichiers = [f for f in fichiers if selected_season in f]
+        # IMPORTANT: ne filtre la saison QUE pour les fichiers match PFC.
+        # Les fichiers EDF (EDF_Joueuses / EDF_U19_Match*.csv) n'ont pas forcément l'année dans le nom.
+        keep_always_prefixes = ("EDF_",)
+        keep_always_names = {EDF_JOUEUSES_FILENAME, REFERENTIEL_FILENAME, PASSERELLE_FILENAME}
+        fichiers = [
+            f for f in fichiers
+            if (selected_season in f)
+            or f.startswith(keep_always_prefixes)
+            or (f in keep_always_names)
+        ]
 
     # GPS
     gps_raw = load_gps_raw(ref_set, alias_to_canon)
@@ -1655,7 +1664,7 @@ def collect_data(selected_season=None):
                     _tj = edf_j["Temps de jeu"]
                 else:
                     _tj = pd.Series([0] * len(edf_j))
-                edf_j["Temps de jeu"] = pd.to_numeric(_tj, errors="coerce").fillna(0)
+                edf_j["Temps de jeu"] = pd.Series(pd.to_numeric(_tj, errors="coerce"), index=edf_j.index).fillna(0)
 
 
                 matchs_csv = [f for f in fichiers if f.startswith("EDF_U19_Match") and f.endswith(".csv")]
@@ -1932,9 +1941,10 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
         "Prise de risque",
         "Précision",
         "Sang-froid",
-        "Créativité 1",
-        "Créativité 2",
     ]
+    if not exclude_creativity:
+        metrics += ["Créativité 1", "Créativité 2"]
+
     if exclude_creativity:
         metrics = [m for m in metrics if not m.startswith("Créativité")]
 
