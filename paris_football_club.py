@@ -1242,6 +1242,79 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     return safe_int_numeric_only(aggregated)
 
 
+
+# =========================
+# AGRÉGATION GLOBALE (export)
+# =========================
+def aggregate_global_players(df: pd.DataFrame) -> pd.DataFrame:
+    """Agrège la base PFC par joueuse pour l'export Excel.
+
+    - Les colonnes *comptages* (per90 dans la base) sont reconverties en volumes match -> total:
+        total = valeur_per90 * minutes / 90
+    - Les colonnes de type *pourcentage* / *notes* (0-100) sont agrégées en moyenne pondérée par le temps de jeu.
+    """
+    if df is None or df.empty or "Player" not in df.columns:
+        return pd.DataFrame()
+
+    d = df.copy()
+    if "Temps de jeu (en minutes)" not in d.columns:
+        d["Temps de jeu (en minutes)"] = 0.0
+
+    # Colonnes meta à ignorer
+    meta_cols = {"Player", "Adversaire", "Journée", "Catégorie", "Date"}
+
+    # Colonnes "notes" à moyenner (pondérées)
+    score_cols = {
+        # Metrics
+        "Timing", "Force physique", "Intelligence tactique",
+        "Technique 1", "Technique 2", "Technique 3",
+        "Explosivité", "Prise de risque", "Précision", "Sang-froid",
+        "Créativité 1", "Créativité 2",
+        # KPIs
+        "Rigueur", "Récupération", "Distribution", "Percussion", "Finition", "Créativité",
+        # Postes
+        "Défenseur central", "Défenseur latéral", "Milieu défensif", "Milieu relayeur", "Milieu offensif", "Attaquant",
+    }
+
+    minutes = pd.to_numeric(d["Temps de jeu (en minutes)"], errors="coerce").fillna(0.0)
+    w = minutes.replace(0, np.nan)
+
+    # Prépare des colonnes volumes reconverties
+    num_cols = [c for c in d.columns if c not in meta_cols and pd.api.types.is_numeric_dtype(d[c])]
+    count_cols = [c for c in num_cols if c not in score_cols and "Pourcentage" not in c and c != "Temps de jeu (en minutes)"]
+
+    for c in count_cols:
+        # Convertit per90 -> volume (en s'appuyant sur le temps de jeu du match)
+        d[c] = pd.to_numeric(d[c], errors="coerce").fillna(0.0) * minutes / 90.0
+
+    # Pourcentages et scores : moyenne pondérée
+    def wavg(s):
+        s = pd.to_numeric(s, errors="coerce")
+        return np.nan if w.isna().all() else np.nansum(s * w) / np.nansum(w)
+
+    agg_dict = {"Temps de jeu (en minutes)": "sum"}
+    for c in num_cols:
+        if c == "Temps de jeu (en minutes)":
+            continue
+        if c in score_cols or "Pourcentage" in c:
+            agg_dict[c] = wavg
+        else:
+            agg_dict[c] = "sum"
+
+    out = d.groupby("Player", as_index=False).agg(agg_dict)
+
+    # Arrondis propres
+    for c in out.columns:
+        if c == "Player":
+            continue
+        if "Pourcentage" in c or c in score_cols:
+            out[c] = pd.to_numeric(out[c], errors="coerce").round(1)
+        else:
+            out[c] = pd.to_numeric(out[c], errors="coerce").round(0).astype("Int64")
+
+    return out
+
+
 # =========================
 # GPS (lecture simple)
 # =========================
