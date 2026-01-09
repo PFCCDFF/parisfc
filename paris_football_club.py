@@ -1310,26 +1310,30 @@ def collect_data(selected_season=None):
                     vc = d2[d2["Row_clean"].isin(candidates_team_like)]["Row_clean"].value_counts()
                     teams_found = vc.index.tolist()
 
-            # 3) Définir PFC / ADV
+            # 3) Définir les équipes pour filtrer les lignes "match" (via Row)
+            #    ⚠️ IMPORTANT : ces variables servent UNIQUEMENT à filtrer les lignes d'équipes/lineups.
+            #    Le NOM AFFICHÉ de l'adversaire (colonne "Adversaire") doit venir EXCLUSIVEMENT
+            #    des colonnes explicites 'Adversaire' ou 'Teamersaire' (jamais de Row).
             if "PFC" in teams_found:
                 equipe_pfc = "PFC"
                 others = [t for t in teams_found if t != "PFC"]
-                equipe_adv = others[0] if others else None
+                equipe_adv_team = others[0] if others else None
             else:
                 equipe_pfc = teams_found[0] if len(teams_found) else str(parts[0]).strip()
-                equipe_adv = teams_found[1] if len(teams_found) > 1 else None
+                equipe_adv_team = teams_found[1] if len(teams_found) > 1 else None
 
+            # 🔎 Adversaire "label" (pour l'app) : uniquement via colonnes explicites
+            adv_label = infer_opponent_from_columns(data, equipe_pfc)
+            if not adv_label:
+                # Si l'export ne fournit pas d'adversaire explicite, on ne NOMME PAS via Row.
+                # (Option alternative : mettre "Adversaire inconnu")
+                continue
 
-            # 🔎 Priorité à l'adversaire fourni par le fichier (colonnes explicites)
-            adv_from_cols = infer_opponent_from_columns(data, equipe_pfc)
-            if adv_from_cols:
-                equipe_adv = adv_from_cols
-
-            if not equipe_adv:
+            if not equipe_adv_team:
                 continue
 
             home_clean = nettoyer_nom_equipe(equipe_pfc)
-            away_clean = nettoyer_nom_equipe(equipe_adv)
+            away_clean = nettoyer_nom_equipe(equipe_adv_team)
 
             match = d2[d2["Row_clean"].isin({home_clean, away_clean})].copy()
             if match.empty:
@@ -1342,7 +1346,7 @@ def collect_data(selected_season=None):
             if joueurs.empty:
                 joueurs = pd.DataFrame(columns=["Row", "Action"])
 
-            df = create_data(match, joueurs, False, home_team=equipe_pfc, away_team=equipe_adv)
+            df = create_data(match, joueurs, False, home_team=equipe_pfc, away_team=equipe_adv_team)
             if df.empty:
                 continue
 
@@ -1367,7 +1371,7 @@ def collect_data(selected_season=None):
             df = create_kpis(df)
             df = create_poste(df)
 
-            adversaire = equipe_adv if equipe_pfc == "PFC" else equipe_pfc
+            adversaire = adv_label
             # ✅ libellé standard : "J7 - Valenciennes"
             df.insert(1, "Adversaire", f"{journee} - {adversaire}")
             df.insert(2, "Journée", journee)
