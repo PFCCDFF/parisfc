@@ -1124,23 +1124,24 @@ def create_metrics(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
 
-    # =========================
+        # =========================
     # Créativité (KPI spécifique)
-    # Créativité 1 = (Passe dans dernier 1/3 + 2*Passe Décisive) / Passes totales
-    # Créativité 2 = Créations de déséquilibre joueuse / total équipe (match)
+    # Créativité 1 = (Passe dans dernier 1/3 + 2*Passe Décisive) / Passes totales * 100
+    # Créativité 2 = Créations de déséquilibre joueuse / total équipe (match) * 100
+    # NB: on sécurise les colonnes internes: si elles n'existent pas -> 0.
     # =========================
-    if "__total_passes" in df.columns:
-        denom = pd.to_numeric(df["__total_passes"], errors="coerce").replace(0, np.nan)
-        lt = pd.to_numeric(df.get("__last_third", 0), errors="coerce").fillna(0)
-        ast = pd.to_numeric(df.get("__assists", 0), errors="coerce").fillna(0)
-        df["Créativité 1"] = ((lt + 2 * ast) / denom * 100).fillna(0)
+    total_passes = pd.to_numeric(df.get("__total_passes", 0), errors="coerce").fillna(0)
+    last_third = pd.to_numeric(df.get("__last_third", 0), errors="coerce").fillna(0)
+    assists = pd.to_numeric(df.get("__assists", 0), errors="coerce").fillna(0)
+    deseq = pd.to_numeric(df.get("__deseq", 0), errors="coerce").fillna(0)
+    team_total = pd.to_numeric(df.get("__team_deseq_total", 0), errors="coerce").fillna(0)
 
-    if "__team_deseq_total" in df.columns:
-        team_total = pd.to_numeric(df["__team_deseq_total"], errors="coerce").replace(0, np.nan)
-        des = pd.to_numeric(df.get("__deseq", 0), errors="coerce").fillna(0)
-        df["Créativité 2"] = (des / team_total * 100).fillna(0)
+    denom = total_passes.replace(0, np.nan)
+    df["Créativité 1"] = ((last_third + 2 * assists) / denom * 100).fillna(0)
 
-    # Rang percentiles 0-100
+    denom_team = team_total.replace(0, np.nan)
+    df["Créativité 2"] = (deseq / denom_team * 100).fillna(0)
+# Rang percentiles 0-100
     to_rank = list(required_cols.keys()) + ["Créativité 1", "Créativité 2"]
     for metric in to_rank:
         if metric in df.columns:
@@ -1259,16 +1260,21 @@ def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
 
     df.fillna(0, inplace=True)
 
-    # Ajout helpers créativité (à partir des events)
+        # Ajout helpers créativité (à partir des events)
+    # On force toujours la présence des colonnes internes, même si le fichier n'a pas les colonnes attendues,
+    # afin que "Créativité 1/2" et le KPI "Créativité" puissent exister (valeurs à 0 si non calculables).
     try:
         ch = creativity_helpers_from_events(joueurs)
         if ch is not None and not ch.empty:
             df = df.merge(ch, on="Player", how="left")
-            for c in ["__total_passes", "__last_third", "__assists", "__deseq", "__team_deseq_total"]:
-                if c in df.columns:
-                    df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     except Exception:
-        pass
+        ch = None
+
+    # Colonnes internes (fallback à 0 si absentes)
+    for c in ["__total_passes", "__last_third", "__assists", "__deseq", "__team_deseq_total"]:
+        if c not in df.columns:
+            df[c] = 0
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
     df = df[(df.iloc[:, 1:] != 0).any(axis=1)]
 
