@@ -262,6 +262,19 @@ def parse_date_from_gf1_filename(fn: str) -> Optional[datetime]:
         return None
 
 
+
+def extract_season_from_filename(filename: str) -> Optional[str]:
+    """Extrait une saison type '2425' / '2526' depuis le nom de fichier."""
+    if not filename:
+        return None
+    s = str(filename)
+    candidates = re.findall(r"\b\d{4}\b", s)
+    for c in candidates:
+        if c in {"2425", "2526"}:
+            return c
+    # fallback: pattern collé (rare)
+    m = re.search(r"(2425|2526)", s)
+    return m.group(1) if m else None
 # =========================
 # EXCEL READER
 # =========================
@@ -1607,11 +1620,13 @@ def collect_data(selected_season=None):
             df = create_poste(df)
 
             adversaire = adv_label
+            saison = extract_season_from_filename(filename) or "Inconnue"
+            df.insert(1, "Saison", saison)
             # ✅ libellé standard : "J7 - Valenciennes"
-            df.insert(1, "Adversaire", f"{journee} - {adversaire}")
-            df.insert(2, "Journée", journee)
-            df.insert(3, "Catégorie", categorie)
-            df.insert(4, "Date", date)
+            df.insert(2, "Adversaire", f"{journee} - {adversaire}")
+            df.insert(3, "Journée", journee)
+            df.insert(4, "Catégorie", categorie)
+            df.insert(5, "Date", date)
 
             pfc_kpi = pd.concat([pfc_kpi, df], ignore_index=True)
 
@@ -1804,9 +1819,27 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         scope_label = "Toute la base" if export_is_admin else "Données (selon profil/filtres)"
         st.caption(f"Contenu : {scope_label}")
 
+        export_season = st.selectbox(
+            "Filtrer l'export par saison",
+            ["Toutes les saisons", "2425", "2526"],
+            index=0,
+            key="export_season_select",
+        )
+
+        # Base export : admin = toute la base (avant filtre UI), sinon = données déjà filtrées (profil/joueuse/saison UI)
+        base_pfc = export_pfc.copy() if export_is_admin else export_pfc.copy()
+
+        # Filtre saison (nécessite la colonne 'Saison' ajoutée lors de l'import)
+        if export_season != "Toutes les saisons" and "Saison" in base_pfc.columns:
+            base_pfc = base_pfc[base_pfc["Saison"].astype(str) == export_season].copy()
+
+        # Onglet global joueuses (agrégé)
+        global_players = aggregate_global_players(base_pfc)
+
         if st.button("Générer le fichier Excel", key="btn_generate_export_xlsx"):
             sheets = {
-                "PFC_KPI": export_pfc,
+                "PFC_Detail": base_pfc,
+                "PFC_Global_Joueuses": global_players,
                 "EDF_Referentiel": export_edf,
                 "GPS_Hebdo": export_gps_week,
                 "GPS_Brut": export_gps_raw,
@@ -1815,7 +1848,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.session_state["export_xlsx_bytes"] = build_excel_bytes(sheets)
 
         if st.session_state.get("export_xlsx_bytes"):
-            fname = f"parisfc_data_export_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+            season_tag = "all" if export_season == "Toutes les saisons" else export_season
+            fname = f"parisfc_export_{season_tag}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
             st.download_button(
                 "⬇️ Télécharger l'Excel",
                 data=st.session_state["export_xlsx_bytes"],
@@ -1823,7 +1857,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="download_export_xlsx",
             )
-
     options = ["Statistiques", "Comparaison", "Données Physiques", "Joueuses Passerelles"]
     if check_permission(user_profile, "all", permissions):
         options.insert(2, "Gestion")
