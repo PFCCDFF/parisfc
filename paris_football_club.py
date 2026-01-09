@@ -2404,7 +2404,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 # MAIN
 # =========================
 def main():
-    st.set_page_config(page_title="Paris FC - Centre de Formation Féminin", layout="wide")
+    st.set_page_config(page_title="Paris FC", layout="wide")
 
     st.markdown(
         """
@@ -2429,7 +2429,7 @@ def main():
     <img src="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png" alt="Paris FC Logo"
          style="position:absolute; left:1rem; top:50%; transform:translateY(-50%); width:120px; opacity:0.9;">
     <h1 style="margin:0; font-size:3rem; font-weight:bold;">Paris FC - Centre de Formation Féminin</h1>
-    <p style="margin-top:.5rem; font-size:1.2rem;">Data Center</p>
+    <p style="margin-top:.5rem; font-size:2.2rem;">Centre de Formation Féminin</p>
     </div>
     """,
         unsafe_allow_html=True,
@@ -2465,3 +2465,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
