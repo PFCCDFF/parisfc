@@ -1456,8 +1456,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         st.header("Comparaison")
 
         if pfc_kpi.empty:
-        st.warning("Aucune donnée PFC.")
-        return
+    st.warning("Aucune donnée PFC.")
+    return
+
 
         # --- Helpers locaux (petits outils UI)
         def _player_selector(label: str, key: str):
@@ -1782,6 +1783,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         if __name__ == "__main__":
         main()
+
 
 
 
