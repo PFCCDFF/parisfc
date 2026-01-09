@@ -1461,10 +1461,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
 
         # --- Helpers locaux (petits outils UI)
-        def _player_selector(label: str, key: str):
+    def _player_selector(label: str, key: str):
         return st.selectbox(label, sorted(pfc_kpi["Player"].dropna().unique().tolist()), key=key)
 
-        def _matches_for_player(pname: str):
+    def _matches_for_player(pname: str):
         if "Adversaire" not in pfc_kpi.columns:
             return []
         d = pfc_kpi[pfc_kpi["Player"].apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(pname)].copy()
@@ -1783,6 +1783,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         if __name__ == "__main__":
         main()
+
 
 
 
