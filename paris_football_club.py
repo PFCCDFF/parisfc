@@ -748,6 +748,173 @@ def players_passes(joueurs):
     return df.sort_values(by="Passes courtes", ascending=False).reset_index(drop=True)
 
 
+
+def players_pass_directions(joueurs):
+    """Compte la direction des passes à partir de la colonne 'Ungrouped'.
+
+    Règles:
+    - On ne considère que les lignes où la colonne 'Action' contient 'Passe'.
+    - La direction est lue dans la colonne 'Ungrouped' (ex: '... Courte Avant ...', '... Longue Diago Gauche ...').
+    - La réussite est déterminée via la colonne 'Passe' (contient 'Réussie').
+    """
+    if joueurs is None or joueurs.empty:
+        return pd.DataFrame()
+    needed = {"Action", "Row"}
+    if not needed.issubset(set(joueurs.columns)):
+        return pd.DataFrame()
+    if "Ungrouped" not in joueurs.columns:
+        return pd.DataFrame()
+
+    # Colonnes de sortie
+    cols = [
+        "Passes vers l'avant", "Passes vers l'avant réussies",
+        "Passes vers l'arrière", "Passes vers l'arrière réussies",
+        "Passes latérales Gauche", "Passes latérales Gauche réussies",
+        "Passes diagonales Gauche", "Passes diagonales Gauche réussies",
+        "Passes latérales Droite", "Passes latérales Droite réussies",
+        "Passes diagonales Droite", "Passes diagonales Droite réussies",
+    ]
+
+    counts = {c: {} for c in cols}
+
+    def _norm(txt: str) -> str:
+        # normalisation simple (majuscules + sans accents) pour détecter les tokens
+        return nettoyer_nom_joueuse(txt).replace(" ", "_")
+
+    for i in range(len(joueurs)):
+        action = joueurs.iloc[i].get("Action", None)
+        if not (isinstance(action, str) and "Passe" in action):
+            continue
+
+        ug = joueurs.iloc[i].get("Ungrouped", "")
+        if not isinstance(ug, str) or not ug.strip():
+            continue
+
+        ug_norm = _norm(ug)
+
+        # Détection direction (dans Ungrouped)
+        direction = None
+        if "AVANT" in ug_norm:
+            direction = "avant"
+        elif "ARRIERE" in ug_norm or "ARRIÈRE" in ug_norm:
+            direction = "arriere"
+        elif "LATERALE_GAUCHE" in ug_norm or "LATÉRALE_GAUCHE" in ug_norm:
+            direction = "lat_g"
+        elif "LATERALE_DROITE" in ug_norm or "LATÉRALE_DROITE" in ug_norm:
+            direction = "lat_d"
+        elif ("DIAGO_GAUCHE" in ug_norm) or ("DIAGONALE_GAUCHE" in ug_norm):
+            direction = "diag_g"
+        elif ("DIAGO_DROITE" in ug_norm) or ("DIAGONALE_DROITE" in ug_norm):
+            direction = "diag_d"
+
+        if direction is None:
+            continue
+
+        player = nettoyer_nom_joueuse(str(joueurs.iloc[i].get("Row", "")))
+
+        passe_cell = joueurs.iloc[i].get("Passe", "") if "Passe" in joueurs.columns else ""
+        passe_ok = isinstance(passe_cell, str) and ("Réussie" in passe_cell or "REUSSIE" in _norm(passe_cell))
+
+        if direction == "avant":
+            counts["Passes vers l'avant"][player] = counts["Passes vers l'avant"].get(player, 0) + 1
+            if passe_ok:
+                counts["Passes vers l'avant réussies"][player] = counts["Passes vers l'avant réussies"].get(player, 0) + 1
+        elif direction == "arriere":
+            counts["Passes vers l'arrière"][player] = counts["Passes vers l'arrière"].get(player, 0) + 1
+            if passe_ok:
+                counts["Passes vers l'arrière réussies"][player] = counts["Passes vers l'arrière réussies"].get(player, 0) + 1
+        elif direction == "lat_g":
+            counts["Passes latérales Gauche"][player] = counts["Passes latérales Gauche"].get(player, 0) + 1
+            if passe_ok:
+                counts["Passes latérales Gauche réussies"][player] = counts["Passes latérales Gauche réussies"].get(player, 0) + 1
+        elif direction == "lat_d":
+            counts["Passes latérales Droite"][player] = counts["Passes latérales Droite"].get(player, 0) + 1
+            if passe_ok:
+                counts["Passes latérales Droite réussies"][player] = counts["Passes latérales Droite réussies"].get(player, 0) + 1
+        elif direction == "diag_g":
+            counts["Passes diagonales Gauche"][player] = counts["Passes diagonales Gauche"].get(player, 0) + 1
+            if passe_ok:
+                counts["Passes diagonales Gauche réussies"][player] = counts["Passes diagonales Gauche réussies"].get(player, 0) + 1
+        elif direction == "diag_d":
+            counts["Passes diagonales Droite"][player] = counts["Passes diagonales Droite"].get(player, 0) + 1
+            if passe_ok:
+                counts["Passes diagonales Droite réussies"][player] = counts["Passes diagonales Droite réussies"].get(player, 0) + 1
+
+    # Construire DF
+    all_players = set()
+    for cdict in counts.values():
+        all_players |= set(cdict.keys())
+
+    if not all_players:
+        return pd.DataFrame()
+
+    out = pd.DataFrame({"Player": sorted(all_players)})
+    for col in cols:
+        out[col] = out["Player"].map(counts[col]).fillna(0).astype(int)
+
+    return out
+
+
+
+def players_creativity_counts(joueurs):
+    """Calcule les compteurs nécessaires aux KPI de Créativité.
+
+    - __total_passes : nombre de cellules non vides dans la colonne 'Passe' lorsque Action contient 'Passe'
+    - __last_third   : nombre de 'Passe dans dernier 1/3' dans la colonne 'Passe'
+    - __assists      : nombre de 'Passe Décisive' dans la colonne 'Passe' (pondération x2 gérée plus tard)
+    - __deseq        : nombre de cellules non vides dans la colonne 'Création de Deséquilibre'
+    - __team_deseq_total : total équipe sur le match (même valeur recopiée pour chaque joueuse)
+    """
+    if joueurs is None or joueurs.empty or "Row" not in joueurs.columns or "Action" not in joueurs.columns:
+        return pd.DataFrame()
+
+    out_counts = {}
+    out_lt = {}
+    out_ast = {}
+    out_deseq = {}
+
+    # Filtre passes
+    for i in range(len(joueurs)):
+        action = joueurs.iloc[i].get("Action", None)
+        if not (isinstance(action, str) and "Passe" in action):
+            continue
+
+        player = nettoyer_nom_joueuse(str(joueurs.iloc[i].get("Row", "")))
+
+        passe_cell = joueurs.iloc[i].get("Passe", None) if "Passe" in joueurs.columns else None
+        if isinstance(passe_cell, str) and passe_cell.strip():
+            out_counts[player] = out_counts.get(player, 0) + 1
+            if "Passe dans dernier 1/3" in passe_cell:
+                out_lt[player] = out_lt.get(player, 0) + 1
+            if "Passe Décisive" in passe_cell:
+                out_ast[player] = out_ast.get(player, 0) + 1
+
+    # Déséquilibre
+    if "Création de Deséquilibre" in joueurs.columns:
+        for i in range(len(joueurs)):
+            val = joueurs.iloc[i].get("Création de Deséquilibre", None)
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                continue
+            if isinstance(val, str) and not val.strip():
+                continue
+            player = nettoyer_nom_joueuse(str(joueurs.iloc[i].get("Row", "")))
+            out_deseq[player] = out_deseq.get(player, 0) + 1
+
+    players = set(out_counts) | set(out_deseq) | set(out_lt) | set(out_ast)
+    if not players:
+        return pd.DataFrame()
+
+    team_total = sum(out_deseq.values()) if out_deseq else 0
+
+    df = pd.DataFrame({"Player": sorted(players)})
+    df["__total_passes"] = df["Player"].map(out_counts).fillna(0).astype(int)
+    df["__last_third"] = df["Player"].map(out_lt).fillna(0).astype(int)
+    df["__assists"] = df["Player"].map(out_ast).fillna(0).astype(int)
+    df["__deseq"] = df["Player"].map(out_deseq).fillna(0).astype(int)
+    df["__team_deseq_total"] = int(team_total)
+    return df
+
+
 def players_dribbles(joueurs):
     if joueurs is None or joueurs.empty or "Action" not in joueurs.columns or "Row" not in joueurs.columns:
         return pd.DataFrame()
@@ -843,7 +1010,12 @@ def players_ball_losses(joueurs):
 # =========================
 # METRICS / KPI / POSTES
 # =========================
+
 def create_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """Crée les métriques (0-100 via rang percentile).
+
+    Note: les métriques sont transformées en rangs percentiles (0-100) pour faciliter la comparaison.
+    """
     if df is None or df.empty:
         return df
 
@@ -858,34 +1030,46 @@ def create_metrics(df: pd.DataFrame) -> pd.DataFrame:
         "Prise de risque": ["Dribbles"],
         "Précision": ["Tirs", "Tirs cadrés"],
         "Sang-froid": ["Tirs"],
-        # ⚠️ Ici, tu as mis des placeholders. Si tu veux la vraie Créativité (Passe dernier 1/3 etc.),
-        # on la remettra dans une étape suivante.
-        "Créativité 1": ["Dribbles réussis", "Passes réussies (longues)"],
-        "Créativité 2": ["Dribbles", "Passes longues"],
     }
 
-    out = df.copy()
-
+    # Métriques "classiques"
     for metric, cols in required_cols.items():
-        if not all(c in out.columns for c in cols):
+        if not all(c in df.columns for c in cols):
             continue
 
         if metric == "Timing":
-            out[metric] = np.where(out[cols[0]] > 0, (out[cols[0]] - out.get(cols[1], 0)) / out[cols[0]], 0)
+            df[metric] = np.where(df[cols[0]] > 0, (df[cols[0]] - df.get(cols[1], 0)) / df[cols[0]], 0)
         elif metric == "Force physique":
-            out[metric] = np.where(out[cols[0]] > 0, out.get(cols[1], 0) / out[cols[0]], 0)
-        elif metric in {"Intelligence tactique", "Technique 1", "Prise de risque", "Sang-froid", "Créativité 1", "Créativité 2"}:
-            mmax = out[cols[0]].max()
-            out[metric] = np.where(out[cols[0]] > 0, out[cols[0]] / mmax, 0) if mmax > 0 else 0
+            df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
+        elif metric in ["Intelligence tactique", "Technique 1", "Prise de risque", "Sang-froid"]:
+            mmax = pd.to_numeric(df[cols[0]], errors="coerce").max()
+            df[metric] = np.where(df[cols[0]] > 0, df[cols[0]] / mmax, 0) if (mmax is not None and mmax > 0) else 0
         else:
-            out[metric] = np.where(out[cols[0]] > 0, out.get(cols[1], 0) / out[cols[0]], 0)
+            df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
 
-    # Rank -> 0..100
-    for metric in required_cols.keys():
-        if metric in out.columns:
-            out[metric] = (out[metric].rank(pct=True) * 100).fillna(0)
+    # =========================
+    # Créativité (KPI spécifique)
+    # Créativité 1 = (Passe dans dernier 1/3 + 2*Passe Décisive) / Passes totales
+    # Créativité 2 = Créations de déséquilibre joueuse / total équipe (match)
+    # =========================
+    if "__total_passes" in df.columns:
+        denom = pd.to_numeric(df["__total_passes"], errors="coerce").replace(0, np.nan)
+        lt = pd.to_numeric(df.get("__last_third", 0), errors="coerce").fillna(0)
+        ast = pd.to_numeric(df.get("__assists", 0), errors="coerce").fillna(0)
+        df["Créativité 1"] = ((lt + 2 * ast) / denom * 100).fillna(0)
 
-    return out
+    if "__team_deseq_total" in df.columns:
+        team_total = pd.to_numeric(df["__team_deseq_total"], errors="coerce").replace(0, np.nan)
+        des = pd.to_numeric(df.get("__deseq", 0), errors="coerce").fillna(0)
+        df["Créativité 2"] = (des / team_total * 100).fillna(0)
+
+    # Rang percentiles 0-100
+    to_rank = list(required_cols.keys()) + ["Créativité 1", "Créativité 2"]
+    for metric in to_rank:
+        if metric in df.columns:
+            df[metric] = (pd.to_numeric(df[metric], errors="coerce").rank(pct=True) * 100).fillna(0)
+
+    return df
 
 
 def create_kpis(df: pd.DataFrame) -> pd.DataFrame:
