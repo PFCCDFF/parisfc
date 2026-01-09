@@ -1294,7 +1294,7 @@ def aggregate_global_players(df: pd.DataFrame) -> pd.DataFrame:
 
     # Prépare des colonnes volumes reconverties
     num_cols = [c for c in d.columns if c not in meta_cols and pd.api.types.is_numeric_dtype(d[c])]
-    count_cols = [c for c in num_cols if c not in score_cols and "Pourcentage" not in c and c != "Temps de jeu (en minutes)"]
+    count_cols = [c for c in num_cols if c not in score_cols and "Pourcentage" not in c and c != "Temps de jeu (en minutes)" and c != "Buts"]
 
     for c in count_cols:
         # Convertit per90 -> volume (en s'appuyant sur le temps de jeu du match)
@@ -1697,6 +1697,8 @@ def collect_data(selected_season=None):
                         continue
                     scale = 90.0 / tp
                     for col in num_cols:
+                        if col == "Buts":
+                            continue
                         if "Pourcentage" in col:
                             continue
                         df.loc[idx, col] = r[col] * scale
