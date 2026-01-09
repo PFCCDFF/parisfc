@@ -152,28 +152,49 @@ def infer_opponent_from_columns(df: pd.DataFrame, equipe_pfc: str) -> Optional[s
     """
     Retourne le nom d'adversaire depuis les colonnes explicites du fichier si disponibles.
     Priorité: 'Adversaire' puis 'Teamersaire' (orthographe rencontrée dans certains exports).
+
+    ⚠️ Robustesse:
+    - ignore les valeurs "Adversaire"/"Teamersaire" (cellules polluées)
+    - ignore les valeurs qui ressemblent à une joueuse (ex: "SIDIBE OUMOU")
+    - ignore la valeur égale à l'équipe PFC
+    - renvoie une valeur "humaine" (string original le plus fréquent) plutôt qu'un libellé normalisé.
     """
     if df is None or df.empty:
         return None
 
+    pfc_clean = nettoyer_nom_equipe(equipe_pfc)
+    banned_clean = {nettoyer_nom_equipe(x) for x in ["ADVERSAIRE", "TEAMERSAIRE", "TEAMVERSAIRE", "OPPONENT", "OPPOSANT"]}
+
     for col in ["Adversaire", "Teamersaire"]:
         if col not in df.columns:
             continue
-        s = df[col].dropna().astype(str).map(lambda x: x.strip())
-        s = s[s != ""]
-        if s.empty:
+
+        s_raw = df[col].dropna().astype(str).map(lambda x: x.strip())
+        s_raw = s_raw[s_raw != ""]
+        if s_raw.empty:
             continue
 
-        # Normalisation équipe + choix valeur la plus fréquente
-        vc = s.map(nettoyer_nom_equipe).value_counts()
-        if vc.empty:
+        # Couple (original, cleaned)
+        tmp = pd.DataFrame({"raw": s_raw})
+        tmp["clean"] = tmp["raw"].map(nettoyer_nom_equipe)
+
+        # filtre valeurs inutiles
+        tmp = tmp[tmp["clean"] != ""]
+        tmp = tmp[tmp["clean"] != pfc_clean]
+        tmp = tmp[~tmp["clean"].isin(banned_clean)]
+
+        # filtre "joueuse-like" (évite Sidibé Oumou en adversaire)
+        tmp = tmp[~tmp["raw"].map(lambda x: looks_like_player(x))]
+
+        if tmp.empty:
             continue
 
-        # Si la valeur la plus fréquente = équipe PFC, on prend la suivante
-        pfc_clean = nettoyer_nom_equipe(equipe_pfc)
-        for cand in vc.index.tolist():
-            if nettoyer_nom_equipe(cand) != pfc_clean:
-                return cand
+        # valeur la plus fréquente sur la version nettoyée
+        clean_choice = tmp["clean"].value_counts().index[0]
+
+        # renvoyer la chaîne "raw" la plus fréquente associée à ce clean_choice
+        raw_choice = tmp.loc[tmp["clean"] == clean_choice, "raw"].value_counts().index[0]
+        return raw_choice.strip()
 
     return None
 
