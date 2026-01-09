@@ -2085,53 +2085,37 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.pyplot(fig)
 
         with tab2:
-            needed = ["Rigueur", "Récupération", "Distribution", "Percussion", "Finition"]
-            has_base = all(k in aggregated.columns for k in needed)
-            has_crea = "Créativité" in aggregated.columns
-            if has_base:
-                cols = st.columns(6 if has_crea else 5)
-                col1, col2, col3, col4, col5 = cols[:5]
-                col6 = cols[5] if has_crea else None
-                with col1:
-                    st.metric("Rigueur", f"{int(aggregated['Rigueur'].iloc[0])}/100")
-                with col2:
-                    st.metric("Récupération", f"{int(aggregated['Récupération'].iloc[0])}/100")
-                with col3:
-                    st.metric("Distribution", f"{int(aggregated['Distribution'].iloc[0])}/100")
-                with col4:
-                    st.metric("Percussion", f"{int(aggregated['Percussion'].iloc[0])}/100")
-                with col5:
-                    st.metric("Finition", f"{int(aggregated['Finition'].iloc[0])}/100")
-                with col6:
-                    st.metric("Créativité", f"{int(aggregated['Créativité'].iloc[0])}/100")
+            kpi_order = [
+                ("Rigueur", "Rigueur"),
+                ("Récupération", "Récupération"),
+                ("Distribution", "Distribution"),
+                ("Percussion", "Percussion"),
+                ("Finition", "Finition"),
+                ("Créativité", "Créativité"),
+            ]
+            available_kpis = [(label, col) for (label, col) in kpi_order if col in aggregated.columns]
+            if available_kpis:
+                cols = st.columns(len(available_kpis))
+                for col_ui, (label, colname) in zip(cols, available_kpis):
+                    with col_ui:
+                        st.metric(label, f"{int(aggregated[colname].iloc[0])}/100")
             else:
                 st.info("KPIs non disponibles sur cette sélection.")
 
         with tab3:
-            poste_cols = [
-                "Défenseur central",
-                "Défenseur latéral",
-                "Milieu défensif",
-                "Milieu relayeur",
-                "Milieu offensif",
-                "Attaquant",
+            poste_order = [
+                ("DC", "Défenseur central"),
+                ("DL", "Défenseur latéral"),
+                ("MD", "Milieu défensif"),
+                ("MR", "Milieu relayeur"),
+                ("MO", "Milieu offensif"),
+                ("ATT", "Attaquant"),
             ]
-            if all(c in aggregated.columns for c in poste_cols):
-                cols = st.columns(6 if has_crea else 5)
-                col1, col2, col3, col4, col5 = cols[:5]
-                col6 = cols[5] if has_crea else None
-                with col1:
-                    st.metric("DC", f"{int(aggregated['Défenseur central'].iloc[0])}/100")
-                with col2:
-                    st.metric("DL", f"{int(aggregated['Défenseur latéral'].iloc[0])}/100")
-                with col3:
-                    st.metric("MD", f"{int(aggregated['Milieu défensif'].iloc[0])}/100")
-                with col4:
-                    st.metric("MR", f"{int(aggregated['Milieu relayeur'].iloc[0])}/100")
-                with col5:
-                    st.metric("MO", f"{int(aggregated['Milieu offensif'].iloc[0])}/100")
-                with col6:
-                    st.metric("ATT", f"{int(aggregated['Attaquant'].iloc[0])}/100")
+            if all(colname in aggregated.columns for _, colname in poste_order):
+                cols = st.columns(len(poste_order))
+                for col_ui, (label, colname) in zip(cols, poste_order):
+                    with col_ui:
+                        st.metric(label, f"{int(aggregated[colname].iloc[0])}/100")
             else:
                 st.info("Notes de poste non disponibles sur cette sélection.")
 
