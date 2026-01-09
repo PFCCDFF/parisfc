@@ -1033,6 +1033,57 @@ def players_ball_losses(joueurs):
     )
 
 
+
+
+def creativity_helpers_from_events(joueurs: pd.DataFrame) -> pd.DataFrame:
+    """Construit les colonnes nécessaires à Créativité 1 & 2 à partir des events.
+
+    Règles (CSV Sportscode):
+    - Total passes joueuse: compter les lignes où Action contient 'Passe' ET cellule 'Passe' non vide.
+    - Passe dans dernier 1/3: compter les occurrences de 'Passe dans dernier 1/3' dans la colonne 'Passe'.
+    - Passe décisive: compter les occurrences de 'Passe Décisive' dans la colonne 'Passe'.
+    - Création de Déséquilibre: compter les cellules non vides dans la colonne 'Création de Deséquilibre' par joueuse.
+    - Total équipe déséquilibres: somme des déséquilibres sur tout le match (toutes joueuses confondues).
+
+    Retour: Player, __total_passes, __last_third, __assists, __deseq, __team_deseq_total
+    """
+    if joueurs is None or joueurs.empty or "Row" not in joueurs.columns:
+        return pd.DataFrame()
+
+    d = joueurs.copy()
+    d["Player"] = d["Row"].astype(str).apply(nettoyer_nom_joueuse)
+
+    # ---- Passes (Action contient 'Passe') ----
+    total_passes = pd.Series(dtype=float)
+    last_third = pd.Series(dtype=float)
+    assists = pd.Series(dtype=float)
+
+    if "Action" in d.columns and "Passe" in d.columns:
+        mask_p = d["Action"].astype(str).str.contains("Passe", na=False)
+        passe_txt = d.loc[mask_p, "Passe"].astype(str).fillna("")
+        player_p = d.loc[mask_p, "Player"]
+
+        total_passes = passe_txt.str.strip().ne("").groupby(player_p).sum().astype(float)
+        last_third = passe_txt.str.count("Passe dans dernier 1/3").groupby(player_p).sum().astype(float)
+        assists = passe_txt.str.count("Passe Décisive").groupby(player_p).sum().astype(float)
+
+    # ---- Déséquilibres ----
+    deseq = pd.Series(dtype=float)
+    team_total = 0.0
+    if "Création de Deséquilibre" in d.columns:
+        filled = d["Création de Deséquilibre"].notna() & d["Création de Deséquilibre"].astype(str).str.strip().ne("")
+        deseq = filled.groupby(d["Player"]).sum().astype(float)
+        team_total = float(filled.sum())
+
+    players = sorted(set(d["Player"].dropna().unique().tolist()))
+    out = pd.DataFrame({"Player": players})
+    out["__total_passes"] = out["Player"].map(total_passes).fillna(0.0).astype(float)
+    out["__last_third"] = out["Player"].map(last_third).fillna(0.0).astype(float)
+    out["__assists"] = out["Player"].map(assists).fillna(0.0).astype(float)
+    out["__deseq"] = out["Player"].map(deseq).fillna(0.0).astype(float)
+    out["__team_deseq_total"] = team_total
+    return out
+
 # =========================
 # METRICS / KPI / POSTES
 # =========================
@@ -1207,6 +1258,18 @@ def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
         df = df.merge(other, on="Player", how="outer")
 
     df.fillna(0, inplace=True)
+
+    # Ajout helpers créativité (à partir des events)
+    try:
+        ch = creativity_helpers_from_events(joueurs)
+        if ch is not None and not ch.empty:
+            df = df.merge(ch, on="Player", how="left")
+            for c in ["__total_passes", "__last_third", "__assists", "__deseq", "__team_deseq_total"]:
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    except Exception:
+        pass
+
     df = df[(df.iloc[:, 1:] != 0).any(axis=1)]
 
     if "Temps de jeu (en minutes)" in df.columns:
@@ -2022,9 +2085,13 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.pyplot(fig)
 
         with tab2:
-            needed = ["Rigueur", "Récupération", "Distribution", "Percussion", "Finition", "Créativité"]
-            if all(k in aggregated.columns for k in needed):
-                col1, col2, col3, col4, col5, col6 = st.columns(6)
+            needed = ["Rigueur", "Récupération", "Distribution", "Percussion", "Finition"]
+            has_base = all(k in aggregated.columns for k in needed)
+            has_crea = "Créativité" in aggregated.columns
+            if has_base:
+                cols = st.columns(6 if has_crea else 5)
+                col1, col2, col3, col4, col5 = cols[:5]
+                col6 = cols[5] if has_crea else None
                 with col1:
                     st.metric("Rigueur", f"{int(aggregated['Rigueur'].iloc[0])}/100")
                 with col2:
@@ -2050,7 +2117,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 "Attaquant",
             ]
             if all(c in aggregated.columns for c in poste_cols):
-                col1, col2, col3, col4, col5, col6 = st.columns(6)
+                cols = st.columns(6 if has_crea else 5)
+                col1, col2, col3, col4, col5 = cols[:5]
+                col6 = cols[5] if has_crea else None
                 with col1:
                     st.metric("DC", f"{int(aggregated['Défenseur central'].iloc[0])}/100")
                 with col2:
