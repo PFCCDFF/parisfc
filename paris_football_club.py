@@ -403,6 +403,27 @@ def download_google_drive():
 # =========================
 # REFERENTIEL NOMS
 # =========================
+
+def infer_opponent_from_filename(filename: str, equipe_pfc: str) -> Optional[str]:
+    """Fallback si les colonnes Adversaire/Teamersaire n'existent pas ou sont vides.
+    On PARSE le nom adversaire depuis le nom du fichier (sans jamais utiliser Row pour le nommage).
+    Exemples attendus:
+      - PFC_VS_ 2526 U19F LOSC_J9_U19_30-11-2025.csv  -> LOSC
+      - PFC_VS_ 2425 U19F HAC_J10_U19_08-12-2024.csv  -> HAC
+    """
+    if not filename:
+        return None
+    base = os.path.splitext(os.path.basename(filename))[0]
+    parts = base.split("_")
+    if len(parts) >= 3:
+        token = parts[2].strip()
+        words = token.split()
+        if words:
+            opp = words[-1].strip()
+            if opp and normalize_str(opp) != normalize_str(equipe_pfc):
+                return opp
+    return None
+
 def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str]]:
     ref = read_excel_auto(ref_path)
 
@@ -1323,14 +1344,17 @@ def collect_data(selected_season=None):
                 equipe_adv_team = teams_found[1] if len(teams_found) > 1 else None
 
             # 🔎 Adversaire "label" (pour l'app) : uniquement via colonnes explicites
-            adv_label = infer_opponent_from_columns(data, equipe_pfc)
-            if not adv_label:
-                # Si l'export ne fournit pas d'adversaire explicite, on ne NOMME PAS via Row.
-                # (Option alternative : mettre "Adversaire inconnu")
-                continue
+            # Nom adversaire = colonnes Adversaire/Teamersaire (PRIORITE), sinon parsing filename.
+            adv_label = infer_opponent_from_columns(data, equipe_pfc) or infer_opponent_from_filename(filename, equipe_pfc)
 
+            # Si toujours rien, on garde un libellé neutre (mais on ne skip pas le match)
+            if not adv_label:
+                adv_label = "Adversaire inconnu"
+
+            # Pour le filtrage "match" (segments Duration), on tente d'abord avec une équipe adverse:
+            # - si on n'a pas réussi à l'inférer via Row (teams_found), on utilise adv_label
             if not equipe_adv_team:
-                continue
+                equipe_adv_team = adv_label
 
             home_clean = nettoyer_nom_equipe(equipe_pfc)
             away_clean = nettoyer_nom_equipe(equipe_adv_team)
