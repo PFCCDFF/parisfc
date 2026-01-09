@@ -1124,17 +1124,82 @@ def create_metrics(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
 
+    # =========================
+    # Créativité (métriques spécifiques)
+    # Créativité 1 = (Passe dans dernier 1/3 + 2*Passe Décisive) / Passes totales * 100
+    # Créativité 2 = Créations de déséquilibre joueuse / total équipe (match) * 100
+    # NB: on sécurise les colonnes internes: si elles n'existent pas -> 0.
+    # =========================
+    def _series_or_zeros(col: str) -> pd.Series:
+        if col in df.columns:
+            return pd.to_numeric(df[col], errors="coerce").fillna(0)
+        return pd.Series(0, index=df.index, dtype=float)
+
+    total_passes = _series_or_zeros("__total_passes")
+    last_third = _series_or_zeros("__last_third")
+    assists = _series_or_zeros("__assists")
+    deseq = _series_or_zeros("__deseq")
+    team_total = _series_or_zeros("__team_deseq_total")
+
+    denom = total_passes.replace(0, np.nan)
+    df["Créativité 1"] = ((last_third + 2 * assists) / denom * 100).fillna(0)
+
+    denom_team = team_total.replace(0, np.nan)
+    df["Créativité 2"] = (deseq / denom_team * 100).fillna(0)
+
+    # Rang percentiles 0-100
+    to_rank = list(required_cols.keys()) + ["Créativité 1", "Créativité 2"]
+    for metric in to_rank:
+        if metric in df.columns:
+            df[metric] = (pd.to_numeric(df[metric], errors="coerce").rank(pct=True) * 100).fillna(0)
+
+    return df
+
+    required_cols = {
+        "Timing": ["Duels défensifs", "Fautes"],
+        "Force physique": ["Duels défensifs", "Duels défensifs gagnés"],
+        "Intelligence tactique": ["Interceptions"],
+        "Technique 1": ["Passes"],
+        "Technique 2": ["Passes courtes", "Passes réussies (courtes)"],
+        "Technique 3": ["Passes longues", "Passes réussies (longues)"],
+        "Explosivité": ["Dribbles", "Dribbles réussis"],
+        "Prise de risque": ["Dribbles"],
+        "Précision": ["Tirs", "Tirs cadrés"],
+        "Sang-froid": ["Tirs"],
+    }
+
+    # Métriques "classiques"
+    for metric, cols in required_cols.items():
+        if not all(c in df.columns for c in cols):
+            continue
+
+        if metric == "Timing":
+            df[metric] = np.where(df[cols[0]] > 0, (df[cols[0]] - df.get(cols[1], 0)) / df[cols[0]], 0)
+        elif metric == "Force physique":
+            df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
+        elif metric in ["Intelligence tactique", "Technique 1", "Prise de risque", "Sang-froid"]:
+            mmax = pd.to_numeric(df[cols[0]], errors="coerce").max()
+            df[metric] = np.where(df[cols[0]] > 0, df[cols[0]] / mmax, 0) if (mmax is not None and mmax > 0) else 0
+        else:
+            df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
+
         # =========================
     # Créativité (KPI spécifique)
     # Créativité 1 = (Passe dans dernier 1/3 + 2*Passe Décisive) / Passes totales * 100
     # Créativité 2 = Créations de déséquilibre joueuse / total équipe (match) * 100
     # NB: on sécurise les colonnes internes: si elles n'existent pas -> 0.
     # =========================
-    total_passes = pd.to_numeric(df.get("__total_passes", 0), errors="coerce").fillna(0)
-    last_third = pd.to_numeric(df.get("__last_third", 0), errors="coerce").fillna(0)
-    assists = pd.to_numeric(df.get("__assists", 0), errors="coerce").fillna(0)
-    deseq = pd.to_numeric(df.get("__deseq", 0), errors="coerce").fillna(0)
-    team_total = pd.to_numeric(df.get("__team_deseq_total", 0), errors="coerce").fillna(0)
+    def _series_or_zeros(col: str):
+        if col in df.columns:
+            return pd.to_numeric(df[col], errors="coerce").fillna(0)
+        # df.get(col, 0) renvoie un scalaire -> pas de fillna => on crée une Series de zéros
+        return pd.Series(0, index=df.index, dtype=float)
+
+    total_passes = _series_or_zeros("__total_passes")
+    last_third = _series_or_zeros("__last_third")
+    assists = _series_or_zeros("__assists")
+    deseq = _series_or_zeros("__deseq")
+    team_total = _series_or_zeros("__team_deseq_total")
 
     denom = total_passes.replace(0, np.nan)
     df["Créativité 1"] = ((last_third + 2 * assists) / denom * 100).fillna(0)
@@ -2404,7 +2469,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 # MAIN
 # =========================
 def main():
-    st.set_page_config(page_title="Paris FC", layout="wide")
+    st.set_page_config(page_title="Paris FC - Centre de Formation Féminin", layout="wide")
 
     st.markdown(
         """
@@ -2429,7 +2494,7 @@ def main():
     <img src="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png" alt="Paris FC Logo"
          style="position:absolute; left:1rem; top:50%; transform:translateY(-50%); width:120px; opacity:0.9;">
     <h1 style="margin:0; font-size:3rem; font-weight:bold;">Paris FC - Centre de Formation Féminin</h1>
-    <p style="margin-top:.5rem; font-size:2.2rem;">Centre de Formation Féminin</p>
+    <p style="margin-top:.5rem; font-size:1.2rem;">Data Center</p>
     </div>
     """,
         unsafe_allow_html=True,
@@ -2465,4 +2530,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
