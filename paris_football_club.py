@@ -146,6 +146,37 @@ def nettoyer_nom_equipe(nom: str) -> str:
     return s
 
 
+
+
+def infer_opponent_from_columns(df: pd.DataFrame, equipe_pfc: str) -> Optional[str]:
+    """
+    Retourne le nom d'adversaire depuis les colonnes explicites du fichier si disponibles.
+    Priorité: 'Adversaire' puis 'Teamersaire' (orthographe rencontrée dans certains exports).
+    """
+    if df is None or df.empty:
+        return None
+
+    for col in ["Adversaire", "Teamersaire"]:
+        if col not in df.columns:
+            continue
+        s = df[col].dropna().astype(str).map(lambda x: x.strip())
+        s = s[s != ""]
+        if s.empty:
+            continue
+
+        # Normalisation équipe + choix valeur la plus fréquente
+        vc = s.map(nettoyer_nom_equipe).value_counts()
+        if vc.empty:
+            continue
+
+        # Si la valeur la plus fréquente = équipe PFC, on prend la suivante
+        pfc_clean = nettoyer_nom_equipe(equipe_pfc)
+        for cand in vc.index.tolist():
+            if nettoyer_nom_equipe(cand) != pfc_clean:
+                return cand
+
+    return None
+
 def looks_like_player(name: str) -> bool:
     n = nettoyer_nom_joueuse(str(name)) if name is not None else ""
     if not n or n in {"NAN", "NONE", "NULL"}:
@@ -1266,6 +1297,12 @@ def collect_data(selected_season=None):
             else:
                 equipe_pfc = teams_found[0] if len(teams_found) else str(parts[0]).strip()
                 equipe_adv = teams_found[1] if len(teams_found) > 1 else None
+
+
+            # 🔎 Priorité à l'adversaire fourni par le fichier (colonnes explicites)
+            adv_from_cols = infer_opponent_from_columns(data, equipe_pfc)
+            if adv_from_cols:
+                equipe_adv = adv_from_cols
 
             if not equipe_adv:
                 continue
