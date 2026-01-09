@@ -1585,7 +1585,13 @@ def collect_data(selected_season=None):
                     canon_list.append(canon)
                 edf_j["PlayerCanon"] = canon_list
 
-                edf_j["Temps de jeu"] = pd.to_numeric(edf_j["Temps de jeu"], errors="coerce").fillna(0)
+                                # Temps de jeu en minutes (sécurisé)
+                if "Temps de jeu" in edf_j.columns:
+                    _tj = edf_j["Temps de jeu"]
+                else:
+                    _tj = pd.Series([0] * len(edf_j))
+                edf_j["Temps de jeu"] = pd.to_numeric(_tj, errors="coerce").fillna(0)
+
 
                 matchs_csv = [f for f in fichiers if f.startswith("EDF_U19_Match") and f.endswith(".csv")]
                 all_edf_rows = []
