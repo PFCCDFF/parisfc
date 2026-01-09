@@ -694,36 +694,49 @@ def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.
 # STATS ACTIONS
 # =========================
 def players_shots(joueurs):
-    if joueurs is None or joueurs.empty or "Action" not in joueurs.columns or "Row" not in joueurs.columns:
+    """
+    Compte les tirs / tirs cadrés / buts à partir des événements.
+    Règle demandée : les buts = nombre d'occurrences de "But" dans la colonne "Tir"
+    (sur les lignes où Action contient "Tir"), par joueuse.
+    """
+    if joueurs is None or joueurs.empty or "Row" not in joueurs.columns:
         return pd.DataFrame()
-    ps, p_on, p_goals = {}, {}, {}
-    for i in range(len(joueurs)):
-        action = joueurs.iloc[i].get("Action", None)
-        if isinstance(action, str) and "Tir" in action:
-            player = nettoyer_nom_joueuse(str(joueurs.iloc[i].get("Row", "")))
-            ps[player] = ps.get(player, 0) + action.count("Tir")
-            if "Tir" in joueurs.columns:
-                status = joueurs.iloc[i].get("Tir", None)
-                if isinstance(status, str):
-                    if "Tir Cadré" in status or "But" in status:
-                        p_on[player] = p_on.get(player, 0) + status.count("Tir Cadré") + status.count("But")
-                    if "But" in status:
-                        p_goals[player] = p_goals.get(player, 0) + 1
-    if not ps:
-        return pd.DataFrame()
-    return (
-        pd.DataFrame(
-            {
-                "Player": list(ps.keys()),
-                "Tirs": list(ps.values()),
-                "Tirs cadrés": [p_on.get(p, 0) for p in ps],
-                "Buts": [p_goals.get(p, 0) for p in ps],
-            }
-        )
-        .sort_values(by="Tirs", ascending=False)
-        .reset_index(drop=True)
-    )
 
+    df = joueurs.copy()
+
+    # Filtre "tirs"
+    if "Action" in df.columns:
+        mask_shot = df["Action"].astype(str).str.contains("Tir", na=False)
+    else:
+        # Sans colonne Action, on ne peut pas garantir l'événement "tir"
+        mask_shot = pd.Series([False] * len(df), index=df.index)
+
+    df = df[mask_shot].copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    df["Player"] = df["Row"].astype(str).apply(nettoyer_nom_joueuse)
+
+    # Tirs = nb d'occurrences "Tir" dans Action (compat exports où Action peut contenir plusieurs tags)
+    df["__shots"] = df["Action"].astype(str).apply(lambda s: s.count("Tir"))
+
+    # Colonne Tir : contient des statuts ("Tir Cadré", "But", etc.)
+    if "Tir" in df.columns:
+        tir_txt = df["Tir"].astype(str)
+        df["__on_target"] = tir_txt.apply(lambda s: s.count("Tir Cadré") + s.count("But"))
+        df["__goals"] = tir_txt.apply(lambda s: s.count("But"))
+    else:
+        df["__on_target"] = 0
+        df["__goals"] = 0
+
+    out = (
+        df.groupby("Player", as_index=False)
+          .agg({"__shots": "sum", "__on_target": "sum", "__goals": "sum"})
+          .rename(columns={"__shots": "Tirs", "__on_target": "Tirs cadrés", "__goals": "Buts"})
+          .sort_values(by="Tirs", ascending=False)
+          .reset_index(drop=True)
+    )
+    return out
 
 def players_passes(joueurs):
     if joueurs is None or joueurs.empty or "Action" not in joueurs.columns or "Row" not in joueurs.columns:
