@@ -1161,6 +1161,7 @@ def collect_data(selected_season=None):
 def create_individual_radar(df):
     if df.empty or "Player" not in df.columns:
         return None
+
     columns_to_plot = [
         "Timing", "Force physique", "Intelligence tactique",
         "Technique 1", "Technique 2", "Technique 3",
@@ -1171,7 +1172,9 @@ def create_individual_radar(df):
     if not available:
         return None
 
-    colors = ["#6A7CD9", "#00BFFE", "#FF9470", "#F27979", "#BFBFBF"] * 2
+    base_colors = ["#6A7CD9", "#00BFFE", "#FF9470", "#F27979", "#BFBFBF"]
+    colors = (base_colors * ((len(available) // len(base_colors)) + 1))[:len(available)]
+
     player = df.iloc[0]
 
     pizza = PyPizza(
@@ -1183,7 +1186,7 @@ def create_individual_radar(df):
     fig, _ = pizza.make_pizza(
         figsize=(3, 3),
         values=[player[c] for c in available],
-        slice_colors=colors[:len(available)],
+        slice_colors=colors,  # ✅ même longueur que params
         kwargs_values=dict(
             color="#FFFFFF",
             fontsize=3.5,
@@ -1193,6 +1196,7 @@ def create_individual_radar(df):
     )
     fig.set_facecolor("#002B5C")
     return fig
+
 
 def create_comparison_radar(df, player1_name=None, player2_name=None):
     if df.empty or len(df) < 2:
@@ -1677,3 +1681,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
