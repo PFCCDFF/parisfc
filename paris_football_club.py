@@ -680,6 +680,8 @@ def create_metrics(df):
         "Prise de risque": ["Dribbles"],
         "Précision": ["Tirs", "Tirs cadrés"],
         "Sang-froid": ["Tirs"],
+        "Créativité 1": ["Dribbles réussis", "Passes réussies (longues)"],
+        "Créativité 2": ["Dribbles", "Passes longues"],
     }
     for metric, cols in required_cols.items():
         if not all(c in df.columns for c in cols):
@@ -688,9 +690,11 @@ def create_metrics(df):
             df[metric] = np.where(df[cols[0]] > 0, (df[cols[0]] - df.get(cols[1], 0)) / df[cols[0]], 0)
         elif metric == "Force physique":
             df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
-        elif metric in ["Intelligence tactique", "Technique 1", "Prise de risque", "Sang-froid"]:
+        elif metric in ["Intelligence tactique", "Technique 1", "Prise de risque", "Sang-froid", "Créativité 1", "Créativité 2"]:
             mmax = df[cols[0]].max()
             df[metric] = np.where(df[cols[0]] > 0, df[cols[0]] / mmax, 0) if mmax > 0 else 0
+        elif metric in ["Technique 2", "Technique 3", "Explosivité"]:
+            df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
         else:
             df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
 
@@ -713,6 +717,8 @@ def create_kpis(df):
         df["Percussion"] = (df["Explosivité"] + df["Prise de risque"]) / 2
     if "Précision" in df.columns and "Sang-froid" in df.columns:
         df["Finition"] = (df["Précision"] + df["Sang-froid"]) / 2
+    if "Créativité 1" in df.columns and "Créativité 2" in df.columns:
+        df["Créativité"] = (df["Créativité 1"] + df["Créativité 2"]) / 2
     return df
 
 def create_poste(df):
@@ -1159,6 +1165,7 @@ def create_individual_radar(df):
         "Timing", "Force physique", "Intelligence tactique",
         "Technique 1", "Technique 2", "Technique 3",
         "Explosivité", "Prise de risque", "Précision", "Sang-froid",
+        "Créativité 1", "Créativité 2",
     ]
     available = [c for c in columns_to_plot if c in df.columns]
     if not available:
@@ -1195,6 +1202,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         "Timing", "Force physique", "Intelligence tactique",
         "Technique 1", "Technique 2", "Technique 3",
         "Explosivité", "Prise de risque", "Précision", "Sang-froid",
+        "Créativité 1", "Créativité 2",
     ]
     available = [m for m in metrics if m in df.columns]
     if len(available) < 2:
@@ -1354,14 +1362,15 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.pyplot(fig)
 
         with tab2:
-            needed = ["Rigueur", "Récupération", "Distribution", "Percussion", "Finition"]
+            needed = ["Rigueur", "Récupération", "Distribution", "Percussion", "Finition", "Créativité"]
             if all(k in aggregated.columns for k in needed):
-                col1, col2, col3, col4, col5 = st.columns(5)
+                col1, col2, col3, col4, col5, col6 = st.columns(6)
                 with col1: st.metric("Rigueur", f"{int(aggregated['Rigueur'].iloc[0])}/100")
                 with col2: st.metric("Récupération", f"{int(aggregated['Récupération'].iloc[0])}/100")
                 with col3: st.metric("Distribution", f"{int(aggregated['Distribution'].iloc[0])}/100")
                 with col4: st.metric("Percussion", f"{int(aggregated['Percussion'].iloc[0])}/100")
                 with col5: st.metric("Finition", f"{int(aggregated['Finition'].iloc[0])}/100")
+                with col6: st.metric("Créativité", f"{int(aggregated['Créativité'].iloc[0])}/100")
             else:
                 st.info("KPIs non disponibles sur cette sélection.")
 
