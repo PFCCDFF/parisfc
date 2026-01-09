@@ -200,22 +200,9 @@ def list_files_in_folder(service, folder_id):
     return results.get("files", [])
 
 def download_file(service, file_id, file_name, output_folder, mime_type=None):
-    """Download a file from Google Drive to output_folder.
-
-    Fixes common Streamlit Cloud issues:
-      - sanitize file names (avoid subfolders or invalid characters)
-      - ensure parent directories exist
-      - write to a tmp file then atomically replace
-      - if download fails, raise a clear error instead of crashing later
-    """
     os.makedirs(output_folder, exist_ok=True)
-
-    # Prevent accidental subfolders coming from Drive names like "folder/file.csv"
-    safe_name = os.path.basename(str(file_name))
-    if safe_name.strip() == "":
-        safe_name = f"{file_id}"
-
-    final_path = os.path.join(output_folder, safe_name)
+    final_path = os.path.join(output_folder, file_name)
+    tmp_path = final_path + ".tmp"
 
     # Google Sheet -> export xlsx
     if mime_type == "application/vnd.google-apps.spreadsheet":
@@ -225,28 +212,19 @@ def download_file(service, file_id, file_name, output_folder, mime_type=None):
         )
         if not final_path.lower().endswith(".xlsx"):
             final_path = os.path.splitext(final_path)[0] + ".xlsx"
+            tmp_path = final_path + ".tmp"
     else:
         request = service.files().get_media(fileId=file_id)
 
-    # Ensure parent directory exists (in case output_folder is relative or changed)
-    os.makedirs(os.path.dirname(final_path) or ".", exist_ok=True)
-    tmp_path = final_path + ".tmp"
-
     fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
+    downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
     done = False
     while not done:
-        status, done = downloader.next_chunk()
+        _, done = downloader.next_chunk()
 
     fh.seek(0)
-    # Write tmp file
     with open(tmp_path, "wb") as f:
         f.write(fh.read())
-
-    # Safety: ensure tmp exists before replace (helps debug Drive permission/quota issues)
-    if not os.path.exists(tmp_path):
-        raise FileNotFoundError(f"Download failed: temporary file not created: {tmp_path}")
-
     os.replace(tmp_path, final_path)
     return final_path
 
@@ -1471,21 +1449,21 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             else:
                 st.info("Notes de poste non disponibles sur cette sélection.")
 
-    # =====================
-    # COMPARAISON ✅ EDF RESTAURÉ
-    # =====================
+        # =====================
+        # COMPARAISON ✅ EDF RESTAURÉ
+        # =====================
     elif page == "Comparaison":
-    st.header("Comparaison")
+        st.header("Comparaison")
 
-    if pfc_kpi.empty:
+        if pfc_kpi.empty:
         st.warning("Aucune donnée PFC.")
         return
 
-    # --- Helpers locaux (petits outils UI)
-    def _player_selector(label: str, key: str):
+        # --- Helpers locaux (petits outils UI)
+        def _player_selector(label: str, key: str):
         return st.selectbox(label, sorted(pfc_kpi["Player"].dropna().unique().tolist()), key=key)
 
-    def _matches_for_player(pname: str):
+        def _matches_for_player(pname: str):
         if "Adversaire" not in pfc_kpi.columns:
             return []
         d = pfc_kpi[pfc_kpi["Player"].apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(pname)].copy()
@@ -1493,12 +1471,12 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             return []
         return sorted(d["Adversaire"].dropna().unique().tolist())
 
-    def _aggregate_player(pname: str, selected_matches=None):
+        def _aggregate_player(pname: str, selected_matches=None):
         # Utilise ta fonction existante (agrège temps de jeu + buts en sum et le reste en mean)
         return prepare_comparison_data(pfc_kpi, pname, selected_matches=selected_matches)
 
-    # --- Choix du MODE (liste déroulante)
-    mode = st.selectbox(
+        # --- Choix du MODE (liste déroulante)
+        mode = st.selectbox(
         "Mode de comparaison",
         [
             "Joueuse vs elle-même (matchs)",
@@ -1506,14 +1484,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             "Joueuse vs Référentiel EDF U19 (poste)",
         ],
         key="compare_mode_select"
-    )
+        )
 
-    st.divider()
+        st.divider()
 
-    # =========================================================
-    # 1) Joueuse vs elle-même (match A vs match B)
-    # =========================================================
-    if mode == "Joueuse vs elle-même (matchs)":
+        # =========================================================
+        # 1) Joueuse vs elle-même (match A vs match B)
+        # =========================================================
+        if mode == "Joueuse vs elle-même (matchs)":
         # Joueuse PFC (si profil associé -> imposé)
         if player_name:
             p = player_name
@@ -1589,10 +1567,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             else:
                 st.warning("Radar indisponible (données insuffisantes sur les métriques).")
 
-    # =========================================================
-    # 2) Joueuse vs autre joueuse
-    # =========================================================
-    elif mode == "Joueuse vs une autre joueuse":
+        # =========================================================
+        # 2) Joueuse vs autre joueuse
+        # =========================================================
+        elif mode == "Joueuse vs une autre joueuse":
         # Si profil associé : la joueuse A est imposée
         if player_name:
             p1 = player_name
@@ -1640,10 +1618,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             else:
                 st.warning("Radar indisponible (données insuffisantes sur les métriques).")
 
-    # =========================================================
-    # 3) Joueuse vs Référentiel EDF U19 (poste)
-    # =========================================================
-    else:
+        # =========================================================
+        # 3) Joueuse vs Référentiel EDF U19 (poste)
+        # =========================================================
+        else:
         # Joueuse PFC (si profil associé -> imposé)
         if player_name:
             p = player_name
@@ -1688,9 +1666,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.warning("Radar indisponible (données insuffisantes sur les métriques).")
 
 
-    # =====================
-    # GESTION
-    # =====================
+        # =====================
+        # GESTION
+        # =====================
     elif page == "Gestion":
         st.header("Gestion des utilisateurs")
         if not check_permission(user_profile, "all", permissions):
@@ -1705,9 +1683,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             })
         st.dataframe(pd.DataFrame(users_data))
 
-    # =====================
-    # DONNEES PHYSIQUES
-    # =====================
+        # =====================
+        # DONNEES PHYSIQUES
+        # =====================
     elif page == "Données Physiques":
         st.header("📊 Données Physiques")
         gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
@@ -1723,9 +1701,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         st.subheader("GPS - Hebdomadaire")
         st.dataframe(dfp.sort_values("SEMAINE"))
 
-    # =====================
-    # PASSERELLES
-    # =====================
+        # =====================
+        # PASSERELLES
+        # =====================
     elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
         passerelle_data = load_passerelle_data()
@@ -1746,46 +1724,46 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         if info.get("Taille"): st.write(f"**Taille :** {info['Taille']}")
 
 
-# =========================
-# MAIN
-# =========================
-def main():
-    st.set_page_config(page_title="Paris FC - Centre de Formation Féminin", layout="wide")
+        # =========================
+        # MAIN
+        # =========================
+        def main():
+        st.set_page_config(page_title="Paris FC - Centre de Formation Féminin", layout="wide")
 
-    st.markdown("""
-    <style>
-      .stApp { background: linear-gradient(135deg, #002B5C 0%, #002B5C 100%); color: white; }
-      .main .block-container { background: linear-gradient(135deg, #003A58 0%, #0047AB 100%);
+        st.markdown("""
+        <style>
+        .stApp { background: linear-gradient(135deg, #002B5C 0%, #002B5C 100%); color: white; }
+        .main .block-container { background: linear-gradient(135deg, #003A58 0%, #0047AB 100%);
         border-radius: 10px; padding: 20px; color: white; }
-      .stButton>button { background-color: #0078D4; color: white; border-radius: 5px; border: none; padding: 8px 16px; }
-      .stSelectbox>div>div, .stMultiselect>div>div { background-color: #003A58; color: white; border-radius: 5px; border: 1px solid #0078D4; }
-      .stMetric { background-color: rgba(0, 71, 171, 0.4); border-radius: 5px; padding: 10px; color: white; }
-      .stDataFrame table { color: white !important; }
-    </style>
-    """, unsafe_allow_html=True)
+        .stButton>button { background-color: #0078D4; color: white; border-radius: 5px; border: none; padding: 8px 16px; }
+        .stSelectbox>div>div, .stMultiselect>div>div { background-color: #003A58; color: white; border-radius: 5px; border: 1px solid #0078D4; }
+        .stMetric { background-color: rgba(0, 71, 171, 0.4); border-radius: 5px; padding: 10px; color: white; }
+        .stDataFrame table { color: white !important; }
+        </style>
+        """, unsafe_allow_html=True)
 
-    st.markdown("""
-    <div style="background: linear-gradient(135deg, #002B5C 0%, #0047AB 100%);
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #002B5C 0%, #0047AB 100%);
                 color: white; padding: 2rem; border-radius: 10px; margin-bottom: 2rem;
                 text-align: center; position: relative;">
         <img src="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png" alt="Paris FC Logo"
              style="position:absolute; left:1rem; top:50%; transform:translateY(-50%); width:120px; opacity:0.9;">
         <h1 style="margin:0; font-size:3rem; font-weight:bold;">Paris FC - Centre de Formation Féminin</h1>
         <p style="margin-top:.5rem; font-size:1.2rem;">Data Center</p>
-    </div>
-    """, unsafe_allow_html=True)
+        </div>
+        """, unsafe_allow_html=True)
 
-    permissions = load_permissions()
-    if not permissions:
+        permissions = load_permissions()
+        if not permissions:
         st.error("Impossible de charger les permissions. Vérifie le fichier de permissions sur Drive.")
         st.stop()
 
-    if "authenticated" not in st.session_state:
+        if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
-    if "user_profile" not in st.session_state:
+        if "user_profile" not in st.session_state:
         st.session_state.user_profile = None
 
-    if not st.session_state.authenticated:
+        if not st.session_state.authenticated:
         with st.form("login_form"):
             username = st.text_input("Nom d'utilisateur (profil)")
             password = st.text_input("Mot de passe", type="password")
@@ -1799,11 +1777,11 @@ def main():
                     st.error("Nom d'utilisateur ou mot de passe incorrect")
         st.stop()
 
-    pfc_kpi, edf_kpi = collect_data()
-    script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+        pfc_kpi, edf_kpi = collect_data()
+        script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
 
-if __name__ == "__main__":
-    main()
+        if __name__ == "__main__":
+        main()
 
 
 
