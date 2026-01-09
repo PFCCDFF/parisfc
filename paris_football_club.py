@@ -941,6 +941,109 @@ def players_creativity_counts(joueurs):
     return df
 
 
+
+def players_pass_directions(joueurs):
+    """
+    Compte la direction des passes à partir de la colonne 'Ungrouped' (uniquement si Action contient 'Passe').
+    Règles (basées sur les libellés observés) :
+    - Courte Avant / Longue Avant -> Passes vers l'avant
+    - Courte/Longue Arrière -> Passes vers l'arrière
+    - Courte/Longue Diago Gauche -> Passes diagonales Gauche
+    - Courte/Longue Diago Droite -> Passes diagonales Droite
+    - Courte/Longue Latérale Gauche -> Passes latérales Gauche
+    - Courte/Longue Latérale Droite -> Passes latérales Droite
+    Une passe est 'réussie' si la colonne 'Passe' contient 'Réussie'.
+    """
+    if joueurs is None or joueurs.empty:
+        return pd.DataFrame()
+    if "Action" not in joueurs.columns or "Row" not in joueurs.columns:
+        return pd.DataFrame()
+    if "Ungrouped" not in joueurs.columns:
+        return pd.DataFrame()
+
+    # Colonnes de sortie
+    out_cols = [
+        "Passes vers l'avant",
+        "Passes vers l'avant réussies",
+        "Passes vers l'arrière",
+        "Passes vers l'arrière réussies",
+        "Passes latérales Gauche",
+        "Passes latérales Gauche réussies",
+        "Passes latérales Droite",
+        "Passes latérales Droite réussies",
+        "Passes diagonales Gauche",
+        "Passes diagonales Gauche réussies",
+        "Passes diagonales Droite",
+        "Passes diagonales Droite réussies",
+    ]
+
+    totals = {}   # player -> dict(col->int)
+    def ensure(p):
+        if p not in totals:
+            totals[p] = {c: 0 for c in out_cols}
+
+    for i in range(len(joueurs)):
+        action = joueurs.iloc[i].get("Action", None)
+        if not (isinstance(action, str) and "Passe" in action):
+            continue
+
+        player = nettoyer_nom_joueuse(str(joueurs.iloc[i].get("Row", "")))
+        if not looks_like_player(player):
+            continue
+
+        ung = joueurs.iloc[i].get("Ungrouped", "")
+        ung_norm = normalize_str(ung)
+
+        # déterminer le type de passe (priorité aux directions spécifiques)
+        cat_total = None
+        cat_ok = None
+
+        if "diago gauche" in ung_norm or "diagonale gauche" in ung_norm:
+            cat_total = "Passes diagonales Gauche"
+            cat_ok = "Passes diagonales Gauche réussies"
+        elif "diago droite" in ung_norm or "diagonale droite" in ung_norm:
+            cat_total = "Passes diagonales Droite"
+            cat_ok = "Passes diagonales Droite réussies"
+        elif "laterale gauche" in ung_norm:
+            cat_total = "Passes latérales Gauche"
+            cat_ok = "Passes latérales Gauche réussies"
+        elif "laterale droite" in ung_norm:
+            cat_total = "Passes latérales Droite"
+            cat_ok = "Passes latérales Droite réussies"
+        elif "arriere" in ung_norm:
+            cat_total = "Passes vers l'arrière"
+            cat_ok = "Passes vers l'arrière réussies"
+        elif "avant" in ung_norm:
+            cat_total = "Passes vers l'avant"
+            cat_ok = "Passes vers l'avant réussies"
+
+        if not cat_total:
+            continue
+
+        ensure(player)
+        totals[player][cat_total] += 1
+
+        passe = joueurs.iloc[i].get("Passe", "")
+        if isinstance(passe, str) and "Réussie" in passe:
+            totals[player][cat_ok] += 1
+
+    if not totals:
+        return pd.DataFrame()
+
+    rows = []
+    for p, d in totals.items():
+        r = {"Player": p}
+        r.update(d)
+        rows.append(r)
+
+    df = pd.DataFrame(rows)
+    # sécurise colonnes manquantes
+    for c in out_cols:
+        if c not in df.columns:
+            df[c] = 0
+    return df
+
+
 def players_dribbles(joueurs):
     if joueurs is None or joueurs.empty or "Action" not in joueurs.columns or "Row" not in joueurs.columns:
         return pd.DataFrame()
@@ -1297,6 +1400,7 @@ def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
     for func in [
         players_shots,
         players_passes,
+        players_pass_directions,
         players_dribbles,
         players_defensive_duels,
         players_interceptions,
@@ -1706,6 +1810,7 @@ def collect_data(selected_season=None):
                     for func in [
                         players_shots,
                         players_passes,
+        players_pass_directions,
                         players_dribbles,
                         players_defensive_duels,
                         players_interceptions,
