@@ -1917,7 +1917,7 @@ def create_individual_radar(df):
     return fig
 
 
-def create_comparison_radar(df, player1_name=None, player2_name=None):
+def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_creativity: bool = False):
     if df is None or df.empty or len(df) < 2:
         return None
 
@@ -1935,6 +1935,9 @@ def create_comparison_radar(df, player1_name=None, player2_name=None):
         "Créativité 1",
         "Créativité 2",
     ]
+    if exclude_creativity:
+        metrics = [m for m in metrics if not m.startswith("Créativité")]
+
     available = [m for m in metrics if m in df.columns]
     if len(available) < 2:
         return None
@@ -2391,7 +2394,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                     return
 
                 players_data = pd.concat([player_data, edf_line], ignore_index=True)
-                fig = create_comparison_radar(players_data, player1_name=p, player2_name=edf_label)
+                fig = create_comparison_radar(players_data, player1_name=p, player2_name=edf_label, exclude_creativity=True)
                 if fig:
                     st.pyplot(fig)
                 else:
@@ -2469,7 +2472,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 # MAIN
 # =========================
 def main():
-    st.set_page_config(page_title="Paris FC", layout="wide")
+    st.set_page_config(page_title="Paris FC - Centre de Formation Féminin", layout="wide")
 
     st.markdown(
         """
@@ -2493,8 +2496,8 @@ def main():
             text-align: center; position: relative;">
     <img src="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png" alt="Paris FC Logo"
          style="position:absolute; left:1rem; top:50%; transform:translateY(-50%); width:120px; opacity:0.9;">
-    <h1 style="margin:0; font-size:4rem; font-weight:bold;">Paris FC</h1>
-    <p style="margin-top:.5rem; font-size:2.2rem;">Centre de Formation Féminin</p>
+    <h1 style="margin:0; font-size:3rem; font-weight:bold;">Paris FC - Centre de Formation Féminin</h1>
+    <p style="margin-top:.5rem; font-size:1.2rem;">Data Center</p>
     </div>
     """,
         unsafe_allow_html=True,
@@ -2530,4 +2533,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
