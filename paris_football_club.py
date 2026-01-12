@@ -739,40 +739,94 @@ def players_shots(joueurs):
     return out
 
 def players_passes(joueurs):
+    """Compte les passes (1 passe = 1 ligne) et la réussite.
+
+    Important: certains exports peuvent contenir des multi-tags (ex: 'Passe' répété).
+    Ici, on compte **1 seule passe par action/ligne**, jamais via .count() sur les chaînes.
+    """
     if joueurs is None or joueurs.empty or "Action" not in joueurs.columns or "Row" not in joueurs.columns:
         return pd.DataFrame()
+
     short_, long_ = {}, {}
     ok_s, ok_l = {}, {}
+    total_, ok_total = {}, {}
+
     for i in range(len(joueurs)):
         action = joueurs.iloc[i].get("Action", None)
-        if isinstance(action, str) and "Passe" in action:
-            player = nettoyer_nom_joueuse(str(joueurs.iloc[i].get("Row", "")))
-            passe = joueurs.iloc[i].get("Passe", None) if "Passe" in joueurs.columns else None
-            if isinstance(passe, str):
-                if "Courte" in passe:
-                    short_[player] = short_.get(player, 0) + passe.count("Courte")
-                    if "Réussie" in passe:
-                        ok_s[player] = ok_s.get(player, 0) + passe.count("Réussie")
-                if "Longue" in passe:
-                    long_[player] = long_.get(player, 0) + passe.count("Longue")
-                    if "Réussie" in passe:
-                        ok_l[player] = ok_l.get(player, 0) + passe.count("Réussie")
-    if not short_:
-        return pd.DataFrame()
-    df = pd.DataFrame(
-        {
-            "Player": list(short_.keys()),
-            "Passes courtes": [short_.get(p, 0) for p in short_],
-            "Passes longues": [long_.get(p, 0) for p in short_],
-            "Passes réussies (courtes)": [ok_s.get(p, 0) for p in short_],
-            "Passes réussies (longues)": [ok_l.get(p, 0) for p in short_],
-        }
-    )
-    df["Passes"] = df["Passes courtes"] + df["Passes longues"]
-    df["Passes réussies"] = df["Passes réussies (courtes)"] + df["Passes réussies (longues)"]
-    df["Pourcentage de passes réussies"] = (df["Passes réussies"] / df["Passes"] * 100).fillna(0)
-    return df.sort_values(by="Passes courtes", ascending=False).reset_index(drop=True)
+        if not (isinstance(action, str) and "Passe" in action):
+            continue
 
+        player = nettoyer_nom_joueuse(str(joueurs.iloc[i].get("Row", "")))
+
+        passe = joueurs.iloc[i].get("Passe", "") if "Passe" in joueurs.columns else ""
+        passe = "" if pd.isna(passe) else str(passe)
+
+        is_short = "Courte" in passe
+        is_long = "Longue" in passe
+        is_ok = "Réussie" in passe
+
+        # 1 ligne = 1 passe
+        total_[player] = total_.get(player, 0) + 1
+        if is_ok:
+            ok_total[player] = ok_total.get(player, 0) + 1
+
+        # Catégorisation courte / longue (si absent, on ne l'affecte pas)
+        if is_short:
+            short_[player] = short_.get(player, 0) + 1
+            if is_ok:
+                ok_s[player] = ok_s.get(player, 0) + 1
+        elif is_long:
+            long_[player] = long_.get(player, 0) + 1
+            if is_ok:
+                ok_l[player] = ok_l.get(player, 0) + 1
+
+    if not total_:
+        return pd.DataFrame()
+
+    players = sorted(total_.keys())
+
+    df = pd.DataFrame({
+        "Player": players,
+        "Passes courtes": [short_.get(p, 0) for p in players],
+        "Passes longues": [long_.get(p, 0) for p in players],
+        "Passes réussies (courtes)": [ok_s.get(p, 0) for p in players],
+        "Passes réussies (longues)": [ok_l.get(p, 0) for p in players],
+        "Passes": [total_.get(p, 0) for p in players],
+        "Passes réussies": [ok_total.get(p, 0) for p in players],
+    })
+
+    df["Pourcentage de passes réussies"] = np.where(
+        df["Passes"] > 0, (df["Passes réussies"] / df["Passes"]) * 100, 0
+    )
+
+    return df.sort_values(by="Passes", ascending=False).reset_index(drop=True)
+
+
+def players_assists(joueurs):
+    """Compte les passes décisives (1 ligne = 1 passe)."""
+    if joueurs is None or joueurs.empty or "Action" not in joueurs.columns or "Row" not in joueurs.columns:
+        return pd.DataFrame()
+
+    assists = {}
+    for i in range(len(joueurs)):
+        action = joueurs.iloc[i].get("Action", None)
+        if not (isinstance(action, str) and "Passe" in action):
+            continue
+
+        player = nettoyer_nom_joueuse(str(joueurs.iloc[i].get("Row", "")))
+        passe = joueurs.iloc[i].get("Passe", "") if "Passe" in joueurs.columns else ""
+        passe = "" if pd.isna(passe) else str(passe)
+
+        if "Passe Décisive" in passe:
+            assists[player] = assists.get(player, 0) + 1
+
+    if not assists:
+        return pd.DataFrame()
+
+    return pd.DataFrame({
+        "Player": list(assists.keys()),
+        "Passes décisives": list(assists.values()),
+    })
 
 
 def players_pass_directions(joueurs):
@@ -1400,6 +1454,7 @@ def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
     for func in [
         players_shots,
         players_passes,
+        players_assists,
         players_pass_directions,
         players_dribbles,
         players_defensive_duels,
