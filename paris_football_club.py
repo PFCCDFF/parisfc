@@ -1663,6 +1663,8 @@ def denormalize_match_rows_from_per90(df: pd.DataFrame) -> pd.DataFrame:
         'Milieu défensif', 'Milieu defensif', 'Milieu relayeur', 'Milieu offensif', 'Attaquant',
     }
 
+    scaled_cols: List[str] = []
+
     for col in list(out.columns):
         if col in exclude:
             continue
@@ -1678,8 +1680,18 @@ def denormalize_match_rows_from_per90(df: pd.DataFrame) -> pd.DataFrame:
 
         # Scale back to real values: real = per90 * minutes / 90
         out[col] = np.where(minutes > 0, coerced * (minutes / 90.0), coerced)
+        scaled_cols.append(col)
+
+    # Important : les colonnes de "comptage" (buts, assists, passes, directions,
+    # etc.) doivent rester des valeurs brutes match par match.
+    # Après dénormalisation, on les arrondit et on les caste en entiers pour
+    # éviter l'affichage en décimales (ex: 1.0, 0.999999).
+    for col in scaled_cols:
+        out[col] = pd.to_numeric(out[col], errors='coerce').round(0).astype('Int64')
 
     return out
+
+
 def list_excel_files_local() -> List[str]:
     if not os.path.exists(DATA_FOLDER):
         return []
