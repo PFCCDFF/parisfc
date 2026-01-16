@@ -1621,6 +1621,51 @@ def aggregate_global_players(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def denormalize_match_rows_from_per90(df: pd.DataFrame) -> pd.DataFrame:
+    """Re-convertit les stats *comptables* présentes en base (souvent ramenées à 90')
+    vers des volumes réels par match, UNIQUEMENT pour l'export Excel "détail match".
+
+    Règles:
+    - on ne touche pas aux pourcentages (colonnes contenant "Pourcentage")
+    - on ne touche pas aux scores/notes (métriques, KPIs, notes de poste)
+    - on ne touche pas au temps de jeu
+
+    Hypothèse : les colonnes de comptage ont été multipliées par (90 / temps_de_jeu).
+    Pour revenir au réel: valeur_reelle = valeur_90 * (temps_de_jeu / 90).
+    """
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df
+    if "Temps de jeu (en minutes)" not in df.columns:
+        return df
+
+    out = df.copy()
+
+    metric_cols = {
+        "Timing", "Force physique", "Intelligence tactique",
+        "Technique 1", "Technique 2", "Technique 3",
+        "Explosivité", "Prise de risque", "Précision", "Sang-froid",
+        "Créativité 1", "Créativité 2",
+    }
+    kpi_cols = {"Rigueur", "Récupération", "Distribution", "Percussion", "Finition", "Créativité"}
+    poste_cols = {
+        "Défenseur central", "Défenseur latéral", "Milieu défensif",
+        "Milieu relayeur", "Milieu offensif", "Attaquant",
+    }
+    exclude = metric_cols | kpi_cols | poste_cols | {"Temps de jeu (en minutes)"}
+
+    numeric_cols = [c for c in out.columns if pd.api.types.is_numeric_dtype(out[c])]
+    vol_cols = [c for c in numeric_cols if (c not in exclude) and ("Pourcentage" not in c)]
+
+    minutes = pd.to_numeric(out["Temps de jeu (en minutes)"], errors="coerce")
+    scale = minutes / 90.0
+
+    # vectorisé: multiplie chaque colonne volume par le scale ligne à ligne
+    for c in vol_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce").mul(scale, axis=0)
+
+    return out
+
+
 # =========================
 # GPS (lecture simple)
 # =========================
@@ -2234,12 +2279,15 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         if export_season != "Toutes les saisons" and "Saison" in base_pfc.columns:
             base_pfc = base_pfc[base_pfc["Saison"].astype(str) == export_season].copy()
 
+        # Pour l'onglet "détail match", on exporte des volumes réels (pas ramenés à 90')
+        base_pfc_detail = denormalize_match_rows_from_per90(base_pfc)
+
         # Onglet global joueuses (agrégé)
         global_players = aggregate_global_players(base_pfc)
 
         if st.button("Générer le fichier Excel", key="btn_generate_export_xlsx"):
             sheets = {
-                "PFC_Detail": base_pfc,
+                "PFC_Detail": base_pfc_detail,
                 "PFC_Global_Joueuses": global_players,
                 "EDF_Referentiel": export_edf,
                 "GPS_Hebdo": export_gps_week,
