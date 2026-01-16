@@ -1587,7 +1587,15 @@ def aggregate_global_players(df: pd.DataFrame) -> pd.DataFrame:
 
     # Prépare des colonnes volumes reconverties
     num_cols = [c for c in d.columns if c not in meta_cols and pd.api.types.is_numeric_dtype(d[c])]
-    count_cols = [c for c in num_cols if c not in score_cols and "Pourcentage" not in c and c != "Temps de jeu (en minutes)" and c != "Buts"]
+    # Colonnes de comptage (volumes) : but(s), assists, passes, directions, etc.
+    # La base PFC est stockée en per90 pour l'analyse, mais pour l'onglet "Global"
+    # on veut des volumes réels cumulés : on reconvertit donc ici grâce au temps de jeu.
+    count_cols = [
+        c for c in num_cols
+        if c not in score_cols
+        and "Pourcentage" not in c
+        and c != "Temps de jeu (en minutes)"
+    ]
 
     for c in count_cols:
         # Convertit per90 -> volume (en s'appuyant sur le temps de jeu du match)
@@ -1622,53 +1630,56 @@ def aggregate_global_players(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def denormalize_match_rows_from_per90(df: pd.DataFrame) -> pd.DataFrame:
-    """Re-convertit les stats *comptables* présentes en base (souvent ramenées à 90')
-    vers des volumes réels par match, UNIQUEMENT pour l'export Excel "détail match".
+    """Convert per-90 volumes back to real volumes for match-by-match export only.
 
-    Règles:
-    - on ne touche pas aux pourcentages (colonnes contenant "Pourcentage")
-    - on ne touche pas aux scores/notes (métriques, KPIs, notes de poste)
-    - on ne touche pas au temps de jeu
+    In the app we scale most counting stats to 90 minutes for comparability.
+    For the Excel match sheet, we want the *real* values based on each player's
+    minutes played.
 
-    Hypothèse : les colonnes de comptage ont été multipliées par (90 / temps_de_jeu).
-    Pour revenir au réel: valeur_reelle = valeur_90 * (temps_de_jeu / 90).
+    This function is intentionally robust to dtype issues (e.g. some numeric
+    columns loaded as object).
     """
-    if df is None or df.empty:
-        return pd.DataFrame() if df is None else df
-    if "Temps de jeu (en minutes)" not in df.columns:
+    if df is None or df.empty or 'Temps de jeu (en minutes)' not in df.columns:
         return df
 
     out = df.copy()
+    minutes = pd.to_numeric(out['Temps de jeu (en minutes)'], errors='coerce')
 
-    metric_cols = {
-        "Timing", "Force physique", "Intelligence tactique",
-        "Technique 1", "Technique 2", "Technique 3",
-        "Explosivité", "Prise de risque", "Précision", "Sang-froid",
-        "Créativité 1", "Créativité 2",
+    # Columns we must NOT rescale (meta columns and already-normalized metrics/KPIs).
+    exclude = {
+        'Player', 'Adversaire', 'Journée', 'Journee', 'Catégorie', 'Categorie', 'Date',
+        'Row', 'Row_clean', 'Row_team', 'Player_clean', 'Poste',
+        'Temps de jeu', 'Temps de jeu (en minutes)',
     }
-    kpi_cols = {"Rigueur", "Récupération", "Distribution", "Percussion", "Finition", "Créativité"}
-    poste_cols = {
-        "Défenseur central", "Défenseur latéral", "Milieu défensif",
-        "Milieu relayeur", "Milieu offensif", "Attaquant",
+
+    # Anything that is already a percentage or a note (0-100 ranks) should not be scaled.
+    exclude_prefixes = {
+        'Timing', 'Force physique', 'Intelligence tactique',
+        'Technique 1', 'Technique 2', 'Technique 3',
+        'Explosivité', 'Prise de risque', 'Précision', 'Sang-froid',
+        'Créativité 1', 'Créativité 2', 'Créativité',
+        'Rigueur', 'Récupération', 'Recuperation', 'Distribution', 'Percussion', 'Finition',
+        'Défenseur central', 'Defenseur central', 'Défenseur latéral', 'Defenseur lateral',
+        'Milieu défensif', 'Milieu defensif', 'Milieu relayeur', 'Milieu offensif', 'Attaquant',
     }
-    exclude = metric_cols | kpi_cols | poste_cols | {"Temps de jeu (en minutes)"}
 
-    numeric_cols = [c for c in out.columns if pd.api.types.is_numeric_dtype(out[c])]
-    vol_cols = [c for c in numeric_cols if (c not in exclude) and ("Pourcentage" not in c)]
+    for col in list(out.columns):
+        if col in exclude:
+            continue
+        if isinstance(col, str) and 'pourcentage' in col.lower():
+            continue
+        if any(col == p for p in exclude_prefixes):
+            continue
 
-    minutes = pd.to_numeric(out["Temps de jeu (en minutes)"], errors="coerce")
-    scale = minutes / 90.0
+        # Try to coerce to numeric: if it becomes all-NaN, it's not a volume column.
+        coerced = pd.to_numeric(out[col], errors='coerce')
+        if coerced.notna().sum() == 0:
+            continue
 
-    # vectorisé: multiplie chaque colonne volume par le scale ligne à ligne
-    for c in vol_cols:
-        out[c] = pd.to_numeric(out[c], errors="coerce").mul(scale, axis=0)
+        # Scale back to real values: real = per90 * minutes / 90
+        out[col] = np.where(minutes > 0, coerced * (minutes / 90.0), coerced)
 
     return out
-
-
-# =========================
-# GPS (lecture simple)
-# =========================
 def list_excel_files_local() -> List[str]:
     if not os.path.exists(DATA_FOLDER):
         return []
