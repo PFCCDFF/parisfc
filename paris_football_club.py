@@ -12,7 +12,7 @@ import re
 import unicodedata
 import warnings
 from typing import Dict, List, Optional, Set, Tuple
-from difflib import get_close_matches
+from difflib import get_close_matches, SequenceMatcher
 from datetime import datetime
 
 import numpy as np
@@ -918,19 +918,51 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], 
 
     return ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons
 
+def best_from_candidates(raw_clean: str, candidates: List[str], min_score: float = 0.88) -> Tuple[Optional[str], float, Optional[float]]:
+    """Retourne le meilleur canon si non ambigu.
+    - min_score: score minimum pour accepter
+    - anti-ambiguïté: écart >= 0.04 avec le 2e meilleur
+    """
+    if not candidates:
+        return None, 0.0, None
+
+    best_canon = None
+    best_score = 0.0
+    second = 0.0
+
+    for canon in candidates:
+        sc = SequenceMatcher(None, raw_clean, canon).ratio()
+        if sc > best_score:
+            second = best_score
+            best_score = sc
+            best_canon = canon
+        elif sc > second:
+            second = sc
+
+    if best_canon and best_score >= min_score and (best_score - second) >= 0.04:
+        return best_canon, best_score, second
+    return None, best_score, second
+
+
 def map_player_name(
     raw_name: str,
     ref_set: Set[str],
     alias_to_canon: Dict[str, str],
     tokenkey_to_canon: Dict[str, str],
     compact_to_canon: Dict[str, str],
+    first_to_canons: Dict[str, Set[str]],
+    last_to_canons: Dict[str, Set[str]],
     cutoff_fuzzy: float = 0.90,
     cutoff_token: float = 0.92,
+    cutoff_single: float = 0.90,
 ) -> Tuple[str, str, str]:
-    """Mappe un nom brut vers un CANON du référentiel.
+    """Mappe un nom brut vers le CANON du référentiel.
 
-    Stratégies (dans l'ordre):
-    exact -> alias -> token-set -> token-fuzzy -> compact -> fuzzy(final)
+    Cascade:
+      exact -> alias -> token_set -> token_fuzzy -> compact -> single_token -> fuzzy -> unmatched
+
+    Le mode single_token (prénom seul / nom seul / tronqué) est protégé par une règle
+    anti-ambiguïté (écart avec le 2e meilleur).
     """
     if raw_name is None:
         return "", "unmatched", "empty"
@@ -947,22 +979,21 @@ def map_player_name(
     if cleaned in ref_set:
         return cleaned, "exact", raw
 
-    # 2) alias direct
+    # 2) alias
     if cleaned in alias_to_canon:
         return alias_to_canon[cleaned], "alias", raw
 
-    # 3) token-set (ordre insensible)
+    # 3) token-set exact + token-fuzzy
     toks = tokens_name(cleaned)
     if toks:
         key = " ".join(sorted(toks))
         if key in tokenkey_to_canon:
             return tokenkey_to_canon[key], "token_set", raw
 
-        # token fuzzy (petites fautes / particules / prénoms composés)
         best_canon = None
         best_score = 0.0
         for k, canon in tokenkey_to_canon.items():
-            sc = similarity(key, k)
+            sc = SequenceMatcher(None, key, k).ratio()
             if sc > best_score:
                 best_score = sc
                 best_canon = canon
@@ -974,12 +1005,33 @@ def map_player_name(
     if comp in compact_to_canon:
         return compact_to_canon[comp], "compact", raw
 
-    # 5) fuzzy final sur canon
+    # 5) single token : prénom seul / nom seul / tronqué
+    if toks and len(toks) == 1:
+        t = toks[0]
+        cand: Set[str] = set()
+        cand |= first_to_canons.get(t, set())
+        cand |= last_to_canons.get(t, set())
+
+        # élargissement si faute sur le token
+        if not cand:
+            keys = list(set(list(first_to_canons.keys()) + list(last_to_canons.keys())))
+            near = get_close_matches(t, keys, n=8, cutoff=0.86)
+            for nk in near:
+                cand |= first_to_canons.get(nk, set())
+                cand |= last_to_canons.get(nk, set())
+
+        cand_list = list(cand)
+        best, sc, sc2 = best_from_candidates(cleaned, cand_list, min_score=cutoff_single)
+        if best:
+            return best, f"single_token({sc:.2f})", raw
+
+    # 6) fuzzy final global (dernier recours)
     best = get_close_matches(cleaned, list(ref_set), n=1, cutoff=cutoff_fuzzy)
     if best:
         return best[0], "fuzzy", raw
 
     return cleaned, "unmatched", raw
+
 
 def normalize_players_in_df(
     df: pd.DataFrame,
