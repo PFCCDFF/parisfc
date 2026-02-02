@@ -128,29 +128,50 @@ def build_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
 
 
 def nettoyer_nom_joueuse(nom):
-    if not isinstance(nom, str):
-        nom = str(nom) if nom is not None else ""
-    s = nom.strip().upper()
-    s = (
-        s.replace("É", "E")
-        .replace("È", "E")
-        .replace("Ê", "E")
-        .replace("À", "A")
-        .replace("Ù", "U")
-        .replace("Î", "I")
-        .replace("Ï", "I")
-        .replace("Ô", "O")
-        .replace("Ö", "O")
-        .replace("Â", "A")
-        .replace("Ä", "A")
-        .replace("Ç", "C")
-    )
-    s = " ".join(s.split())
-    parts = [p.strip().upper() for p in s.split(",") if p.strip()]
-    if len(parts) > 1 and parts[0] == parts[1]:
-        return parts[0]
-    return s
+    """Normalise un nom joueuse pour avoir UNE seule forme canonique.
 
+    Objectif: toutes les sources (PFC CSV, EDF, GPS, permissions, passerelle)
+    doivent converger vers le **référentiel** (excel) comme unique base.
+
+    Règles:
+    - supprime accents, espaces multiples, ponctuation finale (',' '.' ';' ':')
+    - gère les formats: "NOM PRENOM", "NOM, PRENOM", "PRENOM NOM"
+    - sortie: "NOM PRENOM" (majuscules) si détectable, sinon chaîne nettoyée.
+    """
+    if nom is None:
+        return ""
+    s = str(nom).strip()
+    if not s or s.upper() in {"NAN", "NONE", "NULL"}:
+        return ""
+
+    # normalisation unicode -> sans accents
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.upper()
+
+    # Nettoyage ponctuation / séparateurs
+    s = s.replace("’", "'")
+    s = re.sub(r"[\t\n\r]+", " ", s)
+    s = s.replace(";", ",").replace("/", " ").replace("\\", " ")
+
+    # Retire ponctuation finale (ex: 'BOUDINE FAERBER,')
+    s = s.strip(" ,.;:|-_")
+
+    # Si format "NOM, PRENOM" -> "NOM PRENOM"
+    if "," in s:
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        if len(parts) >= 2:
+            s = parts[0] + " " + " ".join(parts[1:])
+        elif len(parts) == 1:
+            s = parts[0]
+
+    # Espace unique
+    s = " ".join(s.split())
+
+    # Heuristique simple: si écrit "PRENOM NOM" (cas GPS) et qu'on veut "NOM PRENOM"
+    # On ne swap que si on détecte >=2 tokens et que le dernier token ressemble à un prénom (capitalisé au départ).
+    # Ici on ne peut pas inférer parfaitement: on gère via alias + fuzzy match ensuite.
+    return s
 
 def nettoyer_nom_equipe(nom: str) -> str:
     if nom is None:
@@ -756,8 +777,19 @@ st.session_state["gps_drive_downloaded"] = 0
 # REFERENTIEL NOMS
 # =========================
 def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str]]:
+    """Construit le référentiel canonique des joueuses + dictionnaire d'alias.
+
+    Supporte 2 formats de fichiers référentiel:
+    1) Colonnes NOM / PRÉNOM (ou variations)
+    2) Colonne unique "Nom de joueuse" (observé dans "Numéro de personnes Paris FC ...")
+
+    Sorties:
+    - ref_set: ensemble des noms canoniques (format nettoyer_nom_joueuse)
+    - alias_to_canon: mapping alias -> canon (inclut variantes inversées, "NOM, PRENOM", initiales, etc.)
+    """
     ref = read_excel_auto(ref_path)
 
+    # sécurité si dict
     if isinstance(ref, dict):
         if len(ref) == 0:
             raise ValueError("Référentiel vide (aucune feuille lisible).")
@@ -766,36 +798,55 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str]]:
     if not isinstance(ref, pd.DataFrame) or ref.empty:
         raise ValueError("Référentiel illisible ou vide.")
 
-    cols = {str(c).strip().upper(): c for c in ref.columns}
-    col_nom = cols.get("NOM")
-    col_pre = cols.get("PRÉNOM") or cols.get("PRENOM")
-
-    if not col_nom or not col_pre:
-        cols_norm = {normalize_str(c): c for c in ref.columns}
-        col_nom = col_nom or cols_norm.get("nom")
-        col_pre = col_pre or cols_norm.get("prenom") or cols_norm.get("prénom")
-
-    if not col_nom or not col_pre:
-        raise ValueError(f"Référentiel: colonnes NOM/Prénom introuvables: {ref.columns.tolist()}")
-
     ref = ref.copy()
-    ref["CANON"] = (ref[col_nom].astype(str) + " " + ref[col_pre].astype(str)).apply(nettoyer_nom_joueuse)
+
+    # Détection colonnes
+    cols_norm = {normalize_str(c): c for c in ref.columns}
+
+    col_full = None
+    # Ex: "Nom de joueuse"
+    for key in ["nom de joueuse", "nom_joueuse", "nom joueuse", "joueuse", "player"]:
+        if key in cols_norm:
+            col_full = cols_norm[key]
+            break
+
+    if col_full:
+        ref["CANON"] = ref[col_full].astype(str).apply(nettoyer_nom_joueuse)
+    else:
+        cols_up = {str(c).strip().upper(): c for c in ref.columns}
+        col_nom = cols_up.get("NOM") or cols_norm.get("nom")
+        col_pre = cols_up.get("PRÉNOM") or cols_up.get("PRENOM") or cols_norm.get("prenom") or cols_norm.get("prénom")
+
+        if not col_nom or not col_pre:
+            raise ValueError(f"Référentiel: colonnes NOM/Prénom ou 'Nom de joueuse' introuvables: {ref.columns.tolist()}")
+
+        ref["CANON"] = (ref[col_nom].astype(str) + " " + ref[col_pre].astype(str)).apply(nettoyer_nom_joueuse)
+
+    ref["CANON"] = ref["CANON"].astype(str).apply(nettoyer_nom_joueuse)
+    ref = ref[ref["CANON"].str.strip().ne("")].copy()
+
     ref_set = set(ref["CANON"].dropna().unique().tolist())
 
     alias_to_canon: Dict[str, str] = {}
     for canon in ref_set:
         alias_to_canon[canon] = canon
+
         parts = canon.split()
         if len(parts) >= 2:
             prenom = parts[-1]
             nom = " ".join(parts[:-1])
-            alias_to_canon[nettoyer_nom_joueuse(f"{prenom} {nom}")] = canon
+
+            # Variantes courantes
             alias_to_canon[nettoyer_nom_joueuse(f"{nom}, {prenom}")] = canon
+            alias_to_canon[nettoyer_nom_joueuse(f"{prenom} {nom}")] = canon
             alias_to_canon[nettoyer_nom_joueuse(f"{nom} {prenom[0]}.")] = canon
             alias_to_canon[nettoyer_nom_joueuse(f"{nom} {prenom[0]}")] = canon
 
-    return ref_set, alias_to_canon
+            # Sans tirets / apostrophes (sécurité)
+            alias_to_canon[nettoyer_nom_joueuse(canon.replace("-", " "))] = canon
+            alias_to_canon[nettoyer_nom_joueuse(canon.replace("'", " "))] = canon
 
+    return ref_set, alias_to_canon
 
 def map_player_name(
     raw_name: str, ref_set: Set[str], alias_to_canon: Dict[str, str], fuzzy_cutoff: float = 0.93
@@ -1956,12 +2007,36 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
 def collect_data(selected_season=None):
     download_google_drive()
 
-    # Référentiel
-    ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
-    if not os.path.exists(ref_path):
-        ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME)
+        # Référentiel (UNIQUE base des noms)
+    # On accepte plusieurs noms de fichier possibles (ex: ancien "Noms Prénoms ..." ou nouveau "Numéro de personnes ...").
+    ref_candidates = [
+        REFERENTIEL_FILENAME,
+        "Numéro de personnes Paris FC.xlsx",
+        "Numéro de personnes Paris FC (1).xlsx",
+        "Numero de personnes Paris FC.xlsx",
+        "Numero de personnes Paris FC (1).xlsx",
+    ]
+
+    ref_path = None
+    for cand in ref_candidates:
+        p = os.path.join(DATA_FOLDER, cand)
+        if os.path.exists(p):
+            ref_path = p
+            break
+        p2 = find_local_file_by_normalized_name(DATA_FOLDER, cand)
+        if p2 and os.path.exists(p2):
+            ref_path = p2
+            break
+
+    # Fallback: chercher un excel dans /data contenant "numero de personnes" dans le nom
+    if not ref_path and os.path.exists(DATA_FOLDER):
+        for fn in os.listdir(DATA_FOLDER):
+            if fn.lower().endswith((".xlsx", ".xls")) and ("numero de personnes" in normalize_str(fn) or "numéro de personnes" in normalize_str(fn)):
+                ref_path = os.path.join(DATA_FOLDER, fn)
+                break
+
     if not ref_path or not os.path.exists(ref_path):
-        st.error(f"Référentiel introuvable dans '{DATA_FOLDER}'.")
+        st.error(f"Référentiel introuvable dans '{DATA_FOLDER}'. Ajoute le fichier référentiel (ex: Numéro de personnes Paris FC.xlsx).")
         return pd.DataFrame(), pd.DataFrame()
 
     ref_set, alias_to_canon = build_referentiel_players(ref_path)
