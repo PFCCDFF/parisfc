@@ -31,6 +31,7 @@ warnings.filterwarnings("ignore")
 # =========================
 DATA_FOLDER = "data"
 PASSERELLE_FOLDER = "data/passerelle"
+GPS_FOLDER = "data/gps"
 
 # Dossiers Drive
 DRIVE_MAIN_FOLDER_ID = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
@@ -306,11 +307,46 @@ def authenticate_google_drive():
     return build("drive", "v3", credentials=creds)
 
 
-def list_files_in_folder(service, folder_id):
+def list_files_in_folder(service, folder_id: str, include_folders: bool = False) -> List[dict]:
+    """Liste les fichiers d'un dossier Drive (avec pagination).
+    Si include_folders=True, inclut également les sous-dossiers (mimeType folder).
+    """
     query = f"'{folder_id}' in parents and trashed=false"
-    results = service.files().list(q=query, fields="files(id, name, mimeType, modifiedTime, size)").execute()
-    return results.get("files", [])
+    fields = "nextPageToken, files(id, name, mimeType, modifiedTime, size)"
+    page_token = None
+    out: List[dict] = []
+    while True:
+        resp = service.files().list(q=query, fields=fields, pageToken=page_token).execute()
+        files = resp.get("files", []) or []
+        if include_folders:
+            out.extend(files)
+        else:
+            out.extend([f for f in files if f.get("mimeType") != "application/vnd.google-apps.folder"])
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    return out
 
+
+def list_files_recursive(service, folder_id: str) -> List[dict]:
+    """Parcourt récursivement un dossier Drive et retourne tous les fichiers (hors folders)."""
+    stack = [folder_id]
+    out: List[dict] = []
+    seen = set()
+    while stack:
+        fid = stack.pop()
+        if fid in seen:
+            continue
+        seen.add(fid)
+
+        items = list_files_in_folder(service, fid, include_folders=True)
+        for it in items:
+            mt = it.get("mimeType")
+            if mt == "application/vnd.google-apps.folder":
+                stack.append(it["id"])
+            else:
+                out.append(it)
+    return out
 
 def download_file(service, file_id, file_name, output_folder, mime_type=None):
     os.makedirs(output_folder, exist_ok=True)
@@ -424,6 +460,7 @@ def download_google_drive():
     service = authenticate_google_drive()
     os.makedirs(DATA_FOLDER, exist_ok=True)
     os.makedirs(PASSERELLE_FOLDER, exist_ok=True)
+    os.makedirs(GPS_FOLDER, exist_ok=True)
 
     # Main folder
     files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
@@ -439,13 +476,19 @@ def download_google_drive():
             download_file(service, f["id"], f["name"], PASSERELLE_FOLDER, mime_type=f.get("mimeType"))
             break
 
-    # GPS folder
+    # GPS folder (récursif : fichiers souvent rangés en sous-dossiers)
     try:
-        gps_files = list_files_in_folder(service, DRIVE_GPS_FOLDER_ID)
+        gps_files = list_files_recursive(service, DRIVE_GPS_FOLDER_ID)
         for f in gps_files:
             is_sheet = f.get("mimeType") == "application/vnd.google-apps.spreadsheet"
             if f["name"].endswith((".xlsx", ".xls")) or is_sheet:
-                download_file(service, f["id"], f["name"], DATA_FOLDER, mime_type=f.get("mimeType"))
+                # Evite collisions de noms (même fichier "GF1 ... .xlsx" dans plusieurs sous-dossiers)
+                fname = f["name"]
+                final_path = os.path.join(GPS_FOLDER, fname)
+                if os.path.exists(final_path):
+                    base, ext = os.path.splitext(fname)
+                    fname = f"{base}__{f['id'][:6]}{ext if ext else '.xlsx'}"
+                download_file(service, f["id"], fname, GPS_FOLDER, mime_type=f.get("mimeType"))
     except Exception as e:
         st.warning(f"Impossible de télécharger les fichiers GPS: {e}")
 
@@ -1429,10 +1472,14 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
 
 
 def list_excel_files_local() -> List[str]:
-    if not os.path.exists(DATA_FOLDER):
-        return []
-    return [os.path.join(DATA_FOLDER, f) for f in os.listdir(DATA_FOLDER) if f.lower().endswith((".xlsx", ".xls"))]
-
+    paths: List[str] = []
+    for folder in [DATA_FOLDER, GPS_FOLDER]:
+        if not os.path.exists(folder):
+            continue
+        for f in os.listdir(folder):
+            if f.lower().endswith((".xlsx", ".xls")):
+                paths.append(os.path.join(folder, f))
+    return paths
 
 def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     """Détecte d'abord le format GF1 export, sinon applique le mapping legacy."""
@@ -1504,6 +1551,7 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFr
             if isinstance(dfp, dict):
                 dfp = list(dfp.values())[0] if len(dfp) else pd.DataFrame()
             dfp = standardize_gps_columns(dfp, os.path.basename(p))
+            dfp["__source_file"] = os.path.basename(p)
             frames.append(dfp)
         except Exception:
             continue
@@ -1543,15 +1591,31 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFr
 
 
 def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
+    """Agrège les données GPS par joueuse et par semaine.
+
+    Colonnes gérées (si présentes) :
+    - Distance Totale : 'Distance (m)'
+    - Bandes vitesse : 'Distance 13-19 (m)', 'Distance 19-23 (m)', 'Distance >23 (m)'
+      (ou leurs équivalents HID si c'est ce qui est disponible)
+    - Charge : 'CHARGE' (ou calcul via RPE * Durée)
+    - Durée : 'Durée_min' (ou 'Durée')
+
+    Retourne aussi (si CHARGE disponible) :
+    - Aigue, Chronique (rolling 4 semaines), ACWR
+    """
     if df_gps is None or df_gps.empty:
         return pd.DataFrame()
 
     d = df_gps.copy()
 
+    # Semaine
     if "SEMAINE" not in d.columns:
-        d["SEMAINE"] = d["DATE"].dt.isocalendar().week.astype("Int64")
+        if "DATE" in d.columns:
+            d["SEMAINE"] = pd.to_datetime(d["DATE"], errors="coerce").dt.isocalendar().week.astype("Int64")
+        else:
+            d["SEMAINE"] = pd.NA
 
-    # Durée minutes (standard)
+    # Durée minutes
     if "Durée_min" in d.columns:
         d["Durée_min"] = pd.to_numeric(d["Durée_min"], errors="coerce")
     elif "Durée" in d.columns:
@@ -1559,30 +1623,45 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
     else:
         d["Durée_min"] = np.nan
 
-    # Charge si dispo
+    # Charge
     if "CHARGE" not in d.columns and "RPE" in d.columns:
         d["CHARGE"] = pd.to_numeric(d["RPE"], errors="coerce").fillna(0) * d["Durée_min"].fillna(0)
+    elif "CHARGE" in d.columns:
+        d["CHARGE"] = pd.to_numeric(d["CHARGE"], errors="coerce")
 
-    agg_map = {}
+    # Colonnes à sommer
+    agg_map: Dict[str, str] = {}
 
-    # Sommes hebdo : distances + charge + sprints
-    for col in [
-        "Distance (m)",
-        "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
-        "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
-        "CHARGE",
-        "Sprints_23", "Sprints_25",
-    ]:
+    # Distance totale
+    if "Distance (m)" in d.columns:
+        d["Distance (m)"] = pd.to_numeric(d["Distance (m)"], errors="coerce")
+        agg_map["Distance (m)"] = "sum"
+
+    # Bandes demandées
+    for col in ["Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)"]:
         if col in d.columns:
+            d[col] = pd.to_numeric(d[col], errors="coerce")
             agg_map[col] = "sum"
 
-    # vmax hebdo
-    if "Vitesse max (km/h)" in d.columns:
-        agg_map["Vitesse max (km/h)"] = "max"
+    # Fallback HID si les bandes ne sont pas là
+    for col in ["Distance HID (>13 km/h)", "Distance HID (>19 km/h)"]:
+        if col in d.columns and col not in agg_map:
+            d[col] = pd.to_numeric(d[col], errors="coerce")
+            agg_map[col] = "sum"
+
+    # Durée et charge
+    if "Durée_min" in d.columns:
+        agg_map["Durée_min"] = "sum"
+    if "CHARGE" in d.columns:
+        agg_map["CHARGE"] = "sum"
+
+    # Si rien à agréger, on renvoie un DF vide (UI affichera un message)
+    if not agg_map:
+        return pd.DataFrame()
 
     out = d.groupby(["Player", "SEMAINE"], as_index=False).agg(agg_map)
 
-    # ACWR si charge
+    # ACWR si charge dispo
     if "CHARGE" in out.columns:
         out = out.sort_values(["Player", "SEMAINE"])
         out["Aigue"] = out["CHARGE"]
@@ -1592,7 +1671,6 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
         out["ACWR"] = np.nan
 
     return out
-
 
 # =========================
 # COLLECT DATA
@@ -2387,7 +2465,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
 
         if gps_weekly.empty:
-            st.warning("Aucune donnée GPS hebdo trouvée.")
+            st.warning("Aucune donnée GPS hebdo trouvée. Vérifie que les fichiers GF1 (.xls/.xlsx) ont bien été téléchargés depuis Drive (y compris sous-dossiers) et que les colonnes Distance/Durée existent.")
+            gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
+            if not gps_raw.empty:
+                st.info(f"👉 {len(gps_raw)} lignes GPS brutes ont été chargées, mais l'agrégation hebdo est vide (colonnes non reconnues).")
+                st.dataframe(gps_raw.head(50))
             return
 
         all_players = sorted(set(gps_weekly["Player"].dropna().unique().tolist()))
