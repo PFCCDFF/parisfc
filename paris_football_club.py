@@ -25,6 +25,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.errors import HttpError
 import time
+import json
 
 warnings.filterwarnings("ignore")
 
@@ -335,6 +336,220 @@ def _is_retryable_http_error(e: Exception) -> bool:
     return status in (429, 500, 502, 503, 504)
 
 
+
+# =========================
+# GPS DRIVE SYNC (autonome, sans index)
+# - évite les listings géants => limite les erreurs Drive 500 sur pagination
+# - sync incrémental (modifiedTime)
+# - conversion .xls -> Google Sheet -> export .xlsx (pas besoin de xlrd)
+# =========================
+GPS_SYNC_STATE_PATH = os.path.join(DATA_FOLDER, "gps_sync_state.json")
+
+def _load_gps_state() -> dict:
+    if os.path.exists(GPS_SYNC_STATE_PATH):
+        try:
+            with open(GPS_SYNC_STATE_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"last_modifiedTime": None, "folders_failed": {}}
+
+def _save_gps_state(state: dict) -> None:
+    os.makedirs(DATA_FOLDER, exist_ok=True)
+    with open(GPS_SYNC_STATE_PATH, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+def _execute_with_retry(call, max_tries: int = 7):
+    for attempt in range(max_tries):
+        try:
+            return call.execute()
+        except Exception as e:
+            if _is_retryable_http_error(e) and attempt < max_tries - 1:
+                time.sleep((2 ** attempt) + 0.2 * attempt)
+                continue
+            raise
+
+def list_files_in_folder_paged(service, folder_id: str, q_extra: str = "", page_size: int = 200) -> List[dict]:
+    q = f"'{folder_id}' in parents and trashed=false"
+    if q_extra:
+        q += f" and ({q_extra})"
+
+    out: List[dict] = []
+    page_token = None
+    while True:
+        req = service.files().list(
+            q=q,
+            fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
+            pageSize=page_size,
+            pageToken=page_token,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        )
+        resp = _execute_with_retry(req)
+        out.extend(resp.get("files", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    return out
+
+def walk_drive_folders(service, root_folder_id: str, state: dict):
+    stack = [root_folder_id]
+    seen = set()
+    now = time.time()
+
+    while stack:
+        fid = stack.pop()
+        if fid in seen:
+            continue
+        seen.add(fid)
+
+        last_fail = state.get("folders_failed", {}).get(fid)
+        if last_fail and (now - float(last_fail)) < 600:
+            continue
+
+        yield fid
+
+        try:
+            subfolders = list_files_in_folder_paged(
+                service,
+                fid,
+                q_extra="mimeType='application/vnd.google-apps.folder'",
+                page_size=200
+            )
+            for sf in subfolders:
+                stack.append(sf["id"])
+        except Exception:
+            state.setdefault("folders_failed", {})[fid] = time.time()
+            continue
+
+def _safe_local_path(filename: str, file_id: str) -> str:
+    os.makedirs(GPS_FOLDER, exist_ok=True)
+    base, ext = os.path.splitext(filename)
+    return os.path.join(GPS_FOLDER, f"{base}__{file_id[:8]}{ext}")
+
+def download_drive_file_to_local(service, file_id: str, file_name: str, mime_type: str) -> str:
+    # Google Sheet -> export xlsx
+    if mime_type == "application/vnd.google-apps.spreadsheet":
+        request = service.files().export_media(
+            fileId=file_id,
+            mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        file_name = os.path.splitext(file_name)[0] + ".xlsx"
+    else:
+        request = service.files().get_media(fileId=file_id)
+
+    final_path = _safe_local_path(file_name, file_id)
+
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+
+    fh.seek(0)
+    with open(final_path, "wb") as f:
+        f.write(fh.read())
+
+    return final_path
+
+def convert_xls_drive_to_xlsx_local(service, file_id: str, original_name: str) -> str:
+    # 1) copy+convert -> Google Sheet (temp)
+    body = {
+        "name": f"__tmp_convert__{original_name}",
+        "mimeType": "application/vnd.google-apps.spreadsheet",
+        "parents": [DRIVE_GPS_FOLDER_ID],
+    }
+    copied = _execute_with_retry(service.files().copy(
+        fileId=file_id,
+        body=body,
+        supportsAllDrives=True,
+    ))
+    gsheet_id = copied["id"]
+
+    # 2) export -> xlsx
+    req = service.files().export_media(
+        fileId=gsheet_id,
+        mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, req, chunksize=1024 * 1024)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    fh.seek(0)
+
+    out_name = os.path.splitext(original_name)[0] + ".xlsx"
+    final_path = _safe_local_path(out_name, file_id)
+    with open(final_path, "wb") as f:
+        f.write(fh.read())
+
+    # 3) cleanup temp
+    try:
+        _execute_with_retry(service.files().delete(fileId=gsheet_id, supportsAllDrives=True))
+    except Exception:
+        pass
+
+    return final_path
+
+def sync_gps_from_drive_autonomous():
+    """Synchronise les fichiers GPS depuis Drive, de manière autonome et incrémentale.
+
+    Objectifs:
+    - éviter un listing récursif gigantesque (source de 500 Internal Error sur pageToken)
+    - parcourir dossier par dossier, avec skip temporaire des dossiers en échec
+    - ne rapatrier que les fichiers modifiés depuis la dernière sync (modifiedTime)
+    - convertir automatiquement les .xls en .xlsx via conversion Drive (sans xlrd)
+    """
+    service = authenticate_google_drive()
+    state = _load_gps_state()
+    last_m = state.get("last_modifiedTime")  # RFC3339 str ou None
+    newest_modified = last_m
+
+    def is_gps_candidate(f: dict) -> bool:
+        name = (f.get("name") or "").lower()
+        mt = f.get("mimeType") or ""
+        # heuristique: GF1 + seance, + extensions/supports gsheet
+        if mt == "application/vnd.google-apps.folder":
+            return False
+        if not (name.endswith(".xlsx") or name.endswith(".xls") or mt == "application/vnd.google-apps.spreadsheet"):
+            return False
+        return ("gf1" in name) or ("seance" in name) or ("séance" in name) or ("gps" in name)
+
+    for folder_id in walk_drive_folders(service, DRIVE_GPS_FOLDER_ID, state):
+        try:
+            q_extra = f"modifiedTime > '{last_m}'" if last_m else ""
+            items = list_files_in_folder_paged(service, folder_id, q_extra=q_extra, page_size=200)
+
+            for f in items:
+                if not is_gps_candidate(f):
+                    continue
+
+                fid = f["id"]
+                name = f.get("name", "")
+                mt = f.get("mimeType", "")
+
+                try:
+                    if name.lower().endswith(".xls") and mt != "application/vnd.google-apps.spreadsheet":
+                        convert_xls_drive_to_xlsx_local(service, fid, name)
+                    else:
+                        download_drive_file_to_local(service, fid, name, mt)
+                except Exception as e:
+                    st.warning(f"GPS: téléchargement/convert impossible {name} -> {e}")
+
+                mtime = f.get("modifiedTime")
+                if mtime and (newest_modified is None or mtime > newest_modified):
+                    newest_modified = mtime
+
+        except Exception:
+            state.setdefault("folders_failed", {})[folder_id] = time.time()
+            continue
+
+    state["last_modifiedTime"] = newest_modified
+    # purge des échecs vieux de +24h
+    state["folders_failed"] = {k: v for k, v in state.get("folders_failed", {}).items() if (time.time() - float(v)) < 86400}
+    _save_gps_state(state)
+
+
 def list_files_in_folder(service, folder_id: str, include_folders: bool = False) -> List[dict]:
     """Liste les fichiers d'un dossier Drive (1 niveau) avec pagination + retries.
 
@@ -531,34 +746,11 @@ def download_google_drive():
             download_file(service, f["id"], f["name"], PASSERELLE_FOLDER, mime_type=f.get("mimeType"))
             break
 
-    # GPS folder (récursif : fichiers souvent rangés en sous-dossiers)
-    try:
-        gps_files = list_files_recursive(service, DRIVE_GPS_FOLDER_ID)
-        gps_found = len(gps_files)
-        gps_downloaded = 0
-
-        for f in gps_files:
-            is_sheet = f.get("mimeType") == "application/vnd.google-apps.spreadsheet"
-            if f["name"].endswith((".xlsx", ".xls")) or is_sheet:
-                # Evite collisions de noms (même fichier "GF1 ... .xlsx" dans plusieurs sous-dossiers)
-                fname = f["name"]
-                final_path = os.path.join(GPS_FOLDER, fname)
-                if os.path.exists(final_path):
-                    base, ext = os.path.splitext(fname)
-                    fname = f"{base}__{f['id'][:6]}{ext if ext else '.xlsx'}"
-                download_file(service, f["id"], fname, GPS_FOLDER, mime_type=f.get("mimeType"))
-                gps_downloaded += 1
-
-        # debug pour l'UI
-        st.session_state["gps_drive_found"] = gps_found
-        st.session_state["gps_drive_downloaded"] = gps_downloaded
-        st.session_state["gps_local_files"] = len([x for x in os.listdir(GPS_FOLDER) if x.lower().endswith((".xlsx", ".xls"))])
-    except Exception as e:
-        st.session_state["gps_drive_found"] = 0
-        st.session_state["gps_drive_downloaded"] = 0
-        st.session_state["gps_local_files"] = len([x for x in os.listdir(GPS_FOLDER)]) if os.path.exists(GPS_FOLDER) else 0
-        st.warning(f"Impossible de télécharger les fichiers GPS: {e}")
-
+# GPS : la synchronisation est gérée par sync_gps_from_drive_autonomous()
+# (collecte incrémentale + conversion .xls -> .xlsx), afin d'éviter les erreurs Drive 500
+# sur les listings paginés de gros dossiers.
+st.session_state["gps_drive_found"] = 0
+st.session_state["gps_drive_downloaded"] = 0
 
 # =========================
 # REFERENTIEL NOMS
@@ -1542,12 +1734,26 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
 
 
 def list_excel_files_local() -> List[str]:
+    """Liste les fichiers Excel locaux (data/ et data/gps/).
+
+    - .xlsx: toujours supporté (openpyxl)
+    - .xls: seulement si xlrd est disponible (sinon on ignore pour éviter l'erreur 'Missing optional dependency xlrd')
+    """
     paths: List[str] = []
+    try:
+        import importlib.util
+        has_xlrd = importlib.util.find_spec("xlrd") is not None
+    except Exception:
+        has_xlrd = False
+
     for folder in [DATA_FOLDER, GPS_FOLDER]:
         if not os.path.exists(folder):
             continue
         for f in os.listdir(folder):
-            if f.lower().endswith((".xlsx", ".xls")):
+            fl = f.lower()
+            if fl.endswith(".xlsx"):
+                paths.append(os.path.join(folder, f))
+            elif fl.endswith(".xls") and has_xlrd:
                 paths.append(os.path.join(folder, f))
     return paths
 
@@ -1776,6 +1982,11 @@ def collect_data(selected_season=None):
             f for f in fichiers
             if (selected_season in f) or f.startswith(keep_always_prefixes) or (f in keep_always_names)
         ]
+    # GPS: sync autonome (Drive -> local data/gps) + conversion .xls si nécessaire
+    try:
+        sync_gps_from_drive_autonomous()
+    except Exception as e:
+        st.warning(f"GPS: sync autonome échouée -> {e}")
 
     # GPS
     gps_raw = load_gps_raw(ref_set, alias_to_canon)
