@@ -128,50 +128,29 @@ def build_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
 
 
 def nettoyer_nom_joueuse(nom):
-    """Normalise un nom joueuse pour avoir UNE seule forme canonique.
-
-    Objectif: toutes les sources (PFC CSV, EDF, GPS, permissions, passerelle)
-    doivent converger vers le **référentiel** (excel) comme unique base.
-
-    Règles:
-    - supprime accents, espaces multiples, ponctuation finale (',' '.' ';' ':')
-    - gère les formats: "NOM PRENOM", "NOM, PRENOM", "PRENOM NOM"
-    - sortie: "NOM PRENOM" (majuscules) si détectable, sinon chaîne nettoyée.
-    """
-    if nom is None:
-        return ""
-    s = str(nom).strip()
-    if not s or s.upper() in {"NAN", "NONE", "NULL"}:
-        return ""
-
-    # normalisation unicode -> sans accents
-    s = unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    s = s.upper()
-
-    # Nettoyage ponctuation / séparateurs
-    s = s.replace("’", "'")
-    s = re.sub(r"[\t\n\r]+", " ", s)
-    s = s.replace(";", ",").replace("/", " ").replace("\\", " ")
-
-    # Retire ponctuation finale (ex: 'BOUDINE FAERBER,')
-    s = s.strip(" ,.;:|-_")
-
-    # Si format "NOM, PRENOM" -> "NOM PRENOM"
-    if "," in s:
-        parts = [p.strip() for p in s.split(",") if p.strip()]
-        if len(parts) >= 2:
-            s = parts[0] + " " + " ".join(parts[1:])
-        elif len(parts) == 1:
-            s = parts[0]
-
-    # Espace unique
+    if not isinstance(nom, str):
+        nom = str(nom) if nom is not None else ""
+    s = nom.strip().upper()
+    s = (
+        s.replace("É", "E")
+        .replace("È", "E")
+        .replace("Ê", "E")
+        .replace("À", "A")
+        .replace("Ù", "U")
+        .replace("Î", "I")
+        .replace("Ï", "I")
+        .replace("Ô", "O")
+        .replace("Ö", "O")
+        .replace("Â", "A")
+        .replace("Ä", "A")
+        .replace("Ç", "C")
+    )
     s = " ".join(s.split())
-
-    # Heuristique simple: si écrit "PRENOM NOM" (cas GPS) et qu'on veut "NOM PRENOM"
-    # On ne swap que si on détecte >=2 tokens et que le dernier token ressemble à un prénom (capitalisé au départ).
-    # Ici on ne peut pas inférer parfaitement: on gère via alias + fuzzy match ensuite.
+    parts = [p.strip().upper() for p in s.split(",") if p.strip()]
+    if len(parts) > 1 and parts[0] == parts[1]:
+        return parts[0]
     return s
+
 
 def nettoyer_nom_equipe(nom: str) -> str:
     if nom is None:
@@ -267,6 +246,63 @@ def extract_season_from_filename(filename: str) -> Optional[str]:
     # fallback: pattern collé (rare)
     m = re.search(r"(2425|2526)", s)
     return m.group(1) if m else None
+
+
+# =========================
+# NAME NORMALIZATION (robuste: inversions / noms collés / doubles noms)
+# =========================
+from difflib import SequenceMatcher
+
+PARTICLES = {"DE", "DU", "DES", "D", "DA", "DI", "DEL", "DELA", "DELLA", "LE", "LA", "LES"}
+
+def strip_accents_upper(s: str) -> str:
+    s = "" if s is None else str(s)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return s.upper()
+
+def normalize_name_raw(s: str) -> str:
+    # Normalisation agressive: accents, virgules, tirets, espaces, caractères parasites
+    s = strip_accents_upper(s)
+    s = s.replace(",", " ")
+    s = s.replace("’", "'")
+    s = re.sub(r"[^A-Z' -]", " ", s)
+    s = s.replace("-", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+
+    # supprime doublons type "DUPONT DUPONT"
+    toks = s.split()
+    if len(toks) >= 2 and toks[0] == toks[1]:
+        toks = toks[1:]
+    return " ".join(toks)
+
+def tokens_name(s: str) -> List[str]:
+    s = normalize_name_raw(s)
+    if not s:
+        return []
+    toks = s.split()
+
+    # fusion "D" + "A" => "DA" (exports parfois bizarres)
+    out: List[str] = []
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if t == "D" and i + 1 < len(toks):
+            out.append("D" + toks[i + 1])
+            i += 2
+            continue
+        out.append(t)
+        i += 1
+    return out
+
+def compact_name(s: str) -> str:
+    # pour capter "DUPONTALICE" vs "DUPONT ALICE"
+    s = strip_accents_upper(s)
+    s = re.sub(r"[^A-Z]", "", s)
+    return s
+
+def similarity(a: str, b: str) -> float:
+    return SequenceMatcher(None, a, b).ratio()
 
 
 def infer_opponent_from_columns(df: pd.DataFrame, equipe_pfc: str) -> Optional[str]:
@@ -776,20 +812,20 @@ st.session_state["gps_drive_downloaded"] = 0
 # =========================
 # REFERENTIEL NOMS
 # =========================
-def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str]]:
-    """Construit le référentiel canonique des joueuses + dictionnaire d'alias.
+def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], Dict[str, str], Dict[str, str]]:
+    """Construit la base canon des joueuses depuis le référentiel.
 
-    Supporte 2 formats de fichiers référentiel:
-    1) Colonnes NOM / PRÉNOM (ou variations)
-    2) Colonne unique "Nom de joueuse" (observé dans "Numéro de personnes Paris FC ...")
-
-    Sorties:
-    - ref_set: ensemble des noms canoniques (format nettoyer_nom_joueuse)
-    - alias_to_canon: mapping alias -> canon (inclut variantes inversées, "NOM, PRENOM", initiales, etc.)
+    Supporte 2 formats:
+    - Ancien: colonnes NOM / Prénom
+    - Nouveau: colonne 'Nom de joueuse' (nom complet)
+    Retourne:
+      - ref_set: ensemble des CANON
+      - alias_to_canon: alias directs -> CANON
+      - tokenkey_to_canon: clé tokens triés -> CANON (insensible à l'ordre NOM/PRENOM)
+      - compact_to_canon: forme sans espaces -> CANON (capte noms collés/décollés)
     """
     ref = read_excel_auto(ref_path)
 
-    # sécurité si dict
     if isinstance(ref, dict):
         if len(ref) == 0:
             raise ValueError("Référentiel vide (aucune feuille lisible).")
@@ -798,85 +834,141 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str]]:
     if not isinstance(ref, pd.DataFrame) or ref.empty:
         raise ValueError("Référentiel illisible ou vide.")
 
-    ref = ref.copy()
-
-    # Détection colonnes
     cols_norm = {normalize_str(c): c for c in ref.columns}
 
-    col_full = None
-    # Ex: "Nom de joueuse"
-    for key in ["nom de joueuse", "nom_joueuse", "nom joueuse", "joueuse", "player"]:
-        if key in cols_norm:
-            col_full = cols_norm[key]
-            break
-
-    if col_full:
-        ref["CANON"] = ref[col_full].astype(str).apply(nettoyer_nom_joueuse)
+    # --- Nouveau format prioritaire ---
+    if "Nom de joueuse" in ref.columns:
+        col_name = "Nom de joueuse"
+        ref = ref.copy()
+        ref["CANON"] = ref[col_name].astype(str).map(normalize_name_raw)
+    elif cols_norm.get("nom de joueuse") is not None:
+        col_name = cols_norm["nom de joueuse"]
+        ref = ref.copy()
+        ref["CANON"] = ref[col_name].astype(str).map(normalize_name_raw)
     else:
-        cols_up = {str(c).strip().upper(): c for c in ref.columns}
-        col_nom = cols_up.get("NOM") or cols_norm.get("nom")
-        col_pre = cols_up.get("PRÉNOM") or cols_up.get("PRENOM") or cols_norm.get("prenom") or cols_norm.get("prénom")
+        # --- Ancien format NOM / PRENOM ---
+        cols = {str(c).strip().upper(): c for c in ref.columns}
+        col_nom = cols.get("NOM") or cols_norm.get("nom")
+        col_pre = cols.get("PRÉNOM") or cols.get("PRENOM") or cols_norm.get("prenom") or cols_norm.get("prénom")
 
         if not col_nom or not col_pre:
-            raise ValueError(f"Référentiel: colonnes NOM/Prénom ou 'Nom de joueuse' introuvables: {ref.columns.tolist()}")
+            raise ValueError(f"Référentiel: colonnes introuvables (NOM/Prénom ou 'Nom de joueuse'): {ref.columns.tolist()}")
 
-        ref["CANON"] = (ref[col_nom].astype(str) + " " + ref[col_pre].astype(str)).apply(nettoyer_nom_joueuse)
+        ref = ref.copy()
+        ref["CANON"] = (ref[col_nom].astype(str) + " " + ref[col_pre].astype(str)).map(normalize_name_raw)
 
-    ref["CANON"] = ref["CANON"].astype(str).apply(nettoyer_nom_joueuse)
-    ref = ref[ref["CANON"].str.strip().ne("")].copy()
-
+    ref = ref[ref["CANON"].astype(str).str.strip().ne("")].copy()
     ref_set = set(ref["CANON"].dropna().unique().tolist())
 
     alias_to_canon: Dict[str, str] = {}
+    tokenkey_to_canon: Dict[str, str] = {}
+    compact_to_canon: Dict[str, str] = {}
+
     for canon in ref_set:
         alias_to_canon[canon] = canon
+        compact_to_canon[compact_name(canon)] = canon
 
-        parts = canon.split()
-        if len(parts) >= 2:
-            prenom = parts[-1]
-            nom = " ".join(parts[:-1])
+        toks = tokens_name(canon)
+        if toks:
+            token_key = " ".join(sorted(toks))
+            tokenkey_to_canon[token_key] = canon
 
-            # Variantes courantes
-            alias_to_canon[nettoyer_nom_joueuse(f"{nom}, {prenom}")] = canon
-            alias_to_canon[nettoyer_nom_joueuse(f"{prenom} {nom}")] = canon
-            alias_to_canon[nettoyer_nom_joueuse(f"{nom} {prenom[0]}.")] = canon
-            alias_to_canon[nettoyer_nom_joueuse(f"{nom} {prenom[0]}")] = canon
+        # Aliases d'inversion fréquents (PRENOM NOM)
+        if toks and len(toks) >= 2:
+            inv1 = " ".join([toks[-1]] + toks[:-1])
+            alias_to_canon[normalize_name_raw(inv1)] = canon
 
-            # Sans tirets / apostrophes (sécurité)
-            alias_to_canon[nettoyer_nom_joueuse(canon.replace("-", " "))] = canon
-            alias_to_canon[nettoyer_nom_joueuse(canon.replace("'", " "))] = canon
+            if len(toks) >= 3:
+                inv2 = " ".join(toks[-2:] + toks[:-2])
+                alias_to_canon[normalize_name_raw(inv2)] = canon
 
-    return ref_set, alias_to_canon
+        # Alias virgule
+        if toks and len(toks) >= 2:
+            nom = " ".join(toks[:-1])
+            prenom = toks[-1]
+            alias_to_canon[normalize_name_raw(f"{nom}, {prenom}")] = canon
+            alias_to_canon[normalize_name_raw(f"{prenom} {nom}")] = canon
+
+        # Alias initiale (ex: DUPONT A)
+        if toks and len(toks) >= 2:
+            nom = " ".join(toks[:-1])
+            prenom = toks[-1]
+            alias_to_canon[normalize_name_raw(f"{nom} {prenom[0]}")] = canon
+            alias_to_canon[normalize_name_raw(f"{nom} {prenom[0]}.")] = canon
+
+    return ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon
+
 
 def map_player_name(
-    raw_name: str, ref_set: Set[str], alias_to_canon: Dict[str, str], fuzzy_cutoff: float = 0.93
+    raw_name: str,
+    ref_set: Set[str],
+    alias_to_canon: Dict[str, str],
+    tokenkey_to_canon: Dict[str, str],
+    compact_to_canon: Dict[str, str],
+    cutoff_fuzzy: float = 0.90,
+    cutoff_token: float = 0.92,
 ) -> Tuple[str, str, str]:
+    """Mappe un nom brut vers un CANON du référentiel.
+
+    Stratégies (dans l'ordre):
+    exact -> alias -> token-set -> token-fuzzy -> compact -> fuzzy(final)
+    """
     if raw_name is None:
         return "", "unmatched", "empty"
 
-    candidates = split_if_comma(raw_name)
-    cleaned = [nettoyer_nom_joueuse(c) for c in candidates if c]
+    raw = str(raw_name).strip()
+    if not raw or raw.upper() in {"NAN", "NONE", "NULL"}:
+        return "", "unmatched", "empty"
 
-    for c in cleaned:
-        if c in ref_set:
-            return c, "exact", str(raw_name)
-        if c in alias_to_canon:
-            return alias_to_canon[c], "alias", str(raw_name)
+    cleaned = normalize_name_raw(raw)
+    if not cleaned:
+        return "", "unmatched", raw
 
-    for c in cleaned:
-        best = get_close_matches(c, list(ref_set), n=1, cutoff=fuzzy_cutoff)
-        if best:
-            return best[0], "fuzzy", str(raw_name)
+    # 1) exact
+    if cleaned in ref_set:
+        return cleaned, "exact", raw
 
-    fallback = cleaned[0] if cleaned else nettoyer_nom_joueuse(str(raw_name))
-    return fallback, "unmatched", str(raw_name)
+    # 2) alias direct
+    if cleaned in alias_to_canon:
+        return alias_to_canon[cleaned], "alias", raw
 
+    # 3) token-set (ordre insensible)
+    toks = tokens_name(cleaned)
+    if toks:
+        key = " ".join(sorted(toks))
+        if key in tokenkey_to_canon:
+            return tokenkey_to_canon[key], "token_set", raw
+
+        # token fuzzy (petites fautes / particules / prénoms composés)
+        best_canon = None
+        best_score = 0.0
+        for k, canon in tokenkey_to_canon.items():
+            sc = similarity(key, k)
+            if sc > best_score:
+                best_score = sc
+                best_canon = canon
+        if best_canon and best_score >= cutoff_token:
+            return best_canon, f"token_fuzzy({best_score:.2f})", raw
+
+    # 4) compact (noms collés/décollés)
+    comp = compact_name(cleaned)
+    if comp in compact_to_canon:
+        return compact_to_canon[comp], "compact", raw
+
+    # 5) fuzzy final sur canon
+    best = get_close_matches(cleaned, list(ref_set), n=1, cutoff=cutoff_fuzzy)
+    if best:
+        return best[0], "fuzzy", raw
+
+    return cleaned, "unmatched", raw
 
 def normalize_players_in_df(
     df: pd.DataFrame,
     cols: List[str],
     ref_set: Set[str],
     alias_to_canon: Dict[str, str],
+    tokenkey_to_canon: Dict[str, str],
+    compact_to_canon: Dict[str, str],
     filename: str,
     report: List[dict],
     fuzzy_cutoff: float = 0.93,
@@ -887,7 +979,7 @@ def normalize_players_in_df(
             continue
         new_vals = []
         for v in out[col].tolist():
-            mapped, status, raw = map_player_name(v, ref_set, alias_to_canon, fuzzy_cutoff=fuzzy_cutoff)
+            mapped, status, raw = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, cutoff_fuzzy=fuzzy_cutoff, cutoff_token=0.92)
             if status in {"fuzzy", "unmatched"} and str(v).strip():
                 report.append({"file": filename, "column": col, "raw": raw, "mapped": mapped, "status": status})
             new_vals.append(mapped if looks_like_player(mapped) else v)
@@ -1854,7 +1946,7 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return out
 
 
-def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFrame:
+def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_canon: Dict[str, str], compact_to_canon: Dict[str, str]) -> pd.DataFrame:
     files = list_excel_files_local()
     if not files:
         return pd.DataFrame()
@@ -1890,10 +1982,13 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFr
 
     # Mapping référentiel
     mapped = []
+    statuses = []
     for v in df["NOM"].astype(str).tolist():
-        m, _, _ = map_player_name(v, ref_set, alias_to_canon, fuzzy_cutoff=0.93)
+        m, status, _ = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, cutoff_fuzzy=0.93)
         mapped.append(m)
+        statuses.append(status)
     df["Player"] = mapped
+    df["__name_status"] = statuses
 
     # Numériques (compat formats)
     for c in [
@@ -2007,39 +2102,15 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
 def collect_data(selected_season=None):
     download_google_drive()
 
-        # Référentiel (UNIQUE base des noms)
-    # On accepte plusieurs noms de fichier possibles (ex: ancien "Noms Prénoms ..." ou nouveau "Numéro de personnes ...").
-    ref_candidates = [
-        REFERENTIEL_FILENAME,
-        "Numéro de personnes Paris FC.xlsx",
-        "Numéro de personnes Paris FC (1).xlsx",
-        "Numero de personnes Paris FC.xlsx",
-        "Numero de personnes Paris FC (1).xlsx",
-    ]
-
-    ref_path = None
-    for cand in ref_candidates:
-        p = os.path.join(DATA_FOLDER, cand)
-        if os.path.exists(p):
-            ref_path = p
-            break
-        p2 = find_local_file_by_normalized_name(DATA_FOLDER, cand)
-        if p2 and os.path.exists(p2):
-            ref_path = p2
-            break
-
-    # Fallback: chercher un excel dans /data contenant "numero de personnes" dans le nom
-    if not ref_path and os.path.exists(DATA_FOLDER):
-        for fn in os.listdir(DATA_FOLDER):
-            if fn.lower().endswith((".xlsx", ".xls")) and ("numero de personnes" in normalize_str(fn) or "numéro de personnes" in normalize_str(fn)):
-                ref_path = os.path.join(DATA_FOLDER, fn)
-                break
-
+    # Référentiel
+    ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
+    if not os.path.exists(ref_path):
+        ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME)
     if not ref_path or not os.path.exists(ref_path):
-        st.error(f"Référentiel introuvable dans '{DATA_FOLDER}'. Ajoute le fichier référentiel (ex: Numéro de personnes Paris FC.xlsx).")
+        st.error(f"Référentiel introuvable dans '{DATA_FOLDER}'.")
         return pd.DataFrame(), pd.DataFrame()
 
-    ref_set, alias_to_canon = build_referentiel_players(ref_path)
+    ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon = build_referentiel_players(ref_path)
     name_report: List[dict] = []
 
     pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
@@ -2064,7 +2135,7 @@ def collect_data(selected_season=None):
         st.warning(f"GPS: sync autonome échouée -> {e}")
 
     # GPS
-    gps_raw = load_gps_raw(ref_set, alias_to_canon)
+    gps_raw = load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon)
     gps_week = compute_gps_weekly_metrics(gps_raw)
     st.session_state["gps_weekly_df"] = gps_week
     st.session_state["gps_raw_df"] = gps_raw
@@ -2088,7 +2159,7 @@ def collect_data(selected_season=None):
 
                 canon_list = []
                 for v in edf_j["Player_raw"].tolist():
-                    canon, _, _ = map_player_name(v, ref_set, alias_to_canon, fuzzy_cutoff=0.93)
+                    canon, _, _ = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, cutoff_fuzzy=0.93)
                     canon_list.append(canon)
                 edf_j["PlayerCanon"] = canon_list
 
@@ -2109,7 +2180,7 @@ def collect_data(selected_season=None):
 
                     canon_d = []
                     for v in d["Player_raw"].tolist():
-                        canon, _, _ = map_player_name(v, ref_set, alias_to_canon, fuzzy_cutoff=0.93)
+                        canon, _, _ = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, cutoff_fuzzy=0.93)
                         canon_d.append(canon)
                     d["PlayerCanon"] = canon_d
 
@@ -2194,7 +2265,7 @@ def collect_data(selected_season=None):
 
             cols_to_fix = ["Row"] + [c for c in POST_COLS if c in data.columns]
             data = normalize_players_in_df(
-                data, cols=cols_to_fix, ref_set=ref_set, alias_to_canon=alias_to_canon, filename=filename, report=name_report
+                data, cols=cols_to_fix, ref_set=ref_set, alias_to_canon=alias_to_canon, tokenkey_to_canon=tokenkey_to_canon, compact_to_canon=compact_to_canon, filename=filename, report=name_report
             )
 
             d2 = data.copy()
