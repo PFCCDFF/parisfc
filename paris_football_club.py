@@ -812,17 +812,19 @@ st.session_state["gps_drive_downloaded"] = 0
 # =========================
 # REFERENTIEL NOMS
 # =========================
-def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], Dict[str, str], Dict[str, str]]:
+def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], Dict[str, str], Dict[str, str], Dict[str, Set[str]], Dict[str, Set[str]]]:
     """Construit la base canon des joueuses depuis le référentiel.
 
     Supporte 2 formats:
     - Ancien: colonnes NOM / Prénom
     - Nouveau: colonne 'Nom de joueuse' (nom complet)
+
     Retourne:
       - ref_set: ensemble des CANON
       - alias_to_canon: alias directs -> CANON
       - tokenkey_to_canon: clé tokens triés -> CANON (insensible à l'ordre NOM/PRENOM)
       - compact_to_canon: forme sans espaces -> CANON (capte noms collés/décollés)
+      - first_to_canons / last_to_canons: index tokens -> set(CANON) pour gérer prénom seul / nom seul + typos
     """
     ref = read_excel_auto(ref_path)
 
@@ -863,6 +865,15 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], 
     alias_to_canon: Dict[str, str] = {}
     tokenkey_to_canon: Dict[str, str] = {}
     compact_to_canon: Dict[str, str] = {}
+    first_to_canons: Dict[str, Set[str]] = {}
+    last_to_canons: Dict[str, Set[str]] = {}
+
+    def _add_index(d: Dict[str, Set[str]], k: str, canon: str):
+        if not k:
+            return
+        if k not in d:
+            d[k] = set()
+        d[k].add(canon)
 
     for canon in ref_set:
         alias_to_canon[canon] = canon
@@ -872,6 +883,15 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], 
         if toks:
             token_key = " ".join(sorted(toks))
             tokenkey_to_canon[token_key] = canon
+
+            # Index tokens -> canons (prénom seul / nom seul)
+            # Heuristique: on indexe TOUS les tokens + extrémités
+            for t in toks:
+                _add_index(first_to_canons, t, canon)
+                _add_index(last_to_canons, t, canon)
+
+            _add_index(first_to_canons, toks[-1], canon)  # prénom probable
+            _add_index(last_to_canons, toks[0], canon)    # nom probable
 
         # Aliases d'inversion fréquents (PRENOM NOM)
         if toks and len(toks) >= 2:
@@ -896,8 +916,7 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], 
             alias_to_canon[normalize_name_raw(f"{nom} {prenom[0]}")] = canon
             alias_to_canon[normalize_name_raw(f"{nom} {prenom[0]}.")] = canon
 
-    return ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon
-
+    return ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons
 
 def map_player_name(
     raw_name: str,
@@ -969,6 +988,8 @@ def normalize_players_in_df(
     alias_to_canon: Dict[str, str],
     tokenkey_to_canon: Dict[str, str],
     compact_to_canon: Dict[str, str],
+    first_to_canons: Dict[str, Set[str]],
+    last_to_canons: Dict[str, Set[str]],
     filename: str,
     report: List[dict],
     fuzzy_cutoff: float = 0.93,
@@ -979,12 +1000,24 @@ def normalize_players_in_df(
             continue
         new_vals = []
         for v in out[col].tolist():
-            mapped, status, raw = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, cutoff_fuzzy=fuzzy_cutoff, cutoff_token=0.92)
-            if status in {"fuzzy", "unmatched"} and str(v).strip():
+            mapped, status, raw = map_player_name(
+                v,
+                ref_set,
+                alias_to_canon,
+                tokenkey_to_canon,
+                compact_to_canon,
+                first_to_canons,
+                last_to_canons,
+                cutoff_fuzzy=fuzzy_cutoff,
+                cutoff_token=0.92,
+                cutoff_single=0.90,
+            )
+            if status not in {"exact", "alias", "token_set", "compact"} and str(v).strip():
                 report.append({"file": filename, "column": col, "raw": raw, "mapped": mapped, "status": status})
             new_vals.append(mapped if looks_like_player(mapped) else v)
         out[col] = new_vals
     return out
+
 
 
 # =========================
@@ -1946,7 +1979,7 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return out
 
 
-def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_canon: Dict[str, str], compact_to_canon: Dict[str, str]) -> pd.DataFrame:
+def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_canon: Dict[str, str], compact_to_canon: Dict[str, str], first_to_canons: Dict[str, Set[str]], last_to_canons: Dict[str, Set[str]]) -> pd.DataFrame:
     files = list_excel_files_local()
     if not files:
         return pd.DataFrame()
@@ -1984,7 +2017,7 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_
     mapped = []
     statuses = []
     for v in df["NOM"].astype(str).tolist():
-        m, status, _ = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, cutoff_fuzzy=0.93)
+        m, status, _ = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons, cutoff_fuzzy=0.93)
         mapped.append(m)
         statuses.append(status)
     df["Player"] = mapped
@@ -2110,7 +2143,7 @@ def collect_data(selected_season=None):
         st.error(f"Référentiel introuvable dans '{DATA_FOLDER}'.")
         return pd.DataFrame(), pd.DataFrame()
 
-    ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon = build_referentiel_players(ref_path)
+    ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons = build_referentiel_players(ref_path)
     name_report: List[dict] = []
 
     pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
@@ -2135,7 +2168,7 @@ def collect_data(selected_season=None):
         st.warning(f"GPS: sync autonome échouée -> {e}")
 
     # GPS
-    gps_raw = load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon)
+    gps_raw = load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons)
     gps_week = compute_gps_weekly_metrics(gps_raw)
     st.session_state["gps_weekly_df"] = gps_week
     st.session_state["gps_raw_df"] = gps_raw
@@ -2159,7 +2192,7 @@ def collect_data(selected_season=None):
 
                 canon_list = []
                 for v in edf_j["Player_raw"].tolist():
-                    canon, _, _ = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, cutoff_fuzzy=0.93)
+                    canon, _, _ = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons, cutoff_fuzzy=0.93)
                     canon_list.append(canon)
                 edf_j["PlayerCanon"] = canon_list
 
@@ -2180,7 +2213,7 @@ def collect_data(selected_season=None):
 
                     canon_d = []
                     for v in d["Player_raw"].tolist():
-                        canon, _, _ = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, cutoff_fuzzy=0.93)
+                        canon, _, _ = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons, cutoff_fuzzy=0.93)
                         canon_d.append(canon)
                     d["PlayerCanon"] = canon_d
 
@@ -2265,7 +2298,16 @@ def collect_data(selected_season=None):
 
             cols_to_fix = ["Row"] + [c for c in POST_COLS if c in data.columns]
             data = normalize_players_in_df(
-                data, cols=cols_to_fix, ref_set=ref_set, alias_to_canon=alias_to_canon, tokenkey_to_canon=tokenkey_to_canon, compact_to_canon=compact_to_canon, filename=filename, report=name_report
+                data,
+                cols=cols_to_fix,
+                ref_set=ref_set,
+                alias_to_canon=alias_to_canon,
+                tokenkey_to_canon=tokenkey_to_canon,
+                compact_to_canon=compact_to_canon,
+                first_to_canons=first_to_canons,
+                last_to_canons=last_to_canons,
+                filename=filename,
+                report=name_report,
             )
 
             d2 = data.copy()
