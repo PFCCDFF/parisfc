@@ -479,6 +479,9 @@ def download_google_drive():
     # GPS folder (récursif : fichiers souvent rangés en sous-dossiers)
     try:
         gps_files = list_files_recursive(service, DRIVE_GPS_FOLDER_ID)
+        gps_found = len(gps_files)
+        gps_downloaded = 0
+
         for f in gps_files:
             is_sheet = f.get("mimeType") == "application/vnd.google-apps.spreadsheet"
             if f["name"].endswith((".xlsx", ".xls")) or is_sheet:
@@ -489,7 +492,16 @@ def download_google_drive():
                     base, ext = os.path.splitext(fname)
                     fname = f"{base}__{f['id'][:6]}{ext if ext else '.xlsx'}"
                 download_file(service, f["id"], fname, GPS_FOLDER, mime_type=f.get("mimeType"))
+                gps_downloaded += 1
+
+        # debug pour l'UI
+        st.session_state["gps_drive_found"] = gps_found
+        st.session_state["gps_drive_downloaded"] = gps_downloaded
+        st.session_state["gps_local_files"] = len([x for x in os.listdir(GPS_FOLDER) if x.lower().endswith((".xlsx", ".xls"))])
     except Exception as e:
+        st.session_state["gps_drive_found"] = 0
+        st.session_state["gps_drive_downloaded"] = 0
+        st.session_state["gps_local_files"] = len([x for x in os.listdir(GPS_FOLDER)]) if os.path.exists(GPS_FOLDER) else 0
         st.warning(f"Impossible de télécharger les fichiers GPS: {e}")
 
 
@@ -1553,7 +1565,8 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str]) -> pd.DataFr
             dfp = standardize_gps_columns(dfp, os.path.basename(p))
             dfp["__source_file"] = os.path.basename(p)
             frames.append(dfp)
-        except Exception:
+        except Exception as e:
+            st.warning(f"GPS: impossible de lire {os.path.basename(p)} -> {e}")
             continue
 
     df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -1921,7 +1934,8 @@ def collect_data(selected_season=None):
 
             pfc_kpi = pd.concat([pfc_kpi, df], ignore_index=True)
 
-        except Exception:
+        except Exception as e:
+            st.warning(f"GPS: impossible de lire {os.path.basename(p)} -> {e}")
             continue
 
     st.session_state["name_report_df"] = pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
@@ -2465,13 +2479,35 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
 
         if gps_weekly.empty:
-            st.warning("Aucune donnée GPS hebdo trouvée. Vérifie que les fichiers GF1 (.xls/.xlsx) ont bien été téléchargés depuis Drive (y compris sous-dossiers) et que les colonnes Distance/Durée existent.")
-            gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
-            if not gps_raw.empty:
-                st.info(f"👉 {len(gps_raw)} lignes GPS brutes ont été chargées, mais l'agrégation hebdo est vide (colonnes non reconnues).")
-                st.dataframe(gps_raw.head(50))
-            return
+            st.warning("Aucune donnée GPS hebdo trouvée.")
+            with st.expander("Diagnostic GPS (debug)", expanded=True):
+                st.write("Drive (trouvé / téléchargé) :", st.session_state.get("gps_drive_found"), "/", st.session_state.get("gps_drive_downloaded"))
+                st.write("Fichiers GPS locaux (.xls/.xlsx) :", st.session_state.get("gps_local_files"))
+                if os.path.exists(GPS_FOLDER):
+                    local_list = sorted([f for f in os.listdir(GPS_FOLDER) if f.lower().endswith((".xlsx", ".xls"))])
+                    st.write("Exemples fichiers :", local_list[:15])
+                else:
+                    st.write("Dossier local GPS_FOLDER absent :", GPS_FOLDER)
 
+                st.info(
+                    "Si Drive(trouvé)=0, le dossier GPS n'est probablement pas partagé au service account. "
+                    "Partage le dossier Drive GPS avec l'email du service account (dans st.secrets) en lecteur. "
+                    "Sinon, vérifie que DRIVE_GPS_FOLDER_ID pointe vers le bon dossier."
+                )
+
+                # Aperçu d'un fichier (si présent) pour vérifier les colonnes
+                try:
+                    if os.path.exists(GPS_FOLDER) and local_list:
+                        p0 = os.path.join(GPS_FOLDER, local_list[0])
+                        df0 = read_excel_auto(p0)
+                        if isinstance(df0, dict):
+                            df0 = list(df0.values())[0] if len(df0) else pd.DataFrame()
+                        st.write("Colonnes du 1er fichier :", df0.columns.tolist())
+                        st.dataframe(df0.head(10))
+                except Exception as e:
+                    st.write("Aperçu impossible :", e)
+
+            return
         all_players = sorted(set(gps_weekly["Player"].dropna().unique().tolist()))
         player_sel = player_name if player_name else st.selectbox("Sélectionnez une joueuse", all_players)
         dfp = gps_weekly[gps_weekly["Player"] == nettoyer_nom_joueuse(player_sel)].copy()
