@@ -23,6 +23,8 @@ from mplsoccer import PyPizza, Radar, FontManager, grid
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.errors import HttpError
+import time
 
 warnings.filterwarnings("ignore")
 
@@ -212,6 +214,25 @@ def parse_date_from_gf1_filename(fn: str) -> Optional[datetime]:
         return None
 
 
+def parse_week_from_gf1_filename(fn: str) -> Optional[int]:
+    """Extrait une semaine ISO depuis un nom de fichier du type 'GF1 S16 ...'.
+
+    Exemple: 'GF1 S16 séance 66 - 10.11.25.xlsx' -> 16
+    """
+    if not fn:
+        return None
+    base = os.path.basename(str(fn))
+    m = re.search(r"\bS(\d{1,2})\b", base, flags=re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        w = int(m.group(1))
+        if 1 <= w <= 53:
+            return w
+    except Exception:
+        return None
+    return None
+
 def extract_season_from_filename(filename: str) -> Optional[str]:
     """Extrait une saison type '2425' / '2526' depuis le nom de fichier."""
     if not filename:
@@ -307,24 +328,58 @@ def authenticate_google_drive():
     return build("drive", "v3", credentials=creds)
 
 
+def _is_retryable_http_error(e: Exception) -> bool:
+    if not isinstance(e, HttpError):
+        return False
+    status = getattr(e.resp, "status", None)
+    return status in (429, 500, 502, 503, 504)
+
+
 def list_files_in_folder(service, folder_id: str, include_folders: bool = False) -> List[dict]:
-    """Liste les fichiers d'un dossier Drive (avec pagination).
-    Si include_folders=True, inclut également les sous-dossiers (mimeType folder).
+    """Liste les fichiers d'un dossier Drive (1 niveau) avec pagination + retries.
+
+    - Retry/backoff pour les erreurs transitoires (500/503/504 etc.)
+    - supportsAllDrives/includeItemsFromAllDrives: robuste aux drives partagés
     """
     query = f"'{folder_id}' in parents and trashed=false"
     fields = "nextPageToken, files(id, name, mimeType, modifiedTime, size)"
+
     page_token = None
     out: List[dict] = []
+
     while True:
-        resp = service.files().list(q=query, fields=fields, pageToken=page_token).execute()
-        files = resp.get("files", []) or []
-        if include_folders:
-            out.extend(files)
-        else:
-            out.extend([f for f in files if f.get("mimeType") != "application/vnd.google-apps.folder"])
+        max_tries = 6
+        resp = None
+        for attempt in range(max_tries):
+            try:
+                resp = service.files().list(
+                    q=query,
+                    fields=fields,
+                    pageSize=200,
+                    pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                ).execute()
+                break
+            except Exception as e:
+                if _is_retryable_http_error(e) and attempt < max_tries - 1:
+                    # backoff exponentiel
+                    time.sleep((2 ** attempt) + (0.1 * attempt))
+                    continue
+                raise
+
+        if not resp:
+            break
+
+        items = resp.get("files", []) or []
+        if not include_folders:
+            items = [f for f in items if f.get("mimeType") != "application/vnd.google-apps.folder"]
+        out.extend(items)
+
         page_token = resp.get("nextPageToken")
         if not page_token:
             break
+
     return out
 
 
@@ -1456,6 +1511,9 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
         d["DATE"] = pd.Timestamp(dt.date()) if dt else pd.NaT
 
     d["SEMAINE"] = d["DATE"].dt.isocalendar().week.astype("Int64")
+    w_file = parse_week_from_gf1_filename(filename)
+    if w_file is not None:
+        d["SEMAINE"] = pd.Series([w_file] * len(d), index=d.index, dtype="Int64")
 
     # Numériques essentiels
     for c in ["Durée_min", "Distance (m)", "Sprints_23", "Sprints_25", "Vitesse max (km/h)", "Accélération maximale (m/s²)", "#accel/decel"]:
