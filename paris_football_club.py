@@ -2233,17 +2233,39 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
 # GPS UI HELPERS
 # =========================
 def ensure_date_column(df: pd.DataFrame) -> pd.DataFrame:
-    """Garantit une colonne DATE en datetime **tz-naive** (évite erreurs de comparaison tz-aware vs tz-naive)."""
+    '''Garantit une colonne DATE (tz-naive) en datetime.
+    Priorité: 'activity date' -> 'DATE' -> 'Date' -> date dans __source_file (JJ.MM.AAAA)
+    '''
     if df is None or df.empty:
         return df
+
     d = df.copy()
 
-    # Source colonne
-    src = "DATE" if "DATE" in d.columns else ("Date" if "Date" in d.columns else None)
-    if src is None:
+    # 1) Colonne "activity date" (prioritaire)
+    if "activity date" in d.columns:
+        d["DATE"] = pd.to_datetime(d["activity date"], errors="coerce", utc=True).dt.tz_convert(None)
+    # 2) Déjà DATE
+    elif "DATE" in d.columns:
+        d["DATE"] = pd.to_datetime(d["DATE"], errors="coerce", utc=True).dt.tz_convert(None)
+    # 3) Colonne Date
+    elif "Date" in d.columns:
+        d["DATE"] = pd.to_datetime(d["Date"], errors="coerce", utc=True).dt.tz_convert(None)
+    else:
         d["DATE"] = pd.NaT
-        return d
 
+    # 4) Fallback: date dans le nom de fichier (JJ.MM.AAAA) si DATE manquante
+    if "__source_file" in d.columns:
+        missing = d["DATE"].isna()
+        if missing.any():
+            extracted = (
+                d.loc[missing, "__source_file"]
+                .astype(str)
+                .str.extract(r"(\d{2}\.\d{2}\.\d{4})", expand=False)
+            )
+            parsed = pd.to_datetime(extracted, format="%d.%m.%Y", errors="coerce")
+            d.loc[missing, "DATE"] = parsed.values
+
+    return d
     # Parse en UTC puis on retire le timezone pour obtenir du datetime64[ns] naïf
     s = pd.to_datetime(d[src], errors="coerce", utc=True)
     try:
@@ -2254,21 +2276,30 @@ def ensure_date_column(df: pd.DataFrame) -> pd.DataFrame:
     d["DATE"] = s
     return d
 
-def gps_last_7_days_summary(df_raw: pd.DataFrame, player_canon: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Retourne (df_7j, summary_7j) pour une joueuse sur les 7 derniers jours glissants."""
+def gps_last_7_days_summary(df_raw: pd.DataFrame, player_canon: str, end_date: Optional[pd.Timestamp] = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    '''
+    Retourne (df_7j, summary_7j) pour une joueuse sur une fenêtre glissante de 7 jours.
+    - end_date=None => dernière date disponible pour la joueuse
+    - end_date=...  => fenêtre [end_date-6j ; end_date] (inclus)
+    '''
     if df_raw is None or df_raw.empty:
         return pd.DataFrame(), pd.DataFrame()
 
     d = ensure_date_column(df_raw)
-    d = d[d.get("Player", "").astype(str) == nettoyer_nom_joueuse(player_canon)].copy()
+    d = d[d["Player"].astype(str) == nettoyer_nom_joueuse(player_canon)].copy()
     d = d[d["DATE"].notna()].copy()
     if d.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    last_date = d["DATE"].max()
-    start = last_date - pd.Timedelta(days=6)  # 7 jours glissants
+    if end_date is None:
+        end_dt = pd.to_datetime(d["DATE"].max()).normalize()
+    else:
+        end_dt = pd.to_datetime(end_date).normalize()
 
-    df_7j = d[(d["DATE"] >= start) & (d["DATE"] <= last_date)].copy()
+    start_dt = end_dt - pd.Timedelta(days=6)
+    end_inclusive = end_dt + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+
+    df_7j = d[(d["DATE"] >= start_dt) & (d["DATE"] <= end_inclusive)].copy()
     if df_7j.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -2278,22 +2309,19 @@ def gps_last_7_days_summary(df_raw: pd.DataFrame, player_canon: str) -> Tuple[pd
         "CHARGE", "RPE"
     ] if c in df_7j.columns]
 
-    dnum = df_7j[metric_cols].apply(pd.to_numeric, errors="coerce") if metric_cols else pd.DataFrame()
-
-    means = dnum.mean(numeric_only=True) if not dnum.empty else pd.Series(dtype=float)
-    sums = dnum.sum(numeric_only=True) if not dnum.empty else pd.Series(dtype=float)
+    means = df_7j[metric_cols].apply(pd.to_numeric, errors="coerce").mean(numeric_only=True)
+    sums = df_7j[metric_cols].apply(pd.to_numeric, errors="coerce").sum(numeric_only=True)
 
     summary = pd.DataFrame([{
         "Player": nettoyer_nom_joueuse(player_canon),
-        "Période": f"{start.date()} → {last_date.date()}",
+        "Période": f"{start_dt.date()} → {end_dt.date()}",
         **{f"Moyenne 7j - {k}": float(v) for k, v in means.items()},
         **{f"Total 7j - {k}": float(v) for k, v in sums.items()},
-        "Nb jours couverts": int(df_7j["DATE"].dt.date.nunique()),
+        "Nb jours avec données (7j)": int(df_7j["DATE"].dt.date.nunique()),
         "Nb lignes": int(len(df_7j)),
     }])
 
     return df_7j, summary
-
 # =========================
 # COLLECT DATA
 # =========================
@@ -3160,9 +3188,30 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         with tab_week:
             st.subheader("Moyennes sur les 7 derniers jours (glissant)")
 
-            player_sel = player_name if player_name else st.selectbox("Joueuse", all_players, key="gps_7d_player_sel")
+            
+player_sel = player_name if player_name else st.selectbox("Joueuse", all_players, key="gps_7d_player_sel")
 
-            df_7j, summary = gps_last_7_days_summary(gps_raw, player_sel)
+# Choix de la date de fin pour la fenêtre 7 jours (J-6 à J)
+tmp = gps_raw[gps_raw["Player"] == nettoyer_nom_joueuse(player_sel)].copy()
+tmp = ensure_date_column(tmp)
+tmp = tmp[tmp["DATE"].notna()].copy()
+
+if tmp.empty:
+    st.info("Pas de dates exploitables pour cette joueuse (colonne 'activity date' ou date JJ.MM.AAAA dans le nom du fichier).")
+    return
+
+min_d = tmp["DATE"].min().date()
+max_d = tmp["DATE"].max().date()
+
+end_date_ui = st.date_input(
+    "Date de fin (calcul sur les 7 jours précédents inclus)",
+    value=max_d,
+    min_value=min_d,
+    max_value=max_d,
+    key="gps_end_date_7d",
+)
+
+df_7j, summary = gps_last_7_days_summary(gps_raw, player_sel, end_date=pd.Timestamp(end_date_ui))
             if summary.empty:
                 st.info("Pas assez de données datées pour calculer les 7 derniers jours.")
                 return
