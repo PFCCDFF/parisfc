@@ -3,7 +3,7 @@
 # - PFC Matchs (CSV): stats + temps de jeu via segments Duration
 # - EDF U19: comparaison vs référentiel EDF (moyenne par poste)
 # - Référentiel noms: "Noms Prénoms Paris FC.xlsx"
-# - GPS Entraînement: fichiers "GF1 ... .xls/.xlsx" (GF1 export + legacy)
+# - GPS Entraînement: fichiers "GF1 ... .csv" (exports Drive, lecture robuste)
 # ============================================================
 
 import os
@@ -509,6 +509,48 @@ def download_drive_file_to_local(service, file_id: str, file_name: str, mime_typ
 
     return final_path
 
+def download_drive_csv_to_local(service, file_id: str, file_name: str) -> str:
+    """Télécharge un CSV (Drive binaire) vers data/gps/."""
+    request = service.files().get_media(fileId=file_id)
+    if not file_name.lower().endswith(".csv"):
+        file_name = os.path.splitext(file_name)[0] + ".csv"
+    # Stocke dans data/gps (pour éviter de mélanger avec les fichiers match)
+    final_path = _safe_local_path(os.path.join("gps", file_name), file_id)
+
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+
+    fh.seek(0)
+    os.makedirs(os.path.dirname(final_path), exist_ok=True)
+    with open(final_path, "wb") as f:
+        f.write(fh.read())
+
+    return final_path
+
+
+def export_sheet_to_csv_local(service, file_id: str, file_name: str) -> str:
+    """Exporte un Google Sheet en CSV vers data/gps/."""
+    request = service.files().export_media(fileId=file_id, mimeType="text/csv")
+    file_name = os.path.splitext(file_name)[0] + ".csv"
+    final_path = _safe_local_path(os.path.join("gps", file_name), file_id)
+
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+
+    fh.seek(0)
+    os.makedirs(os.path.dirname(final_path), exist_ok=True)
+    with open(final_path, "wb") as f:
+        f.write(fh.read())
+
+    return final_path
+
+
 def convert_xls_drive_to_xlsx_local(service, file_id: str, original_name: str) -> str:
     # 1) copy+convert -> Google Sheet (temp)
     body = {
@@ -555,7 +597,7 @@ def sync_gps_from_drive_autonomous():
     - éviter un listing récursif gigantesque (source de 500 Internal Error sur pageToken)
     - parcourir dossier par dossier, avec skip temporaire des dossiers en échec
     - ne rapatrier que les fichiers modifiés depuis la dernière sync (modifiedTime)
-    - convertir automatiquement les .xls en .xlsx via conversion Drive (sans xlrd)
+    - télécharger/exporter les fichiers GPS en .csv (Google Sheets export -> CSV, CSV natifs téléchargés)
     """
     service = authenticate_google_drive()
     state = _load_gps_state()
@@ -565,10 +607,10 @@ def sync_gps_from_drive_autonomous():
     def is_gps_candidate(f: dict) -> bool:
         name = (f.get("name") or "").lower()
         mt = f.get("mimeType") or ""
-        # heuristique: GF1 + seance, + extensions/supports gsheet
         if mt == "application/vnd.google-apps.folder":
             return False
-        if not (name.endswith(".xlsx") or name.endswith(".xls") or mt == "application/vnd.google-apps.spreadsheet"):
+        # GPS: CSV natif ou Google Sheet (export CSV)
+        if not (name.endswith(".csv") or mt == "application/vnd.google-apps.spreadsheet"):
             return False
         return ("gf1" in name) or ("seance" in name) or ("séance" in name) or ("gps" in name)
 
@@ -586,12 +628,12 @@ def sync_gps_from_drive_autonomous():
                 mt = f.get("mimeType", "")
 
                 try:
-                    if name.lower().endswith(".xls") and mt != "application/vnd.google-apps.spreadsheet":
-                        convert_xls_drive_to_xlsx_local(service, fid, name)
-                    else:
-                        download_drive_file_to_local(service, fid, name, mt)
+                    if mt == "application/vnd.google-apps.spreadsheet":
+                        export_sheet_to_csv_local(service, fid, name)
+                    elif name.lower().endswith(".csv"):
+                        download_drive_csv_to_local(service, fid, name)
                 except Exception as e:
-                    st.warning(f"GPS: téléchargement/convert impossible {name} -> {e}")
+                    st.warning(f"GPS: téléchargement/export CSV impossible {name} -> {e}")
 
                 mtime = f.get("modifiedTime")
                 if mtime and (newest_modified is None or mtime > newest_modified):
@@ -1961,29 +2003,38 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return d
 
 
-def list_excel_files_local() -> List[str]:
-    """Liste les fichiers Excel locaux (data/ et data/gps/).
+def read_csv_auto(path: str) -> pd.DataFrame:
+    """Lecture CSV robuste (',' ou ';', encodages fréquents)."""
+    # essai UTF-8 (avec BOM) puis latin-1
+    encodings = ["utf-8-sig", "utf-8", "latin1"]
+    seps = [",", ";", "\t"]
+    last_err = None
+    for enc in encodings:
+        for sep in seps:
+            try:
+                df = pd.read_csv(path, encoding=enc, sep=sep)
+                # Heuristique: si 1 seule colonne et le fichier contient des séparateurs, mauvais sep
+                if df.shape[1] == 1 and sep != "\t":
+                    continue
+                return df
+            except Exception as e:
+                last_err = e
+                continue
+    raise last_err if last_err else ValueError(f"Impossible de lire le CSV: {path}")
 
-    - .xlsx: toujours supporté (openpyxl)
-    - .xls: seulement si xlrd est disponible (sinon on ignore pour éviter l'erreur 'Missing optional dependency xlrd')
-    """
+
+def list_gps_files_local() -> List[str]:
+    """Liste des CSV GPS synchronisés localement (data/gps + fallback data/)."""
     paths: List[str] = []
-    try:
-        import importlib.util
-        has_xlrd = importlib.util.find_spec("xlrd") is not None
-    except Exception:
-        has_xlrd = False
-
-    for folder in [DATA_FOLDER, GPS_FOLDER]:
+    for folder in [os.path.join(DATA_FOLDER, "gps"), DATA_FOLDER]:
         if not os.path.exists(folder):
             continue
         for f in os.listdir(folder):
-            fl = f.lower()
-            if fl.endswith(".xlsx"):
-                paths.append(os.path.join(folder, f))
-            elif fl.endswith(".xls") and has_xlrd:
+            if f.lower().endswith(".csv") and ("gf1" in normalize_str(f) or "seance" in normalize_str(f) or "gps" in normalize_str(f)):
                 paths.append(os.path.join(folder, f))
     return paths
+
+
 
 def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     """Détecte d'abord le format GF1 export, sinon applique le mapping legacy."""
@@ -2032,7 +2083,7 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
 
 
 def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_canon: Dict[str, str], compact_to_canon: Dict[str, str], first_to_canons: Dict[str, Set[str]], last_to_canons: Dict[str, Set[str]]) -> pd.DataFrame:
-    files = list_excel_files_local()
+    files = list_gps_files_local()
     if not files:
         return pd.DataFrame()
 
@@ -2051,9 +2102,7 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_
     frames = []
     for _, p in gf1_files_sorted:
         try:
-            dfp = read_excel_auto(p)
-            if isinstance(dfp, dict):
-                dfp = list(dfp.values())[0] if len(dfp) else pd.DataFrame()
+            dfp = read_csv_auto(p)
             dfp = standardize_gps_columns(dfp, os.path.basename(p))
             dfp["__source_file"] = os.path.basename(p)
             frames.append(dfp)
@@ -2993,7 +3042,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.write("Drive (trouvé / téléchargé) :", st.session_state.get("gps_drive_found"), "/", st.session_state.get("gps_drive_downloaded"))
                 st.write("Fichiers GPS locaux (.xls/.xlsx) :", st.session_state.get("gps_local_files"))
                 if os.path.exists(GPS_FOLDER):
-                    local_list = sorted([f for f in os.listdir(GPS_FOLDER) if f.lower().endswith((".xlsx", ".xls"))])
+                    local_list = sorted([f for f in os.listdir(GPS_FOLDER) if f.lower().endswith(".csv")])
                     st.write("Exemples fichiers :", local_list[:15])
                 else:
                     st.write("Dossier local GPS_FOLDER absent :", GPS_FOLDER)
