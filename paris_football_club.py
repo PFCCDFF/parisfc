@@ -2233,18 +2233,26 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
 # GPS UI HELPERS
 # =========================
 def ensure_date_column(df: pd.DataFrame) -> pd.DataFrame:
-    """Garantit une colonne DATE en datetime."""
+    """Garantit une colonne DATE en datetime **tz-naive** (évite erreurs de comparaison tz-aware vs tz-naive)."""
     if df is None or df.empty:
         return df
     d = df.copy()
-    if "DATE" in d.columns:
-        d["DATE"] = pd.to_datetime(d["DATE"], errors="coerce")
-    elif "Date" in d.columns:
-        d["DATE"] = pd.to_datetime(d["Date"], errors="coerce")
-    else:
-        d["DATE"] = pd.NaT
-    return d
 
+    # Source colonne
+    src = "DATE" if "DATE" in d.columns else ("Date" if "Date" in d.columns else None)
+    if src is None:
+        d["DATE"] = pd.NaT
+        return d
+
+    # Parse en UTC puis on retire le timezone pour obtenir du datetime64[ns] naïf
+    s = pd.to_datetime(d[src], errors="coerce", utc=True)
+    try:
+        s = s.dt.tz_convert(None)
+    except Exception:
+        # Si jamais s n'est pas tz-aware (rare), on laisse tel quel
+        pass
+    d["DATE"] = s
+    return d
 
 def gps_last_7_days_summary(df_raw: pd.DataFrame, player_canon: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Retourne (df_7j, summary_7j) pour une joueuse sur les 7 derniers jours glissants."""
