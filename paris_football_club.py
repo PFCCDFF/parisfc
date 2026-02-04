@@ -2230,6 +2230,63 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # =========================
+# GPS UI HELPERS
+# =========================
+def ensure_date_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Garantit une colonne DATE en datetime."""
+    if df is None or df.empty:
+        return df
+    d = df.copy()
+    if "DATE" in d.columns:
+        d["DATE"] = pd.to_datetime(d["DATE"], errors="coerce")
+    elif "Date" in d.columns:
+        d["DATE"] = pd.to_datetime(d["Date"], errors="coerce")
+    else:
+        d["DATE"] = pd.NaT
+    return d
+
+
+def gps_last_7_days_summary(df_raw: pd.DataFrame, player_canon: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Retourne (df_7j, summary_7j) pour une joueuse sur les 7 derniers jours glissants."""
+    if df_raw is None or df_raw.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    d = ensure_date_column(df_raw)
+    d = d[d.get("Player", "").astype(str) == nettoyer_nom_joueuse(player_canon)].copy()
+    d = d[d["DATE"].notna()].copy()
+    if d.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    last_date = d["DATE"].max()
+    start = last_date - pd.Timedelta(days=6)  # 7 jours glissants
+
+    df_7j = d[(d["DATE"] >= start) & (d["DATE"] <= last_date)].copy()
+    if df_7j.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    metric_cols = [c for c in [
+        "Durée", "Durée_min",
+        "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+        "CHARGE", "RPE"
+    ] if c in df_7j.columns]
+
+    dnum = df_7j[metric_cols].apply(pd.to_numeric, errors="coerce") if metric_cols else pd.DataFrame()
+
+    means = dnum.mean(numeric_only=True) if not dnum.empty else pd.Series(dtype=float)
+    sums = dnum.sum(numeric_only=True) if not dnum.empty else pd.Series(dtype=float)
+
+    summary = pd.DataFrame([{
+        "Player": nettoyer_nom_joueuse(player_canon),
+        "Période": f"{start.date()} → {last_date.date()}",
+        **{f"Moyenne 7j - {k}": float(v) for k, v in means.items()},
+        **{f"Total 7j - {k}": float(v) for k, v in sums.items()},
+        "Nb jours couverts": int(df_7j["DATE"].dt.date.nunique()),
+        "Nb lignes": int(len(df_7j)),
+    }])
+
+    return df_7j, summary
+
+# =========================
 # COLLECT DATA
 # =========================
 @st.cache_data
@@ -3031,51 +3088,96 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
     # =====================
     # DONNEES PHYSIQUES
-    # =====================
-    elif page == "Données Physiques":
-        st.header("📊 Données Physiques")
+    # =====================    elif page == "Données Physiques":
+        st.header("📊 Données Physiques (GPS)")
+
+        gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
         gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
 
-        if gps_weekly.empty:
-            st.warning("Aucune donnée GPS hebdo trouvée.")
-            with st.expander("Diagnostic GPS (debug)", expanded=True):
-                st.write("Drive (trouvé / téléchargé) :", st.session_state.get("gps_drive_found"), "/", st.session_state.get("gps_drive_downloaded"))
-                st.write("Fichiers GPS locaux (.xls/.xlsx) :", st.session_state.get("gps_local_files"))
-                if os.path.exists(GPS_FOLDER):
-                    local_list = sorted([f for f in os.listdir(GPS_FOLDER) if f.lower().endswith(".csv")])
-                    st.write("Exemples fichiers :", local_list[:15])
-                else:
-                    st.write("Dossier local GPS_FOLDER absent :", GPS_FOLDER)
-
-                st.info(
-                    "Si Drive(trouvé)=0, le dossier GPS n'est probablement pas partagé au service account. "
-                    "Partage le dossier Drive GPS avec l'email du service account (dans st.secrets) en lecteur. "
-                    "Sinon, vérifie que DRIVE_GPS_FOLDER_ID pointe vers le bon dossier."
-                )
-
-                # Aperçu d'un fichier (si présent) pour vérifier les colonnes
-                try:
-                    if os.path.exists(GPS_FOLDER) and local_list:
-                        p0 = os.path.join(GPS_FOLDER, local_list[0])
-                        df0 = read_excel_auto(p0)
-                        if isinstance(df0, dict):
-                            df0 = list(df0.values())[0] if len(df0) else pd.DataFrame()
-                        st.write("Colonnes du 1er fichier :", df0.columns.tolist())
-                        st.dataframe(df0.head(10))
-                except Exception as e:
-                    st.write("Aperçu impossible :", e)
-
+        if gps_raw is None or gps_raw.empty:
+            st.warning("Aucune donnée GPS brute trouvée.")
             return
-        all_players = sorted(set(gps_weekly["Player"].dropna().unique().tolist()))
-        player_sel = player_name if player_name else st.selectbox("Sélectionnez une joueuse", all_players)
-        dfp = gps_weekly[gps_weekly["Player"] == nettoyer_nom_joueuse(player_sel)].copy()
 
-        st.subheader("GPS - Hebdomadaire")
-        st.dataframe(dfp.sort_values("SEMAINE"))
+        gps_raw = ensure_date_column(gps_raw)
 
-    # =====================
-    # PASSERELLES
-    # =====================
+        all_players = sorted(set(gps_raw.get("Player", pd.Series(dtype=str)).dropna().unique().tolist()))
+        if not all_players:
+            st.warning("Aucune joueuse détectée dans les données GPS.")
+            return
+
+        tab_raw, tab_week = st.tabs(["🧾 Données brutes par joueuse", "📅 Moyennes 7 derniers jours"])
+
+        with tab_raw:
+            st.subheader("Données brutes (par joueuse)")
+
+            player_sel = player_name if player_name else st.selectbox("Joueuse", all_players, key="gps_raw_player_sel")
+            d = gps_raw[gps_raw["Player"].astype(str) == nettoyer_nom_joueuse(player_sel)].copy()
+
+            if d.empty:
+                st.info("Aucune ligne GPS pour cette joueuse.")
+            else:
+                c1, c2 = st.columns(2)
+                with c1:
+                    min_date = d["DATE"].min()
+                    max_date = d["DATE"].max()
+                    default_range = (
+                        (min_date.date() if pd.notna(min_date) else None),
+                        (max_date.date() if pd.notna(max_date) else None),
+                    )
+                    date_range = st.date_input("Période", value=default_range, key="gps_raw_date_range")
+
+                with c2:
+                    if "__source_file" in d.columns:
+                        srcs = ["Tous"] + sorted(d["__source_file"].dropna().astype(str).unique().tolist())
+                        src_sel = st.selectbox("Fichier source (optionnel)", srcs, key="gps_raw_src_sel")
+                    else:
+                        src_sel = "Tous"
+
+                if isinstance(date_range, tuple) and len(date_range) == 2 and date_range[0] and date_range[1]:
+                    d = d[(d["DATE"] >= pd.Timestamp(date_range[0])) & (d["DATE"] <= pd.Timestamp(date_range[1]))].copy()
+
+                if src_sel != "Tous" and "__source_file" in d.columns:
+                    d = d[d["__source_file"].astype(str) == str(src_sel)].copy()
+
+                show_cols = [c for c in [
+                    "DATE", "SEMAINE", "Player", "NOM",
+                    "Durée", "Durée_min",
+                    "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+                    "CHARGE", "RPE",
+                    "__name_status", "__source_file"
+                ] if c in d.columns]
+
+                st.dataframe(d.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
+
+        with tab_week:
+            st.subheader("Moyennes sur les 7 derniers jours (glissant)")
+
+            player_sel = player_name if player_name else st.selectbox("Joueuse", all_players, key="gps_7d_player_sel")
+
+            df_7j, summary = gps_last_7_days_summary(gps_raw, player_sel)
+            if summary.empty:
+                st.info("Pas assez de données datées pour calculer les 7 derniers jours.")
+                return
+
+            st.dataframe(summary, use_container_width=True)
+
+            with st.expander("Voir le détail (lignes brutes sur la période 7 jours)"):
+                show_cols = [c for c in [
+                    "DATE", "SEMAINE", "Player", "NOM",
+                    "Durée", "Durée_min",
+                    "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+                    "CHARGE", "RPE",
+                    "__name_status", "__source_file"
+                ] if c in df_7j.columns]
+                st.dataframe(df_7j.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
+
+            if gps_weekly is not None and not gps_weekly.empty and "SEMAINE" in gps_weekly.columns:
+                st.divider()
+                st.caption("Vue hebdomadaire (somme par semaine ISO) – optionnelle")
+                dw = gps_weekly[gps_weekly["Player"].astype(str) == nettoyer_nom_joueuse(player_sel)].copy()
+                if not dw.empty:
+                    st.dataframe(dw.sort_values("SEMAINE"), use_container_width=True)
+
     elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
         passerelle_data = load_passerelle_data()
