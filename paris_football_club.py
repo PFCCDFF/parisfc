@@ -20,6 +20,7 @@ import pandas as pd
 import streamlit as st
 from streamlit_option_menu import option_menu
 from mplsoccer import PyPizza, Radar, FontManager, grid
+import matplotlib.pyplot as plt
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -2048,9 +2049,9 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     colmap = {}
     for c in df.columns:
         nc = normalize_str(c)
-        if nc in {"nom", "name", "joueur", "joueuse"}:
+        if nc in {"nom", "name", "joueur", "joueuse", "nom de joueur", "nom_de_joueur"}:
             colmap[c] = "NOM"
-        elif nc == "date":
+        elif nc in {"date", "activity date", "activity_date"}:
             colmap[c] = "DATE"
         elif "semaine" in nc or nc == "week":
             colmap[c] = "SEMAINE"
@@ -2062,6 +2063,12 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
             colmap[c] = "Distance HID (>13 km/h)"
         elif "hid" in nc and "19" in nc:
             colmap[c] = "Distance HID (>19 km/h)"
+        elif "accel" in nc or "decel" in nc:
+            colmap[c] = "#accel/decel"
+        elif "15-19" in nc or ("15" in nc and "19" in nc and "plage" in nc):
+            colmap[c] = "Distance par plage de vitesse (15-19 km/h)"
+        elif ">25" in nc or ("25" in nc and "plage" in nc):
+            colmap[c] = "Distance par plage de vitesse (>25 km/h)"
         elif "charge" in nc:
             colmap[c] = "CHARGE"
         elif "rpe" in nc:
@@ -2322,6 +2329,156 @@ def gps_last_7_days_summary(df_raw: pd.DataFrame, player_canon: str, end_date: O
     }])
 
     return df_7j, summary
+
+# =========================
+# GPS - GRAPH (MD-6 -> MD) + FATIGUE (Monotony/Strain)
+# =========================
+def compute_monotony_strain(df_7j: pd.DataFrame, load_col: str = "CHARGE") -> pd.DataFrame:
+    """Monotony & Strain sur une fenêtre 7 jours.
+
+    - Agrège d'abord la charge par JOUR (DATE normalisée), puis :
+        monotony = mean(daily_load) / std(daily_load)
+        strain   = sum(daily_load) * monotony
+    """
+    if df_7j is None or df_7j.empty or "DATE" not in df_7j.columns:
+        return pd.DataFrame()
+    d = df_7j.copy()
+    d = ensure_date_column(d)
+    d = d[d["DATE"].notna()].copy()
+    if d.empty or load_col not in d.columns:
+        return pd.DataFrame()
+
+    d[load_col] = pd.to_numeric(d[load_col], errors="coerce").fillna(0.0)
+    d["DAY"] = pd.to_datetime(d["DATE"]).dt.normalize()
+
+    daily = d.groupby("DAY", as_index=False)[load_col].sum()
+    if daily.empty:
+        return pd.DataFrame()
+
+    mean_load = float(daily[load_col].mean())
+    std_load = float(daily[load_col].std(ddof=0))  # population std
+    total_load = float(daily[load_col].sum())
+
+    monotony = (mean_load / std_load) if std_load > 0 else np.nan
+    strain = (total_load * monotony) if pd.notna(monotony) else np.nan
+
+    return pd.DataFrame([{
+        "Charge variable": load_col,
+        "Charge totale (7j)": total_load,
+        "Charge moyenne/jour (7j)": mean_load,
+        "Variabilité (std/jour)": std_load,
+        "Monotony": monotony,
+        "Strain": strain,
+        "Nb jours avec données": int(daily["DAY"].nunique()),
+    }])
+
+
+def gps_daily_md7(df_7j: pd.DataFrame, md_date: pd.Timestamp) -> pd.DataFrame:
+    """Agrège les données GPS par jour sur [MD-6 ; MD] et crée les labels MD-6..MD."""
+    if df_7j is None or df_7j.empty:
+        return pd.DataFrame()
+
+    d = ensure_date_column(df_7j).copy()
+    d = d[d["DATE"].notna()].copy()
+    if d.empty:
+        return pd.DataFrame()
+
+    md = pd.to_datetime(md_date).normalize()
+    d["DAY"] = pd.to_datetime(d["DATE"]).dt.normalize()
+
+    # Colonnes attendues (si absentes, ignorées)
+    # Distances = somme ; Acc/Dec = somme ; Rel (m/min) = moyenne
+    cols_sum = [
+        "Distance (m)",
+        "Distance HID (>13 km/h)",
+        "Distance par plage de vitesse (15-19 km/h)",
+        "Distance HID (>19 km/h)",
+        "Distance par plage de vitesse (>25 km/h)",
+        "#accel/decel",
+    ]
+    cols_mean = ["Distance relative (m/min)"]
+
+    # Calcul distance relative si on ne l'a pas
+    if "Distance relative (m/min)" not in d.columns and "Distance (m)" in d.columns:
+        # Durée minutes: Durée_min prioritaire puis Durée (si déjà en minutes)
+        dur = None
+        if "Durée_min" in d.columns:
+            dur = pd.to_numeric(d["Durée_min"], errors="coerce")
+        elif "Durée" in d.columns:
+            dur = pd.to_numeric(d["Durée"], errors="coerce")
+        if dur is not None:
+            dist = pd.to_numeric(d["Distance (m)"], errors="coerce")
+            d["Distance relative (m/min)"] = np.where(dur > 0, dist / dur, np.nan)
+
+    agg = {}
+    for c in cols_sum:
+        if c in d.columns:
+            agg[c] = "sum"
+    for c in cols_mean:
+        if c in d.columns:
+            agg[c] = "mean"
+
+    if not agg:
+        return pd.DataFrame()
+
+    daily = d.groupby("DAY", as_index=False).agg(agg)
+
+    daily["delta"] = (daily["DAY"] - md).dt.days
+    daily = daily[(daily["delta"] >= -6) & (daily["delta"] <= 0)].copy()
+    if daily.empty:
+        return pd.DataFrame()
+
+    daily["label"] = daily["delta"].apply(lambda x: "MD" if x == 0 else f"MD{x}")
+    daily = daily.sort_values("delta").reset_index(drop=True)
+    return daily
+
+
+def plot_gps_md7(daily: pd.DataFrame, title: str = "GPS — 7 jours (MD-6 → MD)"):
+    """Graphique barres + courbes (proche de ton exemple)."""
+    if daily is None or daily.empty:
+        return None
+
+    x = np.arange(len(daily))
+    labels = daily["label"].tolist()
+
+    fig, ax1 = plt.subplots(figsize=(12, 5))
+
+    # Barres : Distance totale
+    if "Distance (m)" in daily.columns:
+        ax1.bar(x, daily["Distance (m)"].fillna(0), width=0.55)
+        ax1.set_ylabel("Distance (m)")
+
+    # Courbes distances (axe gauche)
+    for col, lab in [
+        ("Distance HID (>13 km/h)", "Distance HID (>13 km/h)"),
+        ("Distance par plage de vitesse (15-19 km/h)", "Distance 15–19 km/h"),
+        ("Distance HID (>19 km/h)", "Distance HID (>19 km/h)"),
+        ("Distance par plage de vitesse (>25 km/h)", "Distance >25 km/h"),
+    ]:
+        if col in daily.columns:
+            ax1.plot(x, daily[col].fillna(0), marker="o", linewidth=2, label=lab)
+
+    # Axe droit : Rel + Acc/Dec
+    ax2 = ax1.twinx()
+    ax2.set_ylabel("m/min / Acc-Dec")
+
+    if "Distance relative (m/min)" in daily.columns:
+        ax2.plot(x, daily["Distance relative (m/min)"].fillna(0), marker="o", linewidth=2, label="Distance relative (m/min)")
+    if "#accel/decel" in daily.columns:
+        ax2.plot(x, daily["#accel/decel"].fillna(0), marker="o", linewidth=2, label="# Acc/Dec")
+
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels, rotation=90)
+    ax1.set_title(title)
+
+    h1, l1 = ax1.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    if h1 or h2:
+        ax1.legend(h1 + h2, l1 + l2, loc="center left", bbox_to_anchor=(1.02, 0.5), title="Valeurs")
+
+    fig.tight_layout()
+    return fig
+
 # =========================
 # COLLECT DATA
 # =========================
@@ -3218,6 +3375,40 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 return
 
             st.dataframe(summary, use_container_width=True)
+            # --- Graphique MD-6 -> MD (barres + courbes) ---
+            daily = gps_daily_md7(df_7j, md_date=pd.Timestamp(end_date_ui))
+            fig = plot_gps_md7(daily, title=f"{nettoyer_nom_joueuse(player_sel)} — 7 jours (MD-6 → MD)")
+            if fig is not None:
+                st.pyplot(fig)
+            else:
+                st.info("Graphique indisponible (colonnes distances/accel manquantes).")
+
+            # --- Indicateurs fatigue : Monotony / Strain ---
+            st.subheader("🧠 Indicateurs fatigue (Monotony / Strain)")
+            load_candidates = []
+            if "CHARGE" in df_7j.columns:
+                load_candidates.append("CHARGE")
+            if "Distance (m)" in df_7j.columns:
+                load_candidates.append("Distance (m)")
+            if not load_candidates:
+                st.info("Pas de colonne CHARGE ni Distance (m) disponible pour calculer Monotony/Strain.")
+            else:
+                load_col = st.selectbox("Variable de charge utilisée", load_candidates, index=0, key="gps_load_col_ms")
+                ms = compute_monotony_strain(df_7j, load_col=load_col)
+                if ms is not None and not ms.empty:
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1:
+                        st.metric("Monotony", f"{ms['Monotony'].iloc[0]:.2f}" if pd.notna(ms["Monotony"].iloc[0]) else "NA")
+                    with c2:
+                        st.metric("Strain", f"{ms['Strain'].iloc[0]:.0f}" if pd.notna(ms["Strain"].iloc[0]) else "NA")
+                    with c3:
+                        st.metric("Charge totale 7j", f"{ms['Charge totale (7j)'].iloc[0]:.0f}")
+                    with c4:
+                        st.metric("Std/jour", f"{ms['Variabilité (std/jour)'].iloc[0]:.0f}")
+
+                    with st.expander("Voir le détail Monotony/Strain"):
+                        st.dataframe(ms, use_container_width=True)
+
 
             with st.expander("Voir le détail (lignes brutes sur la période 7 jours)"):
                 show_cols = [c for c in [
