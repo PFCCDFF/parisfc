@@ -3281,14 +3281,20 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
     # =====================
     # DONNEES PHYSIQUES
-    # =====================    elif page == "Données Physiques":
+    # =====================
+    elif page == "Données Physiques":
         st.header("📊 Données Physiques (GPS)")
 
         gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
         gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
 
         if gps_raw is None or gps_raw.empty:
+            n_local = len(list_gps_files_local())
             st.warning("Aucune donnée GPS brute trouvée.")
+            st.caption(f"Fichiers GPS trouvés localement : {n_local} (data/gps ou data/)")
+            if n_local == 0:
+                st.info("Astuce : clique sur « Mettre à jour la base » (si disponible) pour lancer la sync Drive → data/gps. "
+                        "Sinon, vérifie que le compte de service Google a bien accès au dossier Drive GPS et à ses sous-dossiers.")
             return
 
         gps_raw = ensure_date_column(gps_raw)
