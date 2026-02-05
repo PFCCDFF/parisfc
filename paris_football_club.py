@@ -3186,32 +3186,33 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.dataframe(d.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
 
         with tab_week:
+
             st.subheader("Moyennes sur les 7 derniers jours (glissant)")
 
-            
-player_sel = player_name if player_name else st.selectbox("Joueuse", all_players, key="gps_7d_player_sel")
+            player_sel = player_name if player_name else st.selectbox("Joueuse", all_players, key="gps_7d_player_sel")
 
-# Choix de la date de fin pour la fenêtre 7 jours (J-6 à J)
-tmp = gps_raw[gps_raw["Player"] == nettoyer_nom_joueuse(player_sel)].copy()
-tmp = ensure_date_column(tmp)
-tmp = tmp[tmp["DATE"].notna()].copy()
+            # Dates disponibles pour cette joueuse (priorité: activity date -> DATE/Date -> JJ.MM.AAAA dans le nom de fichier)
+            tmp = gps_raw[gps_raw["Player"].astype(str) == nettoyer_nom_joueuse(player_sel)].copy()
+            tmp = ensure_date_column(tmp)
+            tmp = tmp[tmp["DATE"].notna()].copy()
 
-if tmp.empty:
-    st.info("Pas de dates exploitables pour cette joueuse (colonne 'activity date' ou date JJ.MM.AAAA dans le nom du fichier).")
-    return
+            if tmp.empty:
+                st.info("Pas de dates exploitables pour cette joueuse (colonne 'activity date' ou date JJ.MM.AAAA dans le nom du fichier).")
+                return
 
-min_d = tmp["DATE"].min().date()
-max_d = tmp["DATE"].max().date()
+            min_d = tmp["DATE"].min().date()
+            max_d = tmp["DATE"].max().date()
 
-end_date_ui = st.date_input(
-    "Date de fin (calcul sur les 7 jours précédents inclus)",
-    value=max_d,
-    min_value=min_d,
-    max_value=max_d,
-    key="gps_end_date_7d",
-)
+            end_date_ui = st.date_input(
+                "Date de fin (fenêtre glissante sur les 7 jours précédents inclus)",
+                value=max_d,
+                min_value=min_d,
+                max_value=max_d,
+                key="gps_end_date_7d",
+            )
 
-df_7j, summary = gps_last_7_days_summary(gps_raw, player_sel, end_date=pd.Timestamp(end_date_ui))
+            df_7j, summary = gps_last_7_days_summary(gps_raw, player_sel, end_date=pd.Timestamp(end_date_ui))
+
             if summary.empty:
                 st.info("Pas assez de données datées pour calculer les 7 derniers jours.")
                 return
@@ -3228,13 +3229,13 @@ df_7j, summary = gps_last_7_days_summary(gps_raw, player_sel, end_date=pd.Timest
                 ] if c in df_7j.columns]
                 st.dataframe(df_7j.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
 
+            # Option: vue hebdomadaire ISO (somme par semaine)
             if gps_weekly is not None and not gps_weekly.empty and "SEMAINE" in gps_weekly.columns:
                 st.divider()
                 st.caption("Vue hebdomadaire (somme par semaine ISO) – optionnelle")
                 dw = gps_weekly[gps_weekly["Player"].astype(str) == nettoyer_nom_joueuse(player_sel)].copy()
                 if not dw.empty:
                     st.dataframe(dw.sort_values("SEMAINE"), use_container_width=True)
-
     elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
         passerelle_data = load_passerelle_data()
