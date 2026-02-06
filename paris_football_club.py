@@ -2026,17 +2026,19 @@ def read_csv_auto(path: str) -> pd.DataFrame:
 
 
 def list_gps_files_local() -> List[str]:
-    """Liste des CSV GPS synchronisés localement (data/gps + fallback data/)."""
+    """Liste des CSV GPS synchronisés localement.
+
+    V34.6.4: on ne filtre PLUS sur le nom (GF1/GF2/Seance/etc.). Tout CSV trouvé
+    dans data/gps/ puis en fallback data/ est candidat.
+    """
     paths: List[str] = []
     for folder in [os.path.join(DATA_FOLDER, "gps"), DATA_FOLDER]:
         if not os.path.exists(folder):
             continue
         for f in os.listdir(folder):
-            if f.lower().endswith(".csv") and ("gf1" in normalize_str(f) or "seance" in normalize_str(f) or "gps" in normalize_str(f)):
+            if f.lower().endswith(".csv"):
                 paths.append(os.path.join(folder, f))
-    return paths
-
-
+    return sorted(paths)
 
 def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     """Détecte d'abord le format GF1 export, sinon applique le mapping legacy."""
@@ -2090,27 +2092,32 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return out
 
 
-def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_canon: Dict[str, str], compact_to_canon: Dict[str, str], first_to_canons: Dict[str, Set[str]], last_to_canons: Dict[str, Set[str]]) -> pd.DataFrame:
+def load_gps_raw(
+    ref_set: Set[str],
+    alias_to_canon: Dict[str, str],
+    tokenkey_to_canon: Dict[str, str],
+    compact_to_canon: Dict[str, str],
+    first_to_canons: Dict[str, Set[str]],
+    last_to_canons: Dict[str, Set[str]],
+) -> pd.DataFrame:
+    """Charge et standardise tous les CSV GPS locaux.
+
+    V34.6.4:
+    - prend TOUS les CSV dans data/gps/ + fallback data/
+    - standardisation robuste des colonnes (BOM, variantes)
+    - mapping des noms vers le référentiel, mais ne drop jamais les lignes GPS
+      si le mapping échoue (on garde un fallback propre).
+    """
     files = list_gps_files_local()
     if not files:
         return pd.DataFrame()
 
-    gps_files = [p for p in files if normalize_str(os.path.basename(p)).startswith(normalize_str("gf"))]
-    if not gps_files:
-        gps_files = [p for p in files if "seance" in normalize_str(os.path.basename(p))]
-    if not gps_files:
-        return pd.DataFrame()
-
-    gps_files_sorted = []
-    for p in gps_files:
-        d = parse_date_from_gf1_filename(os.path.basename(p))
-        gps_files_sorted.append((d or datetime.min, p))
-    gps_files_sorted.sort(key=lambda t: t[0])
-
-    frames = []
-    for _, p in gps_files_sorted:
+    frames: List[pd.DataFrame] = []
+    for p in files:
         try:
             dfp = read_csv_auto(p)
+            # Nettoyage BOM + espaces sur colonnes
+            dfp.columns = [str(c).replace("\ufeff", "").strip() for c in dfp.columns]
             dfp = standardize_gps_columns(dfp, os.path.basename(p))
             dfp["__source_file"] = os.path.basename(p)
             frames.append(dfp)
@@ -2119,47 +2126,110 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_
             continue
 
     df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    # Compat : si la standardisation n'a pas renommé, tenter un fallback
-    if (not df.empty) and ("NOM" not in df.columns):
-        for cand in ["Nom de joueur", "Nom de Joueur", "nom de joueur", "Player", "Joueur", "Joueuse"]:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    # ---- colonne NOM (joueuse) ----
+    if "NOM" not in df.columns:
+        # fallback agressif
+        for cand in [
+            "Nom de joueur", "Nom de Joueur", "nom de joueur",
+            "Nom de joueuse", "Nom de Joueuse", "nom de joueuse",
+            "Player", "Joueur", "Joueuse", "Nom",
+        ]:
             if cand in df.columns:
                 df = df.rename(columns={cand: "NOM"})
                 break
+
+    if "NOM" not in df.columns:
+        # dernier recours: colonne contenant 'nom' + 'jou'
+        for c in df.columns:
+            cn = normalize_str(c)
+            if ("nom" in cn) and ("jou" in cn):
+                df = df.rename(columns={c: "NOM"})
+                break
+
     if df.empty or "NOM" not in df.columns:
         return pd.DataFrame()
 
-    # Mapping référentiel
-    mapped = []
-    statuses = []
+    # ---- mapping référentiel -> Player canon ----
+    mapped: List[str] = []
+    statuses: List[str] = []
     for v in df["NOM"].astype(str).tolist():
-        m, status, _ = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons, cutoff_fuzzy=0.93)
-        mapped.append(m)
+        try:
+            m, status, _ = map_player_name(
+                v,
+                ref_set,
+                alias_to_canon,
+                tokenkey_to_canon,
+                compact_to_canon,
+                first_to_canons,
+                last_to_canons,
+                cutoff_fuzzy=0.93,
+            )
+        except Exception:
+            m, status = nettoyer_nom_joueuse(v), "unmatched"
+        mapped.append(m if m else nettoyer_nom_joueuse(v))
         statuses.append(status)
+
     df["Player"] = mapped
     df["__name_status"] = statuses
 
-    # Numériques (compat formats)
-    for c in [
-        "Durée", "Durée_min",
+    # ---- numériques (compat formats) ----
+    numeric_cols = [
+        "Durée", "Durée_min", "Temps joué",
         "Distance (m)",
         "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+        "Distance par plage de vitesse (13-15 km/h)",
+        "Distance par plage de vitesse (15-19 km/h)",
+        "Distance par plage de vitesse (19-23 km/h)",
+        "Distance par plage de vitesse (23-25 km/h)",
+        "Distance par plage de vitesse (>25 km/h)",
         "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
         "CHARGE", "RPE",
+        "#accel/decel",
+        "# of Sprints (>23 km/h)", "# of Sprints (>25 km/h)",
         "Sprints_23", "Sprints_25",
         "Vitesse max (km/h)",
-    ]:
+    ]
+    for c in numeric_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
     # Harmoniser Durée_min
-    if "Durée_min" not in df.columns and "Durée" in df.columns:
-        df["Durée_min"] = pd.to_numeric(df["Durée"], errors="coerce")
-    elif "Durée_min" in df.columns:
-        df["Durée_min"] = pd.to_numeric(df["Durée_min"], errors="coerce")
+    if "Durée_min" not in df.columns:
+        if "Durée" in df.columns:
+            df["Durée_min"] = pd.to_numeric(df["Durée"], errors="coerce")
+        elif "Temps joué" in df.columns:
+            df["Durée_min"] = pd.to_numeric(df["Temps joué"], errors="coerce")
 
-    df["DATE"] = pd.to_datetime(df.get("DATE", pd.NaT), errors="coerce")
+    # Date
+    if "DATE" in df.columns:
+        df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce", utc=True).dt.tz_convert(None)
+    else:
+        df["DATE"] = pd.NaT
+
+    # fallback: nom fichier JJ.MM.AAAA
+    miss = df["DATE"].isna()
+    if miss.any():
+        parsed = []
+        for fn in df.loc[miss, "__source_file"].astype(str).tolist():
+            m = re.search(r"(\d{2})\.(\d{2})\.(\d{2,4})", fn)
+            if not m:
+                parsed.append(pd.NaT)
+                continue
+            d, mo, y = m.group(1), m.group(2), m.group(3)
+            if len(y) == 2:
+                y = "20" + y
+            parsed.append(pd.to_datetime(f"{y}-{mo}-{d}", errors="coerce"))
+        df.loc[miss, "DATE"] = parsed
+
+    # SEMAINE
+    if "SEMAINE" not in df.columns:
+        dts = pd.to_datetime(df["DATE"], errors="coerce")
+        df["SEMAINE"] = dts.dt.isocalendar().week.astype("Int64")
+
     return df
-
 
 def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
     """Agrège les données GPS par joueuse et par semaine.
@@ -3299,6 +3369,21 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             n_local = len(list_gps_files_local())
             st.warning("Aucune donnée GPS brute trouvée.")
             st.caption(f"Fichiers GPS trouvés localement : {n_local} (data/gps ou data/)")
+
+            # Debug supplémentaire: afficher les colonnes du 1er fichier pour aider au mapping
+            try:
+                sample_files = list_gps_files_local()
+                if sample_files:
+                    samp = read_csv_auto(sample_files[0])
+                    samp.columns = [str(c).replace("\ufeff", "").strip() for c in samp.columns]
+                    st.caption(f"Exemple fichier: {os.path.basename(sample_files[0])}")
+                    st.caption(
+                        f"Colonnes détectées ({len(samp.columns)}): "
+                        + ", ".join(list(samp.columns)[:15])
+                        + (" ..." if len(samp.columns) > 15 else "")
+                    )
+            except Exception as e:
+                st.caption(f"Debug lecture sample GPS impossible: {e}")
             if n_local == 0:
                 st.info("Astuce : clique sur « Mettre à jour la base » (si disponible) pour lancer la sync Drive → data/gps. "
                         "Sinon, vérifie que le compte de service Google a bien accès au dossier Drive GPS et à ses sous-dossiers.")
