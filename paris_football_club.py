@@ -20,7 +20,6 @@ import pandas as pd
 import streamlit as st
 from streamlit_option_menu import option_menu
 from mplsoccer import PyPizza, Radar, FontManager, grid
-import matplotlib.pyplot as plt
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -52,7 +51,8 @@ REFERENTIEL_FILENAME = "Noms Prénoms Paris FC.xlsx"
 POST_COLS = ["ATT", "DCD", "DCG", "DD", "DG", "GB", "MCD", "MCG", "MD", "MDef", "MG"]
 
 BAD_TOKENS = {"CORNER", "COUP-FRANC", "COUP FRANC", "PENALTY", "CARTON", "CARTONS"}
-GPS_PREFIXES = ("GF1", "GF2", "GF")
+GPS_GF1_PREFIX = "GF1"
+
 # =========================
 # UTILS
 # =========================
@@ -1938,7 +1938,7 @@ GPS_GF1_REQUIRED = {
 def is_gf1_export_format(df: pd.DataFrame) -> bool:
     if df is None or df.empty:
         return False
-    cols = set([str(c).replace("\ufeff","").strip() for c in df.columns])
+    cols = set(map(str, df.columns))
     return len(GPS_GF1_REQUIRED.intersection(cols)) >= 8
 
 
@@ -1947,8 +1947,6 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     if df is None or df.empty:
         return df
     d = df.copy()
-    # Nettoyage BOM + espaces sur colonnes
-    d.columns = [str(c).replace("\ufeff", "").strip() for c in d.columns]
 
     rename_map = {
         "Activity Date": "DATE",
@@ -1986,15 +1984,18 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
 
     # Plages -> passerelle
     def _num(col):
-        if col in df.columns:
-            return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-        return pd.Series(0.0, index=df.index)
+        if col in d.columns:
+            return pd.to_numeric(d[col], errors="coerce").fillna(0.0)
+        return pd.Series(0.0, index=d.index)
 
     v13_15 = _num("Distance par plage de vitesse (13-15 km/h)")
     v15_19 = _num("Distance par plage de vitesse (15-19 km/h)")
     v19_23 = _num("Distance par plage de vitesse (19-23 km/h)")
     v23_25 = _num("Distance par plage de vitesse (23-25 km/h)")
     v_sup25 = _num("Distance par plage de vitesse (>25 km/h)")
+
+    d["Distance 15-19 (m)"] = v15_19
+    d["Distance >25 (m)"] = v_sup25
 
     d["Distance 13-19 (m)"] = v13_15 + v15_19
     d["Distance 19-23 (m)"] = v19_23
@@ -2026,19 +2027,17 @@ def read_csv_auto(path: str) -> pd.DataFrame:
 
 
 def list_gps_files_local() -> List[str]:
-    """Liste des CSV GPS synchronisés localement.
-
-    V34.6.4: on ne filtre PLUS sur le nom (GF1/GF2/Seance/etc.). Tout CSV trouvé
-    dans data/gps/ puis en fallback data/ est candidat.
-    """
+    """Liste des CSV GPS synchronisés localement (data/gps + fallback data/)."""
     paths: List[str] = []
     for folder in [os.path.join(DATA_FOLDER, "gps"), DATA_FOLDER]:
         if not os.path.exists(folder):
             continue
         for f in os.listdir(folder):
-            if f.lower().endswith(".csv"):
+            if f.lower().endswith(".csv") and ("gf1" in normalize_str(f) or "seance" in normalize_str(f) or "gps" in normalize_str(f)):
                 paths.append(os.path.join(folder, f))
-    return sorted(paths)
+    return paths
+
+
 
 def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     """Détecte d'abord le format GF1 export, sinon applique le mapping legacy."""
@@ -2052,9 +2051,9 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     colmap = {}
     for c in df.columns:
         nc = normalize_str(c)
-        if nc in {"nom", "name", "joueur", "joueuse", "nom de joueur", "nom_de_joueur"}:
+        if nc in {"nom", "name", "joueur", "joueuse"}:
             colmap[c] = "NOM"
-        elif nc in {"date", "activity date", "activity_date"}:
+        elif nc == "date":
             colmap[c] = "DATE"
         elif "semaine" in nc or nc == "week":
             colmap[c] = "SEMAINE"
@@ -2066,12 +2065,6 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
             colmap[c] = "Distance HID (>13 km/h)"
         elif "hid" in nc and "19" in nc:
             colmap[c] = "Distance HID (>19 km/h)"
-        elif "accel" in nc or "decel" in nc:
-            colmap[c] = "#accel/decel"
-        elif "15-19" in nc or ("15" in nc and "19" in nc and "plage" in nc):
-            colmap[c] = "Distance par plage de vitesse (15-19 km/h)"
-        elif ">25" in nc or ("25" in nc and "plage" in nc):
-            colmap[c] = "Distance par plage de vitesse (>25 km/h)"
         elif "charge" in nc:
             colmap[c] = "CHARGE"
         elif "rpe" in nc:
@@ -2092,32 +2085,27 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return out
 
 
-def load_gps_raw(
-    ref_set: Set[str],
-    alias_to_canon: Dict[str, str],
-    tokenkey_to_canon: Dict[str, str],
-    compact_to_canon: Dict[str, str],
-    first_to_canons: Dict[str, Set[str]],
-    last_to_canons: Dict[str, Set[str]],
-) -> pd.DataFrame:
-    """Charge et standardise tous les CSV GPS locaux.
-
-    V34.6.4:
-    - prend TOUS les CSV dans data/gps/ + fallback data/
-    - standardisation robuste des colonnes (BOM, variantes)
-    - mapping des noms vers le référentiel, mais ne drop jamais les lignes GPS
-      si le mapping échoue (on garde un fallback propre).
-    """
+def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_canon: Dict[str, str], compact_to_canon: Dict[str, str], first_to_canons: Dict[str, Set[str]], last_to_canons: Dict[str, Set[str]]) -> pd.DataFrame:
     files = list_gps_files_local()
     if not files:
         return pd.DataFrame()
 
-    frames: List[pd.DataFrame] = []
-    for p in files:
+    gf1_files = [p for p in files if normalize_str(os.path.basename(p)).startswith(normalize_str(GPS_GF1_PREFIX))]
+    if not gf1_files:
+        gf1_files = [p for p in files if "seance" in normalize_str(os.path.basename(p))]
+    if not gf1_files:
+        return pd.DataFrame()
+
+    gf1_files_sorted = []
+    for p in gf1_files:
+        d = parse_date_from_gf1_filename(os.path.basename(p))
+        gf1_files_sorted.append((d or datetime.min, p))
+    gf1_files_sorted.sort(key=lambda t: t[0])
+
+    frames = []
+    for _, p in gf1_files_sorted:
         try:
             dfp = read_csv_auto(p)
-            # Nettoyage BOM + espaces sur colonnes
-            dfp.columns = [str(c).replace("\ufeff", "").strip() for c in dfp.columns]
             dfp = standardize_gps_columns(dfp, os.path.basename(p))
             dfp["__source_file"] = os.path.basename(p)
             frames.append(dfp)
@@ -2126,110 +2114,41 @@ def load_gps_raw(
             continue
 
     df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    # ---- colonne NOM (joueuse) ----
-    if "NOM" not in df.columns:
-        # fallback agressif
-        for cand in [
-            "Nom de joueur", "Nom de Joueur", "nom de joueur",
-            "Nom de joueuse", "Nom de Joueuse", "nom de joueuse",
-            "Player", "Joueur", "Joueuse", "Nom",
-        ]:
-            if cand in df.columns:
-                df = df.rename(columns={cand: "NOM"})
-                break
-
-    if "NOM" not in df.columns:
-        # dernier recours: colonne contenant 'nom' + 'jou'
-        for c in df.columns:
-            cn = normalize_str(c)
-            if ("nom" in cn) and ("jou" in cn):
-                df = df.rename(columns={c: "NOM"})
-                break
-
     if df.empty or "NOM" not in df.columns:
         return pd.DataFrame()
 
-    # ---- mapping référentiel -> Player canon ----
-    mapped: List[str] = []
-    statuses: List[str] = []
+    # Mapping référentiel
+    mapped = []
+    statuses = []
     for v in df["NOM"].astype(str).tolist():
-        try:
-            m, status, _ = map_player_name(
-                v,
-                ref_set,
-                alias_to_canon,
-                tokenkey_to_canon,
-                compact_to_canon,
-                first_to_canons,
-                last_to_canons,
-                cutoff_fuzzy=0.93,
-            )
-        except Exception:
-            m, status = nettoyer_nom_joueuse(v), "unmatched"
-        mapped.append(m if m else nettoyer_nom_joueuse(v))
+        m, status, _ = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons, cutoff_fuzzy=0.93)
+        mapped.append(m)
         statuses.append(status)
-
     df["Player"] = mapped
     df["__name_status"] = statuses
 
-    # ---- numériques (compat formats) ----
-    numeric_cols = [
-        "Durée", "Durée_min", "Temps joué",
+    # Numériques (compat formats)
+    for c in [
+        "Durée", "Durée_min",
         "Distance (m)",
         "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
-        "Distance par plage de vitesse (13-15 km/h)",
-        "Distance par plage de vitesse (15-19 km/h)",
-        "Distance par plage de vitesse (19-23 km/h)",
-        "Distance par plage de vitesse (23-25 km/h)",
-        "Distance par plage de vitesse (>25 km/h)",
         "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
         "CHARGE", "RPE",
-        "#accel/decel",
-        "# of Sprints (>23 km/h)", "# of Sprints (>25 km/h)",
         "Sprints_23", "Sprints_25",
         "Vitesse max (km/h)",
-    ]
-    for c in numeric_cols:
+    ]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
     # Harmoniser Durée_min
-    if "Durée_min" not in df.columns:
-        if "Durée" in df.columns:
-            df["Durée_min"] = pd.to_numeric(df["Durée"], errors="coerce")
-        elif "Temps joué" in df.columns:
-            df["Durée_min"] = pd.to_numeric(df["Temps joué"], errors="coerce")
+    if "Durée_min" not in df.columns and "Durée" in df.columns:
+        df["Durée_min"] = pd.to_numeric(df["Durée"], errors="coerce")
+    elif "Durée_min" in df.columns:
+        df["Durée_min"] = pd.to_numeric(df["Durée_min"], errors="coerce")
 
-    # Date
-    if "DATE" in df.columns:
-        df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce", utc=True).dt.tz_convert(None)
-    else:
-        df["DATE"] = pd.NaT
-
-    # fallback: nom fichier JJ.MM.AAAA
-    miss = df["DATE"].isna()
-    if miss.any():
-        parsed = []
-        for fn in df.loc[miss, "__source_file"].astype(str).tolist():
-            m = re.search(r"(\d{2})\.(\d{2})\.(\d{2,4})", fn)
-            if not m:
-                parsed.append(pd.NaT)
-                continue
-            d, mo, y = m.group(1), m.group(2), m.group(3)
-            if len(y) == 2:
-                y = "20" + y
-            parsed.append(pd.to_datetime(f"{y}-{mo}-{d}", errors="coerce"))
-        df.loc[miss, "DATE"] = parsed
-
-    # SEMAINE
-    if "SEMAINE" not in df.columns:
-        dts = pd.to_datetime(df["DATE"], errors="coerce")
-        df["SEMAINE"] = dts.dt.isocalendar().week.astype("Int64")
-
+    df["DATE"] = pd.to_datetime(df.get("DATE", pd.NaT), errors="coerce")
     return df
+
 
 def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
     """Agrège les données GPS par joueuse et par semaine.
@@ -2312,6 +2231,82 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
         out["ACWR"] = np.nan
 
     return out
+
+
+
+def gps_plot_md_style(daily: pd.DataFrame, end_date: pd.Timestamp):
+    """Graphique type 'MD-6 ... MD' avec barres Distance(m) + courbes (HID, plages, relatif, Acc/Dec).
+
+    `daily` doit contenir une ligne par date (colonne DATE) et les colonnes métriques.
+    """
+    if daily is None or daily.empty or "DATE" not in daily.columns:
+        return None
+
+    import plotly.graph_objects as go
+
+    d = daily.copy()
+    d["DATE"] = pd.to_datetime(d["DATE"], errors="coerce")
+    d = d.dropna(subset=["DATE"]).sort_values("DATE")
+    if d.empty:
+        return None
+
+    end = pd.Timestamp(end_date).normalize()
+
+    # label MD-x
+    def _lbl(dt):
+        diff = (end - pd.Timestamp(dt).normalize()).days
+        if diff == 0:
+            return "MD"
+        return f"MD-{diff}" if diff > 0 else f"MD+{abs(diff)}"
+
+    d["MD_Label"] = d["DATE"].apply(_lbl)
+
+    # colonnes candidates
+    col_distance = "Distance (m)"
+    series_specs = [
+        ("Distance HID (>13 km/h)", "Distance HID (>13 km/h)"),
+        ("Distance 15-19 (m)", "Distance 15-19 (m)"),
+        ("Distance HID (>19 km/h)", "Distance HID (>19 km/h)"),
+        ("Distance >25 (m)", "Distance >25 (m)"),
+        ("Distance relative (m/min)", "Distance relative (m/min)"),
+        ("#accel/decel", "#accel/decel"),
+    ]
+
+    fig = go.Figure()
+
+    # Barres = Distance
+    if col_distance in d.columns:
+        fig.add_trace(go.Bar(
+            x=d["MD_Label"], y=pd.to_numeric(d[col_distance], errors="coerce"),
+            name="Moyenne de Distance (m)",
+            opacity=0.9
+        ))
+
+    # Courbes sur y2
+    for label, col in series_specs:
+        if col not in d.columns:
+            continue
+        y = pd.to_numeric(d[col], errors="coerce")
+        if y.notna().sum() == 0:
+            continue
+        fig.add_trace(go.Scatter(
+            x=d["MD_Label"], y=y,
+            name=f"Moyenne de {label}",
+            mode="lines+markers",
+            yaxis="y2"
+        ))
+
+    fig.update_layout(
+        height=520,
+        margin=dict(l=40, r=60, t=30, b=40),
+        legend=dict(orientation="v"),
+        xaxis=dict(title=""),
+        yaxis=dict(title="Distance (m)", rangemode="tozero"),
+        yaxis2=dict(title="Autres métriques", overlaying="y", side="right", rangemode="tozero"),
+        barmode="group",
+    )
+    return fig
+
 
 # =========================
 # GPS UI HELPERS
@@ -2406,156 +2401,6 @@ def gps_last_7_days_summary(df_raw: pd.DataFrame, player_canon: str, end_date: O
     }])
 
     return df_7j, summary
-
-# =========================
-# GPS - GRAPH (MD-6 -> MD) + FATIGUE (Monotony/Strain)
-# =========================
-def compute_monotony_strain(df_7j: pd.DataFrame, load_col: str = "CHARGE") -> pd.DataFrame:
-    """Monotony & Strain sur une fenêtre 7 jours.
-
-    - Agrège d'abord la charge par JOUR (DATE normalisée), puis :
-        monotony = mean(daily_load) / std(daily_load)
-        strain   = sum(daily_load) * monotony
-    """
-    if df_7j is None or df_7j.empty or "DATE" not in df_7j.columns:
-        return pd.DataFrame()
-    d = df_7j.copy()
-    d = ensure_date_column(d)
-    d = d[d["DATE"].notna()].copy()
-    if d.empty or load_col not in d.columns:
-        return pd.DataFrame()
-
-    d[load_col] = pd.to_numeric(d[load_col], errors="coerce").fillna(0.0)
-    d["DAY"] = pd.to_datetime(d["DATE"]).dt.normalize()
-
-    daily = d.groupby("DAY", as_index=False)[load_col].sum()
-    if daily.empty:
-        return pd.DataFrame()
-
-    mean_load = float(daily[load_col].mean())
-    std_load = float(daily[load_col].std(ddof=0))  # population std
-    total_load = float(daily[load_col].sum())
-
-    monotony = (mean_load / std_load) if std_load > 0 else np.nan
-    strain = (total_load * monotony) if pd.notna(monotony) else np.nan
-
-    return pd.DataFrame([{
-        "Charge variable": load_col,
-        "Charge totale (7j)": total_load,
-        "Charge moyenne/jour (7j)": mean_load,
-        "Variabilité (std/jour)": std_load,
-        "Monotony": monotony,
-        "Strain": strain,
-        "Nb jours avec données": int(daily["DAY"].nunique()),
-    }])
-
-
-def gps_daily_md7(df_7j: pd.DataFrame, md_date: pd.Timestamp) -> pd.DataFrame:
-    """Agrège les données GPS par jour sur [MD-6 ; MD] et crée les labels MD-6..MD."""
-    if df_7j is None or df_7j.empty:
-        return pd.DataFrame()
-
-    d = ensure_date_column(df_7j).copy()
-    d = d[d["DATE"].notna()].copy()
-    if d.empty:
-        return pd.DataFrame()
-
-    md = pd.to_datetime(md_date).normalize()
-    d["DAY"] = pd.to_datetime(d["DATE"]).dt.normalize()
-
-    # Colonnes attendues (si absentes, ignorées)
-    # Distances = somme ; Acc/Dec = somme ; Rel (m/min) = moyenne
-    cols_sum = [
-        "Distance (m)",
-        "Distance HID (>13 km/h)",
-        "Distance par plage de vitesse (15-19 km/h)",
-        "Distance HID (>19 km/h)",
-        "Distance par plage de vitesse (>25 km/h)",
-        "#accel/decel",
-    ]
-    cols_mean = ["Distance relative (m/min)"]
-
-    # Calcul distance relative si on ne l'a pas
-    if "Distance relative (m/min)" not in d.columns and "Distance (m)" in d.columns:
-        # Durée minutes: Durée_min prioritaire puis Durée (si déjà en minutes)
-        dur = None
-        if "Durée_min" in d.columns:
-            dur = pd.to_numeric(d["Durée_min"], errors="coerce")
-        elif "Durée" in d.columns:
-            dur = pd.to_numeric(d["Durée"], errors="coerce")
-        if dur is not None:
-            dist = pd.to_numeric(d["Distance (m)"], errors="coerce")
-            d["Distance relative (m/min)"] = np.where(dur > 0, dist / dur, np.nan)
-
-    agg = {}
-    for c in cols_sum:
-        if c in d.columns:
-            agg[c] = "sum"
-    for c in cols_mean:
-        if c in d.columns:
-            agg[c] = "mean"
-
-    if not agg:
-        return pd.DataFrame()
-
-    daily = d.groupby("DAY", as_index=False).agg(agg)
-
-    daily["delta"] = (daily["DAY"] - md).dt.days
-    daily = daily[(daily["delta"] >= -6) & (daily["delta"] <= 0)].copy()
-    if daily.empty:
-        return pd.DataFrame()
-
-    daily["label"] = daily["delta"].apply(lambda x: "MD" if x == 0 else f"MD{x}")
-    daily = daily.sort_values("delta").reset_index(drop=True)
-    return daily
-
-
-def plot_gps_md7(daily: pd.DataFrame, title: str = "GPS — 7 jours (MD-6 → MD)"):
-    """Graphique barres + courbes (proche de ton exemple)."""
-    if daily is None or daily.empty:
-        return None
-
-    x = np.arange(len(daily))
-    labels = daily["label"].tolist()
-
-    fig, ax1 = plt.subplots(figsize=(12, 5))
-
-    # Barres : Distance totale
-    if "Distance (m)" in daily.columns:
-        ax1.bar(x, daily["Distance (m)"].fillna(0), width=0.55)
-        ax1.set_ylabel("Distance (m)")
-
-    # Courbes distances (axe gauche)
-    for col, lab in [
-        ("Distance HID (>13 km/h)", "Distance HID (>13 km/h)"),
-        ("Distance par plage de vitesse (15-19 km/h)", "Distance 15–19 km/h"),
-        ("Distance HID (>19 km/h)", "Distance HID (>19 km/h)"),
-        ("Distance par plage de vitesse (>25 km/h)", "Distance >25 km/h"),
-    ]:
-        if col in daily.columns:
-            ax1.plot(x, daily[col].fillna(0), marker="o", linewidth=2, label=lab)
-
-    # Axe droit : Rel + Acc/Dec
-    ax2 = ax1.twinx()
-    ax2.set_ylabel("m/min / Acc-Dec")
-
-    if "Distance relative (m/min)" in daily.columns:
-        ax2.plot(x, daily["Distance relative (m/min)"].fillna(0), marker="o", linewidth=2, label="Distance relative (m/min)")
-    if "#accel/decel" in daily.columns:
-        ax2.plot(x, daily["#accel/decel"].fillna(0), marker="o", linewidth=2, label="# Acc/Dec")
-
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(labels, rotation=90)
-    ax1.set_title(title)
-
-    h1, l1 = ax1.get_legend_handles_labels()
-    h2, l2 = ax2.get_legend_handles_labels()
-    if h1 or h2:
-        ax1.legend(h1 + h2, l1 + l2, loc="center left", bbox_to_anchor=(1.02, 0.5), title="Valeurs")
-
-    fig.tight_layout()
-    return fig
-
 # =========================
 # COLLECT DATA
 # =========================
@@ -3358,35 +3203,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
     # =====================
     # DONNEES PHYSIQUES
-    # =====================
-    elif page == "Données Physiques":
+    # =====================    elif page == "Données Physiques":
         st.header("📊 Données Physiques (GPS)")
 
         gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
         gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
 
         if gps_raw is None or gps_raw.empty:
-            n_local = len(list_gps_files_local())
             st.warning("Aucune donnée GPS brute trouvée.")
-            st.caption(f"Fichiers GPS trouvés localement : {n_local} (data/gps ou data/)")
-
-            # Debug supplémentaire: afficher les colonnes du 1er fichier pour aider au mapping
-            try:
-                sample_files = list_gps_files_local()
-                if sample_files:
-                    samp = read_csv_auto(sample_files[0])
-                    samp.columns = [str(c).replace("\ufeff", "").strip() for c in samp.columns]
-                    st.caption(f"Exemple fichier: {os.path.basename(sample_files[0])}")
-                    st.caption(
-                        f"Colonnes détectées ({len(samp.columns)}): "
-                        + ", ".join(list(samp.columns)[:15])
-                        + (" ..." if len(samp.columns) > 15 else "")
-                    )
-            except Exception as e:
-                st.caption(f"Debug lecture sample GPS impossible: {e}")
-            if n_local == 0:
-                st.info("Astuce : clique sur « Mettre à jour la base » (si disponible) pour lancer la sync Drive → data/gps. "
-                        "Sinon, vérifie que le compte de service Google a bien accès au dossier Drive GPS et à ses sous-dossiers.")
             return
 
         gps_raw = ensure_date_column(gps_raw)
@@ -3473,40 +3297,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 return
 
             st.dataframe(summary, use_container_width=True)
-            # --- Graphique MD-6 -> MD (barres + courbes) ---
-            daily = gps_daily_md7(df_7j, md_date=pd.Timestamp(end_date_ui))
-            fig = plot_gps_md7(daily, title=f"{nettoyer_nom_joueuse(player_sel)} — 7 jours (MD-6 → MD)")
-            if fig is not None:
-                st.pyplot(fig)
-            else:
-                st.info("Graphique indisponible (colonnes distances/accel manquantes).")
-
-            # --- Indicateurs fatigue : Monotony / Strain ---
-            st.subheader("🧠 Indicateurs fatigue (Monotony / Strain)")
-            load_candidates = []
-            if "CHARGE" in df_7j.columns:
-                load_candidates.append("CHARGE")
-            if "Distance (m)" in df_7j.columns:
-                load_candidates.append("Distance (m)")
-            if not load_candidates:
-                st.info("Pas de colonne CHARGE ni Distance (m) disponible pour calculer Monotony/Strain.")
-            else:
-                load_col = st.selectbox("Variable de charge utilisée", load_candidates, index=0, key="gps_load_col_ms")
-                ms = compute_monotony_strain(df_7j, load_col=load_col)
-                if ms is not None and not ms.empty:
-                    c1, c2, c3, c4 = st.columns(4)
-                    with c1:
-                        st.metric("Monotony", f"{ms['Monotony'].iloc[0]:.2f}" if pd.notna(ms["Monotony"].iloc[0]) else "NA")
-                    with c2:
-                        st.metric("Strain", f"{ms['Strain'].iloc[0]:.0f}" if pd.notna(ms["Strain"].iloc[0]) else "NA")
-                    with c3:
-                        st.metric("Charge totale 7j", f"{ms['Charge totale (7j)'].iloc[0]:.0f}")
-                    with c4:
-                        st.metric("Std/jour", f"{ms['Variabilité (std/jour)'].iloc[0]:.0f}")
-
-                    with st.expander("Voir le détail Monotony/Strain"):
-                        st.dataframe(ms, use_container_width=True)
-
 
             with st.expander("Voir le détail (lignes brutes sur la période 7 jours)"):
                 show_cols = [c for c in [
