@@ -52,8 +52,7 @@ REFERENTIEL_FILENAME = "Noms Prénoms Paris FC.xlsx"
 POST_COLS = ["ATT", "DCD", "DCG", "DD", "DG", "GB", "MCD", "MCG", "MD", "MDef", "MG"]
 
 BAD_TOKENS = {"CORNER", "COUP-FRANC", "COUP FRANC", "PENALTY", "CARTON", "CARTONS"}
-GPS_GF1_PREFIX = "GF1"
-
+GPS_PREFIXES = ("GF1", "GF2", "GF")
 # =========================
 # UTILS
 # =========================
@@ -1939,7 +1938,7 @@ GPS_GF1_REQUIRED = {
 def is_gf1_export_format(df: pd.DataFrame) -> bool:
     if df is None or df.empty:
         return False
-    cols = set(map(str, df.columns))
+    cols = set([str(c).replace("\ufeff","").strip() for c in df.columns])
     return len(GPS_GF1_REQUIRED.intersection(cols)) >= 8
 
 
@@ -1948,6 +1947,8 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     if df is None or df.empty:
         return df
     d = df.copy()
+    # Nettoyage BOM + espaces sur colonnes
+    d.columns = [str(c).replace("\ufeff", "").strip() for c in d.columns]
 
     rename_map = {
         "Activity Date": "DATE",
@@ -2094,20 +2095,20 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_
     if not files:
         return pd.DataFrame()
 
-    gf1_files = [p for p in files if normalize_str(os.path.basename(p)).startswith(normalize_str(GPS_GF1_PREFIX))]
-    if not gf1_files:
-        gf1_files = [p for p in files if "seance" in normalize_str(os.path.basename(p))]
-    if not gf1_files:
+    gps_files = [p for p in files if normalize_str(os.path.basename(p)).startswith(normalize_str("gf"))]
+    if not gps_files:
+        gps_files = [p for p in files if "seance" in normalize_str(os.path.basename(p))]
+    if not gps_files:
         return pd.DataFrame()
 
-    gf1_files_sorted = []
-    for p in gf1_files:
+    gps_files_sorted = []
+    for p in gps_files:
         d = parse_date_from_gf1_filename(os.path.basename(p))
-        gf1_files_sorted.append((d or datetime.min, p))
-    gf1_files_sorted.sort(key=lambda t: t[0])
+        gps_files_sorted.append((d or datetime.min, p))
+    gps_files_sorted.sort(key=lambda t: t[0])
 
     frames = []
-    for _, p in gf1_files_sorted:
+    for _, p in gps_files_sorted:
         try:
             dfp = read_csv_auto(p)
             dfp = standardize_gps_columns(dfp, os.path.basename(p))
@@ -2118,6 +2119,12 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_
             continue
 
     df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    # Compat : si la standardisation n'a pas renommé, tenter un fallback
+    if (not df.empty) and ("NOM" not in df.columns):
+        for cand in ["Nom de joueur", "Nom de Joueur", "nom de joueur", "Player", "Joueur", "Joueuse"]:
+            if cand in df.columns:
+                df = df.rename(columns={cand: "NOM"})
+                break
     if df.empty or "NOM" not in df.columns:
         return pd.DataFrame()
 
