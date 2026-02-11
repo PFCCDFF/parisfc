@@ -1984,18 +1984,15 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
 
     # Plages -> passerelle
     def _num(col):
-        if col in d.columns:
-            return pd.to_numeric(d[col], errors="coerce").fillna(0.0)
-        return pd.Series(0.0, index=d.index)
+        if col in df.columns:
+            return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+        return pd.Series(0.0, index=df.index)
 
     v13_15 = _num("Distance par plage de vitesse (13-15 km/h)")
     v15_19 = _num("Distance par plage de vitesse (15-19 km/h)")
     v19_23 = _num("Distance par plage de vitesse (19-23 km/h)")
     v23_25 = _num("Distance par plage de vitesse (23-25 km/h)")
     v_sup25 = _num("Distance par plage de vitesse (>25 km/h)")
-
-    d["Distance 15-19 (m)"] = v15_19
-    d["Distance >25 (m)"] = v_sup25
 
     d["Distance 13-19 (m)"] = v13_15 + v15_19
     d["Distance 19-23 (m)"] = v19_23
@@ -2231,82 +2228,6 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
         out["ACWR"] = np.nan
 
     return out
-
-
-
-def gps_plot_md_style(daily: pd.DataFrame, end_date: pd.Timestamp):
-    """Graphique type 'MD-6 ... MD' avec barres Distance(m) + courbes (HID, plages, relatif, Acc/Dec).
-
-    `daily` doit contenir une ligne par date (colonne DATE) et les colonnes métriques.
-    """
-    if daily is None or daily.empty or "DATE" not in daily.columns:
-        return None
-
-    import plotly.graph_objects as go
-
-    d = daily.copy()
-    d["DATE"] = pd.to_datetime(d["DATE"], errors="coerce")
-    d = d.dropna(subset=["DATE"]).sort_values("DATE")
-    if d.empty:
-        return None
-
-    end = pd.Timestamp(end_date).normalize()
-
-    # label MD-x
-    def _lbl(dt):
-        diff = (end - pd.Timestamp(dt).normalize()).days
-        if diff == 0:
-            return "MD"
-        return f"MD-{diff}" if diff > 0 else f"MD+{abs(diff)}"
-
-    d["MD_Label"] = d["DATE"].apply(_lbl)
-
-    # colonnes candidates
-    col_distance = "Distance (m)"
-    series_specs = [
-        ("Distance HID (>13 km/h)", "Distance HID (>13 km/h)"),
-        ("Distance 15-19 (m)", "Distance 15-19 (m)"),
-        ("Distance HID (>19 km/h)", "Distance HID (>19 km/h)"),
-        ("Distance >25 (m)", "Distance >25 (m)"),
-        ("Distance relative (m/min)", "Distance relative (m/min)"),
-        ("#accel/decel", "#accel/decel"),
-    ]
-
-    fig = go.Figure()
-
-    # Barres = Distance
-    if col_distance in d.columns:
-        fig.add_trace(go.Bar(
-            x=d["MD_Label"], y=pd.to_numeric(d[col_distance], errors="coerce"),
-            name="Moyenne de Distance (m)",
-            opacity=0.9
-        ))
-
-    # Courbes sur y2
-    for label, col in series_specs:
-        if col not in d.columns:
-            continue
-        y = pd.to_numeric(d[col], errors="coerce")
-        if y.notna().sum() == 0:
-            continue
-        fig.add_trace(go.Scatter(
-            x=d["MD_Label"], y=y,
-            name=f"Moyenne de {label}",
-            mode="lines+markers",
-            yaxis="y2"
-        ))
-
-    fig.update_layout(
-        height=520,
-        margin=dict(l=40, r=60, t=30, b=40),
-        legend=dict(orientation="v"),
-        xaxis=dict(title=""),
-        yaxis=dict(title="Distance (m)", rangemode="tozero"),
-        yaxis2=dict(title="Autres métriques", overlaying="y", side="right", rangemode="tozero"),
-        barmode="group",
-    )
-    return fig
-
 
 # =========================
 # GPS UI HELPERS
@@ -2722,6 +2643,136 @@ def create_individual_radar(df):
     fig.set_facecolor("#002B5C")
     return fig
 
+
+
+
+# =========================
+# GPS - GRAPHIQUE MD-6 -> MD
+# =========================
+def _gps_get_numeric(d: pd.DataFrame, col: str) -> pd.Series:
+    if d is None or d.empty or col not in d.columns:
+        return pd.Series(dtype=float)
+    return pd.to_numeric(d[col], errors="coerce")
+
+def build_md_window_summary(d_player: pd.DataFrame, end_date: pd.Timestamp, days: int = 7) -> pd.DataFrame:
+    """Construit un tableau MD-6..MD sur la fenêtre [end_date-(days-1), end_date].
+    - Agrégation: moyenne par jour (si plusieurs lignes le même jour), puis moyenne par MD.
+    """
+    if d_player is None or d_player.empty or "DATE" not in d_player.columns:
+        return pd.DataFrame()
+
+    end_date = pd.Timestamp(end_date).normalize()
+    start_date = end_date - pd.Timedelta(days=days-1)
+
+    d = d_player.copy()
+    d["DATE"] = pd.to_datetime(d["DATE"], errors="coerce").dt.tz_localize(None)
+    d = d[(d["DATE"] >= start_date) & (d["DATE"] <= end_date)].copy()
+    if d.empty:
+        return pd.DataFrame()
+
+    # Variables (on n'impose pas qu'elles existent toutes)
+    vars_map = {
+        "Distance (m)": "Moyenne de Distance (m)",
+        "Distance HID (>13 km/h)": "Moyenne de Distance HID (>13 km/h)",
+        "Distance 15-19 (m)": "Moyenne de Distance par plage de vitesse (15-19 km/h)",
+        "Distance HID (>19 km/h)": "Moyenne de Distance HID (>19 km/h)",
+        "Distance >25 (m)": "Moyenne de Distance par plage de vitesse (>25 km/h)",
+        "Distance relative (m/min)": "Moyenne de Distance relative (m/min)",
+        "#accel/decel": "Moyenne de # Acc/Dec",
+    }
+
+    # Distance relative si non présente (Distance / Durée_min)
+    if "Distance relative (m/min)" not in d.columns:
+        dist = _gps_get_numeric(d, "Distance (m)")
+        dur = _gps_get_numeric(d, "Durée_min")
+        d["Distance relative (m/min)"] = (dist / dur.replace(0, np.nan)).fillna(0)
+
+    # 1) moyenne par DATE si plusieurs lignes dans la journée
+    agg_cols = [c for c in vars_map.keys() if c in d.columns]
+    dd = d.groupby(d["DATE"].dt.normalize(), as_index=False)[agg_cols].mean(numeric_only=True)
+    dd = dd.rename(columns={"DATE": "DATE_DAY"})
+
+    # 2) libellé MD
+    dd["delta"] = (end_date - dd["DATE_DAY"]).dt.days.astype(int)
+    dd = dd[(dd["delta"] >= 0) & (dd["delta"] <= (days-1))].copy()
+    dd["MD"] = dd["delta"].map(lambda k: "MD" if k == 0 else f"MD-{k}")
+
+    # 3) moyenne par MD (au cas où plusieurs séances le même MD sur des semaines différentes — rare)
+    out = dd.groupby("MD", as_index=False)[agg_cols].mean(numeric_only=True)
+
+    # Ordonner MD-6..MD
+    order = [f"MD-{k}" for k in range(days-1, 0, -1)] + ["MD"]
+    out["__ord"] = out["MD"].map({lab: i for i, lab in enumerate(order)})
+    out = out.sort_values("__ord").drop(columns="__ord")
+
+    # Renommer colonnes "Moyenne de ..."
+    out = out.rename(columns=vars_map)
+    return out
+
+def plot_gps_md_graph(summary: pd.DataFrame):
+    """Graphique inspiré du visuel (barres Distance + courbes)."""
+    if summary is None or summary.empty or "MD" not in summary.columns:
+        return None
+
+    import matplotlib.pyplot as plt
+
+    x = summary["MD"].tolist()
+
+    # Barres : Distance
+    dist_col = "Moyenne de Distance (m)"
+    fig, ax = plt.subplots(figsize=(11, 5))
+
+    if dist_col in summary.columns:
+        ax.bar(x, pd.to_numeric(summary[dist_col], errors="coerce").fillna(0.0).values)
+
+    ax.set_ylabel("Distance (m)")
+
+    ax2 = ax.twinx()
+    ax2.set_ylabel("Valeurs (axe droit)")
+
+    # Lignes (axe gauche par défaut, sauf Rel m/min et #Acc/Dec -> axe droit)
+    left_lines = [
+        "Moyenne de Distance HID (>13 km/h)",
+        "Moyenne de Distance par plage de vitesse (15-19 km/h)",
+        "Moyenne de Distance HID (>19 km/h)",
+        "Moyenne de Distance par plage de vitesse (>25 km/h)",
+    ]
+    right_lines = [
+        "Moyenne de Distance relative (m/min)",
+        "Moyenne de # Acc/Dec",
+    ]
+
+    for col in left_lines:
+        if col in summary.columns:
+            ax.plot(x, pd.to_numeric(summary[col], errors="coerce").fillna(0.0).values)
+
+    for col in right_lines:
+        if col in summary.columns:
+            ax2.plot(x, pd.to_numeric(summary[col], errors="coerce").fillna(0.0).values)
+
+    # légende unique
+    lines = ax.get_lines() + ax2.get_lines()
+    labels = [l.get_label() for l in lines]
+    # Matplotlib met souvent un label "_nolegend_"; on force des labels propres
+    # => on reconstruit via colonnes présentes
+    legend_handles = []
+    legend_labels = []
+    # barre distance
+    if dist_col in summary.columns:
+        import matplotlib.patches as mpatches
+        legend_handles.append(mpatches.Patch())
+        legend_labels.append(dist_col)
+
+    for col in left_lines + right_lines:
+        if col in summary.columns:
+            # retrouver la dernière line ajoutée correspondant à la colonne (ordre conservé)
+            # on n'a pas de correspondance 1-1 facile sans labels, donc on ajoute une entrée texte
+            legend_handles.append(plt.Line2D([0], [0]))
+            legend_labels.append(col)
+
+    ax.legend(legend_handles, legend_labels, loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=True)
+    fig.tight_layout()
+    return fig
 
 def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_creativity: bool = False):
     if df is None or df.empty or len(df) < 2:
@@ -3220,7 +3271,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.warning("Aucune joueuse détectée dans les données GPS.")
             return
 
-        tab_raw, tab_week = st.tabs(["🧾 Données brutes par joueuse", "📅 Moyennes 7 derniers jours"])
+        tab_raw, tab_week, tab_graph = st.tabs(["🧾 Données brutes par joueuse", "📅 Moyennes 7 derniers jours", "📈 Graphique MD-6 → MD"])
 
         with tab_raw:
             st.subheader("Données brutes (par joueuse)")
@@ -3315,7 +3366,43 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 dw = gps_weekly[gps_weekly["Player"].astype(str) == nettoyer_nom_joueuse(player_sel)].copy()
                 if not dw.empty:
                     st.dataframe(dw.sort_values("SEMAINE"), use_container_width=True)
-    elif page == "Joueuses Passerelles":
+    
+
+with tab_graph:
+    st.subheader("Graphique microcycle (MD-6 → MD)")
+
+    player_sel_g = player_name if player_name else st.selectbox("Joueuse", all_players, key="gps_graph_player_sel")
+    dg = gps_raw[gps_raw["Player"].astype(str) == nettoyer_nom_joueuse(player_sel_g)].copy()
+    dg = ensure_date_column(dg)
+
+    if dg.empty or dg["DATE"].isna().all():
+        st.info("Pas de dates exploitables pour cette joueuse (colonne activity date / DATE / nom de fichier).")
+    else:
+        dg = dg.dropna(subset=["DATE"]).copy()
+        dg["DATE"] = pd.to_datetime(dg["DATE"], errors="coerce").dt.tz_localize(None)
+        max_date = dg["DATE"].max().normalize()
+        min_date = dg["DATE"].min().normalize()
+
+        end_date = st.date_input(
+            "Date de référence (MD) — le graphique prend les 7 jours précédents",
+            value=max_date.date(),
+            min_value=min_date.date(),
+            max_value=max_date.date(),
+            key="gps_md_ref_date",
+        )
+        summary = build_md_window_summary(dg, pd.Timestamp(end_date), days=7)
+
+        if summary.empty:
+            st.info("Aucune donnée sur cette fenêtre de 7 jours.")
+        else:
+            st.dataframe(summary)
+
+            fig = plot_gps_md_graph(summary)
+            if fig is not None:
+                st.pyplot(fig)
+
+
+elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
         passerelle_data = load_passerelle_data()
         if not passerelle_data:
