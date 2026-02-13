@@ -2450,6 +2450,87 @@ def plot_gps_md_graph(summary: pd.DataFrame):
 # =========================
 # COLLECT DATA
 # =========================
+def gps_last_7_days_summary(gps_raw: pd.DataFrame, player_sel: str, end_date: Optional[pd.Timestamp] = None):
+    """Fenêtre glissante 7 jours (inclus) pour une joueuse.
+
+    Retourne:
+      - df_7j: lignes brutes sur la période
+      - summary: tableau (1 ligne) avec moyennes et totaux sur la période
+    """
+    if gps_raw is None or gps_raw.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    d = gps_raw.copy()
+
+    # Sélection joueuse (canon)
+    canon = nettoyer_nom_joueuse(player_sel)
+    if "Player" in d.columns:
+        d = d[d["Player"].astype(str).apply(nettoyer_nom_joueuse) == canon].copy()
+    else:
+        return pd.DataFrame(), pd.DataFrame()
+
+    if d.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Assurer DATE
+    d = ensure_date_column(d)
+    if "DATE" not in d.columns:
+        return pd.DataFrame(), pd.DataFrame()
+
+    d = d[d["DATE"].notna()].copy()
+    if d.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Normaliser DATE (tz-naive)
+    d["DATE"] = pd.to_datetime(d["DATE"], errors="coerce")
+    d = d[d["DATE"].notna()].copy()
+    if d.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    d["DATE"] = d["DATE"].dt.tz_localize(None)
+
+    # Date de fin (par défaut: dernière date dispo)
+    if end_date is None:
+        end_dt = pd.to_datetime(d["DATE"].max()).normalize()
+    else:
+        end_dt = pd.to_datetime(end_date).normalize()
+
+    start_dt = end_dt - pd.Timedelta(days=6)
+    end_inclusive = end_dt + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+
+    df_7j = d[(d["DATE"] >= start_dt) & (d["DATE"] <= end_inclusive)].copy()
+    if df_7j.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Colonnes numériques GPS possibles
+    metric_cols = [c for c in [
+        "Durée", "Durée_min",
+        "Distance (m)",
+        "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
+        "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+        "CHARGE", "RPE",
+        "Sprints_23", "Sprints_25",
+        "Vitesse max (km/h)", "#accel/decel",
+    ] if c in df_7j.columns]
+
+    # Coerce numériques
+    for c in metric_cols:
+        df_7j[c] = pd.to_numeric(df_7j[c], errors="coerce")
+
+    means = df_7j[metric_cols].mean(numeric_only=True)
+    sums = df_7j[metric_cols].sum(numeric_only=True)
+
+    summary = pd.DataFrame([{
+        "Player": canon,
+        "Période": f"{start_dt.date()} → {end_dt.date()}",
+        **{f"Moyenne 7j - {k}": (float(v) if pd.notna(v) else np.nan) for k, v in means.items()},
+        **{f"Total 7j - {k}": (float(v) if pd.notna(v) else np.nan) for k, v in sums.items()},
+        "Nb jours avec données (7j)": int(df_7j["DATE"].dt.date.nunique()),
+        "Nb lignes": int(len(df_7j)),
+    }])
+
+    return df_7j, summary
+
 @st.cache_data
 def collect_data(selected_season=None):
     download_google_drive()
@@ -3286,7 +3367,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 with c1:
                     # Sécuriser le type datetime (certains CSV donnent des strings / mixed types)
                     # DATE: conversion robuste (gère tz-aware / valeurs mixtes)
-                    d = ensure_date_column(d)
+d = ensure_date_column(d)
                     if d["DATE"].notna().sum() == 0:
                         st.info("Aucune date exploitable pour cette joueuse (colonne 'Activity Date' / 'DATE' / date dans le nom du fichier).")
                         date_range = None
@@ -3494,4 +3575,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
