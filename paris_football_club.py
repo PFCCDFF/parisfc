@@ -3402,7 +3402,7 @@ with tab_graph:
                 st.pyplot(fig)
 
 
-elif page == "Joueuses Passerelles":
+    elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
         passerelle_data = load_passerelle_data()
         if not passerelle_data:
@@ -3494,3 +3494,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
