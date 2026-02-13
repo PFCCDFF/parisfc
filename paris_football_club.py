@@ -2147,7 +2147,8 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_
             dfp["__source_file"] = os.path.basename(p)
             frames.append(dfp)
         except Exception as e:
-            st.warning(f"Match: impossible de lire {filename} -> {e}")
+            # Ici on est dans la lecture des fichiers GPS (pas les matchs)
+            st.warning(f"GPS: impossible de lire {os.path.basename(p)} -> {e}")
             continue
 
     df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
