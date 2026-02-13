@@ -3332,13 +3332,16 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             else:
                 c1, c2 = st.columns(2)
                 with c1:
-                    min_date = d["DATE"].min()
-                    max_date = d["DATE"].max()
-                    default_range = (
-                        (min_date.date() if pd.notna(min_date) else None),
-                        (max_date.date() if pd.notna(max_date) else None),
-                    )
-                    date_range = st.date_input("Période", value=default_range, key="gps_raw_date_range")
+                    # Sécuriser le type datetime (certains CSV donnent des strings / mixed types)
+                    d["DATE"] = pd.to_datetime(d.get("DATE", pd.NaT), errors="coerce")
+                    if d["DATE"].notna().sum() == 0:
+                        st.info("Aucune date exploitable pour cette joueuse (colonne 'Activity Date' / 'DATE' / date dans le nom du fichier).")
+                        date_range = None
+                    else:
+                        min_date = d["DATE"].min()
+                        max_date = d["DATE"].max()
+                        default_range = (min_date.date(), max_date.date())
+                        date_range = st.date_input("Période", value=default_range, key="gps_raw_date_range")
 
                 with c2:
                     if "__source_file" in d.columns:
@@ -3378,6 +3381,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.info("Pas de dates exploitables pour cette joueuse (colonne 'Activity Date' / 'DATE' ou date JJ.MM.AAAA dans le nom du fichier).")
                 return
 
+            tmp["DATE"] = pd.to_datetime(tmp["DATE"], errors="coerce")
             min_d = tmp["DATE"].min().date()
             max_d = tmp["DATE"].max().date()
 
