@@ -480,9 +480,27 @@ def walk_drive_folders(service, root_folder_id: str, state: dict):
             continue
 
 def _safe_local_path(filename: str, file_id: str) -> str:
+    """Construit un chemin local sûr sous data/gps.
+
+    Important:
+    - Certains appels passent un 'filename' avec un sous-dossier (ex: 'gps/xxx.csv').
+      On évite alors de créer 'data/gps/gps/xxx...' et on place toujours sous 'data/gps/'.
+    - On ajoute un suffixe avec l'id Drive pour éviter les collisions de noms.
+    """
     os.makedirs(GPS_FOLDER, exist_ok=True)
-    base, ext = os.path.splitext(filename)
-    return os.path.join(GPS_FOLDER, f"{base}__{file_id[:8]}{ext}")
+
+    rel = "" if filename is None else str(filename)
+    rel = os.path.normpath(rel).lstrip("/")
+
+    rel_dir = os.path.dirname(rel)
+    base = os.path.basename(rel)
+    base_noext, ext = os.path.splitext(base)
+
+    target_dir = os.path.join(GPS_FOLDER, rel_dir) if rel_dir else GPS_FOLDER
+    os.makedirs(target_dir, exist_ok=True)
+
+    return os.path.join(target_dir, f"{base_noext}__{file_id[:8]}{ext}")
+
 
 def download_drive_file_to_local(service, file_id: str, file_name: str, mime_type: str) -> str:
     # Google Sheet -> export xlsx
@@ -510,12 +528,13 @@ def download_drive_file_to_local(service, file_id: str, file_name: str, mime_typ
     return final_path
 
 def download_drive_csv_to_local(service, file_id: str, file_name: str) -> str:
-    """Télécharge un CSV (Drive binaire) vers data/gps/."""
+    """Télécharge un CSV (Drive binaire) vers data/gps/ (ou sous-dossiers éventuels)."""
     request = service.files().get_media(fileId=file_id)
-    if not file_name.lower().endswith(".csv"):
-        file_name = os.path.splitext(file_name)[0] + ".csv"
-    # Stocke dans data/gps (pour éviter de mélanger avec les fichiers match)
-    final_path = _safe_local_path(os.path.join("gps", file_name), file_id)
+    if not str(file_name).lower().endswith(".csv"):
+        file_name = os.path.splitext(str(file_name))[0] + ".csv"
+
+    # IMPORTANT: ne pas préfixer 'gps/' ici; _safe_local_path gère les sous-dossiers si présents.
+    final_path = _safe_local_path(str(file_name), file_id)
 
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
@@ -534,8 +553,10 @@ def download_drive_csv_to_local(service, file_id: str, file_name: str) -> str:
 def export_sheet_to_csv_local(service, file_id: str, file_name: str) -> str:
     """Exporte un Google Sheet en CSV vers data/gps/."""
     request = service.files().export_media(fileId=file_id, mimeType="text/csv")
-    file_name = os.path.splitext(file_name)[0] + ".csv"
-    final_path = _safe_local_path(os.path.join("gps", file_name), file_id)
+    file_name = os.path.splitext(str(file_name))[0] + ".csv"
+
+    # IMPORTANT: ne pas préfixer 'gps/' ici; _safe_local_path gère les sous-dossiers si présents.
+    final_path = _safe_local_path(str(file_name), file_id)
 
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
@@ -2024,16 +2045,35 @@ def read_csv_auto(path: str) -> pd.DataFrame:
 
 
 def list_gps_files_local() -> List[str]:
-    """Liste des CSV GPS synchronisés localement (data/gps + fallback data/)."""
-    paths: List[str] = []
-    for folder in [os.path.join(DATA_FOLDER, "gps"), DATA_FOLDER]:
-        if not os.path.exists(folder):
-            continue
-        for f in os.listdir(folder):
-            if f.lower().endswith(".csv") and ("gf1" in normalize_str(f) or "seance" in normalize_str(f) or "gps" in normalize_str(f)):
-                paths.append(os.path.join(folder, f))
-    return paths
+    """Liste des CSV GPS synchronisés localement.
 
+    - Parcourt récursivement data/gps (car certains téléchargements peuvent créer des sous-dossiers)
+    - Fallback: data/ (non récursif) si certains CSV ont été déposés à la racine.
+    """
+    paths: List[str] = []
+
+    gps_root = os.path.join(DATA_FOLDER, "gps")
+    if os.path.exists(gps_root):
+        for root, _, files in os.walk(gps_root):
+            for f in files:
+                if not f.lower().endswith(".csv"):
+                    continue
+                fn_norm = normalize_str(f)
+                if ("gf1" in fn_norm) or ("seance" in fn_norm) or ("séance" in fn_norm) or ("gps" in fn_norm):
+                    paths.append(os.path.join(root, f))
+
+    # fallback data/ (1 niveau)
+    if os.path.exists(DATA_FOLDER):
+        for f in os.listdir(DATA_FOLDER):
+            if not f.lower().endswith(".csv"):
+                continue
+            fn_norm = normalize_str(f)
+            if ("gf1" in fn_norm) or ("seance" in fn_norm) or ("séance" in fn_norm) or ("gps" in fn_norm):
+                paths.append(os.path.join(DATA_FOLDER, f))
+
+    # dédoublonnage
+    paths = sorted(list(dict.fromkeys(paths)))
+    return paths
 
 
 def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
