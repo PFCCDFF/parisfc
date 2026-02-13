@@ -3286,7 +3286,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 with c1:
                     # Sécuriser le type datetime (certains CSV donnent des strings / mixed types)
                     # DATE: conversion robuste (gère tz-aware / valeurs mixtes)
-d = ensure_date_column(d)
+                    d = ensure_date_column(d)
                     if d["DATE"].notna().sum() == 0:
                         st.info("Aucune date exploitable pour cette joueuse (colonne 'Activity Date' / 'DATE' / date dans le nom du fichier).")
                         date_range = None
@@ -3494,3 +3494,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
