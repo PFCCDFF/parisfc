@@ -2971,6 +2971,93 @@ def create_individual_radar(df: pd.DataFrame):
     return fig
 
 
+
+# =========================
+# RADAR COMPARAISON (2 profils)
+# =========================
+def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_creativity: bool = False):
+    """Radar comparatif (2 lignes) sur les métriques normalisées 0-100.
+    Attendu: df contient 2 lignes (joueuse A, joueuse B) + colonnes métriques.
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty or len(df) < 2:
+        return None
+
+    metrics = [
+        "Timing",
+        "Force physique",
+        "Intelligence tactique",
+        "Technique 1",
+        "Technique 2",
+        "Technique 3",
+        "Explosivité",
+        "Prise de risque",
+        "Précision",
+        "Sang-froid",
+    ]
+    if not exclude_creativity:
+        metrics += ["Créativité 1", "Créativité 2"]
+
+    available = [m for m in metrics if m in df.columns]
+    if len(available) < 3:
+        return None
+
+    # clamp 0..100
+    d = df.copy()
+    for c in available:
+        d[c] = pd.to_numeric(d[c], errors="coerce").clip(lower=0, upper=100).fillna(0)
+
+    # On prend les 2 premières lignes (ordre déjà imposé dans le caller)
+    v1 = d.iloc[0][available].values
+    v2 = d.iloc[1][available].values
+
+    low, high = [0] * len(available), [100] * len(available)
+    radar = Radar(available, low, high, num_rings=4, ring_width=1, center_circle_radius=1)
+
+    # Polices (fallback si URLs inaccessibles)
+    try:
+        url1 = "https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Thin.ttf"
+        url2 = "https://raw.githubusercontent.com/google/fonts/main/apache/robotoslab/RobotoSlab%5Bwght%5D.ttf"
+        robotto_thin, robotto_bold = FontManager(url1), FontManager(url2)
+        fp_thin = robotto_thin.prop
+        fp_bold = robotto_bold.prop
+    except Exception:
+        fp_thin = None
+        fp_bold = None
+
+    fig, axs = grid(
+        figheight=13,
+        grid_height=0.90,
+        title_height=0.07,
+        endnote_height=0.02,
+        title_space=0,
+        endnote_space=0,
+        grid_key="radar",
+    )
+
+    radar.setup_axis(ax=axs["radar"], facecolor="None")
+    radar.draw_circles(ax=axs["radar"], facecolor="#0c4281", edgecolor="#0c4281", lw=1.4)
+
+    radar.draw_radar_compare(
+        v1,
+        v2,
+        ax=axs["radar"],
+        kwargs_radar={"facecolor": "#00f2c1", "alpha": 0.55},
+        kwargs_compare={"facecolor": "#d80499", "alpha": 0.55},
+    )
+
+    radar.draw_range_labels(ax=axs["radar"], fontsize=16, color="#fcfcfc", fontproperties=fp_thin)
+    radar.draw_param_labels(ax=axs["radar"], fontsize=16, color="#fcfcfc", fontproperties=fp_thin)
+
+    p1 = player1_name if player1_name else str(d.iloc[0].get("Player", "Profil A"))
+    p2 = player2_name if player2_name else str(d.iloc[1].get("Player", "Profil B"))
+
+    axs["title"].text(0.01, 0.65, p1, fontsize=18, color="#01c49d", fontproperties=fp_bold, ha="left", va="center")
+    axs["title"].text(0.99, 0.65, p2, fontsize=18, color="#d80499", fontproperties=fp_bold, ha="right", va="center")
+
+    fig.set_facecolor("#002B5C")
+    return fig
+
+
 # =========================
 # UI
 # =========================
