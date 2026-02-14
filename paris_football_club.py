@@ -3028,7 +3028,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
     import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=(10, 10))
-    ax = fig.add_subplot(111, polar=True)
+    ax = fig.add_subplot(111)
     fig.patch.set_facecolor("#002B5C")
     ax.set_facecolor("#002B5C")
 
