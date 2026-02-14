@@ -2802,119 +2802,148 @@ def collect_data(selected_season=None):
 # =========================
 # RADARS
 # =========================
-def create_individual_radar(df):
+def create_individual_radar(df: pd.DataFrame):
+    """
+    Radar 'Club Pro' (Version A) :
+    - Couleurs par KPI (familles)
+    - Ordre des axes logique
+    - Grille fine
+    - Zones de perf (rouge/orange/vert en fond)
+    - Top 2 forces / Top 2 axes de progrès
+    """
     if df is None or df.empty or "Player" not in df.columns:
         return None
 
-    columns_to_plot = [
-        "Timing",
-        "Force physique",
+    # --- Ordre logique (familles) ---
+    # Rigueur -> Lecture -> Distribution -> Percussion -> Finition -> Créativité
+    ordered_params = [
+        # Rigueur
+        "Timing", "Force physique",
+        # Lecture
         "Intelligence tactique",
-        "Technique 1",
-        "Technique 2",
-        "Technique 3",
-        "Explosivité",
-        "Prise de risque",
-        "Précision",
-        "Sang-froid",
-        "Créativité 1",
-        "Créativité 2",
+        # Distribution
+        "Technique 1", "Technique 2", "Technique 3",
+        # Percussion
+        "Explosivité", "Prise de risque",
+        # Finition
+        "Précision", "Sang-froid",
+        # Créativité
+        "Créativité 1", "Créativité 2",
     ]
-    available = [c for c in columns_to_plot if c in df.columns]
-    if not available:
+
+    available = [p for p in ordered_params if p in df.columns]
+    if len(available) < 3:
         return None
 
-    base_colors = ["#6A7CD9", "#00BFFE", "#FF9470", "#F27979", "#BFBFBF"]
-    colors = (base_colors * ((len(available) // len(base_colors)) + 1))[: len(available)]
+    player = df.iloc[0].copy()
 
-    player = df.iloc[0]
+    # --- Couleurs par KPI (familles cohérentes) ---
+    # (tu peux ajuster si tu veux coller à ta charte)
+    FAMILY_COLOR = {
+        "Timing": "#2FB8FF",
+        "Force physique": "#2FB8FF",
 
+        "Intelligence tactique": "#FFA06E",
+
+        "Technique 1": "#FF6B6B",
+        "Technique 2": "#FF6B6B",
+        "Technique 3": "#FF6B6B",
+
+        "Explosivité": "#7B84FF",
+        "Prise de risque": "#7B84FF",
+
+        "Précision": "#BFBFBF",
+        "Sang-froid": "#BFBFBF",
+
+        "Créativité 1": "#8E9BFF",
+        "Créativité 2": "#8E9BFF",
+    }
+    slice_colors = [FAMILY_COLOR.get(p, "#9AA4B2") for p in available]
+
+    # --- Valeurs ---
+    values = [float(pd.to_numeric(player[p], errors="coerce")) if p in player else 0.0 for p in available]
+    values = [0.0 if pd.isna(v) else max(0.0, min(100.0, v)) for v in values]
+
+    # --- Top forces / axes de progrès (sur les métriques disponibles) ---
+    s = pd.Series(values, index=available).sort_values(ascending=False)
+    top2 = s.head(2)
+    low2 = s.tail(2).sort_values(ascending=True)
+
+    # --- Construction PyPizza ---
+    # Grille plus fine + look plus clean
     pizza = PyPizza(
         params=available,
         background_color="#002B5C",
         straight_line_color="#FFFFFF",
         last_circle_color="#FFFFFF",
+        straight_line_lw=1.0,      # plus fin
+        last_circle_lw=1.4,        # un peu plus épais
+        other_circle_lw=0.8,       # plus fin
+        other_circle_color="#8FA3BF",
     )
-    fig, _ = pizza.make_pizza(
-        figsize=(3, 3),
-        values=[player[c] for c in available],
-        slice_colors=colors,
+
+    fig, ax = pizza.make_pizza(
+        values=values,
+        figsize=(8, 8),
+        slice_colors=slice_colors,
+        value_colors=["#FFFFFF"] * len(available),
+        kwargs_slices=dict(edgecolor="#FFFFFF", linewidth=2.2),
+        kwargs_params=dict(color="#FFFFFF", fontsize=12, fontproperties="monospace"),
         kwargs_values=dict(
             color="#FFFFFF",
-            fontsize=3.5,
-            bbox=dict(edgecolor="#FFFFFF", facecolor="#002B5C", boxstyle="round, pad=0.5", lw=1),
+            fontsize=11,
+            bbox=dict(
+                edgecolor="#FFFFFF",
+                facecolor="#002B5C",
+                boxstyle="round,pad=0.25",
+                lw=1.2
+            ),
         ),
-        kwargs_params=dict(color="#FFFFFF", fontsize=3.5, fontproperties="monospace"),
     )
-    fig.set_facecolor("#002B5C")
-    return fig
 
+    # --- Zones de performance (fond léger) ---
+    # Rouge <40 / Orange 40-70 / Vert >70
+    # PyPizza est en coordonnées polaires mais on peut superposer des cercles
+    import matplotlib.patches as patches
 
-def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_creativity: bool = False):
-    if df is None or df.empty or len(df) < 2:
-        return None
-
-    metrics = [
-        "Timing",
-        "Force physique",
-        "Intelligence tactique",
-        "Technique 1",
-        "Technique 2",
-        "Technique 3",
-        "Explosivité",
-        "Prise de risque",
-        "Précision",
-        "Sang-froid",
+    # cercle externe = 100
+    zone_specs = [
+        (40, "#FF6B6B", 0.08),   # fragile
+        (70, "#FFA06E", 0.07),   # développement
+        (100, "#2ED47A", 0.05),  # point fort
     ]
-    if not exclude_creativity:
-        metrics += ["Créativité 1", "Créativité 2"]
 
-    if exclude_creativity:
-        metrics = [m for m in metrics if not m.startswith("Créativité")]
+    # On dessine de l’extérieur vers l’intérieur (100->70->40) pour un rendu propre
+    for r, col, alpha in sorted(zone_specs, key=lambda x: x[0], reverse=True):
+        circ = patches.Circle((0, 0), r, transform=ax.transData._b, color=col, alpha=alpha, zorder=0)
+        ax.add_artist(circ)
 
-    available = [m for m in metrics if m in df.columns]
-    if len(available) < 2:
-        return None
+    # --- Petite pastille centrale plus discrète ---
+    center = patches.Circle((0, 0), 4.0, transform=ax.transData._b, color="#001E40", zorder=10)
+    ax.add_artist(center)
 
-    low, high = (0,) * len(available), (100,) * len(available)
-    radar = Radar(available, low, high, num_rings=4, ring_width=1, center_circle_radius=1)
-
-    url1 = "https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Thin.ttf"
-    url2 = "https://raw.githubusercontent.com/google/fonts/main/apache/robotoslab/RobotoSlab%5Bwght%5D.ttf"
-    robotto_thin, robotto_bold = FontManager(url1), FontManager(url2)
-
-    fig, axs = grid(
-        figheight=14,
-        grid_height=0.915,
-        title_height=0.06,
-        endnote_height=0.025,
-        title_space=0,
-        endnote_space=0,
-        grid_key="radar",
+    # --- Titre + résumé forces/axes ---
+    player_name = str(player.get("Player", "")).strip()
+    fig.text(
+        0.5, 0.96,
+        f"{player_name} — Profil (0–100)",
+        ha="center", va="center",
+        color="#FFFFFF", fontsize=16, fontweight="bold"
     )
 
-    radar.setup_axis(ax=axs["radar"], facecolor="None")
-    radar.draw_circles(ax=axs["radar"], facecolor="#0c4281", edgecolor="#0c4281", lw=1.5)
-
-    v1 = df.iloc[0][available].values
-    v2 = df.iloc[1][available].values
-
-    radar.draw_radar_compare(
-        v1,
-        v2,
-        ax=axs["radar"],
-        kwargs_radar={"facecolor": "#00f2c1", "alpha": 0.6},
-        kwargs_compare={"facecolor": "#d80499", "alpha": 0.6},
+    fig.text(
+        0.5, 0.92,
+        f"⭐ Forces : {top2.index[0]} ({int(round(top2.iloc[0]))}) • {top2.index[1]} ({int(round(top2.iloc[1]))})",
+        ha="center", va="center",
+        color="#CFE8FF", fontsize=11
     )
 
-    radar.draw_range_labels(ax=axs["radar"], fontsize=18, color="#fcfcfc", fontproperties=robotto_thin.prop)
-    radar.draw_param_labels(ax=axs["radar"], fontsize=18, color="#fcfcfc", fontproperties=robotto_thin.prop)
-
-    p1 = player1_name if player1_name else df.iloc[0]["Player"]
-    p2 = player2_name if player2_name else df.iloc[1]["Player"]
-
-    axs["title"].text(0.01, 0.65, p1, fontsize=18, color="#01c49d", fontproperties=robotto_bold.prop, ha="left", va="center")
-    axs["title"].text(0.99, 0.65, p2, fontsize=18, color="#d80499", fontproperties=robotto_bold.prop, ha="right", va="center")
+    fig.text(
+        0.5, 0.89,
+        f"⚠️ Axes : {low2.index[0]} ({int(round(low2.iloc[0]))}) • {low2.index[1]} ({int(round(low2.iloc[1]))})",
+        ha="center", va="center",
+        color="#FFD6D6", fontsize=11
+    )
 
     fig.set_facecolor("#002B5C")
     return fig
@@ -3575,4 +3604,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
