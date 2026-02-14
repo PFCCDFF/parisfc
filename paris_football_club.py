@@ -2930,6 +2930,25 @@ def create_individual_radar(df: pd.DataFrame):
     player_name = str(player.get("Player", "")).strip()
     # --- Forces / Axes : bloc lisible SOUS le graphique ---
     # On wrappe pour éviter les débordements sur petits écrans
+    # --- calcul Forces / Axes (Top 2 / Bottom 2) ---
+    vals = []
+    for p in available:
+        try:
+            v = float(player.get(p, np.nan))
+        except Exception:
+            v = np.nan
+        if not np.isnan(v):
+            vals.append((p, v))
+
+    vals_desc = sorted(vals, key=lambda t: t[1], reverse=True)
+    vals_asc = sorted(vals, key=lambda t: t[1])
+
+    top_n = vals_desc[:2]
+    low_n = vals_asc[:2]
+
+    top_txt = " • ".join([f"{k} ({v:.0f})" for k, v in top_n]) if top_n else "—"
+    low_txt = " • ".join([f"{k} ({v:.0f})" for k, v in low_n]) if low_n else "—"
+
     forces_txt = f"✅ Forces : {top_txt}"
     axes_txt = f"⚠️ Axes : {low_txt}"
     forces_wrapped = "\n".join(textwrap.wrap(forces_txt, width=70))
