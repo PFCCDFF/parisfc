@@ -2400,6 +2400,7 @@ def plot_gps_md_graph(summary: pd.DataFrame):
         return None
 
     import matplotlib.pyplot as plt
+    import textwrap
     import matplotlib.patches as mpatches
 
     x = summary["MD"].tolist()
@@ -2922,29 +2923,30 @@ def create_individual_radar(df: pd.DataFrame):
     center = patches.Circle((0, 0), 4.0, transform=ax.transData._b, color="#001E40", zorder=10)
     ax.add_artist(center)
 
+
+    # Espace pour afficher Forces / Axes sous le graphique
+    fig.subplots_adjust(top=0.90, bottom=0.18)
     # --- Titre + résumé forces/axes ---
     player_name = str(player.get("Player", "")).strip()
-    fig.text(
-        0.5, 0.96,
-        f"{player_name} — Profil (0–100)",
-        ha="center", va="center",
-        color="#FFFFFF", fontsize=16, fontweight="bold"
-    )
+    # --- Forces / Axes : bloc lisible SOUS le graphique ---
+    # On wrappe pour éviter les débordements sur petits écrans
+    forces_txt = f"✅ Forces : {top_txt}"
+    axes_txt = f"⚠️ Axes : {low_txt}"
+    forces_wrapped = "\n".join(textwrap.wrap(forces_txt, width=70))
+    axes_wrapped = "\n".join(textwrap.wrap(axes_txt, width=70))
 
     fig.text(
-        0.5, 0.92,
-        f"⭐ Forces : {top2.index[0]} ({int(round(top2.iloc[0]))}) • {top2.index[1]} ({int(round(top2.iloc[1]))})",
+        0.5, 0.10,
+        forces_wrapped,
         ha="center", va="center",
-        color="#CFE8FF", fontsize=11
+        fontsize=12, color="#DDE8F7",
     )
-
     fig.text(
-        0.5, 0.89,
-        f"⚠️ Axes : {low2.index[0]} ({int(round(low2.iloc[0]))}) • {low2.index[1]} ({int(round(low2.iloc[1]))})",
+        0.5, 0.05,
+        axes_wrapped,
         ha="center", va="center",
-        color="#FFD6D6", fontsize=11
+        fontsize=12, color="#DDE8F7",
     )
-
     fig.set_facecolor("#002B5C")
     return fig
 
