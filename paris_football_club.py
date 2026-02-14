@@ -2976,12 +2976,16 @@ def create_individual_radar(df: pd.DataFrame):
 # RADAR COMPARAISON (2 profils)
 # =========================
 def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_creativity: bool = False):
-    """Radar comparatif (2 lignes) sur les métriques normalisées 0-100.
-    Attendu: df contient 2 lignes (joueuse A, joueuse B) + colonnes métriques.
+    """Radar de comparaison (2 profils) + résumé des écarts sous le graphique.
+
+    Option A (choisie): même format radar, mais mise en page plus propre :
+    - titres sans bandeaux blancs
+    - espace réservé en bas pour un résumé lisible (forces / axes d'amélioration vs comparatif)
     """
-    if df is None or not isinstance(df, pd.DataFrame) or df.empty or len(df) < 2:
+    if df is None or df.empty or len(df) < 2:
         return None
 
+    # métriques
     metrics = [
         "Timing",
         "Force physique",
@@ -2997,70 +3001,89 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
     if not exclude_creativity:
         metrics += ["Créativité 1", "Créativité 2"]
 
+    # colonnes dispo
     available = [m for m in metrics if m in df.columns]
     if len(available) < 3:
         return None
 
-    # clamp 0..100
     d = df.copy()
+
+    # clamp + numeric
     for c in available:
-        d[c] = pd.to_numeric(d[c], errors="coerce").clip(lower=0, upper=100).fillna(0)
+        d[c] = pd.to_numeric(d[c], errors="coerce").clip(lower=0, upper=100).fillna(0.0)
 
-    # On prend les 2 premières lignes (ordre déjà imposé dans le caller)
-    v1 = d.iloc[0][available].values
-    v2 = d.iloc[1][available].values
+    # on force 2 lignes
+    d2 = d.iloc[:2].copy()
+    v1 = d2.iloc[0][available].values.astype(float)
+    v2 = d2.iloc[1][available].values.astype(float)
 
+    # labels
+    p1 = str(player1_name) if player1_name else str(d2.iloc[0].get("Player", "Joueuse A"))
+    p2 = str(player2_name) if player2_name else str(d2.iloc[1].get("Player", "Joueuse B"))
+
+    # radar
     low, high = [0] * len(available), [100] * len(available)
     radar = Radar(available, low, high, num_rings=4, ring_width=1, center_circle_radius=1)
 
-    # Polices (fallback si URLs inaccessibles)
-    try:
-        url1 = "https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Thin.ttf"
-        url2 = "https://raw.githubusercontent.com/google/fonts/main/apache/robotoslab/RobotoSlab%5Bwght%5D.ttf"
-        robotto_thin, robotto_bold = FontManager(url1), FontManager(url2)
-        fp_thin = robotto_thin.prop
-        fp_bold = robotto_bold.prop
-    except Exception:
-        fp_thin = None
-        fp_bold = None
+    import matplotlib.pyplot as plt
 
-    fig, axs = grid(
-        figheight=13,
-        grid_height=0.90,
-        title_height=0.07,
-        endnote_height=0.02,
-        title_space=0,
-        endnote_space=0,
-        grid_key="radar",
-    )
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(111, polar=True)
+    fig.patch.set_facecolor("#002B5C")
+    ax.set_facecolor("#002B5C")
 
-    radar.setup_axis(ax=axs["radar"], facecolor="None")
-    radar.draw_circles(ax=axs["radar"], facecolor="#0c4281", edgecolor="#0c4281", lw=1.4)
+    radar.setup_axis(ax=ax, facecolor="None")
+    radar.draw_circles(ax=ax, facecolor="#0c4281", edgecolor="#0c4281", lw=1.5)
 
+    # radar compare
     radar.draw_radar_compare(
         v1,
         v2,
-        ax=axs["radar"],
-        kwargs_radar={"facecolor": "#00f2c1", "alpha": 0.55},
-        kwargs_compare={"facecolor": "#d80499", "alpha": 0.55},
+        ax=ax,
+        kwargs_radar={"facecolor": "#00f2c1", "alpha": 0.45, "edgecolor": "#00f2c1", "lw": 2},
+        kwargs_compare={"facecolor": "#d80499", "alpha": 0.40, "edgecolor": "#d80499", "lw": 2},
     )
 
-    radar.draw_range_labels(ax=axs["radar"], fontsize=16, color="#fcfcfc", fontproperties=fp_thin)
-    radar.draw_param_labels(ax=axs["radar"], fontsize=16, color="#fcfcfc", fontproperties=fp_thin)
+    # labels
+    radar.draw_range_labels(ax=ax, fontsize=10, color="#bcd0e6")
+    radar.draw_param_labels(ax=ax, fontsize=12, color="#fcfcfc")
 
-    p1 = player1_name if player1_name else str(d.iloc[0].get("Player", "Profil A"))
-    p2 = player2_name if player2_name else str(d.iloc[1].get("Player", "Profil B"))
+    # titres (sans bandeaux)
+    fig.text(0.03, 0.965, p1, ha="left", va="top", fontsize=16, color="#00f2c1", fontweight="bold")
+    fig.text(0.97, 0.965, p2, ha="right", va="top", fontsize=16, color="#d80499", fontweight="bold")
+    fig.text(0.5, 0.965, "Comparaison (0-100)", ha="center", va="top", fontsize=14, color="#ffffff", fontweight="bold")
 
-    axs["title"].text(0.01, 0.65, p1, fontsize=18, color="#01c49d", fontproperties=fp_bold, ha="left", va="center")
-    axs["title"].text(0.99, 0.65, p2, fontsize=18, color="#d80499", fontproperties=fp_bold, ha="right", va="center")
+    # résumé des écarts sous le radar
+    # delta = p1 - p2
+    delta = pd.Series(v1 - v2, index=available)
 
-    fig.set_facecolor("#002B5C")
+    # top écarts
+    top_pos = delta.sort_values(ascending=False).head(3)
+    top_neg = delta.sort_values(ascending=True).head(3)
+
+    def _fmt_series(s: pd.Series) -> str:
+        parts = []
+        for k, v in s.items():
+            sign = "+" if v >= 0 else ""
+            parts.append(f"{k} ({sign}{v:.0f})")
+        return " • ".join(parts) if parts else "—"
+
+    txt_pos = _fmt_series(top_pos)
+    txt_neg = _fmt_series(top_neg)
+
+    # espace en bas
+    fig.subplots_adjust(top=0.90, bottom=0.18)
+
+    fig.text(0.5, 0.11, f"✅ Avantages {p1} vs {p2} : {txt_pos}", ha="center", va="center",
+             fontsize=11.5, color="#ffffff")
+    fig.text(0.5, 0.075, f"⚠️ Axes d'amélioration {p1} vs {p2} : {txt_neg}", ha="center", va="center",
+             fontsize=11.5, color="#ffffff")
+
+    # petite légende en bas à droite
+    fig.text(0.98, 0.02, "Δ = (profil A - profil B)", ha="right", va="bottom", fontsize=9, color="#bcd0e6")
+
     return fig
 
-
-# =========================
-# UI
-# =========================
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     st.sidebar.markdown(
         "<div style='display:flex;justify-content:center;'><img src='https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png' width='100'></div>",
