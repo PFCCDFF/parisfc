@@ -3731,6 +3731,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.warning("Aucune donnée passerelle.")
             return
 
+        # Sources non filtrées (important si le profil est lié à une seule joueuse)
+        pfc_source = pfc_kpi_all if 'pfc_kpi_all' in locals() and isinstance(pfc_kpi_all, pd.DataFrame) and not pfc_kpi_all.empty else pfc_kpi
+        edf_source = edf_kpi_all if 'edf_kpi_all' in locals() and isinstance(edf_kpi_all, pd.DataFrame) and not edf_kpi_all.empty else edf_kpi
+
         # --- Sélection ---
         selected = st.selectbox("Sélectionnez une joueuse", list(passerelle_data.keys()), key="passerelle_player_sel")
         info = passerelle_data[selected]
@@ -3780,11 +3784,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         # candidates: joueurs présents dans les stats PFC + GPS (si dispo)
         stats_candidates = []
-        if isinstance(pfc_kpi, pd.DataFrame) and not pfc_kpi.empty:
+        if isinstance(pfc_source, pd.DataFrame) and not pfc_source.empty:
             # selon la structure, la colonne peut être "Joueuse" / "Player" / "Nom"
             for col in ["Joueuse", "Player", "Nom", "NOM", "Joueur"]:
-                if col in pfc_kpi.columns:
-                    stats_candidates = sorted(pfc_kpi[col].dropna().astype(str).unique().tolist())
+                if col in pfc_source.columns:
+                    stats_candidates = sorted(pfc_source[col].dropna().astype(str).unique().tolist())
                     break
 
         gps_candidates = []
@@ -3829,26 +3833,26 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         with tab_stats:
             st.subheader("Statistiques joueuse")
 
-            if not isinstance(pfc_kpi, pd.DataFrame) or pfc_kpi.empty:
+            if not isinstance(pfc_source, pd.DataFrame) or pfc_source.empty:
                 st.warning("Aucune donnée statistiques PFC disponible.")
             else:
                 # Réutilise le pipeline d'agrégation déjà présent
                 # -> on filtre les lignes de la joueuse puis on applique la même logique que l'onglet Statistiques
                 player_col = None
                 for col in ["Joueuse", "Player", "Nom", "NOM", "Joueur"]:
-                    if col in pfc_kpi.columns:
+                    if col in pfc_source.columns:
                         player_col = col
                         break
 
                 if player_col is None:
                     st.warning("Impossible d'identifier la colonne 'joueuse' dans les statistiques PFC.")
                 else:
-                    pfc_player_df = pfc_kpi[pfc_kpi[player_col].astype(str) == str(resolved_player)].copy()
+                    pfc_player_df = pfc_source[pfc_source[player_col].astype(str) == str(resolved_player)].copy()
                     if pfc_player_df.empty:
                         # fallback: match par normalisation
                         try:
                             base = normalize_str(str(resolved_player))
-                            pfc_player_df = pfc_kpi[pfc_kpi[player_col].astype(str).map(lambda x: normalize_str(str(x)) == base)].copy()
+                            pfc_player_df = pfc_source[pfc_source[player_col].astype(str).map(lambda x: normalize_str(str(x)) == base)].copy()
                         except Exception:
                             pass
 
@@ -3881,15 +3885,15 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         with tab_edf:
             st.subheader("Comparaison avec le référentiel EDF")
 
-            if not isinstance(edf_kpi, pd.DataFrame) or edf_kpi.empty:
+            if not isinstance(edf_source, pd.DataFrame) or edf_source.empty:
                 st.warning("Aucune donnée EDF disponible (fichiers EDF_Joueuses / EDF_U19_Match*.csv).")
             else:
                 # On essaie de déterminer un poste par défaut via la passerelle
                 poste_default = str(info.get("Poste 1", "")).strip()
                 postes = []
                 for col in ["Poste", "POSTE", "Position", "POS"]:
-                    if col in edf_kpi.columns:
-                        postes = sorted(edf_kpi[col].dropna().astype(str).unique().tolist())
+                    if col in edf_source.columns:
+                        postes = sorted(edf_source[col].dropna().astype(str).unique().tolist())
                         poste_col = col
                         break
                 else:
@@ -3911,43 +3915,34 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
                     poste_sel = st.selectbox("Poste EDF de référence", postes, index=idx_default, key="passerelle_poste_edf_sel")
 
-                    # Construire la comparaison à partir des données 'players_data' attendues par create_comparison_radar
-                    # On réutilise la fonction existante build_players_data_for_comparison(...) si elle existe.
-                    try:
-                        players_data = build_players_data_for_comparison(
-                            pfc_kpi=pfc_kpi,
-                            edf_kpi=edf_kpi,
-                            player_name=str(resolved_player),
-                            edf_position=poste_sel
-                        )
-                    except Exception:
-                        players_data = {}
+                    # Données pour comparaison EDF (profil joueuse vs référentiel)
+                    player_df = prepare_comparison_data(pfc_source, resolved_player, selected_matches=None)
 
-                    if not players_data or "player1" not in players_data or "player2" not in players_data:
-                        st.info("Comparaison indisponible (données insuffisantes pour construire le radar).")
+                    edf_line = edf_source[edf_source["Poste"] == poste_sel].copy()
+                    if player_df is None or player_df.empty:
+                        st.info("Pas assez de données match pour cette joueuse pour calculer un profil.")
+                    elif edf_line.empty:
+                        st.info("Référentiel EDF indisponible pour ce poste.")
                     else:
-                        edf_label = f"EDF {poste_sel} moyenne (EDF)"
-                        try:
-                            fig = create_comparison_radar(
-                                players_data,
-                                player1_name=str(resolved_player),
-                                player2_name=edf_label,
-                                exclude_creativity=True
-                            )
+                        edf_label = str(poste_sel)
+                        edf_line = edf_line.copy()
+                        edf_line["Player"] = edf_label
+                        if "Poste" in edf_line.columns:
+                            edf_line = edf_line.drop(columns=["Poste"])
+                        players_data = pd.concat([player_df, edf_line], ignore_index=True, sort=False)
+
+                        fig = create_comparison_radar(
+                            players_data,
+                            player1_name=str(resolved_player),
+                            player2_name=edf_label,
+                            exclude_creativity=True,
+                        )
+                        if fig is not None:
                             st.pyplot(fig, use_container_width=True)
-                        except Exception as e:
-                            st.warning(f"Radar comparaison indisponible : {e}")
+                        else:
+                            st.info("Impossible de générer le radar de comparaison (données insuffisantes).")
 
-                        with st.expander("Voir les valeurs comparées"):
-                            try:
-                                st.dataframe(pd.DataFrame(players_data), use_container_width=True)
-                            except Exception:
-                                st.write(players_data)
-
-        # =========================
-        # TAB 3 — DONNÉES PHYSIQUES (GPS)
-        # =========================
-        with tab_gps:
+with tab_gps:
             st.subheader("Données physiques (GPS)")
 
             gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
