@@ -3731,26 +3731,377 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.warning("Aucune donnée passerelle.")
             return
 
-        selected = st.selectbox("Sélectionnez une joueuse", list(passerelle_data.keys()))
+        # --- Sélection ---
+        selected = st.selectbox("Sélectionnez une joueuse", list(passerelle_data.keys()), key="passerelle_player_sel")
         info = passerelle_data[selected]
 
+        # --- Résolution du nom (Passerelle -> noms utilisés dans Stats/GPS) ---
+        def _resolve_best_player_name(pass_key: str, pass_info: dict, candidates: list[str]) -> str:
+            """Tente de retrouver le libellé 'Player' utilisé dans les données (stats/GPS) à partir de la passerelle."""
+            if not candidates:
+                return pass_key
+
+            # Construire un libellé plus informatif si possible : "NOM Prénom"
+            nom = str(pass_info.get("Nom", "") or pass_key).strip()
+            prenom = str(pass_info.get("Prénom", "")).strip()
+            full = f"{nom} {prenom}".strip()
+
+            # Comparaison sur versions normalisées (accents, casse, ponctuation)
+            try:
+                base = normalize_str(full) if full else normalize_str(pass_key)
+            except Exception:
+                base = (full or pass_key).lower()
+
+            norm_map = {}
+            for c in candidates:
+                try:
+                    norm_map[c] = normalize_str(str(c))
+                except Exception:
+                    norm_map[c] = str(c).lower()
+
+            # 1) match exact normalisé
+            for c, cn in norm_map.items():
+                if cn == base:
+                    return c
+
+            # 2) contient (ex: passerelle = NOM, candidates = "NOM Prénom")
+            for c, cn in norm_map.items():
+                if base and base in cn:
+                    return c
+
+            # 3) fuzzy
+            from difflib import get_close_matches
+            best_norm = get_close_matches(base, list(norm_map.values()), n=1, cutoff=0.55)
+            if best_norm:
+                inv = {v: k for k, v in norm_map.items()}
+                return inv.get(best_norm[0], pass_key)
+
+            return pass_key
+
+        # candidates: joueurs présents dans les stats PFC + GPS (si dispo)
+        stats_candidates = []
+        if isinstance(pfc_kpi, pd.DataFrame) and not pfc_kpi.empty:
+            # selon la structure, la colonne peut être "Joueuse" / "Player" / "Nom"
+            for col in ["Joueuse", "Player", "Nom", "NOM", "Joueur"]:
+                if col in pfc_kpi.columns:
+                    stats_candidates = sorted(pfc_kpi[col].dropna().astype(str).unique().tolist())
+                    break
+
+        gps_candidates = []
+        gps_raw_all = st.session_state.get("gps_raw_df", pd.DataFrame())
+        if isinstance(gps_raw_all, pd.DataFrame) and not gps_raw_all.empty and "Player" in gps_raw_all.columns:
+            gps_candidates = sorted(gps_raw_all["Player"].dropna().astype(str).unique().tolist())
+
+        candidates = sorted(set(stats_candidates + gps_candidates))
+        resolved_player = _resolve_best_player_name(selected, info, candidates)
+
+        # --- Identité ---
         st.subheader("Identité")
-        if info.get("Prénom"):
-            st.write(f"**Prénom :** {info['Prénom']}")
-        if info.get("Photo"):
-            st.image(info["Photo"], width=150)
-        if info.get("Date de naissance"):
-            st.write(f"**Date de naissance :** {info['Date de naissance']}")
-        if info.get("Poste 1"):
-            st.write(f"**Poste 1 :** {info['Poste 1']}")
-        if info.get("Poste 2"):
-            st.write(f"**Poste 2 :** {info['Poste 2']}")
-        if info.get("Pied Fort"):
-            st.write(f"**Pied Fort :** {info['Pied Fort']}")
-        if info.get("Taille"):
-            st.write(f"**Taille :** {info['Taille']}")
+        cA, cB = st.columns([1, 2])
+        with cA:
+            if info.get("Photo"):
+                st.image(info["Photo"], width=160)
+        with cB:
+            if info.get("Prénom"):
+                st.write(f"**Prénom :** {info['Prénom']}")
+            st.write(f"**Nom :** {info.get('Nom', selected)}")
+            if info.get("Date de naissance"):
+                st.write(f"**Date de naissance :** {info['Date de naissance']}")
+            if info.get("Poste 1"):
+                st.write(f"**Poste 1 :** {info['Poste 1']}")
+            if info.get("Poste 2"):
+                st.write(f"**Poste 2 :** {info['Poste 2']}")
+            if info.get("Pied Fort"):
+                st.write(f"**Pied Fort :** {info['Pied Fort']}")
+            if info.get("Taille"):
+                st.write(f"**Taille :** {info['Taille']}")
+            if resolved_player:
+                st.caption(f"Nom détecté dans les données : **{resolved_player}**")
 
+        st.divider()
 
+        # --- Onglets (Stats / EDF / GPS) ---
+        tab_stats, tab_edf, tab_gps = st.tabs(["📈 Statistiques", "🆚 Comparaison EDF", "🏃 Données physiques (GPS)"])
+
+        # =========================
+        # TAB 1 — STATS (comme onglet Statistiques)
+        # =========================
+        with tab_stats:
+            st.subheader("Statistiques joueuse")
+
+            if not isinstance(pfc_kpi, pd.DataFrame) or pfc_kpi.empty:
+                st.warning("Aucune donnée statistiques PFC disponible.")
+            else:
+                # Réutilise le pipeline d'agrégation déjà présent
+                # -> on filtre les lignes de la joueuse puis on applique la même logique que l'onglet Statistiques
+                player_col = None
+                for col in ["Joueuse", "Player", "Nom", "NOM", "Joueur"]:
+                    if col in pfc_kpi.columns:
+                        player_col = col
+                        break
+
+                if player_col is None:
+                    st.warning("Impossible d'identifier la colonne 'joueuse' dans les statistiques PFC.")
+                else:
+                    pfc_player_df = pfc_kpi[pfc_kpi[player_col].astype(str) == str(resolved_player)].copy()
+                    if pfc_player_df.empty:
+                        # fallback: match par normalisation
+                        try:
+                            base = normalize_str(str(resolved_player))
+                            pfc_player_df = pfc_kpi[pfc_kpi[player_col].astype(str).map(lambda x: normalize_str(str(x)) == base)].copy()
+                        except Exception:
+                            pass
+
+                    if pfc_player_df.empty:
+                        st.info("Aucune ligne statistique trouvée pour cette joueuse.")
+                    else:
+                        # Fonction utilitaire existante dans le script: aggregate_player_stats(...)
+                        try:
+                            aggregated = aggregate_player_stats(pfc_player_df)
+                        except Exception:
+                            # fallback minimal: moyenne numérique
+                            num_cols = pfc_player_df.select_dtypes(include="number").columns.tolist()
+                            aggregated = pfc_player_df[num_cols].mean(numeric_only=True).to_frame().T
+                            aggregated.insert(0, "Joueuse", resolved_player)
+
+                        # Radar individuel (celui amélioré avec Forces/Faiblesses en dessous)
+                        try:
+                            fig = create_individual_radar(aggregated)
+                            st.pyplot(fig, use_container_width=True)
+                        except Exception as e:
+                            st.warning(f"Radar indisponible : {e}")
+
+                        # Tableau résumé (mêmes colonnes que d'habitude)
+                        with st.expander("Voir les données agrégées"):
+                            st.dataframe(aggregated, use_container_width=True)
+
+        # =========================
+        # TAB 2 — COMPARAISON EDF
+        # =========================
+        with tab_edf:
+            st.subheader("Comparaison avec le référentiel EDF")
+
+            if not isinstance(edf_kpi, pd.DataFrame) or edf_kpi.empty:
+                st.warning("Aucune donnée EDF disponible (fichiers EDF_Joueuses / EDF_U19_Match*.csv).")
+            else:
+                # On essaie de déterminer un poste par défaut via la passerelle
+                poste_default = str(info.get("Poste 1", "")).strip()
+                postes = []
+                for col in ["Poste", "POSTE", "Position", "POS"]:
+                    if col in edf_kpi.columns:
+                        postes = sorted(edf_kpi[col].dropna().astype(str).unique().tolist())
+                        poste_col = col
+                        break
+                else:
+                    poste_col = None
+
+                if poste_col is None or not postes:
+                    st.warning("Impossible d'identifier la colonne 'Poste' dans le référentiel EDF.")
+                else:
+                    # Default index if close match
+                    idx_default = 0
+                    if poste_default:
+                        try:
+                            from difflib import get_close_matches
+                            m = get_close_matches(poste_default, postes, n=1, cutoff=0.4)
+                            if m:
+                                idx_default = postes.index(m[0])
+                        except Exception:
+                            pass
+
+                    poste_sel = st.selectbox("Poste EDF de référence", postes, index=idx_default, key="passerelle_poste_edf_sel")
+
+                    # Construire la comparaison à partir des données 'players_data' attendues par create_comparison_radar
+                    # On réutilise la fonction existante build_players_data_for_comparison(...) si elle existe.
+                    try:
+                        players_data = build_players_data_for_comparison(
+                            pfc_kpi=pfc_kpi,
+                            edf_kpi=edf_kpi,
+                            player_name=str(resolved_player),
+                            edf_position=poste_sel
+                        )
+                    except Exception:
+                        players_data = {}
+
+                    if not players_data or "player1" not in players_data or "player2" not in players_data:
+                        st.info("Comparaison indisponible (données insuffisantes pour construire le radar).")
+                    else:
+                        edf_label = f"EDF {poste_sel} moyenne (EDF)"
+                        try:
+                            fig = create_comparison_radar(
+                                players_data,
+                                player1_name=str(resolved_player),
+                                player2_name=edf_label,
+                                exclude_creativity=True
+                            )
+                            st.pyplot(fig, use_container_width=True)
+                        except Exception as e:
+                            st.warning(f"Radar comparaison indisponible : {e}")
+
+                        with st.expander("Voir les valeurs comparées"):
+                            try:
+                                st.dataframe(pd.DataFrame(players_data), use_container_width=True)
+                            except Exception:
+                                st.write(players_data)
+
+        # =========================
+        # TAB 3 — DONNÉES PHYSIQUES (GPS)
+        # =========================
+        with tab_gps:
+            st.subheader("Données physiques (GPS)")
+
+            gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
+            gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
+
+            if gps_raw is None or gps_raw.empty:
+                st.warning("Aucune donnée GPS brute trouvée.")
+            else:
+                gps_raw = ensure_date_column(gps_raw)
+
+                # Filtre joueuse
+                dgps = gps_raw[gps_raw.get("Player", pd.Series(dtype=str)).astype(str) == str(resolved_player)].copy()
+                if dgps.empty:
+                    # fallback: normalisation
+                    try:
+                        base = normalize_str(str(resolved_player))
+                        dgps = gps_raw[gps_raw.get("Player", pd.Series(dtype=str)).astype(str).map(lambda x: normalize_str(str(x)) == base)].copy()
+                    except Exception:
+                        pass
+
+                if dgps.empty:
+                    st.info("Aucune ligne GPS pour cette joueuse.")
+                else:
+                    tab_raw_g, tab_week_g, tab_graph_g = st.tabs(
+                        ["🧾 Brutes", "📅 7 jours (glissant)", "📈 Microcycle MD-6 → MD"]
+                    )
+
+                    with tab_raw_g:
+                        st.caption("Filtrage par période / fichier source")
+                        d = ensure_date_column(dgps.copy())
+
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if d["DATE"].notna().sum() == 0:
+                                st.info("Aucune date exploitable (colonne 'Activity Date' / 'DATE' / date dans le nom du fichier).")
+                                date_range = None
+                            else:
+                                min_date = d["DATE"].min()
+                                max_date = d["DATE"].max()
+                                default_range = (min_date.date(), max_date.date())
+                                date_range = st.date_input("Période", value=default_range, key="passerelle_gps_raw_date_range")
+
+                        with c2:
+                            if "__source_file" in d.columns:
+                                srcs = ["Tous"] + sorted(d["__source_file"].dropna().astype(str).unique().tolist())
+                                src_sel = st.selectbox("Fichier source (optionnel)", srcs, key="passerelle_gps_raw_src_sel")
+                            else:
+                                src_sel = "Tous"
+
+                        if isinstance(date_range, tuple) and len(date_range) == 2 and date_range[0] and date_range[1]:
+                            d = d[(d["DATE"] >= pd.Timestamp(date_range[0])) & (d["DATE"] <= pd.Timestamp(date_range[1]))].copy()
+                        if src_sel != "Tous" and "__source_file" in d.columns:
+                            d = d[d["__source_file"].astype(str) == str(src_sel)].copy()
+
+                        show_cols = [c for c in [
+                            "DATE", "SEMAINE", "Player", "NOM",
+                            "Durée", "Durée_min",
+                            "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+                            "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
+                            "CHARGE", "RPE",
+                            "Sprints_23", "Sprints_25",
+                            "Vitesse max (km/h)",
+                            "__name_status", "__source_file"
+                        ] if c in d.columns]
+
+                        st.dataframe(d.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
+
+                    with tab_week_g:
+                        tmp = dgps.copy()
+                        tmp = tmp[tmp["DATE"].notna()].copy()
+                        if tmp.empty:
+                            st.info("Pas de dates exploitables pour cette joueuse.")
+                        else:
+                            tmp["DATE"] = pd.to_datetime(tmp["DATE"], errors="coerce")
+                            min_d = tmp["DATE"].min().date()
+                            max_d = tmp["DATE"].max().date()
+
+                            end_date_ui = st.date_input(
+                                "Date de fin (fenêtre = 7 jours précédents inclus)",
+                                value=max_d,
+                                min_value=min_d,
+                                max_value=max_d,
+                                key="passerelle_gps_end_date_7d",
+                            )
+
+                            df_7j, summary = gps_last_7_days_summary(gps_raw, resolved_player, end_date=pd.Timestamp(end_date_ui))
+
+                            if summary is None or summary.empty:
+                                st.info("Aucune donnée sur cette fenêtre de 7 jours.")
+                            else:
+                                st.dataframe(summary, use_container_width=True)
+
+                                with st.expander("Voir le détail (lignes brutes sur la période 7 jours)"):
+                                    show_cols = [c for c in [
+                                        "DATE", "SEMAINE", "Player", "NOM",
+                                        "Durée", "Durée_min",
+                                        "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+                                        "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
+                                        "CHARGE", "RPE",
+                                        "__name_status", "__source_file"
+                                    ] if c in df_7j.columns]
+                                    st.dataframe(df_7j.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
+
+                                if gps_weekly is not None and not gps_weekly.empty and "SEMAINE" in gps_weekly.columns:
+                                    st.divider()
+                                    st.caption("Vue hebdomadaire (somme par semaine ISO) — optionnelle")
+                                    dw = gps_weekly[gps_weekly["Player"].astype(str) == str(resolved_player)].copy()
+                                    if not dw.empty:
+                                        st.dataframe(dw.sort_values("SEMAINE"), use_container_width=True)
+
+                    with tab_graph_g:
+                        dg = dgps.copy()
+                        dg = dg[dg["DATE"].notna()].copy()
+
+                        if dg.empty:
+                            st.info("Pas de dates exploitables pour cette joueuse.")
+                        else:
+                            max_date = dg["DATE"].max().normalize()
+                            min_date = dg["DATE"].min().normalize()
+
+                            end_date = st.date_input(
+                                "Date de référence (MD) — le graphique prend les 7 jours précédents",
+                                value=max_date.date(),
+                                min_value=min_date.date(),
+                                max_value=max_date.date(),
+                                key="passerelle_gps_md_ref_date",
+                            )
+
+                            summary_md = build_md_window_summary(dg, pd.Timestamp(end_date), days=7)
+
+                            if summary_md is None or summary_md.empty:
+                                st.info("Aucune donnée sur cette fenêtre de 7 jours.")
+                            else:
+                                st.dataframe(summary_md, use_container_width=True)
+                                try:
+                                    # On conserve l'amélioration "très visuelle" + possibilité de choisir les courbes
+                                    default_lines = [c for c in [
+                                        "Moyenne de Distance (m)",
+                                        "Moyenne de Distance HID (>13 km/h)",
+                                        "Moyenne de Distance 13-19 (m)",
+                                        "Moyenne de Distance 19-23 (m)",
+                                        "Moyenne de Distance >23 (m)",
+                                    ] if c in summary_md.columns]
+                                    selected_lines = st.multiselect(
+                                        "Courbes affichées (axe droit)",
+                                        [c for c in summary_md.columns if c not in ["MD", "MD_num"]],
+                                        default=default_lines,
+                                        key="passerelle_gps_selected_lines"
+                                    )
+                                    fig = plot_gps_md_graph(summary_md, selected_lines=selected_lines)
+                                    if fig is not None:
+                                        st.pyplot(fig, use_container_width=True)
+                                except Exception as e:
+                                    st.warning(f"Graphique indisponible : {e}")
 
 
 # =========================
