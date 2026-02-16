@@ -3493,7 +3493,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     # DONNEES PHYSIQUES
     # =====================    # =====================
 
-    elif page == "Données Physiques":
+elif page == "Données Physiques":
     st.header("📊 Données Physiques (GPS)")
 
     gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
@@ -3759,5 +3759,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
