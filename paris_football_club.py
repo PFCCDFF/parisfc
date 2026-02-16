@@ -2401,6 +2401,8 @@ def plot_gps_md_graph(summary_md: pd.DataFrame, selected_lines: Optional[List[st
     - selected_lines: list of metric columns to plot as line(s) on the right axis.
     The bar represents total distance by default (if present).
     """
+    import matplotlib.pyplot as plt
+
     if summary_md is None or summary_md.empty:
         return None
     if "MD" not in summary_md.columns:
