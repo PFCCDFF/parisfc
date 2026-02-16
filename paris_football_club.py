@@ -3942,39 +3942,39 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         else:
                             st.info("Impossible de générer le radar de comparaison (données insuffisantes).")
 
-with tab_gps:
-            st.subheader("Données physiques (GPS)")
+                            with tab_gps:
+                                st.subheader("Données physiques (GPS)")
 
-            gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
-            gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
+                                gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
+                                gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
 
-            if gps_raw is None or gps_raw.empty:
-                st.warning("Aucune donnée GPS brute trouvée.")
-            else:
-                gps_raw = ensure_date_column(gps_raw)
+                        if gps_raw is None or gps_raw.empty:
+                            st.warning("Aucune donnée GPS brute trouvée.")
+                        else:
+                            gps_raw = ensure_date_column(gps_raw)
 
                 # Filtre joueuse
-                dgps = gps_raw[gps_raw.get("Player", pd.Series(dtype=str)).astype(str) == str(resolved_player)].copy()
-                if dgps.empty:
-                    # fallback: normalisation
-                    try:
-                        base = normalize_str(str(resolved_player))
-                        dgps = gps_raw[gps_raw.get("Player", pd.Series(dtype=str)).astype(str).map(lambda x: normalize_str(str(x)) == base)].copy()
-                    except Exception:
+                        dgps = gps_raw[gps_raw.get("Player", pd.Series(dtype=str)).astype(str) == str(resolved_player)].copy()
+                        if dgps.empty:
+                            # fallback: normalisation
+                        try:
+                            base = normalize_str(str(resolved_player))
+                            dgps = gps_raw[gps_raw.get("Player", pd.Series(dtype=str)).astype(str).map(lambda x: normalize_str(str(x)) == base)].copy()
+                        except Exception:
                         pass
 
-                if dgps.empty:
-                    st.info("Aucune ligne GPS pour cette joueuse.")
-                else:
-                    tab_raw_g, tab_week_g, tab_graph_g = st.tabs(
-                        ["🧾 Brutes", "📅 7 jours (glissant)", "📈 Microcycle MD-6 → MD"]
+                        if dgps.empty:
+                            st.info("Aucune ligne GPS pour cette joueuse.")
+                        else:
+                            tab_raw_g, tab_week_g, tab_graph_g = st.tabs(
+                            ["🧾 Brutes", "📅 7 jours (glissant)", "📈 Microcycle MD-6 → MD"]
                     )
 
-                    with tab_raw_g:
-                        st.caption("Filtrage par période / fichier source")
-                        d = ensure_date_column(dgps.copy())
+                        with tab_raw_g:
+                            st.caption("Filtrage par période / fichier source")
+                            d = ensure_date_column(dgps.copy())
 
-                        c1, c2 = st.columns(2)
+                            c1, c2 = st.columns(2)
                         with c1:
                             if d["DATE"].notna().sum() == 0:
                                 st.info("Aucune date exploitable (colonne 'Activity Date' / 'DATE' / date dans le nom du fichier).")
@@ -3992,33 +3992,33 @@ with tab_gps:
                             else:
                                 src_sel = "Tous"
 
-                        if isinstance(date_range, tuple) and len(date_range) == 2 and date_range[0] and date_range[1]:
-                            d = d[(d["DATE"] >= pd.Timestamp(date_range[0])) & (d["DATE"] <= pd.Timestamp(date_range[1]))].copy()
-                        if src_sel != "Tous" and "__source_file" in d.columns:
-                            d = d[d["__source_file"].astype(str) == str(src_sel)].copy()
+                            if isinstance(date_range, tuple) and len(date_range) == 2 and date_range[0] and date_range[1]:
+                                d = d[(d["DATE"] >= pd.Timestamp(date_range[0])) & (d["DATE"] <= pd.Timestamp(date_range[1]))].copy()
+                            if src_sel != "Tous" and "__source_file" in d.columns:
+                                d = d[d["__source_file"].astype(str) == str(src_sel)].copy()
 
-                        show_cols = [c for c in [
-                            "DATE", "SEMAINE", "Player", "NOM",
-                            "Durée", "Durée_min",
-                            "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
-                            "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
-                            "CHARGE", "RPE",
-                            "Sprints_23", "Sprints_25",
-                            "Vitesse max (km/h)",
-                            "__name_status", "__source_file"
-                        ] if c in d.columns]
+                                show_cols = [c for c in [
+                                "DATE", "SEMAINE", "Player", "NOM",
+                                "Durée", "Durée_min",
+                                "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+                                "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
+                                "CHARGE", "RPE",
+                                "Sprints_23", "Sprints_25",
+                                "Vitesse max (km/h)",
+                                "__name_status", "__source_file"
+                                ] if c in d.columns]
 
-                        st.dataframe(d.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
+                                    st.dataframe(d.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
 
-                    with tab_week_g:
-                        tmp = dgps.copy()
-                        tmp = tmp[tmp["DATE"].notna()].copy()
-                        if tmp.empty:
-                            st.info("Pas de dates exploitables pour cette joueuse.")
-                        else:
-                            tmp["DATE"] = pd.to_datetime(tmp["DATE"], errors="coerce")
-                            min_d = tmp["DATE"].min().date()
-                            max_d = tmp["DATE"].max().date()
+                            with tab_week_g:
+                                tmp = dgps.copy()
+                                tmp = tmp[tmp["DATE"].notna()].copy()
+                            if tmp.empty:
+                                st.info("Pas de dates exploitables pour cette joueuse.")
+                            else:
+                                tmp["DATE"] = pd.to_datetime(tmp["DATE"], errors="coerce")
+                                min_d = tmp["DATE"].min().date()
+                                max_d = tmp["DATE"].max().date()
 
                             end_date_ui = st.date_input(
                                 "Date de fin (fenêtre = 7 jours précédents inclus)",
@@ -4164,6 +4164,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
