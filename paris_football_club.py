@@ -3494,24 +3494,24 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     # =====================    # =====================
 
     if page == "Données Physiques":
-    st.header("📊 Données Physiques (GPS)")
+        st.header("📊 Données Physiques (GPS)")
 
-    gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
-    gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
+        gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
+        gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
 
-    if gps_raw is None or gps_raw.empty:
-        st.warning("Aucune donnée GPS brute trouvée.")
+        if gps_raw is None or gps_raw.empty:
+            st.warning("Aucune donnée GPS brute trouvée.")
         return
 
-    gps_raw = ensure_date_column(gps_raw)
+        gps_raw = ensure_date_column(gps_raw)
 
-    all_players = sorted(set(gps_raw.get("Player", pd.Series(dtype=str)).dropna().unique().tolist()))
-    if not all_players:
-        st.warning("Aucune joueuse détectée dans les données GPS.")
-        return
+        all_players = sorted(set(gps_raw.get("Player", pd.Series(dtype=str)).dropna().unique().tolist()))
+        if not all_players:
+            st.warning("Aucune joueuse détectée dans les données GPS.")
+            return
 
-    tab_raw, tab_week, tab_graph = st.tabs(
-        ["🧾 Données brutes par joueuse", "📅 Moyennes 7 jours (glissant)", "📈 Graphique MD-6 → MD"]
+            tab_raw, tab_week, tab_graph = st.tabs(
+            ["🧾 Données brutes par joueuse", "📅 Moyennes 7 jours (glissant)", "📈 Graphique MD-6 → MD"]
     )
 
     # =========================
@@ -3759,6 +3759,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
