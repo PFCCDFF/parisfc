@@ -2395,99 +2395,148 @@ def build_md_window_summary(d_player: pd.DataFrame, end_date: pd.Timestamp, days
     out = out.rename(columns=vars_map)
     return out
 
-def plot_gps_md_graph(summary_md: pd.DataFrame, selected_lines: Optional[List[str]] = None):
-    """Plot microcycle MD-6 -> MD.
-    - summary_md must include a column 'MD' and numeric metric columns.
-    - selected_lines: list of metric columns to plot as line(s) on the right axis.
-    The bar represents total distance by default (if present).
+def plot_gps_md_graph(summary: pd.DataFrame, selected_lines: Optional[List[str]] = None):
+    """Graphique microcycle (MD-6 → MD) plus lisible :
+    - barres plus étroites (distance totale)
+    - lignes avec marqueurs + meilleure lisibilité sur fond sombre
+    - légende compacte sous le graphique
     """
+    if summary is None or summary.empty or "MD" not in summary.columns:
+        return None
+
     import matplotlib.pyplot as plt
+    import numpy as np
 
-    if summary_md is None or summary_md.empty:
-        return None
-    if "MD" not in summary_md.columns:
-        return None
+    d = summary.copy()
 
-    df = summary_md.copy()
-    # Ensure order MD-6 .. MD
-    md_order = ["MD-6", "MD-5", "MD-4", "MD-3", "MD-2", "MD-1", "MD"]
-    df["__md_order"] = pd.Categorical(df["MD"].astype(str), categories=md_order, ordered=True)
-    df = df.sort_values("__md_order").drop(columns=["__md_order"])
+    # Ordre MD (si jamais des MD manquent)
+    md_order = [f"MD-{k}" for k in range(6, 0, -1)] + ["MD"]
+    d["__ord"] = d["MD"].astype(str).map({lab: i for i, lab in enumerate(md_order)})
+    d = d.sort_values("__ord").drop(columns="__ord")
 
-    # Candidate columns
-    all_metrics = [c for c in df.columns if c != "MD"]
-    # Choose bar column
-    bar_col_candidates = [c for c in all_metrics if "Distance" in c and "(m)" in c and "relative" not in c.lower()]
-    bar_col = bar_col_candidates[0] if bar_col_candidates else (all_metrics[0] if all_metrics else None)
+    x_labels = d["MD"].astype(str).tolist()
+    x = np.arange(len(x_labels))
 
-    # Default selected lines
-    if selected_lines is None:
-        # keep a small sensible default set if available
-        defaults = [
-            "Moyenne de Distance HID (>13 km/h)",
-            "Moyenne de Distance 19-23 (m)",
-            "Moyenne de Distance >23 (m)",
-            "Moyenne de # Acc/Dec",
-            "Moyenne de Distance relative (m/min)",
-        ]
-        selected_lines = [c for c in defaults if c in df.columns]
+    # Colonnes possibles (selon les exports)
+    bar_col = "Moyenne de Distance (m)"
+    candidates = [
+        "Moyenne de Distance HID (>13 km/h)",
+        "Moyenne de Distance 13-19 (m)",
+        "Moyenne de Distance 19-23 (m)",
+        "Moyenne de Distance >23 (m)",
+        "Moyenne de # Acc/Dec",
+        "Moyenne de Distance relative (m/min)",
+        "Moyenne de Distance HID (>19 km/h)",
+        "Moyenne de Distance par plage de vitesse (15-19 km/h)",
+        "Moyenne de Distance par plage de vitesse (>25 km/h)",
+    ]
+    available_lines = [c for c in candidates if c in d.columns]
 
-    # Keep only numeric columns
-    def _num(s):
-        return pd.to_numeric(s, errors="coerce")
-
-    for c in all_metrics:
-        df[c] = _num(df[c])
-
-    fig, ax1 = plt.subplots(figsize=(10.5, 5.2), dpi=150)
-    fig.patch.set_alpha(0.0)
-    ax1.set_facecolor("none")
-
-    x = np.arange(len(df))
-    labels = df["MD"].astype(str).tolist()
-
-    # Bars (left axis)
-    if bar_col and bar_col in df.columns:
-        ax1.bar(x, df[bar_col].fillna(0), alpha=0.8, label=bar_col)
-        ax1.set_ylabel("Distance (m)")
+    if selected_lines:
+        lines_to_plot = [c for c in selected_lines if c in available_lines]
     else:
-        ax1.set_ylabel("Valeur (axe gauche)")
+        # défaut: 4-5 courbes max (sinon illisible)
+        lines_to_plot = available_lines[:5]
 
+    # ---------- Figure ----------
+    fig, ax1 = plt.subplots(figsize=(11.2, 5.6), dpi=170)
+    fig.patch.set_facecolor("#061a2e")
+    ax1.set_facecolor("#061a2e")
+
+    # Grid + axes
+    ax1.grid(True, axis="y", linestyle="--", alpha=0.25)
+    for sp in ax1.spines.values():
+        sp.set_alpha(0.35)
+
+    ax1.tick_params(axis="x", colors="white")
+    ax1.tick_params(axis="y", colors="white")
+    ax1.yaxis.label.set_color("white")
+
+    # ---------- Barres (Distance totale) ----------
+    if bar_col in d.columns:
+        y_bar = pd.to_numeric(d[bar_col], errors="coerce").fillna(0.0).values
+    else:
+        y_bar = np.zeros(len(d))
+
+    bar_width = 0.55  # ✅ barres plus étroites
+    bars = ax1.bar(
+        x,
+        y_bar,
+        width=bar_width,
+        alpha=0.45,
+        edgecolor="white",
+        linewidth=0.7,
+        label=bar_col if bar_col in d.columns else "Distance (m)",
+    )
+    ax1.set_ylabel("Distance (m)")
     ax1.set_xticks(x)
-    ax1.set_xticklabels(labels, rotation=0)
-    ax1.grid(True, axis="y", linestyle="--", linewidth=0.8, alpha=0.35)
+    ax1.set_xticklabels(x_labels, rotation=0, ha="center", color="white")
 
-    # Lines (right axis)
+    # marge en Y pour éviter que les barres touchent le haut
+    if len(y_bar) and np.nanmax(y_bar) > 0:
+        ax1.set_ylim(0, float(np.nanmax(y_bar)) * 1.18)
+
+    # ---------- Lignes (axe droit) ----------
     ax2 = ax1.twinx()
     ax2.set_facecolor("none")
+    ax2.tick_params(axis="y", colors="white")
+    ax2.yaxis.label.set_color("white")
     ax2.set_ylabel("Valeurs (axe droit)")
 
-    line_handles = []
-    line_labels = []
-    if selected_lines:
-        for col in selected_lines:
-            if col in df.columns:
-                h, = ax2.plot(x, df[col], marker="o", linewidth=2.0, alpha=0.95, label=col)
-                line_handles.append(h)
-                line_labels.append(col)
+    # Palette lisible sur fond sombre
+    palette = ["#2EC4B6", "#FF9F1C", "#E71D36", "#A06CD5", "#9BC53D", "#5BC0EB", "#FDE74C"]
+    handles = []
+    labels = []
 
-    # Compose legend BELOW
-    handles1, labels1 = ax1.get_legend_handles_labels()
-    handles = handles1 + line_handles
-    labels_ = labels1 + line_labels
-    if handles:
-        fig.legend(
-            handles,
-            labels_,
-            loc="lower center",
-            bbox_to_anchor=(0.5, -0.02),
-            ncol=min(3, max(1, len(labels_))),
-            frameon=False,
-            fontsize=9,
+    # Ajoute d'abord la barre dans la légende
+    handles.append(bars)
+    labels.append(bar_col if bar_col in d.columns else "Distance (m)")
+
+    for i, col in enumerate(lines_to_plot):
+        y = pd.to_numeric(d[col], errors="coerce").fillna(0.0).values
+        color = palette[i % len(palette)]
+        line, = ax2.plot(
+            x,
+            y,
+            marker="o",
+            markersize=5.0,
+            linewidth=2.4,
+            alpha=0.95,
+            color=color,
+            label=col,
         )
+        handles.append(line)
+        labels.append(col)
 
-    fig.tight_layout(rect=[0.0, 0.06, 1.0, 1.0])
+    # Améliore la lisibilité : petite marge sur l’axe droit
+    try:
+        y_all = []
+        for col in lines_to_plot:
+            y_all.extend(pd.to_numeric(d[col], errors="coerce").fillna(0.0).tolist())
+        if y_all and np.nanmax(y_all) > 0:
+            ax2.set_ylim(0, float(np.nanmax(y_all)) * 1.15)
+    except Exception:
+        pass
+
+    # ---------- Légende (sous le graphe) ----------
+    leg = ax1.legend(
+        handles,
+        labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.18),
+        ncol=2,
+        frameon=False,
+        fontsize=9,
+    )
+    for txt in leg.get_texts():
+        txt.set_color("white")
+
+    # Titre discret
+    ax1.set_title("Microcycle (MD-6 → MD)", color="white", pad=10, fontsize=13)
+
+    fig.tight_layout()
     return fig
+
 def gps_last_7_days_summary(gps_raw: pd.DataFrame, player_sel: str, end_date: Optional[pd.Timestamp] = None):
     """Fenêtre glissante 7 jours (inclus) pour une joueuse.
 
