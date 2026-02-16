@@ -3493,182 +3493,205 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     # DONNEES PHYSIQUES
     # =====================    # =====================
 
-
     elif page == "Données Physiques":
-        st.header("📊 Données Physiques (GPS)")
+    st.header("📊 Données Physiques (GPS)")
 
-        gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
-        gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
+    gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
+    gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
 
-        if gps_raw is None or gps_raw.empty:
-            st.warning("Aucune donnée GPS brute trouvée.")
-            return
+    if gps_raw is None or gps_raw.empty:
+        st.warning("Aucune donnée GPS brute trouvée.")
+        return
 
-        gps_raw = ensure_date_column(gps_raw)
+    gps_raw = ensure_date_column(gps_raw)
 
-        all_players = sorted(set(gps_raw.get("Player", pd.Series(dtype=str)).dropna().unique().tolist()))
-        if not all_players:
-            st.warning("Aucune joueuse détectée dans les données GPS.")
-            return
+    all_players = sorted(set(gps_raw.get("Player", pd.Series(dtype=str)).dropna().unique().tolist()))
+    if not all_players:
+        st.warning("Aucune joueuse détectée dans les données GPS.")
+        return
 
-        tab_raw, tab_week, tab_graph = st.tabs(
-            ["🧾 Données brutes par joueuse", "📅 Moyennes 7 jours (glissant)", "📈 Graphique MD-6 → MD"]
-        )
+    tab_raw, tab_week, tab_graph = st.tabs(
+        ["🧾 Données brutes par joueuse", "📅 Moyennes 7 jours (glissant)", "📈 Graphique MD-6 → MD"]
+    )
 
-        with tab_raw:
-            st.subheader("Données brutes (par joueuse)")
+    # =========================
+    # TAB 1 — BRUT
+    # =========================
+    with tab_raw:
+        st.subheader("Données brutes (par joueuse)")
 
-            player_sel = player_name if player_name else st.selectbox("Joueuse", all_players, key="gps_raw_player_sel")
-            d = gps_raw[gps_raw["Player"].astype(str) == nettoyer_nom_joueuse(player_sel)].copy()
+        player_sel = player_name if player_name else st.selectbox("Joueuse", all_players, key="gps_raw_player_sel")
+        d = gps_raw[gps_raw["Player"].astype(str) == nettoyer_nom_joueuse(player_sel)].copy()
 
-            if d.empty:
-                st.info("Aucune ligne GPS pour cette joueuse.")
-            else:
-                c1, c2 = st.columns(2)
-                with c1:
-                    # Sécuriser le type datetime (certains CSV donnent des strings / mixed types)
-                    # DATE: conversion robuste (gère tz-aware / valeurs mixtes)
-                    d = ensure_date_column(d)
-                    if d["DATE"].notna().sum() == 0:
-                        st.info("Aucune date exploitable pour cette joueuse (colonne 'Activity Date' / 'DATE' / date dans le nom du fichier).")
+        if d.empty:
+            st.info("Aucune ligne GPS pour cette joueuse.")
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                d = ensure_date_column(d)
+                if d["DATE"].notna().sum() == 0:
+                    st.info("Aucune date exploitable pour cette joueuse (Activity Date / DATE / date dans le nom du fichier).")
+                    date_range = None
+                else:
+                    min_date = pd.to_datetime(d["DATE"], errors="coerce").min()
+                    max_date = pd.to_datetime(d["DATE"], errors="coerce").max()
+                    if pd.isna(min_date) or pd.isna(max_date):
                         date_range = None
                     else:
-                        min_date = d["DATE"].min()
-                        max_date = d["DATE"].max()
                         default_range = (min_date.date(), max_date.date())
                         date_range = st.date_input("Période", value=default_range, key="gps_raw_date_range")
 
-                with c2:
-                    if "__source_file" in d.columns:
-                        srcs = ["Tous"] + sorted(d["__source_file"].dropna().astype(str).unique().tolist())
-                        src_sel = st.selectbox("Fichier source (optionnel)", srcs, key="gps_raw_src_sel")
-                    else:
-                        src_sel = "Tous"
-
-                if isinstance(date_range, tuple) and len(date_range) == 2 and date_range[0] and date_range[1]:
-                    d = d[(d["DATE"] >= pd.Timestamp(date_range[0])) & (d["DATE"] <= pd.Timestamp(date_range[1]))].copy()
-
-                if src_sel != "Tous" and "__source_file" in d.columns:
-                    d = d[d["__source_file"].astype(str) == str(src_sel)].copy()
-
-                show_cols = [c for c in [
-                    "DATE", "SEMAINE", "Player", "NOM",
-                    "Durée", "Durée_min",
-                    "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
-                    "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
-                    "CHARGE", "RPE",
-                    "Sprints_23", "Sprints_25",
-                    "Vitesse max (km/h)",
-                    "__name_status", "__source_file"
-                ] if c in d.columns]
-
-                st.dataframe(d.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
-
-        with tab_week:
-            st.subheader("Moyennes sur une fenêtre glissante de 7 jours")
-
-            player_sel = player_name if player_name else st.selectbox("Joueuse", all_players, key="gps_7d_player_sel")
-
-            tmp = gps_raw[gps_raw["Player"].astype(str) == nettoyer_nom_joueuse(player_sel)].copy()
-            tmp = tmp[tmp["DATE"].notna()].copy()
-
-            if tmp.empty:
-                st.info("Pas de dates exploitables pour cette joueuse (colonne 'Activity Date' / 'DATE' ou date JJ.MM.AAAA dans le nom du fichier).")
-                return
-
-            tmp["DATE"] = pd.to_datetime(tmp["DATE"], errors="coerce")
-            min_d = tmp["DATE"].min().date()
-            max_d = tmp["DATE"].max().date()
-
-            end_date_ui = st.date_input(
-                "Date de fin (fenêtre = 7 jours précédents inclus)",
-                value=max_d,
-                min_value=min_d,
-                max_value=max_d,
-                key="gps_end_date_7d",
-            )
-
-            df_7j, summary = gps_last_7_days_summary(gps_raw, player_sel, end_date=pd.Timestamp(end_date_ui))
-
-            if summary.empty:
-                st.info("Aucune donnée sur cette fenêtre de 7 jours.")
-                return
-
-            st.dataframe(summary, use_container_width=True)
-
-            with st.expander("Voir le détail (lignes brutes sur la période 7 jours)"):
-                show_cols = [c for c in [
-                    "DATE", "SEMAINE", "Player", "NOM",
-                    "Durée", "Durée_min",
-                    "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
-                    "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
-                    "CHARGE", "RPE",
-                    "__name_status", "__source_file"
-                ] if c in df_7j.columns]
-                st.dataframe(df_7j.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
-
-            if gps_weekly is not None and not gps_weekly.empty and "SEMAINE" in gps_weekly.columns:
-                st.divider()
-                st.caption("Vue hebdomadaire (somme par semaine ISO) — optionnelle")
-                dw = gps_weekly[gps_weekly["Player"].astype(str) == nettoyer_nom_joueuse(player_sel)].copy()
-                if not dw.empty:
-                    st.dataframe(dw.sort_values("SEMAINE"), use_container_width=True)
-
-        with tab_graph:
-            st.subheader("Graphique microcycle (MD-6 → MD)")
-
-            player_sel_g = player_name if player_name else st.selectbox("Joueuse", all_players, key="gps_graph_player_sel")
-            dg = gps_raw[gps_raw["Player"].astype(str) == nettoyer_nom_joueuse(player_sel_g)].copy()
-            dg = dg[dg["DATE"].notna()].copy()
-
-            if dg.empty:
-                st.info("Pas de dates exploitables pour cette joueuse.")
-            else:
-                max_date = dg["DATE"].max().normalize()
-                min_date = dg["DATE"].min().normalize()
-
-                end_date = st.date_input(
-                    "Date de référence (MD) — le graphique prend les 7 jours précédents",
-                    value=max_date.date(),
-                    min_value=min_date.date(),
-                    max_value=max_date.date(),
-                    key="gps_md_ref_date",
-                )
-
-                summary_md = build_md_window_summary(dg, pd.Timestamp(end_date), days=7)
-
-                if summary_md.empty:
-                    st.info("Aucune donnée sur cette fenêtre de 7 jours.")
+            with c2:
+                if "__source_file" in d.columns:
+                    srcs = ["Tous"] + sorted(d["__source_file"].dropna().astype(str).unique().tolist())
+                    src_sel = st.selectbox("Fichier source (optionnel)", srcs, key="gps_raw_src_sel")
                 else:
-                    st.dataframe(summary_md, use_container_width=True)
-                    fig = plot_gps_md_graph(summary_md)
-                    if fig is not None:
-                        st.pyplot(fig)
-    elif page == "Joueuses Passerelles":
-        st.header("🔄 Joueuses Passerelles")
-        passerelle_data = load_passerelle_data()
-        if not passerelle_data:
-            st.warning("Aucune donnée passerelle.")
+                    src_sel = "Tous"
+
+            if isinstance(date_range, tuple) and len(date_range) == 2 and date_range[0] and date_range[1]:
+                d = d[(d["DATE"] >= pd.Timestamp(date_range[0])) & (d["DATE"] <= pd.Timestamp(date_range[1]))].copy()
+
+            if src_sel != "Tous" and "__source_file" in d.columns:
+                d = d[d["__source_file"].astype(str) == str(src_sel)].copy()
+
+            show_cols = [c for c in [
+                "DATE", "SEMAINE", "Player", "NOM",
+                "Durée", "Durée_min",
+                "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+                "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
+                "CHARGE", "RPE",
+                "Sprints_23", "Sprints_25",
+                "Vitesse max (km/h)",
+                "__name_status", "__source_file"
+            ] if c in d.columns]
+
+            if "DATE" in d.columns:
+                d = d.sort_values("DATE", ascending=False)
+
+            st.dataframe(d[show_cols], use_container_width=True)
+
+    # =========================
+    # TAB 2 — 7 JOURS GLISSANT
+    # =========================
+    with tab_week:
+        st.subheader("Moyennes sur une fenêtre glissante de 7 jours")
+
+        player_sel = player_name if player_name else st.selectbox("Joueuse", all_players, key="gps_7d_player_sel")
+
+        tmp = gps_raw[gps_raw["Player"].astype(str) == nettoyer_nom_joueuse(player_sel)].copy()
+        tmp = ensure_date_column(tmp)
+        tmp = tmp[tmp["DATE"].notna()].copy()
+
+        if tmp.empty:
+            st.info("Pas de dates exploitables pour cette joueuse (Activity Date / DATE / date dans le nom du fichier).")
             return
 
-        selected = st.selectbox("Sélectionnez une joueuse", list(passerelle_data.keys()))
-        info = passerelle_data[selected]
+        tmp["DATE"] = pd.to_datetime(tmp["DATE"], errors="coerce")
+        tmp = tmp[tmp["DATE"].notna()].copy()
 
-        st.subheader("Identité")
-        if info.get("Prénom"):
-            st.write(f"**Prénom :** {info['Prénom']}")
-        if info.get("Photo"):
-            st.image(info["Photo"], width=150)
-        if info.get("Date de naissance"):
-            st.write(f"**Date de naissance :** {info['Date de naissance']}")
-        if info.get("Poste 1"):
-            st.write(f"**Poste 1 :** {info['Poste 1']}")
-        if info.get("Poste 2"):
-            st.write(f"**Poste 2 :** {info['Poste 2']}")
-        if info.get("Pied Fort"):
-            st.write(f"**Pied Fort :** {info['Pied Fort']}")
-        if info.get("Taille"):
-            st.write(f"**Taille :** {info['Taille']}")
+        if tmp.empty:
+            st.info("Dates non convertibles en datetime pour cette joueuse.")
+            return
+
+        min_d = tmp["DATE"].min().date()
+        max_d = tmp["DATE"].max().date()
+
+        end_date_ui = st.date_input(
+            "Date de fin (fenêtre = 7 jours précédents inclus)",
+            value=max_d,
+            min_value=min_d,
+            max_value=max_d,
+            key="gps_end_date_7d",
+        )
+
+        df_7j, summary = gps_last_7_days_summary(gps_raw, player_sel, end_date=pd.Timestamp(end_date_ui))
+
+        if summary.empty:
+            st.info("Aucune donnée sur cette fenêtre de 7 jours.")
+            return
+
+        st.dataframe(summary, use_container_width=True)
+
+        with st.expander("Voir le détail (lignes brutes sur la période 7 jours)"):
+            show_cols = [c for c in [
+                "DATE", "SEMAINE", "Player", "NOM",
+                "Durée", "Durée_min",
+                "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+                "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
+                "CHARGE", "RPE",
+                "__name_status", "__source_file"
+            ] if c in df_7j.columns]
+            st.dataframe(df_7j.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
+
+        if gps_weekly is not None and not gps_weekly.empty and "SEMAINE" in gps_weekly.columns:
+            st.divider()
+            st.caption("Vue hebdomadaire (somme par semaine ISO) — optionnelle")
+            dw = gps_weekly[gps_weekly["Player"].astype(str) == nettoyer_nom_joueuse(player_sel)].copy()
+            if not dw.empty:
+                st.dataframe(dw.sort_values("SEMAINE"), use_container_width=True)
+
+    # =========================
+    # TAB 3 — MICRO-CYCLE MD-6 → MD (AMÉLIORÉ A)
+    # =========================
+    with tab_graph:
+        st.subheader("Graphique microcycle (MD-6 → MD)")
+
+        player_sel_g = player_name if player_name else st.selectbox("Joueuse", all_players, key="gps_graph_player_sel")
+        dg = gps_raw[gps_raw["Player"].astype(str) == nettoyer_nom_joueuse(player_sel_g)].copy()
+        dg = ensure_date_column(dg)
+        dg = dg[dg["DATE"].notna()].copy()
+
+        if dg.empty:
+            st.info("Pas de dates exploitables pour cette joueuse.")
+        else:
+            dg["DATE"] = pd.to_datetime(dg["DATE"], errors="coerce")
+            dg = dg[dg["DATE"].notna()].copy()
+            if dg.empty:
+                st.info("Dates non convertibles en datetime pour cette joueuse.")
+                return
+
+            max_date = dg["DATE"].max().normalize()
+            min_date = dg["DATE"].min().normalize()
+
+            end_date = st.date_input(
+                "Date de référence (MD) — le graphique prend les 7 jours précédents",
+                value=max_date.date(),
+                min_value=min_date.date(),
+                max_value=max_date.date(),
+                key="gps_md_ref_date",
+            )
+
+            summary_md = build_md_window_summary(dg, pd.Timestamp(end_date), days=7)
+
+            if summary_md.empty:
+                st.info("Aucune donnée sur cette fenêtre de 7 jours.")
+            else:
+                st.dataframe(summary_md, use_container_width=True)
+
+                # ✅ Amélioration A : choix des courbes + légende en bas (dans plot_gps_md_graph)
+                curve_options = [c for c in summary_md.columns if c.startswith("Moyenne de ") and c != "Moyenne de Distance (m)"]
+
+                default_curves = [c for c in [
+                    "Moyenne de Distance HID (>13 km/h)",
+                    "Moyenne de Distance 13-19 (m)",
+                    "Moyenne de Distance >23 (m)",
+                    "Moyenne de Distance relative (m/min)",
+                ] if c in curve_options]
+
+                selected_curves = st.multiselect(
+                    "Courbes à afficher (recommandé : 3 à 5)",
+                    options=curve_options,
+                    default=default_curves,
+                    key="gps_md_curves_select",
+                )
+
+                if len(selected_curves) > 6:
+                    st.warning("Beaucoup de courbes sélectionnées : pour la lisibilité, essaye d’en garder 3 à 6.")
+
+                fig = plot_gps_md_graph(summary_md, selected_lines=selected_curves)
+                if fig is not None:
+                    st.pyplot(fig)
+
 
 
 # =========================
@@ -3736,4 +3759,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
