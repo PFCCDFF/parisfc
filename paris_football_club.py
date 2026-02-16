@@ -3750,34 +3750,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         if info.get("Taille"):
             st.write(f"**Taille :** {info['Taille']}")
 
-            if summary_md.empty:
-                st.info("Aucune donnée sur cette fenêtre de 7 jours.")
-            else:
-                st.dataframe(summary_md, use_container_width=True)
-
-                # ✅ Amélioration A : choix des courbes + légende en bas (dans plot_gps_md_graph)
-                curve_options = [c for c in summary_md.columns if c.startswith("Moyenne de ") and c != "Moyenne de Distance (m)"]
-
-                default_curves = [c for c in [
-                    "Moyenne de Distance HID (>13 km/h)",
-                    "Moyenne de Distance 13-19 (m)",
-                    "Moyenne de Distance >23 (m)",
-                    "Moyenne de Distance relative (m/min)",
-                ] if c in curve_options]
-
-                selected_curves = st.multiselect(
-                    "Courbes à afficher (recommandé : 3 à 5)",
-                    options=curve_options,
-                    default=default_curves,
-                    key="gps_md_curves_select",
-                )
-
-                if len(selected_curves) > 6:
-                    st.warning("Beaucoup de courbes sélectionnées : pour la lisibilité, essaye d’en garder 3 à 6.")
-
-                fig = plot_gps_md_graph(summary_md, selected_lines=selected_curves)
-                if fig is not None:
-                    st.pyplot(fig)
 
 
 
@@ -3846,7 +3818,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 
