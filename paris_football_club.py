@@ -479,6 +479,45 @@ def find_best_photo_for_player(player_name: str, photos_index: Dict[str, str], c
 
     return None
 
+
+def load_photo_bytes(path: str):
+    """
+    Lit une image locale et renvoie des bytes affichables par st.image.
+    - Pour HEIC/HEIF: tente une conversion via PIL (+ pillow-heif).
+    """
+    try:
+        ext = os.path.splitext(path)[1].lower()
+        with open(path, 'rb') as f:
+            raw_bytes = f.read()
+        if ext in ('.heic', '.heif'):
+            if Image is None:
+                return None
+            try:
+                im = Image.open(io.BytesIO(raw_bytes))
+                buf = io.BytesIO()
+                im.convert('RGB').save(buf, format='JPEG', quality=92)
+                return buf.getvalue()
+            except Exception:
+                return None
+        return raw_bytes
+    except Exception:
+        return None
+
+def debug_photo_suggestions(player_name: str, photos_index: dict, topn: int = 8):
+    """Retourne quelques suggestions de fichiers photo proches (debug)."""
+    try:
+        target = normalize_str(player_name)
+        keys = list(photos_index.keys())
+        close = get_close_matches(target, keys, n=topn, cutoff=0.0)
+        out = []
+        for k in close:
+            pth = photos_index.get(k)
+            if pth:
+                out.append(os.path.basename(pth))
+        return out
+    except Exception:
+        return []
+
 def _download_drive_binary_to_path(service, file_id: str, out_path: str) -> str:
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
@@ -493,154 +532,70 @@ def _download_drive_binary_to_path(service, file_id: str, out_path: str) -> str:
     return out_path
 
 
-def sync_photos_from_drive() -> None:
-    """Synchronise les photos depuis le dossier Drive PHOTOS_FOLDER_ID vers data/photos/.
-
-    Robustesse:
-    - Parcours récursif (folders + shortcuts vers folders)
-    - Télécharge images + shortcuts vers images (en résolvant targetId)
-    - Ajoute un suffixe __<id> pour éviter les collisions de noms
-    - Si 0 fichier trouvé: affiche un message d'aide (partage du dossier avec le service account)
-    """
-    service = authenticate_google_drive()
-
-    # --- Vérifier l'accès au dossier (et afficher l'email du service account si besoin) ---
-    sa_email = None
-    try:
-        sa_email = (st.secrets.get("GOOGLE_SERVICE_ACCOUNT_JSON") or {}).get("client_email")
-    except Exception:
-        sa_email = None
+def sync_photos_from_drive():
+    """Télécharge (cache local) les photos des joueuses depuis Google Drive."""
+    folder_id = PHOTOS_FOLDER_ID
+    local_folder = PHOTOS_FOLDER
+    if not folder_id:
+        st.warning('Photos: PHOTOS_FOLDER_ID non configuré.')
+        return
+    os.makedirs(local_folder, exist_ok=True)
 
     try:
-        meta = _execute_with_retry(service.files().get(
-            fileId=PHOTOS_FOLDER_ID,
-            fields="id,name,mimeType,capabilities(canListChildren)",
-            supportsAllDrives=True,
-        ))
-        if meta.get("mimeType") != "application/vnd.google-apps.folder":
-            st.warning("Photos: l'ID fourni ne correspond pas à un dossier Drive (ou c'est un raccourci).")
+        items = list_all_files_in_folder_recursive(folder_id)
     except Exception as e:
-        st.error(
-            "Photos: impossible d'accéder au dossier Drive. "
-            + (f"Partage ce dossier avec le service account: {sa_email}. " if sa_email else "")
-            + f"Erreur: {e}"
-        )
+        st.warning(f"Photos: impossible d'accéder au dossier Drive. Partage ce dossier avec le service account. Erreur: {e}")
         return
 
-    os.makedirs(PHOTOS_FOLDER, exist_ok=True)
+    if not items:
+        st.warning('Photos: aucun fichier trouvé dans le dossier Drive (y compris sous-dossiers/raccourcis).')
+        return
 
-    IMG_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
+    exts = ('.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif')
+    img_items = []
+    for it in items:
+        name = (it.get('name') or '').strip()
+        mt = (it.get('mimeType') or '').lower()
+        if name.lower().endswith(exts) or mt.startswith('image/'):
+            img_items.append(it)
+
+    if not img_items:
+        st.warning('Photos: aucun fichier image (.jpg/.png/.heic…) trouvé dans le dossier Drive.')
+        return
+
     downloaded = 0
-    found = 0
 
-    def _is_image_like(name: str, mime: str) -> bool:
-        n = (name or "").lower()
-        mt = (mime or "").lower()
-        if mt.startswith("image/"):
-            return True
-        return n.endswith(IMG_EXTS)
-
-    def _safe_name(name: str) -> str:
-        name = (name or "photo").replace("/", "_").replace("\\", "_")
-        name = re.sub(r"\s+", " ", name).strip()
-        return name
-
-    def _download_file(file_id: str, file_name: str, mime_type: str = "", thumb: str | None = None, updated: str | None = None):
+    def _download_file(file_id: str, filename: str, size_str=None):
         nonlocal downloaded
-
-        safe_name = file_name or f"{file_id}.img"
+        safe_name = filename.replace('/', '_').replace('\\', '_')
         local_path = os.path.join(local_folder, safe_name)
-
-        # déjà présent ?
-        if os.path.exists(local_path):
-            return local_path
-
         try:
-            download_drive_file_to_local(service, file_id, local_path)
+            if os.path.exists(local_path) and size_str and str(size_str).isdigit():
+                try:
+                    if os.path.getsize(local_path) == int(size_str):
+                        return
+                except Exception:
+                    pass
+            req = drive_service.files().get_media(fileId=file_id)
+            fh = io.FileIO(local_path, 'wb')
+            downloader = MediaIoBaseDownload(fh, req, chunksize=1024 * 1024)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
             downloaded += 1
-
-            # Si .HEIC/.heif: Streamlit/Pillow ne sait pas toujours l'afficher côté serveur.
-            # On génère un aperçu JPEG via thumbnailLink (fourni par Drive) quand dispo.
-            try:
-                ext = os.path.splitext(local_path)[1].lower()
-                if ext in (".heic", ".heif") and (thumb or ""):
-                    creds = getattr(getattr(service, "_http", None), "credentials", None)
-                    token = None
-                    if creds is not None:
-                        try:
-                            from google.auth.transport.requests import Request as _GRequest
-                            if (not getattr(creds, "valid", False)) or getattr(creds, "expired", False):
-                                creds.refresh(_GRequest())
-                        except Exception:
-                            pass
-                        token = getattr(creds, "token", None)
-
-                    import requests
-                    headers = {"Authorization": f"Bearer {token}"} if token else {}
-                    r = requests.get(thumb, headers=headers, timeout=30)
-                    if r.ok and r.content:
-                        preview_path = os.path.splitext(local_path)[0] + ".jpg"
-                        with open(preview_path, "wb") as pf:
-                            pf.write(r.content)
-            except Exception:
-                pass
-
-            return local_path
         except Exception as e:
-            st.warning(f"Photos: impossible de télécharger {safe_name}: {e}")
-            return None
+            st.warning(f"Photos: impossible de télécharger {filename} -> {e}")
 
-    stack = [PHOTOS_FOLDER_ID]
-    visited = set()
+    for it in img_items:
+        fid = it.get('id')
+        name = it.get('name') or ''
+        size = it.get('size')
+        if fid and name:
+            _download_file(fid, name, size)
 
-    while stack:
-        fid = stack.pop()
-        if fid in visited:
-            continue
-        visited.add(fid)
-
-        try:
-            items = list_files_in_folder_paged(service, fid, q_extra="", page_size=200)
-        except Exception as e:
-            st.warning(f"Photos: impossible de lister un sous-dossier -> {e}")
-            continue
-
-        for it in items:
-            mt = it.get("mimeType", "")
-            name = it.get("name", "")
-            item_id = it.get("id")
-
-            # folders
-            if mt == "application/vnd.google-apps.folder":
-                stack.append(item_id)
-                continue
-
-            # shortcuts (vers folder ou image)
-            if mt == "application/vnd.google-apps.shortcut":
-                sd = it.get("shortcutDetails") or {}
-                tgt_id = sd.get("targetId")
-                tgt_mime = sd.get("targetMimeType", "")
-                if tgt_mime == "application/vnd.google-apps.folder" and tgt_id:
-                    stack.append(tgt_id)
-                    continue
-                if tgt_id and _is_image_like(name, tgt_mime):
-                    found += 1
-                    _download_file(tgt_id, name)
-                continue
-
-            # images
-            if _is_image_like(name, mt):
-                found += 1
-                _download_file(item_id, name, mime_type=mt, thumb=it.get('thumbnailLink'), updated=it.get('modifiedTime'))
-
-    st.session_state["photos_drive_found"] = found
-    st.session_state["photos_drive_downloaded"] = downloaded
-
-    if found == 0:
-        st.warning(
-            "Photos: aucun fichier image trouvé dans le dossier Drive. "
-            + ("Vérifie que le dossier est bien partagé avec le service account: " + str(sa_email) if sa_email else "Vérifie les droits du service account.")
-        )
+    build_photos_index_local()
+    if downloaded > 0:
+        st.caption(f"📸 Photos: {downloaded} fichier(s) synchronisé(s) depuis Drive.")
 
 def authenticate_google_drive():
     scopes = ["https://www.googleapis.com/auth/drive"]
