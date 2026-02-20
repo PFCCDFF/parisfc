@@ -560,48 +560,6 @@ def show_photo_block(player_name: str, location: str = "stats") -> None:
             st.write("**Top correspondances possibles (clé):**")
             st.write(", ".join(candidates))
 
-             idx
-
-            def find_best_photo_for_player(player_name: str, photos_index: Dict[str, str], cutoff: float = 0.82) -> Optional[str]:
-            """Trouve la meilleure photo pour une joueuse (fuzzy sur key compact)."""
-            if not player_name:
-            return None
-            if not photos_index:
-            return None
-
-            # 1) match exact sur compact
-            key = _photo_key_compact(player_name)
-            if key in photos_index:
-            return photos_index[key]
-
-            # 2) match tokens dans n'importe quel ordre
-            toks = set(_photo_tokens(player_name))
-            if toks:
-            # candidates dont tous les tokens sont inclus dans le nom de fichier
-            best_path = None
-            best_score = 0.0
-            for k, path in photos_index.items():
-            # k est compact -> on approx via tokens du stem
-            stem = os.path.splitext(os.path.basename(path))[0]
-            stem_toks = set(_photo_tokens(stem))
-            if toks.issubset(stem_toks) or stem_toks.issubset(toks):
-                sc = SequenceMatcher(None, _normalize_for_photo_match(player_name), _normalize_for_photo_match(stem)).ratio()
-                if sc > best_score:
-                    best_score = sc
-                    best_path = path
-                    if best_path and best_score >= cutoff:
-                    return best_path
-
-            # 3) fuzzy sur compact (dernier recours)
-            keys = list(photos_index.keys())
-            if keys:
-            best = get_close_matches(key, keys, n=1, cutoff=cutoff)
-            if best:
-            return photos_index.get(best[0])
-
-            return None
-
-
 def load_photo_bytes(path: str):
     """
     Lit une image locale et renvoie des bytes affichables par st.image.
@@ -4525,7 +4483,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 
