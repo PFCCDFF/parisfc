@@ -11,7 +11,7 @@ import io
 import re
 import unicodedata
 import warnings
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from difflib import get_close_matches, SequenceMatcher
 from datetime import datetime
 
@@ -438,7 +438,129 @@ def build_photos_index_local() -> Dict[str, str]:
                     idx[key] = path
             except Exception:
                 pass
-    return idx
+    return
+
+def photos_get_index(force_sync: bool = False) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    """Assure un index photos non vide si possible.
+
+    - Construit d'abord l'index local.
+    - Si vide (ou force_sync=True), tente une synchro Drive puis reconstruit.
+    Retourne (index, status) où status contient des infos debug à afficher.
+    """
+    status: Dict[str, Any] = {
+        "local_folder": PHOTOS_FOLDER,
+        "folder_id": PHOTOS_FOLDER_ID,
+        "synced": False,
+        "n_index": 0,
+        "n_local_files": 0,
+        "error": None,
+    }
+    _ensure_photos_folder()
+
+    def _count_local_images() -> int:
+        try:
+            if not os.path.exists(PHOTOS_FOLDER):
+                return 0
+            return sum(1 for fn in os.listdir(PHOTOS_FOLDER) if os.path.splitext(fn)[1].lower() in IMAGE_EXTS)
+        except Exception:
+            return 0
+
+    idx = build_photos_index_local()
+    status["n_local_files"] = _count_local_images()
+    status["n_index"] = len(idx)
+
+    if force_sync or len(idx) == 0:
+        try:
+            sync_photos_from_drive(PHOTOS_FOLDER_ID, PHOTOS_FOLDER)
+            status["synced"] = True
+        except Exception as e:
+            status["error"] = str(e)
+
+        idx = build_photos_index_local()
+        status["n_local_files"] = _count_local_images()
+        status["n_index"] = len(idx)
+
+    return idx, status
+
+
+def find_best_photo_for_player_relaxed(player_name: str, photos_index: Dict[str, str]) -> Optional[str]:
+    """Version plus tolérante: baisse les seuils et améliore la concordance."""
+    if not player_name or not photos_index:
+        return None
+
+    # 1) exact compact match
+    key = _photo_key_compact(player_name)
+    if key in photos_index:
+        return photos_index[key]
+
+    # 2) token based match
+    pn = _norm_txt(player_name)
+    pn_tokens = set([t for t in re.split(r"\s+", pn) if t])
+    best_path = None
+    best_score = 0.0
+
+    for k, path in photos_index.items():
+        ktokens = set([t for t in re.split(r"\s+", k) if t])
+        if not ktokens:
+            continue
+
+        inter = len(pn_tokens & ktokens)
+        union = max(1, len(pn_tokens | ktokens))
+        jaccard = inter / union
+
+        # bonus si l'un des tokens est subset de l'autre
+        subset_bonus = 0.15 if (pn_tokens <= ktokens or ktokens <= pn_tokens) else 0.0
+
+        # ratio global de chaînes
+        ratio = _quick_ratio(pn, k)
+
+        score = 0.55 * ratio + 0.45 * jaccard + subset_bonus
+        if score > best_score:
+            best_score = score
+            best_path = path
+
+    # seuil plus permissif
+    return best_path if best_score >= 0.60 else None
+
+
+def show_photo_block(player_name: str, location: str = "stats") -> None:
+    """Affiche la photo d'une joueuse, avec diagnostics si non trouvée.
+
+    location: 'stats' ou 'passerelle' (pour différencier les key Streamlit)
+    """
+    # bouton de sync (optionnel)
+    c1, c2 = st.columns([1, 4])
+    with c1:
+        force = st.button("🔄 Sync photos", key=f"photos_sync_{location}")
+    with c2:
+        st.caption("Photos depuis Drive (JPG/PNG). Si rien ne s'affiche: partage le dossier photos au service account.")
+
+    idx, stt = photos_get_index(force_sync=force)
+    st.session_state["photos_index"] = idx
+    st.session_state["photos_status"] = stt
+
+    photo_path = find_best_photo_for_player_relaxed(player_name, idx)
+
+    if photo_path and os.path.exists(photo_path):
+        st.image(photo_path, width=170)
+        return
+
+    # rien trouvé -> expander diagnostic
+    with st.expander("📷 Diagnostic photos", expanded=False):
+        if stt.get("error"):
+            st.error(f"Erreur sync photos: {stt['error']}")
+        st.write(f"**Dossier Drive (ID):** {stt.get('folder_id')}")
+        st.write(f"**Dossier local:** `{stt.get('local_folder')}`")
+        st.write(f"**Fichiers images locaux:** {stt.get('n_local_files')} — **Index:** {stt.get('n_index')}")
+        st.info("Aucune photo trouvée pour ce nom. Vérifie le nom du fichier (ex: 'NOM Prenom.jpg') ou utilise le bouton Sync.")
+        # montrer quelques candidats proches
+        if idx:
+            key = _photo_key_compact(player_name)
+            candidates = sorted(idx.keys(), key=lambda k: _quick_ratio(key, k), reverse=True)[:10]
+            st.write("**Top correspondances possibles (clé):**")
+            st.write(", ".join(candidates))
+
+ idx
 
 def find_best_photo_for_player(player_name: str, photos_index: Dict[str, str], cutoff: float = 0.82) -> Optional[str]:
     """Trouve la meilleure photo pour une joueuse (fuzzy sur key compact)."""
@@ -3634,15 +3756,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.info(f"Joueuse : {p}")
             else:
                 p = st.selectbox("Joueuse", sorted(pfc_kpi["Player"].dropna().unique().tolist()), key="self_player")
-                # Photo joueuse (Drive Photos) - affichage si disponible
-                photos_index = st.session_state.get("photos_index", {})
-                if photos_index:
-                    try:
-                        photo_path = find_best_photo_for_player(p, photos_index)
-                        if photo_path and os.path.exists(photo_path):
-                            st.image(photo_path, width=160)
-                    except Exception:
-                        pass
+                # Photo joueuse (Drive Photos)
+                show_photo_block(p, location="stats")
 
 
             if "Adversaire" not in pfc_kpi.columns:
