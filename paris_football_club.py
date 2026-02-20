@@ -545,33 +545,51 @@ def sync_photos_from_drive() -> None:
         name = re.sub(r"\s+", " ", name).strip()
         return name
 
-    def _download_file(file_id: str, name: str) -> None:
+    def _download_file(file_id: str, file_name: str, mime_type: str = "", thumb: str | None = None, updated: str | None = None):
         nonlocal downloaded
-        name = _safe_name(name)
-        base, ext = os.path.splitext(name)
-        if not ext:
-            ext = ".jpg"
-        local_name = f"{base}__{file_id[:8]}{ext}"
-        local_path = os.path.join(PHOTOS_FOLDER, local_name)
 
-        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-            return
+        safe_name = file_name or f"{file_id}.img"
+        local_path = os.path.join(local_folder, safe_name)
+
+        # déjà présent ?
+        if os.path.exists(local_path):
+            return local_path
 
         try:
-            request = service.files().get_media(fileId=file_id)
-            fh = io.BytesIO()
-            downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-            fh.seek(0)
-            with open(local_path, "wb") as f:
-                f.write(fh.read())
+            download_drive_file_to_local(service, file_id, local_path)
             downloaded += 1
-        except Exception as e:
-            st.warning(f"Photos: téléchargement impossible {name} -> {e}")
 
-    # --- Parcours récursif avec gestion des raccourcis ---
+            # Si .HEIC/.heif: Streamlit/Pillow ne sait pas toujours l'afficher côté serveur.
+            # On génère un aperçu JPEG via thumbnailLink (fourni par Drive) quand dispo.
+            try:
+                ext = os.path.splitext(local_path)[1].lower()
+                if ext in (".heic", ".heif") and (thumb or ""):
+                    creds = getattr(getattr(service, "_http", None), "credentials", None)
+                    token = None
+                    if creds is not None:
+                        try:
+                            from google.auth.transport.requests import Request as _GRequest
+                            if (not getattr(creds, "valid", False)) or getattr(creds, "expired", False):
+                                creds.refresh(_GRequest())
+                        except Exception:
+                            pass
+                        token = getattr(creds, "token", None)
+
+                    import requests
+                    headers = {"Authorization": f"Bearer {token}"} if token else {}
+                    r = requests.get(thumb, headers=headers, timeout=30)
+                    if r.ok and r.content:
+                        preview_path = os.path.splitext(local_path)[0] + ".jpg"
+                        with open(preview_path, "wb") as pf:
+                            pf.write(r.content)
+            except Exception:
+                pass
+
+            return local_path
+        except Exception as e:
+            st.warning(f"Photos: impossible de télécharger {safe_name}: {e}")
+            return None
+
     stack = [PHOTOS_FOLDER_ID]
     visited = set()
 
@@ -613,7 +631,7 @@ def sync_photos_from_drive() -> None:
             # images
             if _is_image_like(name, mt):
                 found += 1
-                _download_file(item_id, name)
+                _download_file(item_id, name, mime_type=mt, thumb=it.get('thumbnailLink'), updated=it.get('modifiedTime'))
 
     st.session_state["photos_drive_found"] = found
     st.session_state["photos_drive_downloaded"] = downloaded
@@ -681,7 +699,7 @@ def list_files_in_folder_paged(service, folder_id: str, q_extra: str = "", page_
     while True:
         req = service.files().list(
             q=q,
-            fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
+            fields="nextPageToken, files(id, name, mimeType, modifiedTime, size, shortcutDetails, thumbnailLink)",
             pageSize=page_size,
             pageToken=page_token,
             supportsAllDrives=True,
@@ -922,7 +940,7 @@ def list_files_in_folder(service, folder_id: str, include_folders: bool = False)
     - supportsAllDrives/includeItemsFromAllDrives: robuste aux drives partagés
     """
     query = f"'{folder_id}' in parents and trashed=false"
-    fields = "nextPageToken, files(id, name, mimeType, modifiedTime, size)"
+    fields = "nextPageToken, files(id, name, mimeType, modifiedTime, size, shortcutDetails, thumbnailLink)"
 
     page_token = None
     out: List[dict] = []
@@ -3661,6 +3679,16 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.info(f"Joueuse : {p}")
             else:
                 p = st.selectbox("Joueuse", sorted(pfc_kpi["Player"].dropna().unique().tolist()), key="self_player")
+                # Photo joueuse (Drive Photos) - affichage si disponible
+                photos_index = st.session_state.get("photos_index", {})
+                if photos_index:
+                    try:
+                        photo_path = find_best_photo_for_player(p, photos_index)
+                        if photo_path and os.path.exists(photo_path):
+                            st.image(photo_path, width=160)
+                    except Exception:
+                        pass
+
 
             if "Adversaire" not in pfc_kpi.columns:
                 st.warning("Colonne 'Adversaire' manquante : impossible de comparer par match.")
@@ -3989,6 +4017,16 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         # --- Sélection ---
         selected = st.selectbox("Sélectionnez une joueuse", list(passerelle_data.keys()), key="passerelle_player_sel")
+        # Photo joueuse (Drive Photos) - affichage si disponible
+        photos_index = st.session_state.get("photos_index", {})
+        if photos_index:
+            try:
+                photo_path = find_best_photo_for_player(selected, photos_index)
+                if photo_path and os.path.exists(photo_path):
+                    st.image(photo_path, width=160)
+            except Exception:
+                pass
+
         selected_clean = nettoyer_nom_joueuse(selected)
         info = passerelle_data[selected]
 
