@@ -491,63 +491,134 @@ def _download_drive_binary_to_path(service, file_id: str, out_path: str) -> str:
         f.write(fh.read())
     return out_path
 
-def sync_photos_from_drive(max_files: int = 400):
-    """Télécharge les photos depuis le dossier Drive 'PHOTOS' vers data/photos/.
-    - On ne convertit pas les HEIC (affichage dépendra de l'environnement).
-    - max_files: sécurité pour éviter trop de downloads.
+def sync_photos_from_drive(max_files: int = 600):
+    """Synchronise les photos des joueuses depuis Drive (récursif + shortcuts).
+
+    Support:
+    - dossiers imbriqués (par joueuse / par saison) : parcours récursif
+    - fichiers images classiques (jpg/png/webp/heic) + détection via mimeType image/*
+    - shortcuts Drive (application/vnd.google-apps.shortcut) : résolution targetId
+
+    Les fichiers sont stockés localement dans data/photos/.
     """
-    try:
-        service = authenticate_google_drive()
-    except Exception as e:
-        st.warning(f"Photos: authentification Drive impossible -> {e}")
-        return
+    service = authenticate_google_drive()
+    os.makedirs(PHOTOS_FOLDER, exist_ok=True)
 
-    _ensure_photos_folder()
+    # --- listing récursif des sous-dossiers ---
+    state_last = None  # (pas d'incrémental ici; léger)
 
-    try:
-        items = list_files_in_folder_paged(service, DRIVE_PHOTOS_FOLDER_ID, q_extra="", page_size=200)
-    except Exception as e:
-        st.warning(f"Photos: listing Drive impossible -> {e}")
-        return
+    def list_children(folder_id: str, page_size: int = 200):
+        q = f"'{folder_id}' in parents and trashed=false"
+        out = []
+        page_token = None
+        while True:
+            req = service.files().list(
+                q=q,
+                fields="nextPageToken, files(id, name, mimeType, modifiedTime, size, shortcutDetails(targetId,targetMimeType))",
+                pageSize=page_size,
+                pageToken=page_token,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            )
+            resp = _execute_with_retry(req)
+            out.extend(resp.get("files", []) or [])
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        return out
 
-    # Filtrer images
-    imgs = []
-    for f in items:
-        name = f.get("name", "")
-        ext = os.path.splitext(name)[1].lower()
-        if ext in IMAGE_EXTS:
-            imgs.append(f)
+    # BFS des folders
+    folders = [DRIVE_PHOTOS_FOLDER_ID]
+    seen = set()
+    candidates = []
 
-    if not imgs:
-        st.info("Photos: aucun fichier image trouvé dans le dossier Drive.")
-        return
-
-    # limiter
-    imgs = sorted(imgs, key=lambda x: x.get("modifiedTime", ""))[-max_files:]
-
-    downloaded = 0
-    for f in imgs:
-        fid = f["id"]
-        name = f.get("name", "")
-        ext = os.path.splitext(name)[1].lower()
-        safe_name = name.replace("/", "_")
-
-        # path local stable (id pour éviter collisions)
-        out_path = os.path.join(PHOTOS_FOLDER, f"{os.path.splitext(safe_name)[0]}__{fid[:8]}{ext}")
-
-        # skip si déjà présent
-        if os.path.exists(out_path):
+    while folders:
+        fid = folders.pop(0)
+        if fid in seen:
             continue
+        seen.add(fid)
 
         try:
-            _download_drive_binary_to_path(service, fid, out_path)
+            items = list_children(fid, page_size=200)
+        except Exception as e:
+            st.warning(f"Photos: erreur listing dossier Drive ({fid[:8]}) -> {e}")
+            continue
+
+        for it in items:
+            mt = it.get("mimeType") or ""
+            if mt == "application/vnd.google-apps.folder":
+                folders.append(it["id"])
+                continue
+            candidates.append(it)
+
+        # garde-fou
+        if len(candidates) > max_files * 5:
+            break
+
+    IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
+    def is_image_file(f: dict) -> bool:
+        name = (f.get("name") or "")
+        mt = (f.get("mimeType") or "")
+        if mt.startswith("image/"):
+            return True
+        if name.lower().endswith(IMAGE_EXTS):
+            return True
+        # shortcut -> target mime
+        if mt == "application/vnd.google-apps.shortcut":
+            tmt = ((f.get("shortcutDetails") or {}).get("targetMimeType") or "")
+            if tmt.startswith("image/"):
+                return True
+            if name.lower().endswith(IMAGE_EXTS):
+                return True
+        return False
+
+    image_files = [f for f in candidates if is_image_file(f)]
+    image_files = sorted(image_files, key=lambda x: (x.get("modifiedTime") or ""), reverse=True)
+
+    downloaded = 0
+    found = len(image_files)
+
+    for f in image_files[:max_files]:
+        fid = f.get("id")
+        name = f.get("name") or "photo"
+        mt = f.get("mimeType") or ""
+        shortcut = f.get("shortcutDetails") if mt == "application/vnd.google-apps.shortcut" else None
+
+        # resolve shortcut
+        if shortcut and shortcut.get("targetId"):
+            fid = shortcut["targetId"]
+            # le nom du shortcut peut être sans extension => on garde name, mais on ajoute ext si mime connu
+            mt = shortcut.get("targetMimeType") or mt
+
+        # Normalise extension selon mimeType si absent
+        if "." not in os.path.basename(name) and mt.startswith("image/"):
+            ext = mt.split("/")[-1].lower()
+            ext = "jpg" if ext in ("jpeg", "pjpeg") else ext
+            name = f"{name}.{ext}"
+
+        try:
+            # download binaire image
+            request = service.files().get_media(fileId=fid)
+            final_path = os.path.join(PHOTOS_FOLDER, name)
+            tmp_path = final_path + ".tmp"
+
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+
+            fh.seek(0)
+            with open(tmp_path, "wb") as out:
+                out.write(fh.read())
+
+            os.replace(tmp_path, final_path)
             downloaded += 1
         except Exception as e:
             st.warning(f"Photos: téléchargement impossible {name} -> {e}")
 
+    st.session_state["photos_drive_found"] = found
     st.session_state["photos_drive_downloaded"] = downloaded
-
-
 # =========================
 # GOOGLE DRIVE
 # =========================
