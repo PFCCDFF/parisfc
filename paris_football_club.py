@@ -52,7 +52,7 @@ DRIVE_PASSERELLE_FOLDER_ID = "19_ZU-FsAiNKxCfTw_WKzhTcuPDsGoVhL"
 DRIVE_GPS_FOLDER_ID = "1v4Iit4JlEDNACp2QWQVrP89j66zBqMFH"
 
 # Photos joueuses (Drive)
-DRIVE_PHOTOS_FOLDER_ID = \"1h-BwepZc96K7VpidPiy8FEqNiE10GLdE\"
+DRIVE_PHOTOS_FOLDER_ID = "1h-BwepZc96K7VpidPiy8FEqNiE10GLdE"
 PHOTOS_FOLDER = \"data/photos\"
 
 # Fichiers attendus
@@ -4358,6 +4358,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
