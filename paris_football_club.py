@@ -491,137 +491,138 @@ def _download_drive_binary_to_path(service, file_id: str, out_path: str) -> str:
         f.write(fh.read())
     return out_path
 
-def sync_photos_from_drive(max_files: int = 600):
-    """Synchronise les photos des joueuses depuis Drive (récursif + shortcuts).
 
-    Support:
-    - dossiers imbriqués (par joueuse / par saison) : parcours récursif
-    - fichiers images classiques (jpg/png/webp/heic) + détection via mimeType image/*
-    - shortcuts Drive (application/vnd.google-apps.shortcut) : résolution targetId
+def sync_photos_from_drive() -> None:
+    """Synchronise les photos depuis le dossier Drive PHOTOS_FOLDER_ID vers data/photos/.
 
-    Les fichiers sont stockés localement dans data/photos/.
+    Robustesse:
+    - Parcours récursif (folders + shortcuts vers folders)
+    - Télécharge images + shortcuts vers images (en résolvant targetId)
+    - Ajoute un suffixe __<id> pour éviter les collisions de noms
+    - Si 0 fichier trouvé: affiche un message d'aide (partage du dossier avec le service account)
     """
     service = authenticate_google_drive()
+
+    # --- Vérifier l'accès au dossier (et afficher l'email du service account si besoin) ---
+    sa_email = None
+    try:
+        sa_email = (st.secrets.get("GOOGLE_SERVICE_ACCOUNT_JSON") or {}).get("client_email")
+    except Exception:
+        sa_email = None
+
+    try:
+        meta = _execute_with_retry(service.files().get(
+            fileId=PHOTOS_FOLDER_ID,
+            fields="id,name,mimeType,capabilities(canListChildren)",
+            supportsAllDrives=True,
+        ))
+        if meta.get("mimeType") != "application/vnd.google-apps.folder":
+            st.warning("Photos: l'ID fourni ne correspond pas à un dossier Drive (ou c'est un raccourci).")
+    except Exception as e:
+        st.error(
+            "Photos: impossible d'accéder au dossier Drive. "
+            + (f"Partage ce dossier avec le service account: {sa_email}. " if sa_email else "")
+            + f"Erreur: {e}"
+        )
+        return
+
     os.makedirs(PHOTOS_FOLDER, exist_ok=True)
 
-    # --- listing récursif des sous-dossiers ---
-    state_last = None  # (pas d'incrémental ici; léger)
+    IMG_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
+    downloaded = 0
+    found = 0
 
-    def list_children(folder_id: str, page_size: int = 200):
-        q = f"'{folder_id}' in parents and trashed=false"
-        out = []
-        page_token = None
-        while True:
-            req = service.files().list(
-                q=q,
-                fields="nextPageToken, files(id, name, mimeType, modifiedTime, size, shortcutDetails(targetId,targetMimeType))",
-                pageSize=page_size,
-                pageToken=page_token,
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True,
-            )
-            resp = _execute_with_retry(req)
-            out.extend(resp.get("files", []) or [])
-            page_token = resp.get("nextPageToken")
-            if not page_token:
-                break
-        return out
-
-    # BFS des folders
-    folders = [DRIVE_PHOTOS_FOLDER_ID]
-    seen = set()
-    candidates = []
-
-    while folders:
-        fid = folders.pop(0)
-        if fid in seen:
-            continue
-        seen.add(fid)
-
-        try:
-            items = list_children(fid, page_size=200)
-        except Exception as e:
-            st.warning(f"Photos: erreur listing dossier Drive ({fid[:8]}) -> {e}")
-            continue
-
-        for it in items:
-            mt = it.get("mimeType") or ""
-            if mt == "application/vnd.google-apps.folder":
-                folders.append(it["id"])
-                continue
-            candidates.append(it)
-
-        # garde-fou
-        if len(candidates) > max_files * 5:
-            break
-
-    IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
-    def is_image_file(f: dict) -> bool:
-        name = (f.get("name") or "")
-        mt = (f.get("mimeType") or "")
+    def _is_image_like(name: str, mime: str) -> bool:
+        n = (name or "").lower()
+        mt = (mime or "").lower()
         if mt.startswith("image/"):
             return True
-        if name.lower().endswith(IMAGE_EXTS):
-            return True
-        # shortcut -> target mime
-        if mt == "application/vnd.google-apps.shortcut":
-            tmt = ((f.get("shortcutDetails") or {}).get("targetMimeType") or "")
-            if tmt.startswith("image/"):
-                return True
-            if name.lower().endswith(IMAGE_EXTS):
-                return True
-        return False
+        return n.endswith(IMG_EXTS)
 
-    image_files = [f for f in candidates if is_image_file(f)]
-    image_files = sorted(image_files, key=lambda x: (x.get("modifiedTime") or ""), reverse=True)
+    def _safe_name(name: str) -> str:
+        name = (name or "photo").replace("/", "_").replace("\\", "_")
+        name = re.sub(r"\s+", " ", name).strip()
+        return name
 
-    downloaded = 0
-    found = len(image_files)
+    def _download_file(file_id: str, name: str) -> None:
+        nonlocal downloaded
+        name = _safe_name(name)
+        base, ext = os.path.splitext(name)
+        if not ext:
+            ext = ".jpg"
+        local_name = f"{base}__{file_id[:8]}{ext}"
+        local_path = os.path.join(PHOTOS_FOLDER, local_name)
 
-    for f in image_files[:max_files]:
-        fid = f.get("id")
-        name = f.get("name") or "photo"
-        mt = f.get("mimeType") or ""
-        shortcut = f.get("shortcutDetails") if mt == "application/vnd.google-apps.shortcut" else None
-
-        # resolve shortcut
-        if shortcut and shortcut.get("targetId"):
-            fid = shortcut["targetId"]
-            # le nom du shortcut peut être sans extension => on garde name, mais on ajoute ext si mime connu
-            mt = shortcut.get("targetMimeType") or mt
-
-        # Normalise extension selon mimeType si absent
-        if "." not in os.path.basename(name) and mt.startswith("image/"):
-            ext = mt.split("/")[-1].lower()
-            ext = "jpg" if ext in ("jpeg", "pjpeg") else ext
-            name = f"{name}.{ext}"
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            return
 
         try:
-            # download binaire image
-            request = service.files().get_media(fileId=fid)
-            final_path = os.path.join(PHOTOS_FOLDER, name)
-            tmp_path = final_path + ".tmp"
-
+            request = service.files().get_media(fileId=file_id)
             fh = io.BytesIO()
             downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
             done = False
             while not done:
                 _, done = downloader.next_chunk()
-
             fh.seek(0)
-            with open(tmp_path, "wb") as out:
-                out.write(fh.read())
-
-            os.replace(tmp_path, final_path)
+            with open(local_path, "wb") as f:
+                f.write(fh.read())
             downloaded += 1
         except Exception as e:
             st.warning(f"Photos: téléchargement impossible {name} -> {e}")
 
+    # --- Parcours récursif avec gestion des raccourcis ---
+    stack = [PHOTOS_FOLDER_ID]
+    visited = set()
+
+    while stack:
+        fid = stack.pop()
+        if fid in visited:
+            continue
+        visited.add(fid)
+
+        try:
+            items = list_files_in_folder_paged(service, fid, q_extra="", page_size=200)
+        except Exception as e:
+            st.warning(f"Photos: impossible de lister un sous-dossier -> {e}")
+            continue
+
+        for it in items:
+            mt = it.get("mimeType", "")
+            name = it.get("name", "")
+            item_id = it.get("id")
+
+            # folders
+            if mt == "application/vnd.google-apps.folder":
+                stack.append(item_id)
+                continue
+
+            # shortcuts (vers folder ou image)
+            if mt == "application/vnd.google-apps.shortcut":
+                sd = it.get("shortcutDetails") or {}
+                tgt_id = sd.get("targetId")
+                tgt_mime = sd.get("targetMimeType", "")
+                if tgt_mime == "application/vnd.google-apps.folder" and tgt_id:
+                    stack.append(tgt_id)
+                    continue
+                if tgt_id and _is_image_like(name, tgt_mime):
+                    found += 1
+                    _download_file(tgt_id, name)
+                continue
+
+            # images
+            if _is_image_like(name, mt):
+                found += 1
+                _download_file(item_id, name)
+
     st.session_state["photos_drive_found"] = found
     st.session_state["photos_drive_downloaded"] = downloaded
-# =========================
-# GOOGLE DRIVE
-# =========================
+
+    if found == 0:
+        st.warning(
+            "Photos: aucun fichier image trouvé dans le dossier Drive. "
+            + ("Vérifie que le dossier est bien partagé avec le service account: " + str(sa_email) if sa_email else "Vérifie les droits du service account.")
+        )
+
 def authenticate_google_drive():
     scopes = ["https://www.googleapis.com/auth/drive"]
     service_account_info = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
