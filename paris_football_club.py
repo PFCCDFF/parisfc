@@ -26,6 +26,15 @@ from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.errors import HttpError
 import time
 import json
+
+from PIL import Image
+
+# HEIC support (optionnel). Si non dispo, convertir les photos en JPG/PNG.
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except Exception:
+    pass
 import textwrap
 
 warnings.filterwarnings("ignore")
@@ -41,6 +50,10 @@ GPS_FOLDER = "data/gps"
 DRIVE_MAIN_FOLDER_ID = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
 DRIVE_PASSERELLE_FOLDER_ID = "19_ZU-FsAiNKxCfTw_WKzhTcuPDsGoVhL"
 DRIVE_GPS_FOLDER_ID = "1v4Iit4JlEDNACp2QWQVrP89j66zBqMFH"
+
+# Photos joueuses (Drive)
+DRIVE_PHOTOS_FOLDER_ID = \"1h-BwepZc96K7VpidPiy8FEqNiE10GLdE\"
+PHOTOS_FOLDER = \"data/photos\"
 
 # Fichiers attendus
 PERMISSIONS_FILENAME = "Classeurs permissions streamlit.xlsx"
@@ -669,6 +682,166 @@ def sync_gps_from_drive_autonomous():
     # purge des échecs vieux de +24h
     state["folders_failed"] = {k: v for k, v in state.get("folders_failed", {}).items() if (time.time() - float(v)) < 86400}
     _save_gps_state(state)
+
+
+# =========================
+# PHOTOS DRIVE SYNC (joueuses)
+# - Télécharge les images (jpg/png/heic) depuis un dossier Drive vers data/photos/
+# - Matching "nom fichier" <-> "joueuse" via similarité (tolère ordre nom/prénom, accents)
+# =========================
+PHOTOS_SYNC_STATE_PATH = os.path.join(DATA_FOLDER, "photos_sync_state.json")
+
+def _load_photos_state() -> dict:
+    if os.path.exists(PHOTOS_SYNC_STATE_PATH):
+        try:
+            with open(PHOTOS_SYNC_STATE_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"last_modifiedTime": None}
+
+def _save_photos_state(state: dict) -> None:
+    os.makedirs(DATA_FOLDER, exist_ok=True)
+    with open(PHOTOS_SYNC_STATE_PATH, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+def _is_photo_candidate(f: dict) -> bool:
+    name = (f.get("name") or "").lower()
+    mt = (f.get("mimeType") or "").lower()
+    if mt == "application/vnd.google-apps.folder":
+        return False
+    if mt.startswith("image/"):
+        return True
+    return name.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic"))
+
+def _safe_photo_local_path(file_name: str, file_id: str) -> str:
+    os.makedirs(PHOTOS_FOLDER, exist_ok=True)
+    base, ext = os.path.splitext(file_name)
+    ext = ext if ext else ".img"
+    safe = re.sub(r"[^A-Za-z0-9 _\-\.]", "_", base).strip() or "photo"
+    return os.path.join(PHOTOS_FOLDER, f"{safe}__{file_id[:8]}{ext}")
+
+def download_drive_photo_to_local(service, file_id: str, file_name: str) -> str:
+    request = service.files().get_media(fileId=file_id)
+    final_path = _safe_photo_local_path(file_name, file_id)
+
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+
+    fh.seek(0)
+    with open(final_path, "wb") as f:
+        f.write(fh.read())
+    return final_path
+
+def sync_photos_from_drive():
+    """Sync incrémental des photos joueuses depuis Drive -> data/photos/."""
+    if not DRIVE_PHOTOS_FOLDER_ID:
+        return
+
+    service = authenticate_google_drive()
+    state = _load_photos_state()
+    last_m = state.get("last_modifiedTime")
+    newest_modified = last_m
+
+    # Parcours simple (1 niveau + sous-dossiers) pour être robuste si tu ranges par catégories
+    try:
+        folders = [DRIVE_PHOTOS_FOLDER_ID]
+        # Sous-dossiers (1 niveau)
+        try:
+            sub = list_files_in_folder_paged(
+                service,
+                DRIVE_PHOTOS_FOLDER_ID,
+                q_extra="mimeType='application/vnd.google-apps.folder'",
+                page_size=200
+            )
+            folders += [x["id"] for x in sub if x.get("id")]
+        except Exception:
+            pass
+
+        for fid in folders:
+            q_extra = f"modifiedTime > '{last_m}'" if last_m else ""
+            items = list_files_in_folder_paged(service, fid, q_extra=q_extra, page_size=200)
+            for f in items:
+                if not _is_photo_candidate(f):
+                    continue
+                try:
+                    download_drive_photo_to_local(service, f["id"], f.get("name", "photo"))
+                except Exception as e:
+                    st.warning(f"Photos: téléchargement impossible {f.get('name','')} -> {e}")
+
+                mtime = f.get("modifiedTime")
+                if mtime and (newest_modified is None or mtime > newest_modified):
+                    newest_modified = mtime
+
+        state["last_modifiedTime"] = newest_modified
+        _save_photos_state(state)
+    except Exception as e:
+        st.warning(f"Photos: sync échouée -> {e}")
+
+def list_photos_local() -> List[str]:
+    paths: List[str] = []
+    if os.path.exists(PHOTOS_FOLDER):
+        for fn in os.listdir(PHOTOS_FOLDER):
+            if fn.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".heic")):
+                paths.append(os.path.join(PHOTOS_FOLDER, fn))
+    return paths
+
+def _photo_key_from_filename(fn: str) -> str:
+    base = os.path.splitext(os.path.basename(fn))[0]
+    base = base.split("__")[0]  # retire suffix id
+    return normalize_name_raw(base)
+
+def find_best_photo_for_player(player_canon: str, cutoff: float = 0.72) -> Optional[str]:
+    """Trouve la photo la plus proche (matching fuzzy) pour une joueuse CANON."""
+    if not player_canon:
+        return None
+    photos = list_photos_local()
+    if not photos:
+        return None
+
+    target = normalize_name_raw(player_canon)
+    # clés candidates
+    best_path, best_score = None, 0.0
+    for p in photos:
+        key = _photo_key_from_filename(p)
+        if not key:
+            continue
+        sc = similarity(target, key)
+        # tolère inversions (token-set)
+        if sc < best_score and target and key:
+            t_key = " ".join(sorted(tokens_name(target)))
+            k_key = " ".join(sorted(tokens_name(key)))
+            sc = max(sc, similarity(t_key, k_key))
+        if sc > best_score:
+            best_score, best_path = sc, p
+
+    if best_path and best_score >= cutoff:
+        return best_path
+    return None
+
+def display_player_photo(player_canon: str, width: int = 180):
+    """Affiche la photo d'une joueuse si trouvée."""
+    try:
+        # Sync au besoin (léger) : une seule fois par session
+        if not st.session_state.get("__photos_synced_once"):
+            sync_photos_from_drive()
+            st.session_state["__photos_synced_once"] = True
+    except Exception:
+        pass
+
+    p = find_best_photo_for_player(player_canon)
+    if not p or not os.path.exists(p):
+        st.caption("📷 Photo non trouvée (vérifie le nom du fichier image).")
+        return
+
+    try:
+        img = Image.open(p)
+        st.image(img, width=width)
+    except Exception as e:
+        st.caption(f"📷 Photo trouvée mais illisible ({os.path.basename(p)}). Si c'est du HEIC, convertis en JPG/PNG. Détail: {e}")
 
 
 def list_files_in_folder(service, folder_id: str, include_folders: bool = False) -> List[dict]:
@@ -2654,6 +2827,12 @@ def collect_data(selected_season=None):
     except Exception as e:
         st.warning(f"GPS: sync autonome échouée -> {e}")
 
+    # Photos: sync (Drive -> local data/photos)
+    try:
+        sync_photos_from_drive()
+    except Exception as e:
+        st.warning(f"Photos: sync échouée -> {e}")
+
     # GPS
     gps_raw = load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons)
     gps_week = compute_gps_weekly_metrics(gps_raw)
@@ -3290,11 +3469,18 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             return
 
         if player_name:
-            st.subheader(f"Stats pour {player_name}")
-            df_player = pfc_kpi
+            player_sel = player_name
         else:
-            player_sel = st.selectbox("Choisissez une joueuse", pfc_kpi["Player"].unique())
-            df_player = pfc_kpi[pfc_kpi["Player"] == player_sel].copy()
+            player_sel = st.selectbox("Choisissez une joueuse", pfc_kpi["Player"].unique(), key="stats_player_select")
+
+        # Photo + titre
+        c_photo, c_title = st.columns([1, 3])
+        with c_photo:
+            display_player_photo(player_sel, width=170)
+        with c_title:
+            st.subheader(f"Stats pour {player_sel}")
+
+        df_player = pfc_kpi if player_name else pfc_kpi[pfc_kpi["Player"] == player_sel].copy()
 
         if df_player.empty:
             st.warning("Aucune donnée pour cette joueuse.")
@@ -3739,6 +3925,13 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         selected = st.selectbox("Sélectionnez une joueuse", list(passerelle_data.keys()), key="passerelle_player_sel")
         selected_clean = nettoyer_nom_joueuse(selected)
         info = passerelle_data[selected]
+
+        # Photo (Drive) + en-tête
+        c_photo, c_txt = st.columns([1, 3])
+        with c_photo:
+            display_player_photo(selected_clean, width=170)
+        with c_txt:
+            st.subheader(selected)
 
         # --- Résolution du nom (Passerelle -> noms utilisés dans Stats/GPS) ---
         def _resolve_best_player_name(pass_key: str, pass_info: dict, candidates: list[str]) -> str:
