@@ -106,10 +106,6 @@ def safe_int_numeric_only(df: pd.DataFrame, round_first: bool = True) -> pd.Data
 
 
 def build_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
-    """
-    Construit un fichier Excel en mémoire (bytes) avec une feuille par DataFrame.
-    Les noms de feuilles sont tronqués à 31 caractères (limite Excel).
-    """
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         used = set()
@@ -117,7 +113,6 @@ def build_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
             if df is None:
                 continue
             sheet = (str(name) or "Sheet1")[:31]
-            # éviter doublons de noms de feuilles
             base = sheet
             k = 1
             while sheet in used:
@@ -176,7 +171,6 @@ def nettoyer_nom_equipe(nom: str) -> str:
         .replace("Ä", "A")
         .replace("Ç", "C")
     )
-    # Cas "LOSC, LOSC" => on prend le 1er token
     if "," in s:
         parts = [p.strip() for p in s.split(",") if p.strip()]
         s = parts[0] if parts else s
@@ -222,10 +216,6 @@ def parse_date_from_gf1_filename(fn: str) -> Optional[datetime]:
 
 
 def parse_week_from_gf1_filename(fn: str) -> Optional[int]:
-    """Extrait une semaine ISO depuis un nom de fichier du type 'GF1 S16 ...'.
-
-    Exemple: 'GF1 S16 séance 66 - 10.11.25.xlsx' -> 16
-    """
     if not fn:
         return None
     base = os.path.basename(str(fn))
@@ -240,8 +230,8 @@ def parse_week_from_gf1_filename(fn: str) -> Optional[int]:
         return None
     return None
 
+
 def extract_season_from_filename(filename: str) -> Optional[str]:
-    """Extrait une saison type '2425' / '2526' depuis le nom de fichier."""
     if not filename:
         return None
     s = str(filename)
@@ -249,16 +239,13 @@ def extract_season_from_filename(filename: str) -> Optional[str]:
     for c in candidates:
         if c in {"2425", "2526"}:
             return c
-    # fallback: pattern collé (rare)
     m = re.search(r"(2425|2526)", s)
     return m.group(1) if m else None
 
 
 # =========================
-# NAME NORMALIZATION (robuste: inversions / noms collés / doubles noms)
+# NAME NORMALIZATION
 # =========================
-from difflib import SequenceMatcher
-
 PARTICLES = {"DE", "DU", "DES", "D", "DA", "DI", "DEL", "DELA", "DELLA", "LE", "LA", "LES"}
 
 def strip_accents_upper(s: str) -> str:
@@ -268,15 +255,12 @@ def strip_accents_upper(s: str) -> str:
     return s.upper()
 
 def normalize_name_raw(s: str) -> str:
-    # Normalisation agressive: accents, virgules, tirets, espaces, caractères parasites
     s = strip_accents_upper(s)
     s = s.replace(",", " ")
-    s = s.replace("’", "'")
+    s = s.replace("'", "'")
     s = re.sub(r"[^A-Z' -]", " ", s)
     s = s.replace("-", " ")
     s = re.sub(r"\s+", " ", s).strip()
-
-    # supprime doublons type "DUPONT DUPONT"
     toks = s.split()
     if len(toks) >= 2 and toks[0] == toks[1]:
         toks = toks[1:]
@@ -287,8 +271,6 @@ def tokens_name(s: str) -> List[str]:
     if not s:
         return []
     toks = s.split()
-
-    # fusion "D" + "A" => "DA" (exports parfois bizarres)
     out: List[str] = []
     i = 0
     while i < len(toks):
@@ -302,7 +284,6 @@ def tokens_name(s: str) -> List[str]:
     return out
 
 def compact_name(s: str) -> str:
-    # pour capter "DUPONTALICE" vs "DUPONT ALICE"
     s = strip_accents_upper(s)
     s = re.sub(r"[^A-Z]", "", s)
     return s
@@ -312,16 +293,6 @@ def similarity(a: str, b: str) -> float:
 
 
 def infer_opponent_from_columns(df: pd.DataFrame, equipe_pfc: str) -> Optional[str]:
-    """
-    Retourne le nom d'adversaire depuis les colonnes explicites du fichier si disponibles.
-    Priorité: 'Adversaire' puis 'Teamersaire' (orthographe rencontrée dans certains exports).
-
-    Robustesse:
-    - ignore les valeurs "Adversaire"/"Teamersaire" (cellules polluées)
-    - ignore les valeurs qui ressemblent à une joueuse
-    - ignore la valeur égale à l'équipe PFC
-    - renvoie une valeur "humaine" (raw le plus fréquent) plutôt qu'un libellé normalisé.
-    """
     if df is None or df.empty:
         return None
 
@@ -356,7 +327,6 @@ def infer_opponent_from_columns(df: pd.DataFrame, equipe_pfc: str) -> Optional[s
 
 
 def infer_opponent_from_filename(filename: str, equipe_pfc: str) -> Optional[str]:
-    """Fallback si les colonnes Adversaire/Teamersaire n'existent pas ou sont vides."""
     if not filename:
         return None
     base = os.path.splitext(os.path.basename(filename))[0]
@@ -377,10 +347,8 @@ def infer_opponent_from_filename(filename: str, equipe_pfc: str) -> Optional[str
 def read_excel_auto(path: str, sheet_name=0) -> pd.DataFrame:
     ext = os.path.splitext(path)[1].lower()
     if ext == ".xls":
-        # IMPORTANT: nécessite xlrd installé dans ton env Streamlit
         return pd.read_excel(path, sheet_name=sheet_name, engine="xlrd")
     return pd.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
-
 
 
 # =========================
@@ -392,11 +360,6 @@ def _ensure_photos_folder():
     os.makedirs(PHOTOS_FOLDER, exist_ok=True)
 
 def _normalize_for_photo_match(s: str) -> str:
-    """Normalise un nom pour rapprocher joueuse <-> nom de fichier photo.
-    - majuscules, sans accents
-    - supprime ponctuation
-    - espaces normalisés
-    """
     s = "" if s is None else str(s)
     s = unicodedata.normalize("NFKD", s)
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
@@ -413,8 +376,18 @@ def _photo_tokens(s: str) -> List[str]:
 def _photo_key_compact(s: str) -> str:
     return re.sub(r"[^A-Z]", "", _normalize_for_photo_match(s))
 
+# ✅ FIX 1 : fonctions _norm_txt et _quick_ratio manquantes
+def _norm_txt(s: str) -> str:
+    """Normalise un nom pour la comparaison photo (compact, majuscules, sans accents)."""
+    return _photo_key_compact(s)
+
+def _quick_ratio(a: str, b: str) -> float:
+    """Ratio de similarité rapide entre deux chaînes."""
+    return SequenceMatcher(None, a, b).ratio()
+
+# ✅ FIX 2 : build_photos_index_local corrigée (return idx manquant)
 def build_photos_index_local() -> Dict[str, str]:
-    """Index local: renvoie dict key_compact -> filepath (valeur 'meilleure')"""
+    """Index local: renvoie dict key_compact -> filepath"""
     _ensure_photos_folder()
     idx: Dict[str, str] = {}
     if not os.path.exists(PHOTOS_FOLDER):
@@ -428,7 +401,6 @@ def build_photos_index_local() -> Dict[str, str]:
         key = _photo_key_compact(stem)
         if not key:
             continue
-        # si doublon: on garde le plus récent
         path = os.path.join(PHOTOS_FOLDER, fn)
         if key not in idx:
             idx[key] = path
@@ -438,15 +410,10 @@ def build_photos_index_local() -> Dict[str, str]:
                     idx[key] = path
             except Exception:
                 pass
-    return
+    return idx  # ✅ return manquant dans le script original
+
 
 def photos_get_index(force_sync: bool = False) -> Tuple[Dict[str, str], Dict[str, Any]]:
-    """Assure un index photos non vide si possible.
-
-    - Construit d'abord l'index local.
-    - Si vide (ou force_sync=True), tente une synchro Drive puis reconstruit.
-    Retourne (index, status) où status contient des infos debug à afficher.
-    """
     status: Dict[str, Any] = {
         "local_folder": PHOTOS_FOLDER,
         "folder_id": PHOTOS_FOLDER_ID,
@@ -471,7 +438,7 @@ def photos_get_index(force_sync: bool = False) -> Tuple[Dict[str, str], Dict[str
 
     if force_sync or len(idx) == 0:
         try:
-            sync_photos_from_drive(PHOTOS_FOLDER_ID, PHOTOS_FOLDER)
+            sync_photos_from_drive()
             status["synced"] = True
         except Exception as e:
             status["error"] = str(e)
@@ -484,7 +451,7 @@ def photos_get_index(force_sync: bool = False) -> Tuple[Dict[str, str], Dict[str
 
 
 def find_best_photo_for_player_relaxed(player_name: str, photos_index: Dict[str, str]) -> Optional[str]:
-    """Version plus tolérante: baisse les seuils et améliore la concordance."""
+    """Version tolérante du matching photo."""
     if not player_name or not photos_index:
         return None
 
@@ -508,27 +475,24 @@ def find_best_photo_for_player_relaxed(player_name: str, photos_index: Dict[str,
         union = max(1, len(pn_tokens | ktokens))
         jaccard = inter / union
 
-        # bonus si l'un des tokens est subset de l'autre
         subset_bonus = 0.15 if (pn_tokens <= ktokens or ktokens <= pn_tokens) else 0.0
-
-        # ratio global de chaînes
         ratio = _quick_ratio(pn, k)
-
         score = 0.55 * ratio + 0.45 * jaccard + subset_bonus
+
         if score > best_score:
             best_score = score
             best_path = path
 
-    # seuil plus permissif
     return best_path if best_score >= 0.60 else None
 
 
-def show_photo_block(player_name: str, location: str = "stats") -> None:
-    """Affiche la photo d'une joueuse, avec diagnostics si non trouvée.
+# ✅ FIX 3 : alias find_best_photo_for_player -> find_best_photo_for_player_relaxed
+def find_best_photo_for_player(player_name: str, photos_index: Dict[str, str]) -> Optional[str]:
+    """Alias vers find_best_photo_for_player_relaxed (compatibilité)."""
+    return find_best_photo_for_player_relaxed(player_name, photos_index)
 
-    location: 'stats' ou 'passerelle' (pour différencier les key Streamlit)
-    """
-    # bouton de sync (optionnel)
+
+def show_photo_block(player_name: str, location: str = "stats") -> None:
     c1, c2 = st.columns([1, 4])
     with c1:
         force = st.button("🔄 Sync photos", key=f"photos_sync_{location}")
@@ -545,7 +509,6 @@ def show_photo_block(player_name: str, location: str = "stats") -> None:
         st.image(photo_path, width=170)
         return
 
-    # rien trouvé -> expander diagnostic
     with st.expander("📷 Diagnostic photos", expanded=False):
         if stt.get("error"):
             st.error(f"Erreur sync photos: {stt['error']}")
@@ -553,26 +516,21 @@ def show_photo_block(player_name: str, location: str = "stats") -> None:
         st.write(f"**Dossier local:** `{stt.get('local_folder')}`")
         st.write(f"**Fichiers images locaux:** {stt.get('n_local_files')} — **Index:** {stt.get('n_index')}")
         st.info("Aucune photo trouvée pour ce nom. Vérifie le nom du fichier (ex: 'NOM Prenom.jpg') ou utilise le bouton Sync.")
-        # montrer quelques candidats proches
         if idx:
             key = _photo_key_compact(player_name)
             candidates = sorted(idx.keys(), key=lambda k: _quick_ratio(key, k), reverse=True)[:10]
             st.write("**Top correspondances possibles (clé):**")
             st.write(", ".join(candidates))
 
+
 def load_photo_bytes(path: str):
-    """
-    Lit une image locale et renvoie des bytes affichables par st.image.
-    - Pour HEIC/HEIF: tente une conversion via PIL (+ pillow-heif).
-    """
     try:
         ext = os.path.splitext(path)[1].lower()
         with open(path, 'rb') as f:
             raw_bytes = f.read()
         if ext in ('.heic', '.heif'):
-            if Image is None:
-                return None
             try:
+                from PIL import Image
                 im = Image.open(io.BytesIO(raw_bytes))
                 buf = io.BytesIO()
                 im.convert('RGB').save(buf, format='JPEG', quality=92)
@@ -583,8 +541,8 @@ def load_photo_bytes(path: str):
     except Exception:
         return None
 
+
 def debug_photo_suggestions(player_name: str, photos_index: dict, topn: int = 8):
-    """Retourne quelques suggestions de fichiers photo proches (debug)."""
     try:
         target = normalize_str(player_name)
         keys = list(photos_index.keys())
@@ -597,6 +555,7 @@ def debug_photo_suggestions(player_name: str, photos_index: dict, topn: int = 8)
         return out
     except Exception:
         return []
+
 
 def _download_drive_binary_to_path(service, file_id: str, out_path: str) -> str:
     request = service.files().get_media(fileId=file_id)
@@ -612,17 +571,27 @@ def _download_drive_binary_to_path(service, file_id: str, out_path: str) -> str:
     return out_path
 
 
-def sync_photos_from_drive():
+# ✅ FIX 4 : sync_photos_from_drive corrigée
+# - signature avec paramètres par défaut
+# - drive_service initialisé localement
+# - list_all_files_in_folder_recursive remplacée par list_files_recursive
+def sync_photos_from_drive(folder_id: str = None, local_folder: str = None):
     """Télécharge (cache local) les photos des joueuses depuis Google Drive."""
-    folder_id = PHOTOS_FOLDER_ID
-    local_folder = PHOTOS_FOLDER
+    if folder_id is None:
+        folder_id = PHOTOS_FOLDER_ID
+    if local_folder is None:
+        local_folder = PHOTOS_FOLDER
+
     if not folder_id:
         st.warning('Photos: PHOTOS_FOLDER_ID non configuré.')
         return
     os.makedirs(local_folder, exist_ok=True)
 
     try:
-        items = list_all_files_in_folder_recursive(folder_id)
+        # ✅ drive_service initialisé localement (n'existait pas dans la portée)
+        drive_service = authenticate_google_drive()
+        # ✅ list_all_files_in_folder_recursive remplacée par list_files_recursive
+        items = list_files_recursive(drive_service, folder_id)
     except Exception as e:
         st.warning(f"Photos: impossible d'accéder au dossier Drive. Partage ce dossier avec le service account. Erreur: {e}")
         return
@@ -673,6 +642,7 @@ def sync_photos_from_drive():
         if fid and name:
             _download_file(fid, name, size)
 
+    # Reconstruction de l'index après sync
     build_photos_index_local()
     if downloaded > 0:
         st.caption(f"📸 Photos: {downloaded} fichier(s) synchronisé(s) depuis Drive.")
@@ -691,12 +661,8 @@ def _is_retryable_http_error(e: Exception) -> bool:
     return status in (429, 500, 502, 503, 504)
 
 
-
 # =========================
-# GPS DRIVE SYNC (autonome, sans index)
-# - évite les listings géants => limite les erreurs Drive 500 sur pagination
-# - sync incrémental (modifiedTime)
-# - conversion .xls -> Google Sheet -> export .xlsx (pas besoin de xlrd)
+# GPS DRIVE SYNC
 # =========================
 GPS_SYNC_STATE_PATH = os.path.join(DATA_FOLDER, "gps_sync_state.json")
 
@@ -778,13 +744,6 @@ def walk_drive_folders(service, root_folder_id: str, state: dict):
             continue
 
 def _safe_local_path(filename: str, file_id: str) -> str:
-    """Construit un chemin local sûr sous data/gps.
-
-    Important:
-    - Certains appels passent un 'filename' avec un sous-dossier (ex: 'gps/xxx.csv').
-      On évite alors de créer 'data/gps/gps/xxx...' et on place toujours sous 'data/gps/'.
-    - On ajoute un suffixe avec l'id Drive pour éviter les collisions de noms.
-    """
     os.makedirs(GPS_FOLDER, exist_ok=True)
 
     rel = "" if filename is None else str(filename)
@@ -801,7 +760,6 @@ def _safe_local_path(filename: str, file_id: str) -> str:
 
 
 def download_drive_file_to_local(service, file_id: str, file_name: str, mime_type: str) -> str:
-    # Google Sheet -> export xlsx
     if mime_type == "application/vnd.google-apps.spreadsheet":
         request = service.files().export_media(
             fileId=file_id,
@@ -826,12 +784,10 @@ def download_drive_file_to_local(service, file_id: str, file_name: str, mime_typ
     return final_path
 
 def download_drive_csv_to_local(service, file_id: str, file_name: str) -> str:
-    """Télécharge un CSV (Drive binaire) vers data/gps/ (ou sous-dossiers éventuels)."""
     request = service.files().get_media(fileId=file_id)
     if not str(file_name).lower().endswith(".csv"):
         file_name = os.path.splitext(str(file_name))[0] + ".csv"
 
-    # IMPORTANT: ne pas préfixer 'gps/' ici; _safe_local_path gère les sous-dossiers si présents.
     final_path = _safe_local_path(str(file_name), file_id)
 
     fh = io.BytesIO()
@@ -849,11 +805,9 @@ def download_drive_csv_to_local(service, file_id: str, file_name: str) -> str:
 
 
 def export_sheet_to_csv_local(service, file_id: str, file_name: str) -> str:
-    """Exporte un Google Sheet en CSV vers data/gps/."""
     request = service.files().export_media(fileId=file_id, mimeType="text/csv")
     file_name = os.path.splitext(str(file_name))[0] + ".csv"
 
-    # IMPORTANT: ne pas préfixer 'gps/' ici; _safe_local_path gère les sous-dossiers si présents.
     final_path = _safe_local_path(str(file_name), file_id)
 
     fh = io.BytesIO()
@@ -871,7 +825,6 @@ def export_sheet_to_csv_local(service, file_id: str, file_name: str) -> str:
 
 
 def convert_xls_drive_to_xlsx_local(service, file_id: str, original_name: str) -> str:
-    # 1) copy+convert -> Google Sheet (temp)
     body = {
         "name": f"__tmp_convert__{original_name}",
         "mimeType": "application/vnd.google-apps.spreadsheet",
@@ -884,7 +837,6 @@ def convert_xls_drive_to_xlsx_local(service, file_id: str, original_name: str) -
     ))
     gsheet_id = copied["id"]
 
-    # 2) export -> xlsx
     req = service.files().export_media(
         fileId=gsheet_id,
         mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -901,7 +853,6 @@ def convert_xls_drive_to_xlsx_local(service, file_id: str, original_name: str) -
     with open(final_path, "wb") as f:
         f.write(fh.read())
 
-    # 3) cleanup temp
     try:
         _execute_with_retry(service.files().delete(fileId=gsheet_id, supportsAllDrives=True))
     except Exception:
@@ -910,17 +861,9 @@ def convert_xls_drive_to_xlsx_local(service, file_id: str, original_name: str) -
     return final_path
 
 def sync_gps_from_drive_autonomous():
-    """Synchronise les fichiers GPS depuis Drive, de manière autonome et incrémentale.
-
-    Objectifs:
-    - éviter un listing récursif gigantesque (source de 500 Internal Error sur pageToken)
-    - parcourir dossier par dossier, avec skip temporaire des dossiers en échec
-    - ne rapatrier que les fichiers modifiés depuis la dernière sync (modifiedTime)
-    - télécharger/exporter les fichiers GPS en .csv (Google Sheets export -> CSV, CSV natifs téléchargés)
-    """
     service = authenticate_google_drive()
     state = _load_gps_state()
-    last_m = state.get("last_modifiedTime")  # RFC3339 str ou None
+    last_m = state.get("last_modifiedTime")
     newest_modified = last_m
 
     def is_gps_candidate(f: dict) -> bool:
@@ -928,7 +871,6 @@ def sync_gps_from_drive_autonomous():
         mt = f.get("mimeType") or ""
         if mt == "application/vnd.google-apps.folder":
             return False
-        # GPS: CSV natif ou Google Sheet (export CSV)
         if not (name.endswith(".csv") or mt == "application/vnd.google-apps.spreadsheet"):
             return False
         return ("gf1" in name) or ("seance" in name) or ("séance" in name) or ("gps" in name)
@@ -963,17 +905,11 @@ def sync_gps_from_drive_autonomous():
             continue
 
     state["last_modifiedTime"] = newest_modified
-    # purge des échecs vieux de +24h
     state["folders_failed"] = {k: v for k, v in state.get("folders_failed", {}).items() if (time.time() - float(v)) < 86400}
     _save_gps_state(state)
 
 
 def list_files_in_folder(service, folder_id: str, include_folders: bool = False) -> List[dict]:
-    """Liste les fichiers d'un dossier Drive (1 niveau) avec pagination + retries.
-
-    - Retry/backoff pour les erreurs transitoires (500/503/504 etc.)
-    - supportsAllDrives/includeItemsFromAllDrives: robuste aux drives partagés
-    """
     query = f"'{folder_id}' in parents and trashed=false"
     fields = "nextPageToken, files(id, name, mimeType, modifiedTime, size, shortcutDetails, thumbnailLink)"
 
@@ -996,7 +932,6 @@ def list_files_in_folder(service, folder_id: str, include_folders: bool = False)
                 break
             except Exception as e:
                 if _is_retryable_http_error(e) and attempt < max_tries - 1:
-                    # backoff exponentiel
                     time.sleep((2 ** attempt) + (0.1 * attempt))
                     continue
                 raise
@@ -1041,7 +976,6 @@ def download_file(service, file_id, file_name, output_folder, mime_type=None):
     final_path = os.path.join(output_folder, file_name)
     tmp_path = final_path + ".tmp"
 
-    # Google Sheet -> export xlsx
     if mime_type == "application/vnd.google-apps.spreadsheet":
         request = service.files().export_media(
             fileId=file_id, mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1084,7 +1018,6 @@ def download_permissions_file():
             service, candidate["id"], candidate["name"], DATA_FOLDER, mime_type=candidate.get("mimeType")
         )
 
-        # retry once if corrupted
         try:
             _ = read_excel_auto(path)
         except Exception:
@@ -1150,43 +1083,26 @@ def download_google_drive():
     os.makedirs(PASSERELLE_FOLDER, exist_ok=True)
     os.makedirs(GPS_FOLDER, exist_ok=True)
 
-    # Main folder
     files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
     for f in files:
         is_sheet = f.get("mimeType") == "application/vnd.google-apps.spreadsheet"
         if f["name"].endswith((".csv", ".xlsx", ".xls")) or is_sheet:
             download_file(service, f["id"], f["name"], DATA_FOLDER, mime_type=f.get("mimeType"))
 
-    # Passerelle
     files_pass = list_files_in_folder(service, DRIVE_PASSERELLE_FOLDER_ID)
     for f in files_pass:
         if normalize_str(f["name"]) == normalize_str(PASSERELLE_FILENAME):
             download_file(service, f["id"], f["name"], PASSERELLE_FOLDER, mime_type=f.get("mimeType"))
             break
 
-# GPS : la synchronisation est gérée par sync_gps_from_drive_autonomous()
-# (collecte incrémentale + conversion .xls -> .xlsx), afin d'éviter les erreurs Drive 500
-# sur les listings paginés de gros dossiers.
 st.session_state["gps_drive_found"] = 0
 st.session_state["gps_drive_downloaded"] = 0
+
 
 # =========================
 # REFERENTIEL NOMS
 # =========================
 def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], Dict[str, str], Dict[str, str], Dict[str, Set[str]], Dict[str, Set[str]]]:
-    """Construit la base canon des joueuses depuis le référentiel.
-
-    Supporte 2 formats:
-    - Ancien: colonnes NOM / Prénom
-    - Nouveau: colonne 'Nom de joueuse' (nom complet)
-
-    Retourne:
-      - ref_set: ensemble des CANON
-      - alias_to_canon: alias directs -> CANON
-      - tokenkey_to_canon: clé tokens triés -> CANON (insensible à l'ordre NOM/PRENOM)
-      - compact_to_canon: forme sans espaces -> CANON (capte noms collés/décollés)
-      - first_to_canons / last_to_canons: index tokens -> set(CANON) pour gérer prénom seul / nom seul + typos
-    """
     ref = read_excel_auto(ref_path)
 
     if isinstance(ref, dict):
@@ -1199,7 +1115,6 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], 
 
     cols_norm = {normalize_str(c): c for c in ref.columns}
 
-    # --- Nouveau format prioritaire ---
     if "Nom de joueuse" in ref.columns:
         col_name = "Nom de joueuse"
         ref = ref.copy()
@@ -1209,7 +1124,6 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], 
         ref = ref.copy()
         ref["CANON"] = ref[col_name].astype(str).map(normalize_name_raw)
     else:
-        # --- Ancien format NOM / PRENOM ---
         cols = {str(c).strip().upper(): c for c in ref.columns}
         col_nom = cols.get("NOM") or cols_norm.get("nom")
         col_pre = cols.get("PRÉNOM") or cols.get("PRENOM") or cols_norm.get("prenom") or cols_norm.get("prénom")
@@ -1245,16 +1159,13 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], 
             token_key = " ".join(sorted(toks))
             tokenkey_to_canon[token_key] = canon
 
-            # Index tokens -> canons (prénom seul / nom seul)
-            # Heuristique: on indexe TOUS les tokens + extrémités
             for t in toks:
                 _add_index(first_to_canons, t, canon)
                 _add_index(last_to_canons, t, canon)
 
-            _add_index(first_to_canons, toks[-1], canon)  # prénom probable
-            _add_index(last_to_canons, toks[0], canon)    # nom probable
+            _add_index(first_to_canons, toks[-1], canon)
+            _add_index(last_to_canons, toks[0], canon)
 
-        # Aliases d'inversion fréquents (PRENOM NOM)
         if toks and len(toks) >= 2:
             inv1 = " ".join([toks[-1]] + toks[:-1])
             alias_to_canon[normalize_name_raw(inv1)] = canon
@@ -1263,14 +1174,12 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], 
                 inv2 = " ".join(toks[-2:] + toks[:-2])
                 alias_to_canon[normalize_name_raw(inv2)] = canon
 
-        # Alias virgule
         if toks and len(toks) >= 2:
             nom = " ".join(toks[:-1])
             prenom = toks[-1]
             alias_to_canon[normalize_name_raw(f"{nom}, {prenom}")] = canon
             alias_to_canon[normalize_name_raw(f"{prenom} {nom}")] = canon
 
-        # Alias initiale (ex: DUPONT A)
         if toks and len(toks) >= 2:
             nom = " ".join(toks[:-1])
             prenom = toks[-1]
@@ -1280,10 +1189,6 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], 
     return ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons
 
 def best_from_candidates(raw_clean: str, candidates: List[str], min_score: float = 0.88) -> Tuple[Optional[str], float, Optional[float]]:
-    """Retourne le meilleur canon si non ambigu.
-    - min_score: score minimum pour accepter
-    - anti-ambiguïté: écart >= 0.04 avec le 2e meilleur
-    """
     if not candidates:
         return None, 0.0, None
 
@@ -1317,14 +1222,6 @@ def map_player_name(
     cutoff_token: float = 0.92,
     cutoff_single: float = 0.90,
 ) -> Tuple[str, str, str]:
-    """Mappe un nom brut vers le CANON du référentiel.
-
-    Cascade:
-      exact -> alias -> token_set -> token_fuzzy -> compact -> single_token -> fuzzy -> unmatched
-
-    Le mode single_token (prénom seul / nom seul / tronqué) est protégé par une règle
-    anti-ambiguïté (écart avec le 2e meilleur).
-    """
     if raw_name is None:
         return "", "unmatched", "empty"
 
@@ -1336,15 +1233,12 @@ def map_player_name(
     if not cleaned:
         return "", "unmatched", raw
 
-    # 1) exact
     if cleaned in ref_set:
         return cleaned, "exact", raw
 
-    # 2) alias
     if cleaned in alias_to_canon:
         return alias_to_canon[cleaned], "alias", raw
 
-    # 3) token-set exact + token-fuzzy
     toks = tokens_name(cleaned)
     if toks:
         key = " ".join(sorted(toks))
@@ -1361,19 +1255,16 @@ def map_player_name(
         if best_canon and best_score >= cutoff_token:
             return best_canon, f"token_fuzzy({best_score:.2f})", raw
 
-    # 4) compact (noms collés/décollés)
     comp = compact_name(cleaned)
     if comp in compact_to_canon:
         return compact_to_canon[comp], "compact", raw
 
-    # 5) single token : prénom seul / nom seul / tronqué
     if toks and len(toks) == 1:
         t = toks[0]
         cand: Set[str] = set()
         cand |= first_to_canons.get(t, set())
         cand |= last_to_canons.get(t, set())
 
-        # élargissement si faute sur le token
         if not cand:
             keys = list(set(list(first_to_canons.keys()) + list(last_to_canons.keys())))
             near = get_close_matches(t, keys, n=8, cutoff=0.86)
@@ -1386,7 +1277,6 @@ def map_player_name(
         if best:
             return best, f"single_token({sc:.2f})", raw
 
-    # 6) fuzzy final global (dernier recours)
     best = get_close_matches(cleaned, list(ref_set), n=1, cutoff=cutoff_fuzzy)
     if best:
         return best[0], "fuzzy", raw
@@ -1430,7 +1320,6 @@ def normalize_players_in_df(
             new_vals.append(mapped if looks_like_player(mapped) else v)
         out[col] = new_vals
     return out
-
 
 
 # =========================
@@ -1510,7 +1399,6 @@ def extract_lineup_from_row(row: pd.Series, available_posts: List[str]) -> Set[s
 
 
 def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.DataFrame:
-    """Calcule le temps de jeu des joueuses à partir des segments Duration."""
     if match is None or match.empty:
         return pd.DataFrame()
 
@@ -1523,18 +1411,14 @@ def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.
 
     m = match.copy()
 
-    # Normalisation des noms d'équipes
     home_clean = nettoyer_nom_equipe(home_team)
     away_clean = nettoyer_nom_equipe(away_team)
 
     m["Row_team"] = m["Row"].astype(str).apply(nettoyer_nom_equipe)
-
-    # garder lignes équipes
     m = m[m["Row_team"].isin({home_clean, away_clean})].copy()
     if m.empty:
         return pd.DataFrame()
 
-    # unité Duration
     unit = infer_duration_unit(m["Duration"])
 
     def to_seconds(x):
@@ -1573,11 +1457,6 @@ def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.
 # STATS ACTIONS
 # =========================
 def players_shots(joueurs):
-    """
-    Compte les tirs / tirs cadrés / buts à partir des événements.
-    Règle: les buts = occurrences de "But" dans la colonne "Tir"
-    sur les lignes où Action contient "Tir".
-    """
     if joueurs is None or joueurs.empty or "Row" not in joueurs.columns:
         return pd.DataFrame()
 
@@ -1614,7 +1493,6 @@ def players_shots(joueurs):
 
 
 def players_passes(joueurs):
-    """Compte les passes (1 passe = 1 ligne) et la réussite."""
     if joueurs is None or joueurs.empty or "Action" not in joueurs.columns or "Row" not in joueurs.columns:
         return pd.DataFrame()
 
@@ -1668,7 +1546,6 @@ def players_passes(joueurs):
 
 
 def players_assists(joueurs):
-    """Compte les passes décisives (1 ligne = 1 passe)."""
     if joueurs is None or joueurs.empty or "Action" not in joueurs.columns or "Row" not in joueurs.columns:
         return pd.DataFrame()
 
@@ -1692,17 +1569,6 @@ def players_assists(joueurs):
 
 
 def players_pass_directions(joueurs):
-    """
-    ✅ Version unique (nettoyée) : compte la direction des passes à partir de la colonne 'Ungrouped'
-    (uniquement si Action contient 'Passe').
-
-    Catégories :
-    - avant / arrière
-    - latérale gauche / droite
-    - diagonale gauche / droite
-
-    Une passe est réussie si la colonne 'Passe' contient 'Réussie'.
-    """
     if joueurs is None or joueurs.empty:
         return pd.DataFrame()
     if "Action" not in joueurs.columns or "Row" not in joueurs.columns or "Ungrouped" not in joueurs.columns:
@@ -1861,7 +1727,6 @@ def players_ball_losses(joueurs):
 
 
 def creativity_helpers_from_events(joueurs: pd.DataFrame) -> pd.DataFrame:
-    """Construit les colonnes nécessaires à Créativité 1 & 2 à partir des events."""
     if joueurs is None or joueurs.empty or "Row" not in joueurs.columns:
         return pd.DataFrame()
 
@@ -1902,7 +1767,6 @@ def creativity_helpers_from_events(joueurs: pd.DataFrame) -> pd.DataFrame:
 # METRICS / KPI / POSTES
 # =========================
 def create_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """Crée les métriques (0-100 via rang percentile)."""
     if df is None or df.empty:
         return df
 
@@ -1933,7 +1797,6 @@ def create_metrics(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df[metric] = np.where(df[cols[0]] > 0, df.get(cols[1], 0) / df[cols[0]], 0)
 
-    # Créativité 1 & 2 (colonnes internes)
     def _series_or_zeros(col: str) -> pd.Series:
         if col in df.columns:
             return pd.to_numeric(df[col], errors="coerce").fillna(0)
@@ -1951,7 +1814,6 @@ def create_metrics(df: pd.DataFrame) -> pd.DataFrame:
     denom_team = team_total.replace(0, np.nan)
     df["Créativité 2"] = (deseq / denom_team * 100).fillna(0)
 
-    # Rang percentiles 0-100
     to_rank = list(required_cols.keys()) + ["Créativité 1", "Créativité 2"]
     for metric in to_rank:
         if metric in df.columns:
@@ -2072,7 +1934,6 @@ def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
 
     df.fillna(0, inplace=True)
 
-    # Helpers créativité (à partir des events)
     try:
         ch = creativity_helpers_from_events(joueurs)
         if ch is not None and not ch.empty:
@@ -2133,11 +1994,31 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     return safe_int_numeric_only(aggregated)
 
 
+def aggregate_player_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """Agrège les stats d'une joueuse (moyenne pondérée par temps de jeu)."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    sum_cols = ["Temps de jeu (en minutes)", "Buts"]
+    existing_sum = [c for c in sum_cols if c in df.columns]
+
+    mean_df = df.mean(numeric_only=True)
+    agg = mean_df.to_frame().T
+
+    for c in existing_sum:
+        if c in df.columns:
+            agg[c] = df[c].sum()
+
+    if "Player" in df.columns:
+        agg.insert(0, "Player", df["Player"].iloc[0])
+
+    return safe_int_numeric_only(agg)
+
+
 # =========================
 # AGRÉGATION GLOBALE (export)
 # =========================
 def aggregate_global_players(df: pd.DataFrame) -> pd.DataFrame:
-    """Agrège la base PFC par joueuse pour l'export Excel."""
     if df is None or df.empty or "Player" not in df.columns:
         return pd.DataFrame()
 
@@ -2192,7 +2073,6 @@ def aggregate_global_players(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def denormalize_match_rows_from_per90(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert per-90 volumes back to real volumes for match-by-match export only."""
     if df is None or df.empty or "Temps de jeu (en minutes)" not in df.columns:
         return df
 
@@ -2262,7 +2142,6 @@ def is_gf1_export_format(df: pd.DataFrame) -> bool:
 
 
 def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
-    """Standardise un export GF1 (Activity Date, Nom de joueur, Temps joué, Distance par plages...)."""
     if df is None or df.empty:
         return df
     d = df.copy()
@@ -2284,7 +2163,6 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
         if k in d.columns:
             d = d.rename(columns={k: v})
 
-    # Date
     if "DATE" in d.columns:
         d["DATE"] = pd.to_datetime(d["DATE"], errors="coerce")
     else:
@@ -2296,12 +2174,10 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     if w_file is not None:
         d["SEMAINE"] = pd.Series([w_file] * len(d), index=d.index, dtype="Int64")
 
-    # Numériques essentiels
     for c in ["Durée_min", "Distance (m)", "Sprints_23", "Sprints_25", "Vitesse max (km/h)", "Accélération maximale (m/s²)", "#accel/decel"]:
         if c in d.columns:
             d[c] = pd.to_numeric(d[c], errors="coerce")
 
-    # Plages -> passerelle
     def _num(col):
         if col in df.columns:
             return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
@@ -2317,14 +2193,11 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     d["Distance 19-23 (m)"] = v19_23
     d["Distance >23 (m)"] = v23_25 + v_sup25
 
-    # Source
     d["__source_file"] = os.path.basename(filename)
     return d
 
 
 def read_csv_auto(path: str) -> pd.DataFrame:
-    """Lecture CSV robuste (',' ou ';', encodages fréquents)."""
-    # essai UTF-8 (avec BOM) puis latin-1
     encodings = ["utf-8-sig", "utf-8", "latin1"]
     seps = [",", ";", "\t"]
     last_err = None
@@ -2332,7 +2205,6 @@ def read_csv_auto(path: str) -> pd.DataFrame:
         for sep in seps:
             try:
                 df = pd.read_csv(path, encoding=enc, sep=sep)
-                # Heuristique: si 1 seule colonne et le fichier contient des séparateurs, mauvais sep
                 if df.shape[1] == 1 and sep != "\t":
                     continue
                 return df
@@ -2343,11 +2215,6 @@ def read_csv_auto(path: str) -> pd.DataFrame:
 
 
 def list_gps_files_local() -> List[str]:
-    """Liste des CSV GPS synchronisés localement.
-
-    - Parcourt récursivement data/gps (car certains téléchargements peuvent créer des sous-dossiers)
-    - Fallback: data/ (non récursif) si certains CSV ont été déposés à la racine.
-    """
     paths: List[str] = []
 
     gps_root = os.path.join(DATA_FOLDER, "gps")
@@ -2360,7 +2227,6 @@ def list_gps_files_local() -> List[str]:
                 if ("gf1" in fn_norm) or ("seance" in fn_norm) or ("séance" in fn_norm) or ("gps" in fn_norm):
                     paths.append(os.path.join(root, f))
 
-    # fallback data/ (1 niveau)
     if os.path.exists(DATA_FOLDER):
         for f in os.listdir(DATA_FOLDER):
             if not f.lower().endswith(".csv"):
@@ -2369,20 +2235,17 @@ def list_gps_files_local() -> List[str]:
             if ("gf1" in fn_norm) or ("seance" in fn_norm) or ("séance" in fn_norm) or ("gps" in fn_norm):
                 paths.append(os.path.join(DATA_FOLDER, f))
 
-    # dédoublonnage
     paths = sorted(list(dict.fromkeys(paths)))
     return paths
 
 
 def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
-    """Détecte d'abord le format GF1 export, sinon applique le mapping legacy."""
     if df is None or df.empty:
         return df
 
     if is_gf1_export_format(df):
         return standardize_gps_gf1_export(df, filename)
 
-    # fallback legacy
     colmap = {}
     for c in df.columns:
         nc = normalize_str(c)
@@ -2420,7 +2283,7 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return out
 
 
-def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_canon: Dict[str, str], compact_to_canon: Dict[str, str], first_to_canons: Dict[str, Set[str]], last_to_canons: Dict[str, Set[str]]) -> pd.DataFrame:
+def load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons) -> pd.DataFrame:
     files = list_gps_files_local()
     if not files:
         return pd.DataFrame()
@@ -2445,7 +2308,6 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_
             dfp["__source_file"] = os.path.basename(p)
             frames.append(dfp)
         except Exception as e:
-            # Ici on est dans la lecture des fichiers GPS (pas les matchs)
             st.warning(f"GPS: impossible de lire {os.path.basename(p)} -> {e}")
             continue
 
@@ -2453,7 +2315,6 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_
     if df.empty or "NOM" not in df.columns:
         return pd.DataFrame()
 
-    # Mapping référentiel
     mapped = []
     statuses = []
     for v in df["NOM"].astype(str).tolist():
@@ -2463,7 +2324,6 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_
     df["Player"] = mapped
     df["__name_status"] = statuses
 
-    # Numériques (compat formats)
     for c in [
         "Durée", "Durée_min",
         "Distance (m)",
@@ -2476,7 +2336,6 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Harmoniser Durée_min
     if "Durée_min" not in df.columns and "Durée" in df.columns:
         df["Durée_min"] = pd.to_numeric(df["Durée"], errors="coerce")
     elif "Durée_min" in df.columns:
@@ -2487,31 +2346,17 @@ def load_gps_raw(ref_set: Set[str], alias_to_canon: Dict[str, str], tokenkey_to_
 
 
 def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
-    """Agrège les données GPS par joueuse et par semaine.
-
-    Colonnes gérées (si présentes) :
-    - Distance Totale : 'Distance (m)'
-    - Bandes vitesse : 'Distance 13-19 (m)', 'Distance 19-23 (m)', 'Distance >23 (m)'
-      (ou leurs équivalents HID si c'est ce qui est disponible)
-    - Charge : 'CHARGE' (ou calcul via RPE * Durée)
-    - Durée : 'Durée_min' (ou 'Durée')
-
-    Retourne aussi (si CHARGE disponible) :
-    - Aigue, Chronique (rolling 4 semaines), ACWR
-    """
     if df_gps is None or df_gps.empty:
         return pd.DataFrame()
 
     d = df_gps.copy()
 
-    # Semaine
     if "SEMAINE" not in d.columns:
         if "DATE" in d.columns:
             d["SEMAINE"] = pd.to_datetime(d["DATE"], errors="coerce").dt.isocalendar().week.astype("Int64")
         else:
             d["SEMAINE"] = pd.NA
 
-    # Durée minutes
     if "Durée_min" in d.columns:
         d["Durée_min"] = pd.to_numeric(d["Durée_min"], errors="coerce")
     elif "Durée" in d.columns:
@@ -2519,45 +2364,37 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
     else:
         d["Durée_min"] = np.nan
 
-    # Charge
     if "CHARGE" not in d.columns and "RPE" in d.columns:
         d["CHARGE"] = pd.to_numeric(d["RPE"], errors="coerce").fillna(0) * d["Durée_min"].fillna(0)
     elif "CHARGE" in d.columns:
         d["CHARGE"] = pd.to_numeric(d["CHARGE"], errors="coerce")
 
-    # Colonnes à sommer
     agg_map: Dict[str, str] = {}
 
-    # Distance totale
     if "Distance (m)" in d.columns:
         d["Distance (m)"] = pd.to_numeric(d["Distance (m)"], errors="coerce")
         agg_map["Distance (m)"] = "sum"
 
-    # Bandes demandées
     for col in ["Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)"]:
         if col in d.columns:
             d[col] = pd.to_numeric(d[col], errors="coerce")
             agg_map[col] = "sum"
 
-    # Fallback HID si les bandes ne sont pas là
     for col in ["Distance HID (>13 km/h)", "Distance HID (>19 km/h)"]:
         if col in d.columns and col not in agg_map:
             d[col] = pd.to_numeric(d[col], errors="coerce")
             agg_map[col] = "sum"
 
-    # Durée et charge
     if "Durée_min" in d.columns:
         agg_map["Durée_min"] = "sum"
     if "CHARGE" in d.columns:
         agg_map["CHARGE"] = "sum"
 
-    # Si rien à agréger, on renvoie un DF vide (UI affichera un message)
     if not agg_map:
         return pd.DataFrame()
 
     out = d.groupby(["Player", "SEMAINE"], as_index=False).agg(agg_map)
 
-    # ACWR si charge dispo
     if "CHARGE" in out.columns:
         out = out.sort_values(["Player", "SEMAINE"])
         out["Aigue"] = out["CHARGE"]
@@ -2568,28 +2405,16 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
+
 # =========================
 # GPS UI HELPERS
 # =========================
 def ensure_date_column(df: pd.DataFrame) -> pd.DataFrame:
-    """Garantit une colonne DATE (tz-naive) en datetime64[ns].
-
-    Priorité:
-    1) 'Activity Date' / 'activity date' (exports GPS)
-    2) 'DATE'
-    3) 'Date'
-    4) date dans __source_file au format JJ.MM.AAAA
-
-    Robustesse:
-    - gère timestamps tz-aware (convertit en naïf)
-    - gère formats texte variés (JJ.MM.AAAA, JJ/MM/AAAA, ISO)
-    """
     if df is None or df.empty:
         return df
 
     d = df.copy()
 
-    # Trouver une colonne source potentielle
     src = None
     for cand in ["Activity Date", "activity date", "DATE", "Date"]:
         if cand in d.columns:
@@ -2606,7 +2431,6 @@ def ensure_date_column(df: pd.DataFrame) -> pd.DataFrame:
     else:
         d["DATE"] = pd.NaT
 
-    # Fallback: date dans le nom de fichier (JJ.MM.AAAA / JJ.MM.AA / JJ/MM/AAAA)
     if "__source_file" in d.columns:
         missing = d["DATE"].isna()
         if missing.any():
@@ -2618,7 +2442,6 @@ def ensure_date_column(df: pd.DataFrame) -> pd.DataFrame:
             parsed = pd.to_datetime(extracted, dayfirst=True, errors="coerce")
             d.loc[missing, "DATE"] = parsed.values
 
-    # Dernier filet: normaliser en tz-naive
     d["DATE"] = pd.to_datetime(d["DATE"], errors="coerce", utc=True)
     try:
         d["DATE"] = d["DATE"].dt.tz_convert(None)
@@ -2632,12 +2455,7 @@ def _gps_get_numeric(d: pd.DataFrame, col: str) -> pd.Series:
         return pd.Series(dtype=float)
     return pd.to_numeric(d[col], errors="coerce")
 
-def build_md_window_summary(d_player: pd.DataFrame, end_date: pd.Timestamp, days: int = 7) -> pd.DataFrame:
-    """Construit un tableau MD-(days-1) .. MD sur une fenêtre glissante.
-
-    - Fenêtre: [end_date-(days-1) ; end_date] (inclus)
-    - Si plusieurs lignes le même jour: moyenne journalière, puis agrégation par MD
-    """
+def build_md_window_summary(d_player: pd.DataFrame, end_date, days: int = 7) -> pd.DataFrame:
     if d_player is None or d_player.empty or "DATE" not in d_player.columns:
         return pd.DataFrame()
 
@@ -2651,13 +2469,11 @@ def build_md_window_summary(d_player: pd.DataFrame, end_date: pd.Timestamp, days
     if d.empty:
         return pd.DataFrame()
 
-    # Distance relative si absente: Distance / Durée_min
     if "Distance relative (m/min)" not in d.columns:
         dist = _gps_get_numeric(d, "Distance (m)")
         dur = _gps_get_numeric(d, "Durée_min")
         d["Distance relative (m/min)"] = (dist / dur.replace(0, np.nan)).fillna(0)
 
-    # Variables candidates (on ne force pas tout)
     vars_map = {
         "Distance (m)": "Moyenne de Distance (m)",
         "Distance HID (>13 km/h)": "Moyenne de Distance HID (>13 km/h)",
@@ -2675,7 +2491,6 @@ def build_md_window_summary(d_player: pd.DataFrame, end_date: pd.Timestamp, days
     if not agg_cols:
         return pd.DataFrame()
 
-    # Moyenne journalière
     d["DATE_DAY"] = d["DATE"].dt.normalize()
     dd = d.groupby("DATE_DAY", as_index=False)[agg_cols].mean(numeric_only=True)
 
@@ -2692,12 +2507,7 @@ def build_md_window_summary(d_player: pd.DataFrame, end_date: pd.Timestamp, days
     out = out.rename(columns=vars_map)
     return out
 
-def plot_gps_md_graph(summary: pd.DataFrame, selected_lines: Optional[List[str]] = None):
-    """Graphique microcycle (MD-6 → MD) plus lisible :
-    - barres plus étroites (distance totale)
-    - lignes avec marqueurs + meilleure lisibilité sur fond sombre
-    - légende compacte sous le graphique
-    """
+def plot_gps_md_graph(summary: pd.DataFrame, selected_lines=None):
     if summary is None or summary.empty or "MD" not in summary.columns:
         return None
 
@@ -2706,7 +2516,6 @@ def plot_gps_md_graph(summary: pd.DataFrame, selected_lines: Optional[List[str]]
 
     d = summary.copy()
 
-    # Ordre MD (si jamais des MD manquent)
     md_order = [f"MD-{k}" for k in range(6, 0, -1)] + ["MD"]
     d["__ord"] = d["MD"].astype(str).map({lab: i for i, lab in enumerate(md_order)})
     d = d.sort_values("__ord").drop(columns="__ord")
@@ -2714,7 +2523,6 @@ def plot_gps_md_graph(summary: pd.DataFrame, selected_lines: Optional[List[str]]
     x_labels = d["MD"].astype(str).tolist()
     x = np.arange(len(x_labels))
 
-    # Colonnes possibles (selon les exports)
     bar_col = "Moyenne de Distance (m)"
     candidates = [
         "Moyenne de Distance HID (>13 km/h)",
@@ -2732,15 +2540,12 @@ def plot_gps_md_graph(summary: pd.DataFrame, selected_lines: Optional[List[str]]
     if selected_lines:
         lines_to_plot = [c for c in selected_lines if c in available_lines]
     else:
-        # défaut: 4-5 courbes max (sinon illisible)
         lines_to_plot = available_lines[:5]
 
-    # ---------- Figure ----------
     fig, ax1 = plt.subplots(figsize=(11.2, 5.6), dpi=170)
     fig.patch.set_facecolor("#061a2e")
     ax1.set_facecolor("#061a2e")
 
-    # Grid + axes
     ax1.grid(True, axis="y", linestyle="--", alpha=0.25)
     for sp in ax1.spines.values():
         sp.set_alpha(0.35)
@@ -2749,13 +2554,12 @@ def plot_gps_md_graph(summary: pd.DataFrame, selected_lines: Optional[List[str]]
     ax1.tick_params(axis="y", colors="white")
     ax1.yaxis.label.set_color("white")
 
-    # ---------- Barres (Distance totale) ----------
     if bar_col in d.columns:
         y_bar = pd.to_numeric(d[bar_col], errors="coerce").fillna(0.0).values
     else:
         y_bar = np.zeros(len(d))
 
-    bar_width = 0.55  # ✅ barres plus étroites
+    bar_width = 0.55
     bars = ax1.bar(
         x,
         y_bar,
@@ -2769,23 +2573,19 @@ def plot_gps_md_graph(summary: pd.DataFrame, selected_lines: Optional[List[str]]
     ax1.set_xticks(x)
     ax1.set_xticklabels(x_labels, rotation=0, ha="center", color="white")
 
-    # marge en Y pour éviter que les barres touchent le haut
     if len(y_bar) and np.nanmax(y_bar) > 0:
         ax1.set_ylim(0, float(np.nanmax(y_bar)) * 1.18)
 
-    # ---------- Lignes (axe droit) ----------
     ax2 = ax1.twinx()
     ax2.set_facecolor("none")
     ax2.tick_params(axis="y", colors="white")
     ax2.yaxis.label.set_color("white")
     ax2.set_ylabel("Valeurs (axe droit)")
 
-    # Palette lisible sur fond sombre
     palette = ["#2EC4B6", "#FF9F1C", "#E71D36", "#A06CD5", "#9BC53D", "#5BC0EB", "#FDE74C"]
     handles = []
     labels = []
 
-    # Ajoute d'abord la barre dans la légende
     handles.append(bars)
     labels.append(bar_col if bar_col in d.columns else "Distance (m)")
 
@@ -2805,7 +2605,6 @@ def plot_gps_md_graph(summary: pd.DataFrame, selected_lines: Optional[List[str]]
         handles.append(line)
         labels.append(col)
 
-    # Améliore la lisibilité : petite marge sur l’axe droit
     try:
         y_all = []
         for col in lines_to_plot:
@@ -2815,7 +2614,6 @@ def plot_gps_md_graph(summary: pd.DataFrame, selected_lines: Optional[List[str]]
     except Exception:
         pass
 
-    # ---------- Légende (sous le graphe) ----------
     leg = ax1.legend(
         handles,
         labels,
@@ -2828,25 +2626,17 @@ def plot_gps_md_graph(summary: pd.DataFrame, selected_lines: Optional[List[str]]
     for txt in leg.get_texts():
         txt.set_color("white")
 
-    # Titre discret
     ax1.set_title("Microcycle (MD-6 → MD)", color="white", pad=10, fontsize=13)
 
     fig.tight_layout()
     return fig
 
-def gps_last_7_days_summary(gps_raw: pd.DataFrame, player_sel: str, end_date: Optional[pd.Timestamp] = None):
-    """Fenêtre glissante 7 jours (inclus) pour une joueuse.
-
-    Retourne:
-      - df_7j: lignes brutes sur la période
-      - summary: tableau (1 ligne) avec moyennes et totaux sur la période
-    """
+def gps_last_7_days_summary(gps_raw: pd.DataFrame, player_sel: str, end_date=None):
     if gps_raw is None or gps_raw.empty:
         return pd.DataFrame(), pd.DataFrame()
 
     d = gps_raw.copy()
 
-    # Sélection joueuse (canon)
     canon = nettoyer_nom_joueuse(player_sel)
     if "Player" in d.columns:
         d = d[d["Player"].astype(str).apply(nettoyer_nom_joueuse) == canon].copy()
@@ -2856,7 +2646,6 @@ def gps_last_7_days_summary(gps_raw: pd.DataFrame, player_sel: str, end_date: Op
     if d.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    # Assurer DATE
     d = ensure_date_column(d)
     if "DATE" not in d.columns:
         return pd.DataFrame(), pd.DataFrame()
@@ -2865,15 +2654,16 @@ def gps_last_7_days_summary(gps_raw: pd.DataFrame, player_sel: str, end_date: Op
     if d.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    # Normaliser DATE (tz-naive)
     d["DATE"] = pd.to_datetime(d["DATE"], errors="coerce")
     d = d[d["DATE"].notna()].copy()
     if d.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    d["DATE"] = d["DATE"].dt.tz_localize(None)
+    try:
+        d["DATE"] = d["DATE"].dt.tz_localize(None)
+    except Exception:
+        pass
 
-    # Date de fin (par défaut: dernière date dispo)
     if end_date is None:
         end_dt = pd.to_datetime(d["DATE"].max()).normalize()
     else:
@@ -2886,7 +2676,6 @@ def gps_last_7_days_summary(gps_raw: pd.DataFrame, player_sel: str, end_date: Op
     if df_7j.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    # Colonnes numériques GPS possibles
     metric_cols = [c for c in [
         "Durée", "Durée_min",
         "Distance (m)",
@@ -2897,7 +2686,6 @@ def gps_last_7_days_summary(gps_raw: pd.DataFrame, player_sel: str, end_date: Op
         "Vitesse max (km/h)", "#accel/decel",
     ] if c in df_7j.columns]
 
-    # Coerce numériques
     for c in metric_cols:
         df_7j[c] = pd.to_numeric(df_7j[c], errors="coerce")
 
@@ -2915,11 +2703,11 @@ def gps_last_7_days_summary(gps_raw: pd.DataFrame, player_sel: str, end_date: Op
 
     return df_7j, summary
 
+
 @st.cache_data
 def collect_data(selected_season=None):
     download_google_drive()
 
-    # Référentiel
     ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
     if not os.path.exists(ref_path):
         ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME)
@@ -2945,13 +2733,12 @@ def collect_data(selected_season=None):
             f for f in fichiers
             if (selected_season in f) or f.startswith(keep_always_prefixes) or (f in keep_always_names)
         ]
-    # GPS: sync autonome (Drive -> local data/gps) + conversion .xls si nécessaire
+
     try:
         sync_gps_from_drive_autonomous()
     except Exception as e:
         st.warning(f"GPS: sync autonome échouée -> {e}")
 
-    # Photos: sync Drive -> local + index
     try:
         sync_photos_from_drive()
     except Exception as e:
@@ -2959,7 +2746,6 @@ def collect_data(selected_season=None):
 
     st.session_state["photos_index"] = build_photos_index_local()
 
-    # GPS
     gps_raw = load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons)
     gps_week = compute_gps_weekly_metrics(gps_raw)
     st.session_state["gps_weekly_df"] = gps_week
@@ -2988,7 +2774,6 @@ def collect_data(selected_season=None):
                     canon_list.append(canon)
                 edf_j["PlayerCanon"] = canon_list
 
-                # Temps de jeu minutes
                 _tj = edf_j["Temps de jeu"] if "Temps de jeu" in edf_j.columns else pd.Series([0] * len(edf_j))
                 edf_j["Temps de jeu"] = pd.Series(pd.to_numeric(_tj, errors="coerce"), index=edf_j.index).fillna(0)
 
@@ -3012,9 +2797,7 @@ def collect_data(selected_season=None):
                     d = d.merge(edf_j[["PlayerCanon", "Poste", "Temps de jeu"]], on="PlayerCanon", how="left")
 
                     if "Poste" not in d.columns or d["Poste"].isna().mean() > 0.9:
-                        st.warning(
-                            f"EDF: merge faible sur {csv_file} (Poste NaN {d['Poste'].isna().mean():.0%})."
-                        )
+                        st.warning(f"EDF: merge faible sur {csv_file} (Poste NaN {d['Poste'].isna().mean():.0%}).")
                         continue
 
                     df_duration = edf_j[["PlayerCanon", "Poste", "Temps de jeu"]].copy()
@@ -3154,7 +2937,6 @@ def collect_data(selected_season=None):
             if df.empty:
                 continue
 
-            # Normalisation per-90 (sauf buts, %)
             if "Temps de jeu (en minutes)" in df.columns:
                 num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != "Temps de jeu (en minutes)"]
                 for idx, r in df.iterrows():
@@ -3195,31 +2977,15 @@ def collect_data(selected_season=None):
 # RADARS
 # =========================
 def create_individual_radar(df: pd.DataFrame):
-    """
-    Radar 'Club Pro' (Version A) :
-    - Couleurs par KPI (familles)
-    - Ordre des axes logique
-    - Grille fine
-    - Zones de perf (rouge/orange/vert en fond)
-    - Top 2 forces / Top 2 axes de progrès
-    """
     if df is None or df.empty or "Player" not in df.columns:
         return None
 
-    # --- Ordre logique (familles) ---
-    # Rigueur -> Lecture -> Distribution -> Percussion -> Finition -> Créativité
     ordered_params = [
-        # Rigueur
         "Timing", "Force physique",
-        # Lecture
         "Intelligence tactique",
-        # Distribution
         "Technique 1", "Technique 2", "Technique 3",
-        # Percussion
         "Explosivité", "Prise de risque",
-        # Finition
         "Précision", "Sang-froid",
-        # Créativité
         "Créativité 1", "Créativité 2",
     ]
 
@@ -3229,48 +2995,33 @@ def create_individual_radar(df: pd.DataFrame):
 
     player = df.iloc[0].copy()
 
-    # --- Couleurs par KPI (familles cohérentes) ---
-    # (tu peux ajuster si tu veux coller à ta charte)
     FAMILY_COLOR = {
         "Timing": "#2FB8FF",
         "Force physique": "#2FB8FF",
-
         "Intelligence tactique": "#FFA06E",
-
         "Technique 1": "#FF6B6B",
         "Technique 2": "#FF6B6B",
         "Technique 3": "#FF6B6B",
-
         "Explosivité": "#7B84FF",
         "Prise de risque": "#7B84FF",
-
         "Précision": "#BFBFBF",
         "Sang-froid": "#BFBFBF",
-
         "Créativité 1": "#8E9BFF",
         "Créativité 2": "#8E9BFF",
     }
     slice_colors = [FAMILY_COLOR.get(p, "#9AA4B2") for p in available]
 
-    # --- Valeurs ---
     values = [float(pd.to_numeric(player[p], errors="coerce")) if p in player else 0.0 for p in available]
     values = [0.0 if pd.isna(v) else max(0.0, min(100.0, v)) for v in values]
 
-    # --- Top forces / axes de progrès (sur les métriques disponibles) ---
-    s = pd.Series(values, index=available).sort_values(ascending=False)
-    top2 = s.head(2)
-    low2 = s.tail(2).sort_values(ascending=True)
-
-    # --- Construction PyPizza ---
-    # Grille plus fine + look plus clean
     pizza = PyPizza(
         params=available,
         background_color="#002B5C",
         straight_line_color="#FFFFFF",
         last_circle_color="#FFFFFF",
-        straight_line_lw=1.0,      # plus fin
-        last_circle_lw=1.4,        # un peu plus épais
-        other_circle_lw=0.8,       # plus fin
+        straight_line_lw=1.0,
+        last_circle_lw=1.4,
+        other_circle_lw=0.8,
         other_circle_color="#8FA3BF",
     )
 
@@ -3293,35 +3044,25 @@ def create_individual_radar(df: pd.DataFrame):
         ),
     )
 
-    # --- Zones de performance (fond léger) ---
-    # Rouge <40 / Orange 40-70 / Vert >70
-    # PyPizza est en coordonnées polaires mais on peut superposer des cercles
     import matplotlib.patches as patches
 
-    # cercle externe = 100
     zone_specs = [
-        (40, "#FF6B6B", 0.08),   # fragile
-        (70, "#FFA06E", 0.07),   # développement
-        (100, "#2ED47A", 0.05),  # point fort
+        (40, "#FF6B6B", 0.08),
+        (70, "#FFA06E", 0.07),
+        (100, "#2ED47A", 0.05),
     ]
 
-    # On dessine de l’extérieur vers l’intérieur (100->70->40) pour un rendu propre
     for r, col, alpha in sorted(zone_specs, key=lambda x: x[0], reverse=True):
         circ = patches.Circle((0, 0), r, transform=ax.transData._b, color=col, alpha=alpha, zorder=0)
         ax.add_artist(circ)
 
-    # --- Petite pastille centrale plus discrète ---
     center = patches.Circle((0, 0), 4.0, transform=ax.transData._b, color="#001E40", zorder=10)
     ax.add_artist(center)
 
-
-    # Espace pour afficher Forces / Axes sous le graphique
     fig.subplots_adjust(top=0.90, bottom=0.18)
-    # --- Titre + résumé forces/axes ---
+
     player_name = str(player.get("Player", "")).strip()
-    # --- Forces / Axes : bloc lisible SOUS le graphique ---
-    # On wrappe pour éviter les débordements sur petits écrans
-    # --- calcul Forces / Axes (Top 2 / Bottom 2) ---
+
     vals = []
     for p in available:
         try:
@@ -3345,73 +3086,40 @@ def create_individual_radar(df: pd.DataFrame):
     forces_wrapped = "\n".join(textwrap.wrap(forces_txt, width=70))
     axes_wrapped = "\n".join(textwrap.wrap(axes_txt, width=70))
 
-    fig.text(
-        0.5, 0.10,
-        forces_wrapped,
-        ha="center", va="center",
-        fontsize=12, color="#DDE8F7",
-    )
-    fig.text(
-        0.5, 0.05,
-        axes_wrapped,
-        ha="center", va="center",
-        fontsize=12, color="#DDE8F7",
-    )
+    fig.text(0.5, 0.10, forces_wrapped, ha="center", va="center", fontsize=12, color="#DDE8F7")
+    fig.text(0.5, 0.05, axes_wrapped, ha="center", va="center", fontsize=12, color="#DDE8F7")
     fig.set_facecolor("#002B5C")
     return fig
 
 
-
-# =========================
-# RADAR COMPARAISON (2 profils)
-# =========================
 def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_creativity: bool = False):
-    """Radar de comparaison (2 profils) + résumé des écarts sous le graphique.
-
-    Option A (choisie): même format radar, mais mise en page plus propre :
-    - titres sans bandeaux blancs
-    - espace réservé en bas pour un résumé lisible (forces / axes d'amélioration vs comparatif)
-    """
     if df is None or df.empty or len(df) < 2:
         return None
 
-    # métriques
     metrics = [
-        "Timing",
-        "Force physique",
-        "Intelligence tactique",
-        "Technique 1",
-        "Technique 2",
-        "Technique 3",
-        "Explosivité",
-        "Prise de risque",
-        "Précision",
-        "Sang-froid",
+        "Timing", "Force physique", "Intelligence tactique",
+        "Technique 1", "Technique 2", "Technique 3",
+        "Explosivité", "Prise de risque", "Précision", "Sang-froid",
     ]
     if not exclude_creativity:
         metrics += ["Créativité 1", "Créativité 2"]
 
-    # colonnes dispo
     available = [m for m in metrics if m in df.columns]
     if len(available) < 3:
         return None
 
     d = df.copy()
 
-    # clamp + numeric
     for c in available:
         d[c] = pd.to_numeric(d[c], errors="coerce").clip(lower=0, upper=100).fillna(0.0)
 
-    # on force 2 lignes
     d2 = d.iloc[:2].copy()
     v1 = d2.iloc[0][available].values.astype(float)
     v2 = d2.iloc[1][available].values.astype(float)
 
-    # labels
     p1 = str(player1_name) if player1_name else str(d2.iloc[0].get("Player", "Joueuse A"))
     p2 = str(player2_name) if player2_name else str(d2.iloc[1].get("Player", "Joueuse B"))
 
-    # radar
     low, high = [0] * len(available), [100] * len(available)
     radar = Radar(available, low, high, num_rings=4, ring_width=1, center_circle_radius=1)
 
@@ -3425,7 +3133,6 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
     radar.setup_axis(ax=ax, facecolor="None")
     radar.draw_circles(ax=ax, facecolor="#0c4281", edgecolor="#0c4281", lw=1.5)
 
-    # radar compare
     radar.draw_radar_compare(
         v1,
         v2,
@@ -3434,20 +3141,15 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
         kwargs_compare={"facecolor": "#d80499", "alpha": 0.40, "edgecolor": "#d80499", "lw": 2},
     )
 
-    # labels
     radar.draw_range_labels(ax=ax, fontsize=10, color="#bcd0e6")
     radar.draw_param_labels(ax=ax, fontsize=12, color="#fcfcfc")
 
-    # titres (sans bandeaux)
     fig.text(0.03, 0.965, p1, ha="left", va="top", fontsize=16, color="#00f2c1", fontweight="bold")
     fig.text(0.97, 0.965, p2, ha="right", va="top", fontsize=16, color="#d80499", fontweight="bold")
     fig.text(0.5, 0.965, "Comparaison (0-100)", ha="center", va="top", fontsize=14, color="#ffffff", fontweight="bold")
 
-    # résumé des écarts sous le radar
-    # delta = p1 - p2
     delta = pd.Series(v1 - v2, index=available)
 
-    # top écarts
     top_pos = delta.sort_values(ascending=False).head(3)
     top_neg = delta.sort_values(ascending=True).head(3)
 
@@ -3461,18 +3163,15 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
     txt_pos = _fmt_series(top_pos)
     txt_neg = _fmt_series(top_neg)
 
-    # espace en bas
     fig.subplots_adjust(top=0.90, bottom=0.18)
 
-    fig.text(0.5, 0.11, f"✅ Avantages {p1} vs {p2} : {txt_pos}", ha="center", va="center",
-             fontsize=11.5, color="#ffffff")
-    fig.text(0.5, 0.075, f"⚠️ Axes d'amélioration {p1} vs {p2} : {txt_neg}", ha="center", va="center",
-             fontsize=11.5, color="#ffffff")
+    fig.text(0.5, 0.11, f"✅ Avantages {p1} vs {p2} : {txt_pos}", ha="center", va="center", fontsize=11.5, color="#ffffff")
+    fig.text(0.5, 0.075, f"⚠️ Axes d'amélioration {p1} vs {p2} : {txt_neg}", ha="center", va="center", fontsize=11.5, color="#ffffff")
 
-    # petite légende en bas à droite
     fig.text(0.98, 0.02, "Δ = (profil A - profil B)", ha="right", va="bottom", fontsize=9, color="#bcd0e6")
 
     return fig
+
 
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     st.sidebar.markdown(
@@ -3714,9 +3413,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.info(f"Joueuse : {p}")
             else:
                 p = st.selectbox("Joueuse", sorted(pfc_kpi["Player"].dropna().unique().tolist()), key="self_player")
-                # Photo joueuse (Drive Photos)
                 show_photo_block(p, location="stats")
-
 
             if "Adversaire" not in pfc_kpi.columns:
                 st.warning("Colonne 'Adversaire' manquante : impossible de comparer par match.")
@@ -3838,7 +3535,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 p = st.selectbox("Joueuse", sorted(pfc_kpi["Player"].dropna().unique().tolist()), key="edf_player")
 
             if edf_kpi is None or edf_kpi.empty or "Poste" not in edf_kpi.columns:
-                st.warning("Aucune donnée EDF disponible pour la comparaison (EDF_Joueuses.xlsx / EDF_U19_Match*.csv).")
+                st.warning("Aucune donnée EDF disponible pour la comparaison.")
                 return
 
             postes_display = sorted(edf_kpi["Poste"].dropna().astype(str).unique().tolist())
@@ -3848,6 +3545,19 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             edf_line = edf_line.rename(columns={"Poste": "Player"})
             edf_label = f"EDF {poste}"
 
+            player_df = prepare_comparison_data(pfc_kpi, p)
+
+            if player_df.empty:
+                st.info("Pas assez de données match pour cette joueuse.")
+            elif edf_line.empty:
+                st.info("Référentiel EDF indisponible pour ce poste.")
+            else:
+                players_data = pd.concat([player_df, edf_line], ignore_index=True, sort=False)
+                fig = create_comparison_radar(players_data, player1_name=p, player2_name=edf_label, exclude_creativity=True)
+                if fig:
+                    st.pyplot(fig)
+                else:
+                    st.warning("Radar indisponible (données insuffisantes).")
 
     elif page == "Données Physiques":
         st.header("📊 Données Physiques (GPS)")
@@ -3870,9 +3580,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             ["🧾 Données brutes par joueuse", "📅 Moyennes 7 jours (glissant)", "📈 Graphique MD-6 → MD"]
         )
 
-        # -----------------------
-        # TAB 1 — RAW
-        # -----------------------
         with tab_raw:
             st.subheader("Données brutes (par joueuse)")
 
@@ -3883,7 +3590,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             if d.empty:
                 st.info("Aucune ligne GPS pour cette joueuse.")
             elif d["DATE"].notna().sum() == 0:
-                st.info("Aucune date exploitable pour cette joueuse (colonne 'Activity Date' / 'DATE' / date dans le nom du fichier).")
+                st.info("Aucune date exploitable pour cette joueuse.")
             else:
                 c1, c2 = st.columns(2)
                 with c1:
@@ -3922,9 +3629,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
                 st.dataframe(d.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
 
-        # -----------------------
-        # TAB 2 — 7D rolling
-        # -----------------------
         with tab_week:
             st.subheader("Moyennes sur une fenêtre glissante de 7 jours")
 
@@ -3935,7 +3639,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             tmp = tmp[tmp["DATE"].notna()].copy()
 
             if tmp.empty:
-                st.info("Pas de dates exploitables pour cette joueuse (colonne 'Activity Date' / 'DATE' ou date JJ.MM.AAAA dans le nom du fichier).")
+                st.info("Pas de dates exploitables pour cette joueuse.")
                 return
 
             min_d = tmp["DATE"].min().date()
@@ -3975,9 +3679,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 if not dw.empty:
                     st.dataframe(dw.sort_values("SEMAINE"), use_container_width=True)
 
-        # -----------------------
-        # TAB 3 — Microcycle chart
-        # -----------------------
         with tab_graph:
             st.subheader("Graphique microcycle (MD-6 → MD)")
 
@@ -3994,7 +3695,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             min_date = dg["DATE"].min().normalize()
 
             end_date = st.date_input(
-                "Date de référence (MD) — le graphique prend les 7 jours précédents",
+                "Date de référence (MD)",
                 value=max_date.date(),
                 min_value=min_date.date(),
                 max_value=max_date.date(),
@@ -4009,7 +3710,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
             st.dataframe(summary_md, use_container_width=True)
 
-            # KPI selector (lines)
             metric_cols = [c for c in summary_md.columns if c != "MD"]
             default_lines = [c for c in [
                 "Moyenne de Distance HID (>13 km/h)",
@@ -4039,17 +3739,16 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.warning("Aucune donnée passerelle.")
             return
 
-        # Sources non filtrées (important si le profil est lié à une seule joueuse)
-        pfc_source = pfc_kpi_all if 'pfc_kpi_all' in locals() and isinstance(pfc_kpi_all, pd.DataFrame) and not pfc_kpi_all.empty else pfc_kpi
-        edf_source = edf_kpi_all if 'edf_kpi_all' in locals() and isinstance(edf_kpi_all, pd.DataFrame) and not edf_kpi_all.empty else edf_kpi
+        pfc_source = pfc_kpi_all if isinstance(pfc_kpi_all, pd.DataFrame) and not pfc_kpi_all.empty else pfc_kpi
+        edf_source = edf_kpi_all if isinstance(edf_kpi_all, pd.DataFrame) and not edf_kpi_all.empty else edf_kpi
 
-        # --- Sélection ---
         selected = st.selectbox("Sélectionnez une joueuse", list(passerelle_data.keys()), key="passerelle_player_sel")
-        # Photo joueuse (Drive Photos) - affichage si disponible
+
+        # ✅ FIX 5 : utilise find_best_photo_for_player_relaxed (find_best_photo_for_player est maintenant un alias)
         photos_index = st.session_state.get("photos_index", {})
         if photos_index:
             try:
-                photo_path = find_best_photo_for_player(selected, photos_index)
+                photo_path = find_best_photo_for_player_relaxed(selected, photos_index)
                 if photo_path and os.path.exists(photo_path):
                     st.image(photo_path, width=160)
             except Exception:
@@ -4058,18 +3757,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         selected_clean = nettoyer_nom_joueuse(selected)
         info = passerelle_data[selected]
 
-        # --- Résolution du nom (Passerelle -> noms utilisés dans Stats/GPS) ---
-        def _resolve_best_player_name(pass_key: str, pass_info: dict, candidates: list[str]) -> str:
-            """Tente de retrouver le libellé 'Player' utilisé dans les données (stats/GPS) à partir de la passerelle."""
+        def _resolve_best_player_name(pass_key: str, pass_info: dict, candidates: list) -> str:
             if not candidates:
                 return pass_key
 
-            # Construire un libellé plus informatif si possible : "NOM Prénom"
             nom = str(pass_info.get("Nom", "") or pass_key).strip()
             prenom = str(pass_info.get("Prénom", "")).strip()
             full = f"{nom} {prenom}".strip()
 
-            # Comparaison sur versions normalisées (accents, casse, ponctuation)
             try:
                 base = normalize_str(full) if full else normalize_str(pass_key)
             except Exception:
@@ -4082,18 +3777,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 except Exception:
                     norm_map[c] = str(c).lower()
 
-            # 1) match exact normalisé
             for c, cn in norm_map.items():
                 if cn == base:
                     return c
 
-            # 2) contient (ex: passerelle = NOM, candidates = "NOM Prénom")
             for c, cn in norm_map.items():
                 if base and base in cn:
                     return c
 
-            # 3) fuzzy
-            from difflib import get_close_matches
             best_norm = get_close_matches(base, list(norm_map.values()), n=1, cutoff=0.55)
             if best_norm:
                 inv = {v: k for k, v in norm_map.items()}
@@ -4101,10 +3792,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
             return pass_key
 
-        # candidates: joueurs présents dans les stats PFC + GPS (si dispo)
         stats_candidates = []
         if isinstance(pfc_source, pd.DataFrame) and not pfc_source.empty:
-            # selon la structure, la colonne peut être "Joueuse" / "Player" / "Nom"
             for col in ["Joueuse", "Player", "Nom", "NOM", "Joueur"]:
                 if col in pfc_source.columns:
                     stats_candidates = sorted(pfc_source[col].dropna().astype(str).unique().tolist())
@@ -4118,7 +3807,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         candidates = sorted(set(stats_candidates + gps_candidates))
         resolved_player = _resolve_best_player_name(selected, info, candidates)
 
-        # --- Identité ---
         st.subheader("Identité")
         cA, cB = st.columns([1, 2])
         with cA:
@@ -4143,20 +3831,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         st.divider()
 
-        # --- Onglets (Stats / EDF / GPS) ---
         tab_stats, tab_edf, tab_gps = st.tabs(["📈 Statistiques", "🆚 Comparaison EDF", "🏃 Données physiques (GPS)"])
 
-        # =========================
-        # TAB 1 — STATS (comme onglet Statistiques)
-        # =========================
         with tab_stats:
             st.subheader("Statistiques joueuse")
 
             if not isinstance(pfc_source, pd.DataFrame) or pfc_source.empty:
                 st.warning("Aucune donnée statistiques PFC disponible.")
             else:
-                # Réutilise le pipeline d'agrégation déjà présent
-                # -> on filtre les lignes de la joueuse puis on applique la même logique que l'onglet Statistiques
                 player_col = None
                 for col in ["Joueuse", "Player", "Nom", "NOM", "Joueur"]:
                     if col in pfc_source.columns:
@@ -4168,7 +3850,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 else:
                     pfc_player_df = pfc_source[pfc_source[player_col].astype(str) == str(resolved_player)].copy()
                     if pfc_player_df.empty:
-                        # fallback: match par normalisation
                         try:
                             base = normalize_str(str(resolved_player))
                             pfc_player_df = pfc_source[pfc_source[player_col].astype(str).map(lambda x: normalize_str(str(x)) == base)].copy()
@@ -4178,54 +3859,44 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                     if pfc_player_df.empty:
                         st.info("Aucune ligne statistique trouvée pour cette joueuse.")
                     else:
-                        # Fonction utilitaire existante dans le script: aggregate_player_stats(...)
                         try:
                             aggregated = aggregate_player_stats(pfc_player_df)
                         except Exception:
-                            # fallback minimal: moyenne numérique
                             num_cols = pfc_player_df.select_dtypes(include="number").columns.tolist()
                             aggregated = pfc_player_df[num_cols].mean(numeric_only=True).to_frame().T
                             aggregated.insert(0, "Joueuse", resolved_player)
 
-                        # Radar individuel (celui amélioré avec Forces/Faiblesses en dessous)
                         try:
                             fig = create_individual_radar(aggregated)
-                            st.pyplot(fig, use_container_width=True)
+                            if fig:
+                                st.pyplot(fig, use_container_width=True)
                         except Exception as e:
                             st.warning(f"Radar indisponible : {e}")
 
-                        # Tableau résumé (mêmes colonnes que d'habitude)
                         with st.expander("Voir les données agrégées"):
                             st.dataframe(aggregated, use_container_width=True)
 
-        # =========================
-        # TAB 2 — COMPARAISON EDF
-        # =========================
         with tab_edf:
             st.subheader("Comparaison avec le référentiel EDF")
 
             if not isinstance(edf_source, pd.DataFrame) or edf_source.empty:
-                st.warning("Aucune donnée EDF disponible (fichiers EDF_Joueuses / EDF_U19_Match*.csv).")
+                st.warning("Aucune donnée EDF disponible.")
             else:
-                # On essaie de déterminer un poste par défaut via la passerelle
                 poste_default = str(info.get("Poste 1", "")).strip()
                 postes = []
+                poste_col = None
                 for col in ["Poste", "POSTE", "Position", "POS"]:
                     if col in edf_source.columns:
                         postes = sorted(edf_source[col].dropna().astype(str).unique().tolist())
                         poste_col = col
                         break
-                else:
-                    poste_col = None
 
                 if poste_col is None or not postes:
                     st.warning("Impossible d'identifier la colonne 'Poste' dans le référentiel EDF.")
                 else:
-                    # Default index if close match
                     idx_default = 0
                     if poste_default:
                         try:
-                            from difflib import get_close_matches
                             m = get_close_matches(poste_default, postes, n=1, cutoff=0.4)
                             if m:
                                 idx_default = postes.index(m[0])
@@ -4234,12 +3905,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
                     poste_sel = st.selectbox("Poste EDF de référence", postes, index=idx_default, key="passerelle_poste_edf_sel")
 
-                    # Données pour comparaison EDF (profil joueuse vs référentiel)
                     player_df = prepare_comparison_data(pfc_source, resolved_player, selected_matches=None)
 
                     edf_line = edf_source[edf_source["Poste"] == poste_sel].copy()
                     if player_df is None or player_df.empty:
-                        st.info("Pas assez de données match pour cette joueuse pour calculer un profil.")
+                        st.info("Pas assez de données match pour cette joueuse.")
                     elif edf_line.empty:
                         st.info("Référentiel EDF indisponible pour ce poste.")
                     else:
@@ -4259,7 +3929,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         if fig is not None:
                             st.pyplot(fig, use_container_width=True)
                         else:
-                            st.info("Impossible de générer le radar de comparaison (données insuffisantes).")
+                            st.info("Impossible de générer le radar de comparaison.")
 
         with tab_gps:
             st.subheader("Données physiques (GPS)")
@@ -4272,10 +3942,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             else:
                 gps_raw = ensure_date_column(gps_raw)
 
-                # Filtre joueuse
                 dgps = gps_raw[gps_raw.get("Player", pd.Series(dtype=str)).astype(str) == str(resolved_player)].copy()
                 if dgps.empty:
-                    # fallback: normalisation
                     try:
                         base = normalize_str(str(resolved_player))
                         dgps = gps_raw[gps_raw.get("Player", pd.Series(dtype=str)).astype(str).map(lambda x: normalize_str(str(x)) == base)].copy()
@@ -4290,13 +3958,12 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                     )
 
                     with tab_raw_g:
-                        st.caption("Filtrage par période / fichier source")
                         d = ensure_date_column(dgps.copy())
 
                         c1, c2 = st.columns(2)
                         with c1:
                             if d["DATE"].notna().sum() == 0:
-                                st.info("Aucune date exploitable (colonne 'Activity Date' / 'DATE' / date dans le nom du fichier).")
+                                st.info("Aucune date exploitable.")
                                 date_range = None
                             else:
                                 min_date = d["DATE"].min()
@@ -4367,7 +4034,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
                                 if gps_weekly is not None and not gps_weekly.empty and "SEMAINE" in gps_weekly.columns:
                                     st.divider()
-                                    st.caption("Vue hebdomadaire (somme par semaine ISO) — optionnelle")
+                                    st.caption("Vue hebdomadaire (somme par semaine ISO)")
                                     dw = gps_weekly[gps_weekly["Player"].astype(str) == str(resolved_player)].copy()
                                     if not dw.empty:
                                         st.dataframe(dw.sort_values("SEMAINE"), use_container_width=True)
@@ -4383,7 +4050,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             min_date = dg["DATE"].min().normalize()
 
                             end_date = st.date_input(
-                                "Date de référence (MD) — le graphique prend les 7 jours précédents",
+                                "Date de référence (MD)",
                                 value=max_date.date(),
                                 min_value=min_date.date(),
                                 max_value=max_date.date(),
@@ -4397,7 +4064,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             else:
                                 st.dataframe(summary_md, use_container_width=True)
                                 try:
-                                    # On conserve l'amélioration "très visuelle" + possibilité de choisir les courbes
                                     default_lines = [c for c in [
                                         "Moyenne de Distance (m)",
                                         "Moyenne de Distance HID (>13 km/h)",
@@ -4418,9 +4084,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                     st.warning(f"Graphique indisponible : {e}")
 
 
-        # =========================
-        # MAIN
-        # =========================
+# =========================
+# MAIN
+# =========================
 def main():
     st.set_page_config(page_title="Paris FC - Centre de Formation Féminin", layout="wide")
 
@@ -4483,8 +4149,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
