@@ -4207,18 +4207,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         # Chercher la photo (mapping manuel en priorité absolue, puis concordance, puis fuzzy)
         photo_path = find_photo_for_player(selected, concordance=concordance, photos_index=photos_index)
-
         canon_selected = normalize_name_raw(selected)
-
-        if photo_path and os.path.exists(photo_path):
-            safe_show_photo(photo_path, width=160)
-            # Permettre de changer le mapping même si une photo est trouvée
-            with st.expander("🔄 Changer la photo associée", expanded=False):
-                _render_photo_picker(selected, canon_selected, photos_index)
-        else:
-            # Aucune photo trouvée : afficher la grille de sélection
-            with st.expander("📷 Associer une photo à cette joueuse", expanded=True):
-                _render_photo_picker(selected, canon_selected, photos_index)
 
         selected_clean = nettoyer_nom_joueuse(selected)
         info = passerelle_data[selected]
@@ -4273,11 +4262,28 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         candidates = sorted(set(stats_candidates + gps_candidates))
         resolved_player = _resolve_best_player_name(selected, info, candidates)
 
+        # ── Bloc Identité : photo à gauche, infos à droite ──────────────
         st.subheader("Identité")
         cA, cB = st.columns([1, 2])
         with cA:
-            if info.get("Photo"):
-                st.image(info["Photo"], width=160)
+            # Photo Drive en priorité, sinon photo URL du fichier passerelle
+            if photo_path and os.path.exists(photo_path):
+                safe_show_photo(photo_path, width=180)
+            elif info.get("Photo"):
+                st.image(info["Photo"], width=180)
+            else:
+                # Placeholder si aucune photo
+                st.markdown(
+                    "<div style='width:180px;height:220px;background:#0c3660;"
+                    "border-radius:8px;display:flex;align-items:center;"
+                    "justify-content:center;color:#5a8ab8;font-size:48px;'>👤</div>",
+                    unsafe_allow_html=True,
+                )
+            # Bouton changer / associer toujours visible sous la photo
+            btn_label = "🔄 Changer la photo" if photo_path else "📷 Associer une photo"
+            with st.expander(btn_label, expanded=(photo_path is None)):
+                _render_photo_picker(selected, canon_selected, photos_index)
+
         with cB:
             if info.get("Prénom"):
                 st.write(f"**Prénom :** {info['Prénom']}")
@@ -4290,7 +4296,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.write(f"**Poste 2 :** {info['Poste 2']}")
             if info.get("Pied Fort"):
                 st.write(f"**Pied Fort :** {info['Pied Fort']}")
-            if info.get("Taille"):
+            if info.get("Taille") and str(info.get("Taille", "")).lower() not in ("nan", "none", ""):
                 st.write(f"**Taille :** {info['Taille']}")
             if resolved_player:
                 st.caption(f"Nom détecté dans les données : **{resolved_player}**")
