@@ -374,20 +374,31 @@ def _photo_tokens(s: str) -> List[str]:
     return [t for t in s.split() if t]
 
 def _photo_key_compact(s: str) -> str:
+    """Clé compacte sans espaces (ex: DUPONTALICE) — uniquement pour match exact."""
     return re.sub(r"[^A-Z]", "", _normalize_for_photo_match(s))
 
-# ✅ FIX 1 : fonctions _norm_txt et _quick_ratio manquantes
+def _photo_key_spaced(s: str) -> str:
+    """Clé normalisée AVEC espaces (ex: DUPONT ALICE) — utilisée dans l'index principal."""
+    return _normalize_for_photo_match(s)  # déjà normalisé avec espaces
+
 def _norm_txt(s: str) -> str:
-    """Normalise un nom pour la comparaison photo (compact, majuscules, sans accents)."""
-    return _photo_key_compact(s)
+    """Normalise un nom pour la comparaison photo (avec espaces, majuscules, sans accents)."""
+    return _photo_key_spaced(s)  # ← utilise la clé AVEC espaces, pas compacte
 
 def _quick_ratio(a: str, b: str) -> float:
     """Ratio de similarité rapide entre deux chaînes."""
     return SequenceMatcher(None, a, b).ratio()
 
-# ✅ FIX 2 : build_photos_index_local corrigée (return idx manquant)
+# ✅ FIX 2 : build_photos_index_local corrigée
+# - return idx manquant dans l'original
+# - index maintenant sur clé AVEC espaces pour permettre le matching token-based
 def build_photos_index_local() -> Dict[str, str]:
-    """Index local: renvoie dict key_compact -> filepath"""
+    """Index local: renvoie dict key_spaced -> filepath.
+    
+    La clé est la forme normalisée du nom de fichier AVEC espaces
+    (ex: 'DUPONT ALICE' pour 'Dupont Alice.jpg').
+    Cela permet un matching token-by-token fiable.
+    """
     _ensure_photos_folder()
     idx: Dict[str, str] = {}
     if not os.path.exists(PHOTOS_FOLDER):
@@ -398,7 +409,8 @@ def build_photos_index_local() -> Dict[str, str]:
         if ext not in IMAGE_EXTS:
             continue
         stem = os.path.splitext(fn)[0]
-        key = _photo_key_compact(stem)
+        # Clé principale : normalisée avec espaces
+        key = _photo_key_spaced(stem)
         if not key:
             continue
         path = os.path.join(PHOTOS_FOLDER, fn)
@@ -451,39 +463,57 @@ def photos_get_index(force_sync: bool = False) -> Tuple[Dict[str, str], Dict[str
 
 
 def find_best_photo_for_player_relaxed(player_name: str, photos_index: Dict[str, str]) -> Optional[str]:
-    """Version tolérante du matching photo."""
+    """Matching photo robuste : exact → token Jaccard + ratio chaîne.
+    
+    L'index utilise des clés normalisées AVEC espaces (ex: 'DUPONT ALICE').
+    Le nom de la joueuse est normalisé de la même façon avant comparaison.
+    """
     if not player_name or not photos_index:
         return None
 
-    # 1) exact compact match
-    key = _photo_key_compact(player_name)
-    if key in photos_index:
-        return photos_index[key]
+    # Normalisation du nom cherché (avec espaces)
+    pn = _photo_key_spaced(player_name)          # ex: "DUPONT ALICE"
+    pn_compact = re.sub(r"\s+", "", pn)          # ex: "DUPONTALICE"
+    pn_tokens = set(pn.split()) if pn else set() # ex: {"DUPONT", "ALICE"}
 
-    # 2) token based match
-    pn = _norm_txt(player_name)
-    pn_tokens = set([t for t in re.split(r"\s+", pn) if t])
+    # 1) Match exact sur clé normalisée avec espaces
+    if pn in photos_index:
+        return photos_index[pn]
+
+    # 2) Match exact compact (ex: clé = "DUPONTALICE")
+    for k, path in photos_index.items():
+        if re.sub(r"\s+", "", k) == pn_compact:
+            return path
+
+    # 3) Scoring combiné : ratio chaîne + Jaccard tokens
     best_path = None
     best_score = 0.0
 
     for k, path in photos_index.items():
-        ktokens = set([t for t in re.split(r"\s+", k) if t])
-        if not ktokens:
-            continue
+        k_tokens = set(k.split()) if k else set()
 
-        inter = len(pn_tokens & ktokens)
-        union = max(1, len(pn_tokens | ktokens))
+        # Jaccard sur tokens
+        inter = len(pn_tokens & k_tokens)
+        union = max(1, len(pn_tokens | k_tokens))
         jaccard = inter / union
 
-        subset_bonus = 0.15 if (pn_tokens <= ktokens or ktokens <= pn_tokens) else 0.0
+        # Bonus si tous les tokens du nom sont dans la clé (ou vice versa)
+        subset_bonus = 0.20 if pn_tokens and (pn_tokens <= k_tokens or k_tokens <= pn_tokens) else 0.0
+
+        # Bonus si au moins un token commun (nom de famille souvent suffisant)
+        token_hit_bonus = 0.10 if inter >= 1 else 0.0
+
+        # Ratio global de chaînes normalisées
         ratio = _quick_ratio(pn, k)
-        score = 0.55 * ratio + 0.45 * jaccard + subset_bonus
+
+        score = 0.50 * ratio + 0.35 * jaccard + subset_bonus + token_hit_bonus
 
         if score > best_score:
             best_score = score
             best_path = path
 
-    return best_path if best_score >= 0.60 else None
+    # Seuil abaissé à 0.45 pour capturer les cas NOM seul vs "NOM PRENOM"
+    return best_path if best_score >= 0.45 else None
 
 
 # ✅ FIX 3 : alias find_best_photo_for_player -> find_best_photo_for_player_relaxed
@@ -497,7 +527,7 @@ def show_photo_block(player_name: str, location: str = "stats") -> None:
     with c1:
         force = st.button("🔄 Sync photos", key=f"photos_sync_{location}")
     with c2:
-        st.caption("Photos depuis Drive (JPG/PNG). Si rien ne s'affiche: partage le dossier photos au service account.")
+        st.caption("Photos depuis Drive (JPG/PNG). Nommez les fichiers : 'NOM Prenom.jpg'")
 
     idx, stt = photos_get_index(force_sync=force)
     st.session_state["photos_index"] = idx
@@ -509,18 +539,23 @@ def show_photo_block(player_name: str, location: str = "stats") -> None:
         st.image(photo_path, width=170)
         return
 
-    with st.expander("📷 Diagnostic photos", expanded=False):
+    with st.expander("📷 Diagnostic photos", expanded=True):
+        pn_key = _photo_key_spaced(player_name)
+        st.write(f"**Joueuse cherchée :** `{player_name}` → clé normalisée : `{pn_key}`")
+        st.write(f"**Fichiers images locaux :** {stt.get('n_local_files')} — **Index :** {stt.get('n_index')}")
         if stt.get("error"):
-            st.error(f"Erreur sync photos: {stt['error']}")
-        st.write(f"**Dossier Drive (ID):** {stt.get('folder_id')}")
-        st.write(f"**Dossier local:** `{stt.get('local_folder')}`")
-        st.write(f"**Fichiers images locaux:** {stt.get('n_local_files')} — **Index:** {stt.get('n_index')}")
-        st.info("Aucune photo trouvée pour ce nom. Vérifie le nom du fichier (ex: 'NOM Prenom.jpg') ou utilise le bouton Sync.")
+            st.error(f"Erreur sync : {stt['error']}")
         if idx:
-            key = _photo_key_compact(player_name)
-            candidates = sorted(idx.keys(), key=lambda k: _quick_ratio(key, k), reverse=True)[:10]
-            st.write("**Top correspondances possibles (clé):**")
-            st.write(", ".join(candidates))
+            # Trier les clés par score décroissant pour afficher les meilleures suggestions
+            scored = []
+            for k, path in idx.items():
+                ratio = _quick_ratio(pn_key, k)
+                scored.append((ratio, k, os.path.basename(path)))
+            scored.sort(reverse=True)
+            st.write("**Top 8 fichiers les plus proches :**")
+            for score, k, fn in scored[:8]:
+                st.write(f"  `{fn}` — clé: `{k}` — score: `{score:.2f}`")
+        st.info("💡 Renommez vos photos exactement comme le nom affiché dans la clé normalisée ci-dessus (sans accents, majuscules).")
 
 
 def load_photo_bytes(path: str):
@@ -3746,13 +3781,32 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         # ✅ FIX 5 : utilise find_best_photo_for_player_relaxed (find_best_photo_for_player est maintenant un alias)
         photos_index = st.session_state.get("photos_index", {})
+        if not photos_index:
+            # Tenter de charger l'index si pas encore en session
+            photos_index = build_photos_index_local()
+            st.session_state["photos_index"] = photos_index
+
+        photo_found = False
         if photos_index:
             try:
                 photo_path = find_best_photo_for_player_relaxed(selected, photos_index)
                 if photo_path and os.path.exists(photo_path):
                     st.image(photo_path, width=160)
+                    photo_found = True
             except Exception:
                 pass
+
+        if not photo_found and photos_index:
+            pn_key = _photo_key_spaced(selected)
+            with st.expander("📷 Diagnostic photo", expanded=False):
+                st.write(f"**Nom cherché :** `{selected}` → clé : `{pn_key}`")
+                scored = sorted(
+                    [((_quick_ratio(pn_key, k)), k, os.path.basename(p)) for k, p in photos_index.items()],
+                    reverse=True
+                )
+                st.write("**Top 5 fichiers les plus proches :**")
+                for score, k, fn in scored[:5]:
+                    st.write(f"  `{fn}` — score: `{score:.2f}`")
 
         selected_clean = nettoyer_nom_joueuse(selected)
         info = passerelle_data[selected]
