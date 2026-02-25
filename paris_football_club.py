@@ -352,52 +352,246 @@ def read_excel_auto(path: str, sheet_name=0) -> pd.DataFrame:
 
 
 # =========================
-# PHOTOS - concordance noms + sync Drive
+# =========================
+# PHOTOS — concordance 3 sources :
+#   Liste déroulante  →  Référentiel (NOM + Prénom)  →  Fichier photo Drive
 # =========================
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif"}
 
 def _ensure_photos_folder():
     os.makedirs(PHOTOS_FOLDER, exist_ok=True)
 
-def _normalize_for_photo_match(s: str) -> str:
-    s = "" if s is None else str(s)
+def _quick_ratio(a: str, b: str) -> float:
+    return SequenceMatcher(None, a, b).ratio()
+
+def _photo_normalize(s: str) -> str:
+    """Normalisation de base : supprime accents, majuscules, ponctuation → espaces."""
+    if s is None:
+        return ""
+    s = str(s)
     s = unicodedata.normalize("NFKD", s)
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     s = s.upper()
-    s = s.replace(",", " ").replace("-", " ").replace("_", " ")
-    s = re.sub(r"[^A-Z ]", " ", s)
+    # tirets, underscores, virgules, points → espace
+    s = re.sub(r"[-_,.]", " ", s)
+    s = re.sub(r"[^A-Z0-9 ]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
-def _photo_tokens(s: str) -> List[str]:
-    s = _normalize_for_photo_match(s)
-    return [t for t in s.split() if t]
+def _photo_key_spaced(s: str) -> str:
+    """Clé normalisée avec espaces — utilisée dans l'index."""
+    return _photo_normalize(s)
 
 def _photo_key_compact(s: str) -> str:
-    """Clé compacte sans espaces (ex: DUPONTALICE) — uniquement pour match exact."""
-    return re.sub(r"[^A-Z]", "", _normalize_for_photo_match(s))
+    """Clé sans espaces — pour match exact compact."""
+    return re.sub(r"\s+", "", _photo_normalize(s))
 
-def _photo_key_spaced(s: str) -> str:
-    """Clé normalisée AVEC espaces (ex: DUPONT ALICE) — utilisée dans l'index principal."""
-    return _normalize_for_photo_match(s)  # déjà normalisé avec espaces
-
+# rétrocompat
 def _norm_txt(s: str) -> str:
-    """Normalise un nom pour la comparaison photo (avec espaces, majuscules, sans accents)."""
-    return _photo_key_spaced(s)  # ← utilise la clé AVEC espaces, pas compacte
+    return _photo_key_spaced(s)
 
-def _quick_ratio(a: str, b: str) -> float:
-    """Ratio de similarité rapide entre deux chaînes."""
-    return SequenceMatcher(None, a, b).ratio()
 
-# ✅ FIX 2 : build_photos_index_local corrigée
-# - return idx manquant dans l'original
-# - index maintenant sur clé AVEC espaces pour permettre le matching token-based
+# ------------------------------------------------------------------
+# GÉNÉRATION DES VARIANTES de nom à partir de NOM + Prénom
+# ------------------------------------------------------------------
+def _generate_name_variants(nom: str, prenom: str) -> List[str]:
+    """
+    Génère toutes les formes plausibles d'un nom de fichier photo
+    à partir du NOM et du Prénom extraits du référentiel.
+
+    Couvre les conventions mixtes courantes :
+      - DUPONT ALICE  /  ALICE DUPONT
+      - DUPONT_ALICE  /  ALICE_DUPONT
+      - Dupont Alice  /  Alice Dupont
+      - dupont alice  /  alice dupont
+      - DUPONT        (nom seul)
+      - ALICE DUPONT  (prénom d'abord)
+      ... et toutes les combinaisons tiret/underscore
+    """
+    nom = str(nom or "").strip()
+    prenom = str(prenom or "").strip()
+
+    # Normalisation de base (sans accents)
+    def _n(s):
+        s = unicodedata.normalize("NFKD", s)
+        return "".join(ch for ch in s if not unicodedata.combining(ch))
+
+    n  = _n(nom).upper()
+    p  = _n(prenom).upper()
+    nc = nom.capitalize()   # Dupont
+    pc = prenom.capitalize() # Alice
+
+    seps = [" ", "_", "-", ""]
+    variants = set()
+
+    for sep in seps:
+        if n and p:
+            variants.add(f"{n}{sep}{p}")       # DUPONT ALICE
+            variants.add(f"{p}{sep}{n}")       # ALICE DUPONT
+            variants.add(f"{nc}{sep}{pc}")     # Dupont Alice
+            variants.add(f"{pc}{sep}{nc}")     # Alice Dupont
+            variants.add(f"{n}{sep}{pc}")      # DUPONT Alice
+            variants.add(f"{nc}{sep}{p}")      # Dupont ALICE
+
+        if n:
+            variants.add(n)                    # DUPONT
+            variants.add(nc)                   # Dupont
+
+        if p:
+            variants.add(p)                    # ALICE
+            variants.add(pc)                   # Alice
+
+    return [v for v in variants if v]
+
+
+def _score_photo_vs_variants(photo_stem: str, variants: List[str]) -> float:
+    """
+    Score max entre le stem du fichier photo et toutes les variantes générées.
+    Utilise 3 méthodes :
+      1. Égalité exacte après normalisation → score 1.0
+      2. Égalité compact (sans espaces/séparateurs) → score 0.95
+      3. Ratio SequenceMatcher → score continu
+    """
+    stem_norm    = _photo_normalize(photo_stem)   # ex: "DUPONT ALICE"
+    stem_compact = _photo_key_compact(photo_stem) # ex: "DUPONTALICE"
+    stem_tokens  = set(stem_norm.split())
+
+    best = 0.0
+    for v in variants:
+        v_norm    = _photo_normalize(v)
+        v_compact = re.sub(r"\s+", "", v_norm)
+        v_tokens  = set(v_norm.split())
+
+        # 1. Exact normalisé
+        if stem_norm == v_norm:
+            return 1.0
+
+        # 2. Exact compact
+        if stem_compact == v_compact and stem_compact:
+            best = max(best, 0.95)
+            continue
+
+        # 3. Ratio chaîne
+        r = _quick_ratio(stem_norm, v_norm)
+
+        # 4. Jaccard tokens (bonus si tous les tokens du nom sont dans le stem)
+        if v_tokens and stem_tokens:
+            inter = len(v_tokens & stem_tokens)
+            union = len(v_tokens | stem_tokens)
+            jaccard = inter / union if union else 0.0
+            full_match_bonus = 0.15 if v_tokens <= stem_tokens or stem_tokens <= v_tokens else 0.0
+            token_bonus = 0.08 if inter >= 1 else 0.0
+            r = 0.55 * r + 0.30 * jaccard + full_match_bonus + token_bonus
+
+        best = max(best, r)
+
+    return best
+
+
+# ------------------------------------------------------------------
+# TABLE DE CONCORDANCE  :  canon → chemin photo
+# Construite une fois à partir du référentiel + index photos locaux
+# ------------------------------------------------------------------
+def build_photo_concordance(
+    ref_path: str,
+    photos_index: Dict[str, str],   # stem normalisé → filepath
+) -> Dict[str, str]:
+    """
+    Construit un dict  canon_name → photo_filepath
+
+    Étapes :
+      1. Charger le référentiel (NOM + Prénom) → extraire toutes les joueuses
+      2. Pour chaque joueuse, générer toutes les variantes de nom de fichier
+      3. Pour chaque fichier photo dans l'index, scorer contre les variantes
+      4. Associer la meilleure photo (score >= seuil) à chaque canon
+    """
+    concordance: Dict[str, str] = {}
+
+    if not ref_path or not os.path.exists(ref_path):
+        return concordance
+    if not photos_index:
+        return concordance
+
+    # --- Charger le référentiel ---
+    try:
+        ref_df = read_excel_auto(ref_path)
+        if isinstance(ref_df, dict):
+            ref_df = list(ref_df.values())[0] if ref_df else pd.DataFrame()
+    except Exception:
+        return concordance
+
+    if not isinstance(ref_df, pd.DataFrame) or ref_df.empty:
+        return concordance
+
+    # Détecter colonnes NOM / Prénom
+    cols_up = {str(c).strip().upper(): c for c in ref_df.columns}
+    col_nom = cols_up.get("NOM")
+    col_pre = (cols_up.get("PRÉNOM") or cols_up.get("PRENOM")
+                or cols_up.get("PR\u00c9NOM"))   # unicode safe
+
+    # Fallback : colonne unique "Nom de joueuse"
+    col_full = (cols_up.get("NOM DE JOUEUSE")
+                or next((c for ck, c in cols_up.items() if "JOUEUSE" in ck), None))
+
+    joueuses: List[Tuple[str, str, str]] = []  # (canon, nom, prenom)
+
+    if col_nom and col_pre:
+        for _, row in ref_df.iterrows():
+            nom    = str(row.get(col_nom, "") or "").strip()
+            prenom = str(row.get(col_pre, "") or "").strip()
+            if not nom:
+                continue
+            canon = normalize_name_raw(f"{nom} {prenom}")
+            joueuses.append((canon, nom, prenom))
+    elif col_full:
+        for _, row in ref_df.iterrows():
+            full = str(row.get(col_full, "") or "").strip()
+            if not full:
+                continue
+            parts = full.split()
+            nom    = parts[0] if parts else full
+            prenom = " ".join(parts[1:]) if len(parts) > 1 else ""
+            canon  = normalize_name_raw(full)
+            joueuses.append((canon, nom, prenom))
+    else:
+        return concordance
+
+    # --- Index photos : stem normalisé → filepath ---
+    # (l'index passé en paramètre est déjà key_spaced → path)
+    photo_stems = list(photos_index.keys())   # ex: ["DUPONT ALICE", "MARTIN LEA", ...]
+    photo_paths = list(photos_index.values())
+
+    SEUIL = 0.62  # score minimum pour accepter le match
+
+    for canon, nom, prenom in joueuses:
+        variants = _generate_name_variants(nom, prenom)
+        best_score = 0.0
+        best_path  = None
+
+        for stem, path in zip(photo_stems, photo_paths):
+            score = _score_photo_vs_variants(stem, variants)
+            if score > best_score:
+                best_score = score
+                best_path  = path
+
+        if best_path and best_score >= SEUIL:
+            concordance[canon] = best_path
+            # Aussi indexer les variantes directes pour lookup rapide
+            for v in variants:
+                canon_v = normalize_name_raw(v)
+                if canon_v and canon_v not in concordance:
+                    concordance[canon_v] = best_path
+
+    return concordance
+
+
+# ------------------------------------------------------------------
+# INDEX LOCAL  +  SYNC
+# ------------------------------------------------------------------
 def build_photos_index_local() -> Dict[str, str]:
-    """Index local: renvoie dict key_spaced -> filepath.
-    
-    La clé est la forme normalisée du nom de fichier AVEC espaces
-    (ex: 'DUPONT ALICE' pour 'Dupont Alice.jpg').
-    Cela permet un matching token-by-token fiable.
+    """
+    Index local : stem normalisé (avec espaces) → filepath.
+    Ex: { 'DUPONT ALICE': '/data/photos/Dupont_Alice.jpg', ... }
     """
     _ensure_photos_folder()
     idx: Dict[str, str] = {}
@@ -409,8 +603,7 @@ def build_photos_index_local() -> Dict[str, str]:
         if ext not in IMAGE_EXTS:
             continue
         stem = os.path.splitext(fn)[0]
-        # Clé principale : normalisée avec espaces
-        key = _photo_key_spaced(stem)
+        key  = _photo_key_spaced(stem)
         if not key:
             continue
         path = os.path.join(PHOTOS_FOLDER, fn)
@@ -422,7 +615,7 @@ def build_photos_index_local() -> Dict[str, str]:
                     idx[key] = path
             except Exception:
                 pass
-    return idx  # ✅ return manquant dans le script original
+    return idx
 
 
 def photos_get_index(force_sync: bool = False) -> Tuple[Dict[str, str], Dict[str, Any]]:
@@ -438,9 +631,8 @@ def photos_get_index(force_sync: bool = False) -> Tuple[Dict[str, str], Dict[str
 
     def _count_local_images() -> int:
         try:
-            if not os.path.exists(PHOTOS_FOLDER):
-                return 0
-            return sum(1 for fn in os.listdir(PHOTOS_FOLDER) if os.path.splitext(fn)[1].lower() in IMAGE_EXTS)
+            return sum(1 for fn in os.listdir(PHOTOS_FOLDER)
+                       if os.path.splitext(fn)[1].lower() in IMAGE_EXTS)
         except Exception:
             return 0
 
@@ -454,7 +646,6 @@ def photos_get_index(force_sync: bool = False) -> Tuple[Dict[str, str], Dict[str
             status["synced"] = True
         except Exception as e:
             status["error"] = str(e)
-
         idx = build_photos_index_local()
         status["n_local_files"] = _count_local_images()
         status["n_index"] = len(idx)
@@ -462,100 +653,157 @@ def photos_get_index(force_sync: bool = False) -> Tuple[Dict[str, str], Dict[str
     return idx, status
 
 
-def find_best_photo_for_player_relaxed(player_name: str, photos_index: Dict[str, str]) -> Optional[str]:
-    """Matching photo robuste : exact → token Jaccard + ratio chaîne.
-    
-    L'index utilise des clés normalisées AVEC espaces (ex: 'DUPONT ALICE').
-    Le nom de la joueuse est normalisé de la même façon avant comparaison.
+def get_photo_concordance(force_rebuild: bool = False) -> Dict[str, str]:
     """
-    if not player_name or not photos_index:
+    Retourne (et met en cache session) la table de concordance canon → photo.
+    La reconstruit si absente, vide, ou si force_rebuild=True.
+    """
+    cached = st.session_state.get("photo_concordance", {})
+    if cached and not force_rebuild:
+        return cached
+
+    photos_index = build_photos_index_local()
+    if not photos_index:
+        return {}
+
+    ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
+    if not os.path.exists(ref_path):
+        ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME)
+
+    concordance = build_photo_concordance(ref_path or "", photos_index)
+    st.session_state["photo_concordance"] = concordance
+    return concordance
+
+
+# ------------------------------------------------------------------
+# FONCTION PRINCIPALE : trouver la photo d'une joueuse
+# ------------------------------------------------------------------
+def find_photo_for_player(
+    player_name: str,
+    concordance: Optional[Dict[str, str]] = None,
+    photos_index: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """
+    Cherche la photo d'une joueuse en 3 passes :
+
+    Passe 1 — Concordance référentiel (la plus fiable)
+        Le canon du nom est cherché dans la table concordance.
+
+    Passe 2 — Lookup direct dans l'index photos
+        Comparaison normalisée stem ↔ nom cherché (fallback si hors référentiel).
+
+    Passe 3 — Fuzzy large sur tous les fichiers
+        Dernier recours avec seuil très bas pour couvrir les typos.
+    """
+    if not player_name:
         return None
 
-    # Normalisation du nom cherché (avec espaces)
-    pn = _photo_key_spaced(player_name)          # ex: "DUPONT ALICE"
-    pn_compact = re.sub(r"\s+", "", pn)          # ex: "DUPONTALICE"
-    pn_tokens = set(pn.split()) if pn else set() # ex: {"DUPONT", "ALICE"}
+    # --- Passe 1 : concordance référentiel ---
+    if concordance:
+        canon = normalize_name_raw(player_name)
+        if canon in concordance:
+            p = concordance[canon]
+            if os.path.exists(p):
+                return p
 
-    # 1) Match exact sur clé normalisée avec espaces
-    if pn in photos_index:
-        return photos_index[pn]
+        # Essai avec les variantes directes du nom brut
+        pn_norm = _photo_normalize(player_name)
+        for k, path in concordance.items():
+            if _photo_normalize(k) == pn_norm and os.path.exists(path):
+                return path
 
-    # 2) Match exact compact (ex: clé = "DUPONTALICE")
-    for k, path in photos_index.items():
-        if re.sub(r"\s+", "", k) == pn_compact:
-            return path
+    # --- Passe 2 : index photos direct ---
+    if photos_index:
+        pn = _photo_key_spaced(player_name)
 
-    # 3) Scoring combiné : ratio chaîne + Jaccard tokens
-    best_path = None
-    best_score = 0.0
+        # Exact
+        if pn in photos_index and os.path.exists(photos_index[pn]):
+            return photos_index[pn]
 
-    for k, path in photos_index.items():
-        k_tokens = set(k.split()) if k else set()
+        # Compact
+        pn_c = _photo_key_compact(player_name)
+        for k, path in photos_index.items():
+            if re.sub(r"\s+", "", k) == pn_c and os.path.exists(path):
+                return path
 
-        # Jaccard sur tokens
-        inter = len(pn_tokens & k_tokens)
-        union = max(1, len(pn_tokens | k_tokens))
-        jaccard = inter / union
+        # Fuzzy
+        pn_tokens = set(pn.split())
+        best_path, best_score = None, 0.0
+        for k, path in photos_index.items():
+            k_tokens = set(k.split())
+            inter    = len(pn_tokens & k_tokens)
+            union    = max(1, len(pn_tokens | k_tokens))
+            jaccard  = inter / union
+            subset   = 0.15 if (pn_tokens <= k_tokens or k_tokens <= pn_tokens) else 0.0
+            hit      = 0.08 if inter >= 1 else 0.0
+            ratio    = _quick_ratio(pn, k)
+            score    = 0.50 * ratio + 0.30 * jaccard + subset + hit
+            if score > best_score:
+                best_score = score
+                best_path  = path
 
-        # Bonus si tous les tokens du nom sont dans la clé (ou vice versa)
-        subset_bonus = 0.20 if pn_tokens and (pn_tokens <= k_tokens or k_tokens <= pn_tokens) else 0.0
+        if best_path and best_score >= 0.50 and os.path.exists(best_path):
+            return best_path
 
-        # Bonus si au moins un token commun (nom de famille souvent suffisant)
-        token_hit_bonus = 0.10 if inter >= 1 else 0.0
-
-        # Ratio global de chaînes normalisées
-        ratio = _quick_ratio(pn, k)
-
-        score = 0.50 * ratio + 0.35 * jaccard + subset_bonus + token_hit_bonus
-
-        if score > best_score:
-            best_score = score
-            best_path = path
-
-    # Seuil abaissé à 0.45 pour capturer les cas NOM seul vs "NOM PRENOM"
-    return best_path if best_score >= 0.45 else None
+    return None
 
 
-# ✅ FIX 3 : alias find_best_photo_for_player -> find_best_photo_for_player_relaxed
+# Alias rétrocompat
+def find_best_photo_for_player_relaxed(player_name: str, photos_index: Dict[str, str]) -> Optional[str]:
+    concordance = st.session_state.get("photo_concordance", {})
+    return find_photo_for_player(player_name, concordance=concordance, photos_index=photos_index)
+
 def find_best_photo_for_player(player_name: str, photos_index: Dict[str, str]) -> Optional[str]:
-    """Alias vers find_best_photo_for_player_relaxed (compatibilité)."""
     return find_best_photo_for_player_relaxed(player_name, photos_index)
 
 
+# ------------------------------------------------------------------
+# BLOC AFFICHAGE PHOTO (avec diagnostic)
+# ------------------------------------------------------------------
 def show_photo_block(player_name: str, location: str = "stats") -> None:
     c1, c2 = st.columns([1, 4])
     with c1:
         force = st.button("🔄 Sync photos", key=f"photos_sync_{location}")
     with c2:
-        st.caption("Photos depuis Drive (JPG/PNG). Nommez les fichiers : 'NOM Prenom.jpg'")
+        st.caption("Photos synchronisées depuis Google Drive.")
 
-    idx, stt = photos_get_index(force_sync=force)
-    st.session_state["photos_index"] = idx
-    st.session_state["photos_status"] = stt
+    if force:
+        sync_photos_from_drive()
+        get_photo_concordance(force_rebuild=True)
+        st.session_state["photos_index"] = build_photos_index_local()
 
-    photo_path = find_best_photo_for_player_relaxed(player_name, idx)
+    photos_index  = st.session_state.get("photos_index") or build_photos_index_local()
+    concordance   = get_photo_concordance()
+    photo_path    = find_photo_for_player(player_name, concordance=concordance, photos_index=photos_index)
 
     if photo_path and os.path.exists(photo_path):
         st.image(photo_path, width=170)
         return
 
-    with st.expander("📷 Diagnostic photos", expanded=True):
-        pn_key = _photo_key_spaced(player_name)
-        st.write(f"**Joueuse cherchée :** `{player_name}` → clé normalisée : `{pn_key}`")
-        st.write(f"**Fichiers images locaux :** {stt.get('n_local_files')} — **Index :** {stt.get('n_index')}")
-        if stt.get("error"):
-            st.error(f"Erreur sync : {stt['error']}")
-        if idx:
-            # Trier les clés par score décroissant pour afficher les meilleures suggestions
-            scored = []
-            for k, path in idx.items():
-                ratio = _quick_ratio(pn_key, k)
-                scored.append((ratio, k, os.path.basename(path)))
-            scored.sort(reverse=True)
-            st.write("**Top 8 fichiers les plus proches :**")
-            for score, k, fn in scored[:8]:
-                st.write(f"  `{fn}` — clé: `{k}` — score: `{score:.2f}`")
-        st.info("💡 Renommez vos photos exactement comme le nom affiché dans la clé normalisée ci-dessus (sans accents, majuscules).")
+    # --- Diagnostic ---
+    with st.expander("📷 Photo non trouvée — Diagnostic", expanded=True):
+        canon = normalize_name_raw(player_name)
+        st.write(f"**Nom cherché :** `{player_name}`")
+        st.write(f"**Canon référentiel :** `{canon}`")
+        st.write(f"**Photos locales :** {len(photos_index)} fichiers indexés")
+        st.write(f"**Concordance référentiel :** {len(concordance)} entrées")
+
+        if photos_index:
+            pn = _photo_key_spaced(player_name)
+            scored = sorted(
+                [(_quick_ratio(pn, k), k, os.path.basename(p))
+                 for k, p in photos_index.items()],
+                reverse=True
+            )[:6]
+            st.write("**Fichiers photos les plus proches (par nom) :**")
+            for sc, k, fn in scored:
+                st.write(f"  `{fn}` — score : `{sc:.2f}`")
+
+        st.info(
+            "💡 La concordance utilise le référentiel **Noms Prénoms Paris FC.xlsx** (colonnes NOM + Prénom). "
+            "Si la photo n'est pas trouvée, vérifiez que la joueuse est bien dans le référentiel "
+            "et que le nom du fichier photo contient NOM et/ou Prénom."
+        )
 
 
 def load_photo_bytes(path: str):
@@ -2779,7 +3027,15 @@ def collect_data(selected_season=None):
     except Exception as e:
         st.warning(f"Photos: sync échouée -> {e}")
 
-    st.session_state["photos_index"] = build_photos_index_local()
+    # Construire l'index local puis la concordance référentiel → photo
+    photos_index_local = build_photos_index_local()
+    st.session_state["photos_index"] = photos_index_local
+    try:
+        concordance = build_photo_concordance(ref_path, photos_index_local)
+        st.session_state["photo_concordance"] = concordance
+    except Exception as e:
+        st.warning(f"Photos: concordance échouée -> {e}")
+        st.session_state["photo_concordance"] = {}
 
     gps_raw = load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons)
     gps_week = compute_gps_weekly_metrics(gps_raw)
@@ -3779,34 +4035,35 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         selected = st.selectbox("Sélectionnez une joueuse", list(passerelle_data.keys()), key="passerelle_player_sel")
 
-        # ✅ FIX 5 : utilise find_best_photo_for_player_relaxed (find_best_photo_for_player est maintenant un alias)
-        photos_index = st.session_state.get("photos_index", {})
-        if not photos_index:
-            # Tenter de charger l'index si pas encore en session
-            photos_index = build_photos_index_local()
-            st.session_state["photos_index"] = photos_index
+        # Récupérer index + concordance depuis la session (construits dans collect_data)
+        photos_index = st.session_state.get("photos_index") or build_photos_index_local()
+        concordance  = st.session_state.get("photo_concordance") or get_photo_concordance()
 
-        photo_found = False
-        if photos_index:
-            try:
-                photo_path = find_best_photo_for_player_relaxed(selected, photos_index)
-                if photo_path and os.path.exists(photo_path):
-                    st.image(photo_path, width=160)
-                    photo_found = True
-            except Exception:
-                pass
+        # Chercher avec la concordance référentiel en priorité
+        photo_path = find_photo_for_player(selected, concordance=concordance, photos_index=photos_index)
 
-        if not photo_found and photos_index:
-            pn_key = _photo_key_spaced(selected)
-            with st.expander("📷 Diagnostic photo", expanded=False):
-                st.write(f"**Nom cherché :** `{selected}` → clé : `{pn_key}`")
-                scored = sorted(
-                    [((_quick_ratio(pn_key, k)), k, os.path.basename(p)) for k, p in photos_index.items()],
-                    reverse=True
-                )
-                st.write("**Top 5 fichiers les plus proches :**")
-                for score, k, fn in scored[:5]:
-                    st.write(f"  `{fn}` — score: `{score:.2f}`")
+        if photo_path and os.path.exists(photo_path):
+            st.image(photo_path, width=160)
+        else:
+            # Diagnostic compact
+            canon = normalize_name_raw(selected)
+            with st.expander("📷 Photo non trouvée — Diagnostic", expanded=False):
+                st.write(f"**Nom cherché :** `{selected}`")
+                st.write(f"**Canon référentiel :** `{canon}`")
+                st.write(f"**Concordance :** {len(concordance)} entrées — "
+                         f"**Photos indexées :** {len(photos_index)}")
+                if photos_index:
+                    pn = _photo_key_spaced(selected)
+                    scored = sorted(
+                        [(_quick_ratio(pn, k), k, os.path.basename(p))
+                         for k, p in photos_index.items()],
+                        reverse=True
+                    )[:5]
+                    st.write("**Fichiers les plus proches :**")
+                    for sc, k, fn in scored:
+                        st.write(f"  `{fn}` — score : `{sc:.2f}`")
+                st.caption("💡 Vérifiez que la joueuse est dans **Noms Prénoms Paris FC.xlsx** "
+                           "et que le fichier photo contient son NOM ou Prénom.")
 
         selected_clean = nettoyer_nom_joueuse(selected)
         info = passerelle_data[selected]
