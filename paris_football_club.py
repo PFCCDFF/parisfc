@@ -910,9 +910,13 @@ def show_photo_block(player_name: str, location: str = "stats") -> None:
         st.caption("Photos synchronisées depuis Google Drive.")
 
     if force:
-        sync_photos_from_drive()
-        get_photo_concordance(force_rebuild=True)
-        st.session_state["photos_index"] = build_photos_index_local()
+        with st.spinner("Sync + conversion en cours..."):
+            sync_photos_from_drive()
+            ok, fail, errs = reconvert_photos_to_jpeg()
+            if fail > 0:
+                st.warning(f"{fail} fichier(s) non convertible(s) : {', '.join(errs[:3])}")
+            get_photo_concordance(force_rebuild=True)
+            st.session_state["photos_index"] = build_photos_index_local()
 
     photos_index  = st.session_state.get("photos_index") or build_photos_index_local()
     concordance   = get_photo_concordance()
@@ -1024,6 +1028,68 @@ def _download_drive_binary_to_path(service, file_id: str, out_path: str) -> str:
 # - signature avec paramètres par défaut
 # - drive_service initialisé localement
 # - list_all_files_in_folder_recursive remplacée par list_files_recursive
+def reconvert_photos_to_jpeg(folder: str = PHOTOS_FOLDER) -> Tuple[int, int, List[str]]:
+    """
+    Parcourt tous les fichiers du dossier photos et tente de les convertir en JPEG.
+    - HEIC/HEIF/WebP/PNG/etc. → renommés en .jpg et convertis
+    - Fichiers déjà en .jpg valides → vérifiés, reconvertis si corrompus
+    - Retourne (nb_ok, nb_echec, liste_erreurs)
+    """
+    if not os.path.exists(folder):
+        return 0, 0, []
+
+    ok, fail = 0, 0
+    errors: List[str] = []
+
+    # Enregistrer pillow-heif une fois si disponible
+    try:
+        import pillow_heif as _ph
+        _ph.register_heif_opener()
+        heif_ok = True
+    except ImportError:
+        heif_ok = False
+
+    from PIL import Image as _PilImg, UnidentifiedImageError
+
+    files = [f for f in os.listdir(folder)
+             if os.path.splitext(f)[1].lower() in IMAGE_EXTS]
+
+    for fn in files:
+        src_path = os.path.join(folder, fn)
+        stem, ext = os.path.splitext(fn)
+        dst_path = os.path.join(folder, stem + ".jpg")
+
+        try:
+            with open(src_path, "rb") as f_in:
+                raw = f_in.read()
+
+            im = _PilImg.open(io.BytesIO(raw))
+            im.load()
+            im = im.convert("RGB")
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=92, optimize=True)
+            jpeg_bytes = buf.getvalue()
+
+            # Écrire le JPEG (peut écraser le fichier original si déjà .jpg)
+            with open(dst_path, "wb") as f_out:
+                f_out.write(jpeg_bytes)
+
+            # Supprimer le fichier original s'il avait une extension différente
+            if src_path != dst_path and os.path.exists(src_path):
+                try:
+                    os.remove(src_path)
+                except Exception:
+                    pass
+
+            ok += 1
+
+        except Exception as e:
+            fail += 1
+            errors.append(f"{fn}: {e}")
+
+    return ok, fail, errors
+
+
 def sync_photos_from_drive(folder_id: str = None, local_folder: str = None):
     """Télécharge (cache local) les photos des joueuses depuis Google Drive."""
     if folder_id is None:
@@ -1066,21 +1132,55 @@ def sync_photos_from_drive(folder_id: str = None, local_folder: str = None):
     def _download_file(file_id: str, filename: str, size_str=None):
         nonlocal downloaded
         safe_name = filename.replace('/', '_').replace('\\', '_')
-        local_path = os.path.join(local_folder, safe_name)
+        ext_orig = os.path.splitext(safe_name)[1].lower()
+
+        # Toujours stocker en JPEG pour garantir la lisibilité (Pillow universel)
+        stem = os.path.splitext(safe_name)[0]
+        safe_name_jpg = stem + ".jpg"
+        local_path = os.path.join(local_folder, safe_name_jpg)
+
         try:
-            if os.path.exists(local_path) and size_str and str(size_str).isdigit():
+            # Si le fichier JPEG existe déjà et a une taille raisonnable, skip
+            if os.path.exists(local_path):
                 try:
-                    if os.path.getsize(local_path) == int(size_str):
+                    if os.path.getsize(local_path) > 1024:
                         return
                 except Exception:
                     pass
+
+            # Télécharger en mémoire
             req = drive_service.files().get_media(fileId=file_id)
-            fh = io.FileIO(local_path, 'wb')
-            downloader = MediaIoBaseDownload(fh, req, chunksize=1024 * 1024)
+            buf = io.BytesIO()
+            downloader = MediaIoBaseDownload(buf, req, chunksize=1024 * 1024)
             done = False
             while not done:
                 status, done = downloader.next_chunk()
+            raw_bytes = buf.getvalue()
+
+            # Convertir en JPEG via Pillow (gère HEIC si pillow-heif dispo, PNG, WebP, etc.)
+            try:
+                from PIL import Image as _PilImg
+                if ext_orig in (".heic", ".heif"):
+                    try:
+                        import pillow_heif as _ph
+                        _ph.register_heif_opener()
+                    except ImportError:
+                        pass
+                im = _PilImg.open(io.BytesIO(raw_bytes))
+                im.load()
+                im = im.convert("RGB")
+                out_buf = io.BytesIO()
+                im.save(out_buf, format="JPEG", quality=92, optimize=True)
+                jpeg_bytes = out_buf.getvalue()
+            except Exception:
+                # Pillow a échoué : stocker le fichier brut sous son nom d'origine
+                local_path = os.path.join(local_folder, safe_name)
+                jpeg_bytes = raw_bytes
+
+            with open(local_path, "wb") as f_out:
+                f_out.write(jpeg_bytes)
             downloaded += 1
+
         except Exception as e:
             st.warning(f"Photos: impossible de télécharger {filename} -> {e}")
 
@@ -3656,6 +3756,19 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 _p, _e = collect_data(selected_saison)
             st.cache_data.clear()
             st.success("✅ Mise à jour terminée")
+            st.rerun()
+
+        if st.sidebar.button("🖼️ Reconvertir les photos"):
+            with st.spinner("Reconversion en JPEG..."):
+                ok, fail, errs = reconvert_photos_to_jpeg()
+                new_idx = build_photos_index_local()
+                st.session_state["photos_index"] = new_idx
+                ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
+                st.session_state["photo_concordance"] = build_photo_concordance(ref_path, new_idx)
+            if fail == 0:
+                st.sidebar.success(f"✅ {ok} photo(s) converties en JPEG")
+            else:
+                st.sidebar.warning(f"✅ {ok} OK — ⚠️ {fail} échec(s) : {', '.join(errs[:3])}")
             st.rerun()
 
     if selected_saison != "Toutes les saisons":
