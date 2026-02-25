@@ -3297,16 +3297,19 @@ def gps_last_7_days_summary(gps_raw: pd.DataFrame, player_sel: str, end_date=Non
 
 
 @st.cache_data
-def collect_data(selected_season=None):
-    # Réinitialiser le buffer d'avertissements système à chaque chargement
-    st.session_state["_system_warnings"] = []
-
-    def _warn(msg: str):
-        """Accumule les avertissements système sans les afficher immédiatement."""
+def _warn(msg: str) -> None:
+    """Accumule les avertissements système dans session_state sans les afficher."""
+    try:
         buf = st.session_state.setdefault("_system_warnings", [])
         if msg not in buf:
             buf.append(msg)
+    except Exception:
+        pass  # hors contexte Streamlit (tests, import)
 
+
+def collect_data(selected_season=None):
+    # Réinitialiser le buffer d'avertissements système à chaque chargement
+    st.session_state["_system_warnings"] = []
     download_google_drive()
 
     ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
