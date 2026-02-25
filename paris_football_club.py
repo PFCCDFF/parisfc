@@ -1237,9 +1237,7 @@ def sync_photos_from_drive(folder_id: str = None, local_folder: str = None):
     # Reconstruction de l'index après sync
     build_photos_index_local()
     if downloaded > 0:
-        if downloaded > 0 and not st.session_state.get("_photos_sync_notified"):
-            st.caption(f"📸 Photos: {downloaded} fichier(s) synchronisé(s) depuis Drive.")
-            st.session_state["_photos_sync_notified"] = True
+        pass  # photos sync count recorded silently
 
 def authenticate_google_drive():
     scopes = ["https://www.googleapis.com/auth/drive"]
@@ -2902,10 +2900,7 @@ def load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, f
             dfp["__source_file"] = os.path.basename(p)
             frames.append(dfp)
         except Exception as e:
-            _gps_wk = f"gps_warn_{os.path.basename(p)}"
-            if not st.session_state.get(_gps_wk):
-                st.warning(f"GPS: impossible de lire {os.path.basename(p)} → {e}")
-                st.session_state[_gps_wk] = True
+            _warn(f"GPS: impossible de lire {os.path.basename(p)} → {e}")
             continue
 
     df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -3303,6 +3298,15 @@ def gps_last_7_days_summary(gps_raw: pd.DataFrame, player_sel: str, end_date=Non
 
 @st.cache_data
 def collect_data(selected_season=None):
+    # Réinitialiser le buffer d'avertissements système à chaque chargement
+    st.session_state["_system_warnings"] = []
+
+    def _warn(msg: str):
+        """Accumule les avertissements système sans les afficher immédiatement."""
+        buf = st.session_state.setdefault("_system_warnings", [])
+        if msg not in buf:
+            buf.append(msg)
+
     download_google_drive()
 
     ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
@@ -3334,12 +3338,12 @@ def collect_data(selected_season=None):
     try:
         sync_gps_from_drive_autonomous()
     except Exception as e:
-        st.warning(f"GPS: sync autonome échouée -> {e}")
+        _warn(f"GPS: sync autonome échouée → {e}")
 
     try:
         sync_photos_from_drive()
     except Exception as e:
-        st.warning(f"Photos: sync échouée -> {e}")
+        _warn(f"Photos: sync échouée → {e}")
 
     # Construire l'index local puis la concordance référentiel → photo
     photos_index_local = build_photos_index_local()
@@ -3348,7 +3352,7 @@ def collect_data(selected_season=None):
         concordance = build_photo_concordance(ref_path, photos_index_local)
         st.session_state["photo_concordance"] = concordance
     except Exception as e:
-        st.warning(f"Photos: concordance échouée -> {e}")
+        _warn(f"Photos: concordance échouée → {e}")
         st.session_state["photo_concordance"] = {}
 
     gps_raw = load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons)
@@ -3368,7 +3372,7 @@ def collect_data(selected_season=None):
 
             needed = {"Player", "Poste", "Temps de jeu"}
             if not needed.issubset(set(edf_joueuses.columns)):
-                st.warning(f"EDF_Joueuses.xlsx: colonnes manquantes, trouvé: {edf_joueuses.columns.tolist()}")
+                _warn(f"EDF_Joueuses.xlsx: colonnes manquantes → {edf_joueuses.columns.tolist()}")
             else:
                 edf_j = edf_joueuses.copy()
                 edf_j["Player_raw"] = edf_j["Player"].astype(str)
@@ -3402,7 +3406,7 @@ def collect_data(selected_season=None):
                     d = d.merge(edf_j[["PlayerCanon", "Poste", "Temps de jeu"]], on="PlayerCanon", how="left")
 
                     if "Poste" not in d.columns or d["Poste"].isna().mean() > 0.9:
-                        st.warning(f"EDF: merge faible sur {csv_file} (Poste NaN {d['Poste'].isna().mean():.0%}).")
+                        _warn(f"EDF: merge faible sur {csv_file} (Poste NaN {d['Poste'].isna().mean():.0%})")
                         continue
 
                     df_duration = edf_j[["PlayerCanon", "Poste", "Temps de jeu"]].copy()
@@ -3452,7 +3456,7 @@ def collect_data(selected_season=None):
                     edf_kpi["Poste"] = edf_kpi["Poste"].astype(str) + " moyenne (EDF)"
 
         except Exception as e:
-            st.warning(f"EDF: erreur chargement/calcul référentiel: {e}")
+            _warn(f"EDF: erreur chargement/calcul référentiel → {e}")
 
     # ======================================================
     # PFC Matchs
@@ -3571,7 +3575,7 @@ def collect_data(selected_season=None):
             pfc_kpi = pd.concat([pfc_kpi, df], ignore_index=True)
 
         except Exception as e:
-            st.warning(f"Match: impossible de lire {filename} -> {e}")
+            _warn(f"Match: impossible de lire {filename} → {e}")
             continue
 
     st.session_state["name_report_df"] = pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
@@ -3786,6 +3790,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
     player_name = get_player_for_profile(user_profile, permissions)
     st.sidebar.title(f"Connecté : {user_profile}")
+
+    # Badge d'avertissements système discret
+    _sys_warns = st.session_state.get("_system_warnings", [])
+    if _sys_warns:
+        n = len(_sys_warns)
+        with st.sidebar.expander(f"⚠️ {n} avertissement{'s' if n > 1 else ''}", expanded=False):
+            for w in _sys_warns:
+                st.caption(f"• {w}")
     if player_name:
         st.sidebar.write(f"Joueuse associée : {player_name}")
 
@@ -4431,9 +4443,25 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         poste2_val  = info.get("Poste 2", "") or ""
         pied_val    = info.get("Pied Fort", "") or ""
         taille_val  = info.get("Taille", "") or ""
-        ddn_val     = info.get("Date de naissance", "") or ""
+        _ddn_raw = info.get("Date de naissance", "") or ""
+        try:
+            if hasattr(_ddn_raw, "strftime"):  # Timestamp pandas
+                ddn_val = _ddn_raw.strftime("%d/%m/%Y")
+            else:
+                ddn_val = str(_ddn_raw).strip()
+                if ddn_val.lower() in ("nan", "none", "", "nat"):
+                    ddn_val = ""
+                elif re.match(r"^\d{4}-\d{2}-\d{2}", ddn_val):
+                    import pandas as _pd2
+                    ddn_val = _pd2.to_datetime(ddn_val).strftime("%d/%m/%Y")
+        except Exception:
+            ddn_val = str(_ddn_raw).strip()
+            if ddn_val.lower() in ("nan", "none", "", "nat"): ddn_val = ""
+
         if str(taille_val).lower() in ("nan", "none", ""): taille_val = ""
-        if str(ddn_val).lower()    in ("nan", "none", ""): ddn_val    = ""
+        if str(poste1_val).lower() in ("nan", "none", ""): poste1_val = ""
+        if str(poste2_val).lower() in ("nan", "none", ""): poste2_val = ""
+        if str(pied_val).lower()   in ("nan", "none", ""): pied_val   = ""
 
         # Photo bytes pour base64
         photo_b64 = ""
