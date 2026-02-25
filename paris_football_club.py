@@ -3581,6 +3581,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     options = ["Statistiques", "Comparaison", "Données Physiques", "Joueuses Passerelles"]
     if check_permission(user_profile, "all", permissions):
         options.insert(2, "Gestion")
+        options.append("🔍 Diagnostic Photos")
 
     with st.sidebar:
         page = option_menu(
@@ -4419,6 +4420,139 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         st.pyplot(fig, use_container_width=True)
                                 except Exception as e:
                                     st.warning(f"Graphique indisponible : {e}")
+
+
+    # =====================
+    # DIAGNOSTIC PHOTOS
+    # =====================
+    elif page == "🔍 Diagnostic Photos":
+        st.header("🔍 Diagnostic Photos")
+        st.caption("Page admin uniquement — permet de comprendre pourquoi une photo ne s'affiche pas.")
+
+        # --- État de la session ---
+        photos_index = st.session_state.get("photos_index", {})
+        concordance  = st.session_state.get("photo_concordance", {})
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Photos indexées (local)", len(photos_index))
+        col2.metric("Entrées concordance", len(concordance))
+        col3.metric("Dossier local", PHOTOS_FOLDER)
+
+        st.divider()
+
+        # --- Bouton resync forcé ---
+        if st.button("🔄 Forcer sync Drive + reconstruire concordance"):
+            with st.spinner("Sync en cours..."):
+                sync_photos_from_drive()
+                new_idx = build_photos_index_local()
+                st.session_state["photos_index"] = new_idx
+
+                ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
+                if not os.path.exists(ref_path):
+                    ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME) or ""
+                new_conc = build_photo_concordance(ref_path, new_idx)
+                st.session_state["photo_concordance"] = new_conc
+
+                photos_index = new_idx
+                concordance  = new_conc
+            st.success(f"✅ {len(photos_index)} photos indexées — {len(concordance)} concordances")
+            st.rerun()
+
+        # --- Liste de tous les fichiers téléchargés ---
+        st.subheader("📁 Fichiers photos dans le dossier local")
+        if os.path.exists(PHOTOS_FOLDER):
+            all_files = [f for f in os.listdir(PHOTOS_FOLDER)
+                         if os.path.splitext(f)[1].lower() in IMAGE_EXTS]
+            if all_files:
+                df_files = pd.DataFrame({
+                    "Nom du fichier": all_files,
+                    "Clé normalisée (index)": [_photo_key_spaced(os.path.splitext(f)[0]) for f in all_files],
+                    "Taille (ko)": [round(os.path.getsize(os.path.join(PHOTOS_FOLDER, f)) / 1024, 1) for f in all_files],
+                })
+                st.dataframe(df_files, use_container_width=True)
+
+                # Test load_photo_bytes sur les premiers fichiers
+                st.subheader("🖼️ Test lecture des 6 premières photos")
+                cols = st.columns(6)
+                for i, fn in enumerate(all_files[:6]):
+                    path = os.path.join(PHOTOS_FOLDER, fn)
+                    data = load_photo_bytes(path)
+                    with cols[i]:
+                        if data:
+                            st.image(data, caption=fn[:20], width=100)
+                        else:
+                            st.error(f"❌ Illisible\n{fn[:15]}")
+            else:
+                st.warning("Aucun fichier image trouvé dans le dossier local.")
+        else:
+            st.error(f"Dossier photos inexistant : `{PHOTOS_FOLDER}`")
+
+        st.divider()
+
+        # --- Test de matching pour un nom donné ---
+        st.subheader("🔎 Tester le matching pour un nom")
+        test_name = st.text_input("Entrez un nom de joueuse", placeholder="ex: DUPONT Alice")
+
+        if test_name:
+            st.write(f"**Nom saisi :** `{test_name}`")
+            st.write(f"**Canon référentiel :** `{normalize_name_raw(test_name)}`")
+            st.write(f"**Clé normalisée photo :** `{_photo_key_spaced(test_name)}`")
+
+            # Passe 1 : concordance
+            st.write("#### Passe 1 — Concordance référentiel")
+            canon = normalize_name_raw(test_name)
+            if canon in concordance:
+                p = concordance[canon]
+                st.success(f"✅ Trouvé dans la concordance → `{os.path.basename(p)}`")
+                data = load_photo_bytes(p)
+                if data:
+                    st.image(data, width=150)
+                else:
+                    st.error("Fichier trouvé mais illisible (load_photo_bytes a renvoyé None)")
+            else:
+                st.warning(f"❌ Canon `{canon}` absent de la concordance")
+                # Chercher les entrées concordance les plus proches
+                if concordance:
+                    scored_conc = sorted(
+                        [(_quick_ratio(canon, k), k, os.path.basename(v))
+                         for k, v in concordance.items()],
+                        reverse=True
+                    )[:5]
+                    st.write("**Top 5 concordances les plus proches :**")
+                    for sc, k, fn in scored_conc:
+                        st.write(f"  `{k}` → `{fn}` — score : `{sc:.2f}`")
+
+            # Passe 2 : index photos direct
+            st.write("#### Passe 2 — Index photos direct")
+            pn = _photo_key_spaced(test_name)
+            if photos_index:
+                scored = sorted(
+                    [(_quick_ratio(pn, k), k, os.path.basename(p), p)
+                     for k, p in photos_index.items()],
+                    reverse=True
+                )[:8]
+                rows = []
+                for sc, k, fn, fpath in scored:
+                    readable = load_photo_bytes(fpath) is not None
+                    rows.append({"Score": round(sc, 3), "Clé index": k,
+                                 "Fichier": fn, "Lisible par Pillow": readable})
+                st.dataframe(pd.DataFrame(rows), use_container_width=True)
+            else:
+                st.warning("Index photos vide.")
+
+            # Résultat final
+            st.write("#### ✅ Résultat final — find_photo_for_player")
+            result = find_photo_for_player(test_name, concordance=concordance, photos_index=photos_index)
+            if result:
+                st.success(f"Photo trouvée : `{os.path.basename(result)}`")
+                data = load_photo_bytes(result)
+                if data:
+                    st.image(data, width=200)
+                else:
+                    st.error("Fichier trouvé par le matcher mais illisible par Pillow.")
+            else:
+                st.error("Aucune photo trouvée avec find_photo_for_player.")
+
 
 
 # =========================
