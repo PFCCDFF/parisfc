@@ -1041,15 +1041,14 @@ def reconvert_photos_to_jpeg(folder: str = PHOTOS_FOLDER) -> Tuple[int, int, Lis
     ok, fail = 0, 0
     errors: List[str] = []
 
-    # Enregistrer pillow-heif une fois si disponible
+    # Enregistrer pillow-heif si disponible (HEIC/HEIF)
     try:
         import pillow_heif as _ph
         _ph.register_heif_opener()
-        heif_ok = True
     except ImportError:
-        heif_ok = False
+        pass
 
-    from PIL import Image as _PilImg, UnidentifiedImageError
+    from PIL import Image as _PilImg
 
     files = [f for f in os.listdir(folder)
              if os.path.splitext(f)[1].lower() in IMAGE_EXTS]
@@ -1063,14 +1062,24 @@ def reconvert_photos_to_jpeg(folder: str = PHOTOS_FOLDER) -> Tuple[int, int, Lis
             with open(src_path, "rb") as f_in:
                 raw = f_in.read()
 
-            im = _PilImg.open(io.BytesIO(raw))
-            im.load()
-            im = im.convert("RGB")
-            buf = io.BytesIO()
-            im.save(buf, format="JPEG", quality=92, optimize=True)
-            jpeg_bytes = buf.getvalue()
+            # Tentative Pillow (pillow-heif enregistré au-dessus si dispo)
+            jpeg_bytes = None
+            try:
+                im = _PilImg.open(io.BytesIO(raw))
+                im.load()
+                im = im.convert("RGB")
+                buf = io.BytesIO()
+                im.save(buf, format="JPEG", quality=92, optimize=True)
+                jpeg_bytes = buf.getvalue()
+            except Exception:
+                pass
 
-            # Écrire le JPEG (peut écraser le fichier original si déjà .jpg)
+            if jpeg_bytes is None:
+                # Fichier vraiment illisible (HEIC sans pillow-heif, format exotique...)
+                fail += 1
+                errors.append(f"{fn}: non supporté par Pillow (HEIC sans pillow-heif ?)")
+                continue
+
             with open(dst_path, "wb") as f_out:
                 f_out.write(jpeg_bytes)
 
@@ -1157,23 +1166,57 @@ def sync_photos_from_drive(folder_id: str = None, local_folder: str = None):
                 status, done = downloader.next_chunk()
             raw_bytes = buf.getvalue()
 
-            # Convertir en JPEG via Pillow (gère HEIC si pillow-heif dispo, PNG, WebP, etc.)
-            try:
-                from PIL import Image as _PilImg
-                if ext_orig in (".heic", ".heif"):
-                    try:
-                        import pillow_heif as _ph
-                        _ph.register_heif_opener()
-                    except ImportError:
-                        pass
-                im = _PilImg.open(io.BytesIO(raw_bytes))
-                im.load()
-                im = im.convert("RGB")
-                out_buf = io.BytesIO()
-                im.save(out_buf, format="JPEG", quality=92, optimize=True)
-                jpeg_bytes = out_buf.getvalue()
-            except Exception:
-                # Pillow a échoué : stocker le fichier brut sous son nom d'origine
+            # Convertir en JPEG — 3 stratégies en cascade
+            jpeg_bytes = None
+
+            # Stratégie 1 : pillow-heif + Pillow (HEIC/HEIF natif)
+            if ext_orig in (".heic", ".heif"):
+                try:
+                    import pillow_heif as _ph
+                    _ph.register_heif_opener()
+                    from PIL import Image as _PilImg
+                    im = _PilImg.open(io.BytesIO(raw_bytes))
+                    im.load()
+                    im = im.convert("RGB")
+                    out_buf = io.BytesIO()
+                    im.save(out_buf, format="JPEG", quality=92, optimize=True)
+                    jpeg_bytes = out_buf.getvalue()
+                except Exception:
+                    pass
+
+            # Stratégie 2 : Pillow standard (JPG, PNG, WebP, et HEIC si s1 a réussi)
+            if jpeg_bytes is None:
+                try:
+                    from PIL import Image as _PilImg
+                    im = _PilImg.open(io.BytesIO(raw_bytes))
+                    im.load()
+                    im = im.convert("RGB")
+                    out_buf = io.BytesIO()
+                    im.save(out_buf, format="JPEG", quality=92, optimize=True)
+                    jpeg_bytes = out_buf.getvalue()
+                except Exception:
+                    pass
+
+            # Stratégie 3 (HEIC uniquement) : demander à Drive d'exporter en JPEG
+            # Google Drive peut convertir les images HEIC côté serveur
+            if jpeg_bytes is None and ext_orig in (".heic", ".heif"):
+                try:
+                    req_jpg = drive_service.files().export_media(
+                        fileId=file_id, mimeType="image/jpeg"
+                    )
+                    buf_jpg = io.BytesIO()
+                    dl_jpg = MediaIoBaseDownload(buf_jpg, req_jpg, chunksize=1024 * 1024)
+                    done_jpg = False
+                    while not done_jpg:
+                        _, done_jpg = dl_jpg.next_chunk()
+                    jpeg_bytes = buf_jpg.getvalue()
+                except Exception:
+                    pass
+
+            if jpeg_bytes is not None:
+                pass  # conversion réussie → local_path = stem + ".jpg" déjà défini
+            else:
+                # Aucune stratégie n'a fonctionné : stocker brut sous nom d'origine
                 local_path = os.path.join(local_folder, safe_name)
                 jpeg_bytes = raw_bytes
 
@@ -1194,7 +1237,9 @@ def sync_photos_from_drive(folder_id: str = None, local_folder: str = None):
     # Reconstruction de l'index après sync
     build_photos_index_local()
     if downloaded > 0:
-        st.caption(f"📸 Photos: {downloaded} fichier(s) synchronisé(s) depuis Drive.")
+        if downloaded > 0 and not st.session_state.get("_photos_sync_notified"):
+            st.caption(f"📸 Photos: {downloaded} fichier(s) synchronisé(s) depuis Drive.")
+            st.session_state["_photos_sync_notified"] = True
 
 def authenticate_google_drive():
     scopes = ["https://www.googleapis.com/auth/drive"]
@@ -2857,7 +2902,10 @@ def load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, f
             dfp["__source_file"] = os.path.basename(p)
             frames.append(dfp)
         except Exception as e:
-            st.warning(f"GPS: impossible de lire {os.path.basename(p)} -> {e}")
+            _gps_wk = f"gps_warn_{os.path.basename(p)}"
+            if not st.session_state.get(_gps_wk):
+                st.warning(f"GPS: impossible de lire {os.path.basename(p)} → {e}")
+                st.session_state[_gps_wk] = True
             continue
 
     df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -4375,44 +4423,92 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         candidates = sorted(set(stats_candidates + gps_candidates))
         resolved_player = _resolve_best_player_name(selected, info, candidates)
 
-        # ── Bloc Identité : photo à gauche, infos à droite ──────────────
-        st.subheader("Identité")
-        cA, cB = st.columns([1, 2])
-        with cA:
-            # Photo Drive en priorité, sinon photo URL du fichier passerelle
-            if photo_path and os.path.exists(photo_path):
-                safe_show_photo(photo_path, width=180)
-            elif info.get("Photo"):
-                st.image(info["Photo"], width=180)
-            else:
-                # Placeholder si aucune photo
-                st.markdown(
-                    "<div style='width:180px;height:220px;background:#0c3660;"
-                    "border-radius:8px;display:flex;align-items:center;"
-                    "justify-content:center;color:#5a8ab8;font-size:48px;'>👤</div>",
-                    unsafe_allow_html=True,
-                )
-            # Bouton changer / associer toujours visible sous la photo
-            btn_label = "🔄 Changer la photo" if photo_path else "📷 Associer une photo"
-            with st.expander(btn_label, expanded=(photo_path is None)):
-                _render_photo_picker(selected, canon_selected, photos_index)
+        # ── Carte Identité — design fiche joueur ────────────────────────
+        # Préparer les données d'affichage
+        prenom_val  = info.get("Prénom", "") or ""
+        nom_val     = info.get("Nom", selected) or selected
+        poste1_val  = info.get("Poste 1", "") or ""
+        poste2_val  = info.get("Poste 2", "") or ""
+        pied_val    = info.get("Pied Fort", "") or ""
+        taille_val  = info.get("Taille", "") or ""
+        ddn_val     = info.get("Date de naissance", "") or ""
+        if str(taille_val).lower() in ("nan", "none", ""): taille_val = ""
+        if str(ddn_val).lower()    in ("nan", "none", ""): ddn_val    = ""
 
-        with cB:
-            if info.get("Prénom"):
-                st.write(f"**Prénom :** {info['Prénom']}")
-            st.write(f"**Nom :** {info.get('Nom', selected)}")
-            if info.get("Date de naissance"):
-                st.write(f"**Date de naissance :** {info['Date de naissance']}")
-            if info.get("Poste 1"):
-                st.write(f"**Poste 1 :** {info['Poste 1']}")
-            if info.get("Poste 2"):
-                st.write(f"**Poste 2 :** {info['Poste 2']}")
-            if info.get("Pied Fort"):
-                st.write(f"**Pied Fort :** {info['Pied Fort']}")
-            if info.get("Taille") and str(info.get("Taille", "")).lower() not in ("nan", "none", ""):
-                st.write(f"**Taille :** {info['Taille']}")
-            if resolved_player:
-                st.caption(f"Nom détecté dans les données : **{resolved_player}**")
+        # Photo bytes pour base64
+        photo_b64 = ""
+        photo_src = photo_path if (photo_path and os.path.exists(photo_path)) else None
+        if photo_src is None and info.get("Photo"):
+            photo_src = info["Photo"]
+        if photo_src and os.path.exists(str(photo_src)):
+            _pb = load_photo_bytes(photo_src)
+            if _pb:
+                import base64 as _b64
+                photo_b64 = "data:image/jpeg;base64," + _b64.b64encode(_pb).decode()
+
+        # Badges postes
+        def _badge(txt, color="#0078D4"):
+            return f"<span style='background:{color};color:white;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600;letter-spacing:0.5px;margin-right:6px;'>{txt}</span>"
+
+        postes_html = ""
+        if poste1_val: postes_html += _badge(poste1_val, "#0078D4")
+        if poste2_val: postes_html += _badge(poste2_val, "#005a9e")
+
+        pied_icon  = "🦶 " + pied_val if pied_val else ""
+        taille_str = f"📏 {taille_val}" if taille_val else ""
+        ddn_str    = f"🎂 {ddn_val}"  if ddn_val    else ""
+
+        details_lines = [x for x in [ddn_str, taille_str, pied_icon] if x]
+        details_html = "".join(
+            f"<div style='color:#8ab4d4;font-size:13px;margin-top:6px;'>{d}</div>"
+            for d in details_lines
+        )
+
+        photo_html = (
+            f"<img src='{photo_b64}' style='width:160px;height:200px;object-fit:cover;object-position:top;"
+            f"border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,0.5);display:block;'/>"
+            if photo_b64 else
+            "<div style='width:160px;height:200px;background:#0c2f52;border-radius:10px;"
+            "display:flex;align-items:center;justify-content:center;"
+            "font-size:56px;box-shadow:0 4px 20px rgba(0,0,0,0.4);'>👤</div>"
+        )
+
+        card_html = f"""
+        <div style='
+            background: linear-gradient(135deg, #0a2540 0%, #0d3460 60%, #0a2540 100%);
+            border: 1px solid rgba(0,120,212,0.25);
+            border-radius: 16px;
+            padding: 28px 32px;
+            display: flex;
+            gap: 32px;
+            align-items: flex-start;
+            margin-bottom: 8px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        '>
+            <!-- Photo -->
+            <div style='flex-shrink:0;'>
+                {photo_html}
+            </div>
+            <!-- Infos -->
+            <div style='flex:1;min-width:0;'>
+                <div style='color:#5a9fd4;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;'>Paris FC — Joueuse Passerelle</div>
+                <div style='color:white;font-size:28px;font-weight:800;line-height:1.1;margin-bottom:2px;'>{prenom_val}</div>
+                <div style='color:#0078D4;font-size:32px;font-weight:900;letter-spacing:1px;margin-bottom:14px;'>{nom_val.upper()}</div>
+                <div style='margin-bottom:16px;'>{postes_html}</div>
+                <div style='width:40px;height:2px;background:linear-gradient(90deg,#0078D4,transparent);margin-bottom:14px;'></div>
+                {details_html}
+            </div>
+        </div>
+        """
+        st.markdown(card_html, unsafe_allow_html=True)
+
+        # Bouton changer / associer la photo sous la carte
+        btn_label = "🔄 Changer la photo" if photo_src else "📷 Associer une photo"
+        with st.expander(btn_label, expanded=(photo_src is None)):
+            _render_photo_picker(selected, canon_selected, photos_index)
+
+        if resolved_player and resolved_player != selected:
+            st.caption(f"↳ Données liées à : **{resolved_player}**")
 
         st.divider()
 
