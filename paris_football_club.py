@@ -46,6 +46,7 @@ DRIVE_GPS_FOLDER_ID = "1v4Iit4JlEDNACp2QWQVrP89j66zBqMFH"
 DRIVE_PHOTOS_FOLDER_ID = "1h-BwepZc96K7VpidPiy8FEqNiE10GLdE"
 PHOTOS_FOLDER_ID = DRIVE_PHOTOS_FOLDER_ID  # alias rétro-compat
 PHOTOS_FOLDER = "data/photos"
+PHOTO_MAPPING_PATH = "data/photo_mapping.json"  # mapping manuel persistant : canon → filename
 
 # Fichiers attendus
 PERMISSIONS_FILENAME = "Classeurs permissions streamlit.xlsx"
@@ -488,6 +489,61 @@ def _score_photo_vs_variants(photo_stem: str, variants: List[str]) -> float:
     return best
 
 
+
+# ------------------------------------------------------------------
+# MAPPING MANUEL PERSISTANT  :  canon → nom_de_fichier_photo
+# Stocké dans PHOTO_MAPPING_PATH (JSON), survit aux redémarrages
+# ------------------------------------------------------------------
+def load_photo_manual_mapping() -> Dict[str, str]:
+    """Charge le mapping manuel depuis le fichier JSON local."""
+    if not os.path.exists(PHOTO_MAPPING_PATH):
+        return {}
+    try:
+        with open(PHOTO_MAPPING_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_photo_manual_mapping(mapping: Dict[str, str]) -> None:
+    """Sauvegarde le mapping manuel dans le fichier JSON local."""
+    os.makedirs(os.path.dirname(PHOTO_MAPPING_PATH), exist_ok=True)
+    with open(PHOTO_MAPPING_PATH, "w", encoding="utf-8") as f:
+        json.dump(mapping, f, ensure_ascii=False, indent=2)
+
+
+def set_manual_photo(player_name: str, filename: str) -> None:
+    """
+    Associe manuellement un fichier photo à une joueuse.
+    Persiste dans PHOTO_MAPPING_PATH et met à jour la session.
+    """
+    canon = normalize_name_raw(player_name)
+    mapping = load_photo_manual_mapping()
+    mapping[canon] = filename
+    save_photo_manual_mapping(mapping)
+    # Mettre à jour la session immédiatement
+    st.session_state["photo_manual_mapping"] = mapping
+
+
+def get_manual_photo_path(player_name: str) -> Optional[str]:
+    """
+    Retourne le chemin photo du mapping manuel si disponible.
+    Cherche d'abord en session, sinon charge depuis le JSON.
+    """
+    mapping = st.session_state.get("photo_manual_mapping")
+    if mapping is None:
+        mapping = load_photo_manual_mapping()
+        st.session_state["photo_manual_mapping"] = mapping
+
+    canon = normalize_name_raw(player_name)
+    filename = mapping.get(canon)
+    if not filename:
+        return None
+
+    path = os.path.join(PHOTOS_FOLDER, filename)
+    return path if os.path.exists(path) else None
+
+
 # ------------------------------------------------------------------
 # TABLE DE CONCORDANCE  :  canon → chemin photo
 # Construite une fois à partir du référentiel + index photos locaux
@@ -698,6 +754,11 @@ def find_photo_for_player(
     if not player_name:
         return None
 
+    # --- Passe 0 : mapping manuel (priorité absolue) ---
+    manual = get_manual_photo_path(player_name)
+    if manual:
+        return manual
+
     # --- Passe 1 : concordance référentiel ---
     if concordance:
         canon = normalize_name_raw(player_name)
@@ -760,6 +821,87 @@ def find_best_photo_for_player(player_name: str, photos_index: Dict[str, str]) -
 # ------------------------------------------------------------------
 # BLOC AFFICHAGE PHOTO (avec diagnostic)
 # ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# SÉLECTEUR PHOTO MANUEL — grille cliquable dans l'onglet Passerelles
+# ------------------------------------------------------------------
+def _render_photo_picker(player_name: str, canon: str, photos_index: Dict[str, str]) -> None:
+    """
+    Affiche toutes les photos disponibles en grille.
+    L'utilisateur clique sur la bonne → le choix est sauvegardé dans
+    PHOTO_MAPPING_PATH (JSON) et en session_state.
+
+    Affiche d'abord les photos les mieux scorées par le matcher automatique,
+    puis toutes les autres.
+    """
+    if not photos_index:
+        st.warning("Aucune photo disponible dans le dossier local.")
+        return
+
+    # Charger le mapping courant pour afficher la sélection active
+    mapping = st.session_state.get("photo_manual_mapping") or load_photo_manual_mapping()
+    current_file = mapping.get(canon, "")
+
+    # Trier : meilleures correspondances fuzzy en premier
+    pn = _photo_key_spaced(player_name)
+    scored_files = sorted(
+        [(_quick_ratio(pn, k), os.path.basename(v), v)
+         for k, v in photos_index.items()],
+        reverse=True
+    )
+    # Dédoublonner sur le nom de fichier (garde le meilleur score)
+    seen, ordered_files = set(), []
+    for sc, fn, path in scored_files:
+        if fn not in seen:
+            seen.add(fn)
+            ordered_files.append((sc, fn, path))
+
+    if current_file:
+        st.caption(f"✅ Photo actuellement associée : **{current_file}**  —  cliquez sur une autre pour changer.")
+    else:
+        st.caption("Cliquez sur la photo correspondant à cette joueuse pour l'associer.")
+
+    # Afficher en grille de 5 colonnes
+    N_COLS = 5
+    rows = [ordered_files[i:i + N_COLS] for i in range(0, len(ordered_files), N_COLS)]
+
+    for row in rows:
+        cols = st.columns(N_COLS)
+        for col, (sc, fn, path) in zip(cols, row):
+            with col:
+                data = load_photo_bytes(path)
+                if data:
+                    st.image(data, width=110)
+                else:
+                    st.caption("🚫 illisible")
+
+                # Indicateur sélection active
+                is_selected = fn == current_file
+                label = f"✅ {fn[:18]}" if is_selected else fn[:18]
+                btn_type = "primary" if is_selected else "secondary"
+
+                if st.button(
+                    label,
+                    key=f"pick_photo_{canon}_{fn}",
+                    type=btn_type,
+                    use_container_width=True,
+                ):
+                    set_manual_photo(player_name, fn)
+                    st.success(f"✅ Photo **{fn}** associée à **{player_name}**")
+                    st.rerun()
+
+    # Option : effacer le mapping pour cette joueuse
+    if current_file:
+        st.divider()
+        if st.button("🗑️ Supprimer l'association manuelle", key=f"del_photo_{canon}"):
+            mapping = load_photo_manual_mapping()
+            mapping.pop(canon, None)
+            save_photo_manual_mapping(mapping)
+            st.session_state["photo_manual_mapping"] = mapping
+            st.info("Association supprimée.")
+            st.rerun()
+
+
 def show_photo_block(player_name: str, location: str = "stats") -> None:
     c1, c2 = st.columns([1, 4])
     with c1:
@@ -3581,7 +3723,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     options = ["Statistiques", "Comparaison", "Données Physiques", "Joueuses Passerelles"]
     if check_permission(user_profile, "all", permissions):
         options.insert(2, "Gestion")
-        options.append("🔍 Diagnostic Photos")
 
     with st.sidebar:
         page = option_menu(
@@ -4064,33 +4205,20 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         photos_index = st.session_state.get("photos_index") or build_photos_index_local()
         concordance  = st.session_state.get("photo_concordance") or get_photo_concordance()
 
-        # Chercher avec la concordance référentiel en priorité
+        # Chercher la photo (mapping manuel en priorité absolue, puis concordance, puis fuzzy)
         photo_path = find_photo_for_player(selected, concordance=concordance, photos_index=photos_index)
 
+        canon_selected = normalize_name_raw(selected)
+
         if photo_path and os.path.exists(photo_path):
-            photo_shown = safe_show_photo(photo_path, width=160)
+            safe_show_photo(photo_path, width=160)
+            # Permettre de changer le mapping même si une photo est trouvée
+            with st.expander("🔄 Changer la photo associée", expanded=False):
+                _render_photo_picker(selected, canon_selected, photos_index)
         else:
-            photo_shown = False
-        if not photo_shown:
-            # Diagnostic compact
-            canon = normalize_name_raw(selected)
-            with st.expander("📷 Photo non trouvée — Diagnostic", expanded=False):
-                st.write(f"**Nom cherché :** `{selected}`")
-                st.write(f"**Canon référentiel :** `{canon}`")
-                st.write(f"**Concordance :** {len(concordance)} entrées — "
-                         f"**Photos indexées :** {len(photos_index)}")
-                if photos_index:
-                    pn = _photo_key_spaced(selected)
-                    scored = sorted(
-                        [(_quick_ratio(pn, k), k, os.path.basename(p))
-                         for k, p in photos_index.items()],
-                        reverse=True
-                    )[:5]
-                    st.write("**Fichiers les plus proches :**")
-                    for sc, k, fn in scored:
-                        st.write(f"  `{fn}` — score : `{sc:.2f}`")
-                st.caption("💡 Vérifiez que la joueuse est dans **Noms Prénoms Paris FC.xlsx** "
-                           "et que le fichier photo contient son NOM ou Prénom.")
+            # Aucune photo trouvée : afficher la grille de sélection
+            with st.expander("📷 Associer une photo à cette joueuse", expanded=True):
+                _render_photo_picker(selected, canon_selected, photos_index)
 
         selected_clean = nettoyer_nom_joueuse(selected)
         info = passerelle_data[selected]
@@ -4421,137 +4549,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                 except Exception as e:
                                     st.warning(f"Graphique indisponible : {e}")
 
-
-    # =====================
-    # DIAGNOSTIC PHOTOS
-    # =====================
-    elif page == "🔍 Diagnostic Photos":
-        st.header("🔍 Diagnostic Photos")
-        st.caption("Page admin uniquement — permet de comprendre pourquoi une photo ne s'affiche pas.")
-
-        # --- État de la session ---
-        photos_index = st.session_state.get("photos_index", {})
-        concordance  = st.session_state.get("photo_concordance", {})
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Photos indexées (local)", len(photos_index))
-        col2.metric("Entrées concordance", len(concordance))
-        col3.metric("Dossier local", PHOTOS_FOLDER)
-
-        st.divider()
-
-        # --- Bouton resync forcé ---
-        if st.button("🔄 Forcer sync Drive + reconstruire concordance"):
-            with st.spinner("Sync en cours..."):
-                sync_photos_from_drive()
-                new_idx = build_photos_index_local()
-                st.session_state["photos_index"] = new_idx
-
-                ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
-                if not os.path.exists(ref_path):
-                    ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME) or ""
-                new_conc = build_photo_concordance(ref_path, new_idx)
-                st.session_state["photo_concordance"] = new_conc
-
-                photos_index = new_idx
-                concordance  = new_conc
-            st.success(f"✅ {len(photos_index)} photos indexées — {len(concordance)} concordances")
-            st.rerun()
-
-        # --- Liste de tous les fichiers téléchargés ---
-        st.subheader("📁 Fichiers photos dans le dossier local")
-        if os.path.exists(PHOTOS_FOLDER):
-            all_files = [f for f in os.listdir(PHOTOS_FOLDER)
-                         if os.path.splitext(f)[1].lower() in IMAGE_EXTS]
-            if all_files:
-                df_files = pd.DataFrame({
-                    "Nom du fichier": all_files,
-                    "Clé normalisée (index)": [_photo_key_spaced(os.path.splitext(f)[0]) for f in all_files],
-                    "Taille (ko)": [round(os.path.getsize(os.path.join(PHOTOS_FOLDER, f)) / 1024, 1) for f in all_files],
-                })
-                st.dataframe(df_files, use_container_width=True)
-
-                # Test load_photo_bytes sur les premiers fichiers
-                st.subheader("🖼️ Test lecture des 6 premières photos")
-                cols = st.columns(6)
-                for i, fn in enumerate(all_files[:6]):
-                    path = os.path.join(PHOTOS_FOLDER, fn)
-                    data = load_photo_bytes(path)
-                    with cols[i]:
-                        if data:
-                            st.image(data, caption=fn[:20], width=100)
-                        else:
-                            st.error(f"❌ Illisible\n{fn[:15]}")
-            else:
-                st.warning("Aucun fichier image trouvé dans le dossier local.")
-        else:
-            st.error(f"Dossier photos inexistant : `{PHOTOS_FOLDER}`")
-
-        st.divider()
-
-        # --- Test de matching pour un nom donné ---
-        st.subheader("🔎 Tester le matching pour un nom")
-        test_name = st.text_input("Entrez un nom de joueuse", placeholder="ex: DUPONT Alice")
-
-        if test_name:
-            st.write(f"**Nom saisi :** `{test_name}`")
-            st.write(f"**Canon référentiel :** `{normalize_name_raw(test_name)}`")
-            st.write(f"**Clé normalisée photo :** `{_photo_key_spaced(test_name)}`")
-
-            # Passe 1 : concordance
-            st.write("#### Passe 1 — Concordance référentiel")
-            canon = normalize_name_raw(test_name)
-            if canon in concordance:
-                p = concordance[canon]
-                st.success(f"✅ Trouvé dans la concordance → `{os.path.basename(p)}`")
-                data = load_photo_bytes(p)
-                if data:
-                    st.image(data, width=150)
-                else:
-                    st.error("Fichier trouvé mais illisible (load_photo_bytes a renvoyé None)")
-            else:
-                st.warning(f"❌ Canon `{canon}` absent de la concordance")
-                # Chercher les entrées concordance les plus proches
-                if concordance:
-                    scored_conc = sorted(
-                        [(_quick_ratio(canon, k), k, os.path.basename(v))
-                         for k, v in concordance.items()],
-                        reverse=True
-                    )[:5]
-                    st.write("**Top 5 concordances les plus proches :**")
-                    for sc, k, fn in scored_conc:
-                        st.write(f"  `{k}` → `{fn}` — score : `{sc:.2f}`")
-
-            # Passe 2 : index photos direct
-            st.write("#### Passe 2 — Index photos direct")
-            pn = _photo_key_spaced(test_name)
-            if photos_index:
-                scored = sorted(
-                    [(_quick_ratio(pn, k), k, os.path.basename(p), p)
-                     for k, p in photos_index.items()],
-                    reverse=True
-                )[:8]
-                rows = []
-                for sc, k, fn, fpath in scored:
-                    readable = load_photo_bytes(fpath) is not None
-                    rows.append({"Score": round(sc, 3), "Clé index": k,
-                                 "Fichier": fn, "Lisible par Pillow": readable})
-                st.dataframe(pd.DataFrame(rows), use_container_width=True)
-            else:
-                st.warning("Index photos vide.")
-
-            # Résultat final
-            st.write("#### ✅ Résultat final — find_photo_for_player")
-            result = find_photo_for_player(test_name, concordance=concordance, photos_index=photos_index)
-            if result:
-                st.success(f"Photo trouvée : `{os.path.basename(result)}`")
-                data = load_photo_bytes(result)
-                if data:
-                    st.image(data, width=200)
-                else:
-                    st.error("Fichier trouvé par le matcher mais illisible par Pillow.")
-            else:
-                st.error("Aucune photo trouvée avec find_photo_for_player.")
 
 
 
