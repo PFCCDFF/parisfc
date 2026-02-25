@@ -1929,14 +1929,29 @@ def load_passerelle_data():
         for _, row in df.iterrows():
             nom = row.get("Nom", None)
             if nom:
+                def _fmt_date(v):
+                    if v is None: return ""
+                    if hasattr(v, "strftime"): return v.strftime("%d/%m/%Y")
+                    s = str(v).strip()
+                    if s.lower() in ("nan","none","nat",""): return ""
+                    import re as _re
+                    if _re.match(r"^\d{4}-\d{2}-\d{2}", s):
+                        try:
+                            import pandas as _pd3
+                            return _pd3.to_datetime(s).strftime("%d/%m/%Y")
+                        except Exception: pass
+                    return s
+                def _clean(v):
+                    s = str(v).strip() if v is not None else ""
+                    return "" if s.lower() in ("nan","none","nat","") else s
                 passerelle_data[nom] = {
-                    "Prénom": row.get("Prénom", ""),
-                    "Photo": row.get("Photo", ""),
-                    "Date de naissance": row.get("Date de naissance", ""),
-                    "Poste 1": row.get("Poste 1", ""),
-                    "Poste 2": row.get("Poste 2", ""),
-                    "Pied Fort": row.get("Pied Fort", ""),
-                    "Taille": row.get("Taille", ""),
+                    "Prénom": _clean(row.get("Prénom", "")),
+                    "Photo": _clean(row.get("Photo", "")),
+                    "Date de naissance": _fmt_date(row.get("Date de naissance", "")),
+                    "Poste 1": _clean(row.get("Poste 1", "")),
+                    "Poste 2": _clean(row.get("Poste 2", "")),
+                    "Pied Fort": _clean(row.get("Pied Fort", "")),
+                    "Taille": _clean(row.get("Taille", "")),
                 }
     except Exception:
         pass
@@ -3794,13 +3809,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     player_name = get_player_for_profile(user_profile, permissions)
     st.sidebar.title(f"Connecté : {user_profile}")
 
-    # Badge d'avertissements système discret
-    _sys_warns = st.session_state.get("_system_warnings", [])
-    if _sys_warns:
-        n = len(_sys_warns)
-        with st.sidebar.expander(f"⚠️ {n} avertissement{'s' if n > 1 else ''}", expanded=False):
-            for w in _sys_warns:
-                st.caption(f"• {w}")
     if player_name:
         st.sidebar.write(f"Joueuse associée : {player_name}")
 
@@ -3838,6 +3846,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         pfc_kpi, edf_kpi = collect_data(selected_saison)
     else:
         pfc_kpi, edf_kpi = collect_data()
+
+    # Badge d'avertissements — affiché dans sidebar APRÈS collect_data
+    _sys_warns = st.session_state.get("_system_warnings", [])
+    if _sys_warns:
+        n = len(_sys_warns)
+        with st.sidebar.expander(f"⚠️ {n} avertissement{'s' if n > 1 else ''}", expanded=False):
+            for w in _sys_warns:
+                st.sidebar.caption(f"• {w}")
 
     pfc_kpi_all = pfc_kpi.copy() if isinstance(pfc_kpi, pd.DataFrame) else pd.DataFrame()
     edf_kpi_all = edf_kpi.copy() if isinstance(edf_kpi, pd.DataFrame) else pd.DataFrame()
@@ -4446,20 +4462,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         poste2_val  = info.get("Poste 2", "") or ""
         pied_val    = info.get("Pied Fort", "") or ""
         taille_val  = info.get("Taille", "") or ""
-        _ddn_raw = info.get("Date de naissance", "") or ""
-        try:
-            if hasattr(_ddn_raw, "strftime"):  # Timestamp pandas
-                ddn_val = _ddn_raw.strftime("%d/%m/%Y")
-            else:
-                ddn_val = str(_ddn_raw).strip()
-                if ddn_val.lower() in ("nan", "none", "", "nat"):
-                    ddn_val = ""
-                elif re.match(r"^\d{4}-\d{2}-\d{2}", ddn_val):
-                    import pandas as _pd2
-                    ddn_val = _pd2.to_datetime(ddn_val).strftime("%d/%m/%Y")
-        except Exception:
-            ddn_val = str(_ddn_raw).strip()
-            if ddn_val.lower() in ("nan", "none", "", "nat"): ddn_val = ""
+        ddn_val = info.get("Date de naissance", "") or ""  # déjà nettoyé dans load_passerelle_data
 
         if str(taille_val).lower() in ("nan", "none", ""): taille_val = ""
         if str(poste1_val).lower() in ("nan", "none", ""): poste1_val = ""
