@@ -777,8 +777,8 @@ def show_photo_block(player_name: str, location: str = "stats") -> None:
     photo_path    = find_photo_for_player(player_name, concordance=concordance, photos_index=photos_index)
 
     if photo_path and os.path.exists(photo_path):
-        st.image(photo_path, width=170)
-        return
+        if safe_show_photo(photo_path, width=170):
+            return
 
     # --- Diagnostic ---
     with st.expander("📷 Photo non trouvée — Diagnostic", expanded=True):
@@ -806,23 +806,47 @@ def show_photo_block(player_name: str, location: str = "stats") -> None:
         )
 
 
-def load_photo_bytes(path: str):
+def load_photo_bytes(path: str) -> Optional[bytes]:
+    """
+    Charge une image depuis le disque et retourne des bytes JPEG compatibles Streamlit.
+    Gère HEIC, HEIF, PNG, JPG et tout format supporté par Pillow.
+    Retourne None si le fichier est invalide ou illisible.
+    """
+    if not path or not os.path.exists(path):
+        return None
     try:
+        from PIL import Image as PilImage
         ext = os.path.splitext(path)[1].lower()
-        with open(path, 'rb') as f:
+        with open(path, "rb") as f:
             raw_bytes = f.read()
-        if ext in ('.heic', '.heif'):
+        # Enregistrer le support HEIC si pillow-heif est installé
+        if ext in (".heic", ".heif"):
             try:
-                from PIL import Image
-                im = Image.open(io.BytesIO(raw_bytes))
-                buf = io.BytesIO()
-                im.convert('RGB').save(buf, format='JPEG', quality=92)
-                return buf.getvalue()
-            except Exception:
-                return None
-        return raw_bytes
+                import pillow_heif
+                pillow_heif.register_heif_opener()
+            except ImportError:
+                pass
+        # Ouvrir, valider et convertir en JPEG pour Streamlit
+        im = PilImage.open(io.BytesIO(raw_bytes))
+        im.load()
+        im = im.convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=92, optimize=True)
+        return buf.getvalue()
     except Exception:
         return None
+
+
+def safe_show_photo(path: str, width: int = 160) -> bool:
+    """
+    Affiche une photo de façon sécurisée (gère HEIC, HEIF, PNG, JPG...).
+    Retourne True si affichée, False sinon.
+    """
+    data = load_photo_bytes(path)
+    if data:
+        st.image(data, width=width)
+        return True
+    return False
 
 
 def debug_photo_suggestions(player_name: str, photos_index: dict, topn: int = 8):
@@ -4043,8 +4067,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         photo_path = find_photo_for_player(selected, concordance=concordance, photos_index=photos_index)
 
         if photo_path and os.path.exists(photo_path):
-            st.image(photo_path, width=160)
+            photo_shown = safe_show_photo(photo_path, width=160)
         else:
+            photo_shown = False
+        if not photo_shown:
             # Diagnostic compact
             canon = normalize_name_raw(selected)
             with st.expander("📷 Photo non trouvée — Diagnostic", expanded=False):
