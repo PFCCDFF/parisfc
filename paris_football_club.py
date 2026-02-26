@@ -4046,7 +4046,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     st.sidebar.markdown(
         "<div style='display:flex;flex-direction:column;align-items:center;padding:24px 0 16px 0;border-bottom:1px solid rgba(0,163,224,0.15);margin-bottom:8px;'>"
         "<img src='https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png' style='width:90px;height:90px;object-fit:contain;'>"
-        "<div style='font-family:Oswald,sans-serif;font-size:9px;font-weight:500;letter-spacing:0.18em;text-transform:uppercase;color:#6A8090;margin-top:10px;'>Centre de Formation</div>"
+        "<div style='font-family:Oswald,sans-serif;font-size:9px;font-weight:500;letter-spacing:0.18em;text-transform:uppercase;color:#6A8090;margin-top:10px;'>Centre de Formation F&eacute;minin</div>"
         "</div>",
         unsafe_allow_html=True,
     )
