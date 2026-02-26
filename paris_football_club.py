@@ -1239,6 +1239,7 @@ def sync_photos_from_drive(folder_id: str = None, local_folder: str = None):
     if downloaded > 0:
         pass  # photos sync count recorded silently
 
+@st.cache_resource(show_spinner=False)
 def authenticate_google_drive():
     scopes = ["https://www.googleapis.com/auth/drive"]
     service_account_info = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
@@ -1568,6 +1569,10 @@ def download_file(service, file_id, file_name, output_folder, mime_type=None):
     final_path = os.path.join(output_folder, file_name)
     tmp_path = final_path + ".tmp"
 
+    # Fichier déjà présent et non vide → skip (évite les re-téléchargements inutiles)
+    if os.path.exists(final_path) and os.path.getsize(final_path) > 512:
+        return final_path
+
     if mime_type == "application/vnd.google-apps.spreadsheet":
         request = service.files().export_media(
             fileId=file_id, mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1575,14 +1580,31 @@ def download_file(service, file_id, file_name, output_folder, mime_type=None):
         if not final_path.lower().endswith(".xlsx"):
             final_path = os.path.splitext(final_path)[0] + ".xlsx"
             tmp_path = final_path + ".tmp"
+        # Re-check après renommage xlsx
+        if os.path.exists(final_path) and os.path.getsize(final_path) > 512:
+            return final_path
+    elif mime_type and mime_type.startswith("application/vnd.google-apps."):
+        # Type Google natif non exportable (Docs, Slides, etc.) → on skip
+        raise ValueError(f"Type non téléchargeable : {mime_type}")
     else:
         request = service.files().get_media(fileId=file_id)
 
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
     done = False
+    retries = 0
     while not done:
-        _, done = downloader.next_chunk()
+        try:
+            _, done = downloader.next_chunk()
+        except HttpError as e:
+            status = getattr(e.resp, "status", None)
+            if status in (403, 404):
+                raise  # fichier inaccessible → on remonte l'erreur
+            if retries < 3 and status in (429, 500, 502, 503, 504):
+                time.sleep(2 ** retries)
+                retries += 1
+                continue
+            raise
 
     fh.seek(0)
     with open(tmp_path, "wb") as f:
@@ -1628,6 +1650,7 @@ def download_permissions_file():
         return None
 
 
+@st.cache_resource(show_spinner=False)
 def load_permissions():
     try:
         permissions_path = download_permissions_file()
@@ -1669,6 +1692,31 @@ def load_permissions():
         return {}
 
 
+# Types MIME Google natifs NON téléchargeables directement (hors Sheets)
+_SKIP_MIME_TYPES = {
+    "application/vnd.google-apps.document",       # Google Docs
+    "application/vnd.google-apps.presentation",   # Google Slides
+    "application/vnd.google-apps.form",           # Google Forms
+    "application/vnd.google-apps.drawing",        # Google Drawings
+    "application/vnd.google-apps.map",            # Google Maps
+    "application/vnd.google-apps.folder",         # Dossiers
+    "application/vnd.google-apps.shortcut",       # Raccourcis
+    "application/vnd.google-apps.script",         # Apps Script
+    "application/vnd.google-apps.site",           # Google Sites
+}
+
+
+def _is_downloadable(f: dict) -> bool:
+    """Retourne True si le fichier est téléchargeable (CSV/Excel/Sheets seulement)."""
+    name = str(f.get("name", ""))
+    mime = str(f.get("mimeType", ""))
+    if mime in _SKIP_MIME_TYPES:
+        return False
+    is_sheet = mime == "application/vnd.google-apps.spreadsheet"
+    is_data_file = name.lower().endswith((".csv", ".xlsx", ".xls"))
+    return is_sheet or is_data_file
+
+
 def download_google_drive():
     service = authenticate_google_drive()
     os.makedirs(DATA_FOLDER, exist_ok=True)
@@ -1677,14 +1725,20 @@ def download_google_drive():
 
     files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
     for f in files:
-        is_sheet = f.get("mimeType") == "application/vnd.google-apps.spreadsheet"
-        if f["name"].endswith((".csv", ".xlsx", ".xls")) or is_sheet:
+        if not _is_downloadable(f):
+            continue
+        try:
             download_file(service, f["id"], f["name"], DATA_FOLDER, mime_type=f.get("mimeType"))
+        except Exception as e:
+            _warn(f"Drive: impossible de télécharger '{f['name']}' → {e}")
 
     files_pass = list_files_in_folder(service, DRIVE_PASSERELLE_FOLDER_ID)
     for f in files_pass:
         if normalize_str(f["name"]) == normalize_str(PASSERELLE_FILENAME):
-            download_file(service, f["id"], f["name"], PASSERELLE_FOLDER, mime_type=f.get("mimeType"))
+            try:
+                download_file(service, f["id"], f["name"], PASSERELLE_FOLDER, mime_type=f.get("mimeType"))
+            except Exception as e:
+                _warn(f"Drive: impossible de télécharger le fichier passerelle → {e}")
             break
 
 st.session_state["gps_drive_found"] = 0
@@ -1918,124 +1972,49 @@ def normalize_players_in_df(
 # PASSERELLES
 # =========================
 def load_passerelle_data():
-    """Charge le fichier 'Passerelle' (Google Drive) et renvoie un dict { 'NOM Prénom': infos }.
-
-    Patch: rend la lecture robuste aux variations d'intitulés de colonnes (ex: 'Date naissance',
-    'Date de Naissance', 'DOB', etc.) et formate proprement la date pour l'affichage Streamlit.
-    """
+    passerelle_data = {}
+    passerelle_file = os.path.join(PASSERELLE_FOLDER, PASSERELLE_FILENAME)
+    if not os.path.exists(passerelle_file):
+        return passerelle_data
     try:
-        if not PAS_FOLDER_ID:
-            st.warning("Dossier 'Passerelle' non configuré (PAS_FOLDER_ID).")
-            return {}
-
-        # Télécharger le fichier Excel/CSV passerelle (si présent)
-        files = list_drive_files(PAS_FOLDER_ID)
-        if not files:
-            st.warning("Aucun fichier trouvé dans le dossier Passerelle.")
-            return {}
-
-        # On prend le premier fichier compatible (xlsx/xls/csv)
-        passerelle_file = None
-        for f in files:
-            name = str(f.get("name", ""))
-            if name.lower().endswith((".xlsx", ".xls", ".csv")):
-                passerelle_file = f
-                break
-
-        if not passerelle_file:
-            st.warning("Aucun fichier passerelle (.xlsx/.xls/.csv) trouvé dans le dossier Passerelle.")
-            return {}
-
-        content = download_drive_file(passerelle_file["id"])
-        fname = str(passerelle_file.get("name", "")).lower()
-
-        if fname.endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(content), dtype=str, encoding_errors="ignore")
-        else:
-            df = pd.read_excel(io.BytesIO(content), dtype=str)
-
-        if df is None or df.empty:
-            st.warning("Le fichier passerelle est vide.")
-            return {}
-
-        # --- Robust column matching -------------------------------------------------
-        def _col(df_: pd.DataFrame, *candidates: str):
-            """Return the first matching column name in df_ given candidate labels."""
-            cmap = {normalize_str(str(c)).lower(): str(c) for c in df_.columns}
-            for cand in candidates:
-                key = normalize_str(str(cand)).lower()
-                if key in cmap:
-                    return cmap[key]
-            # try fuzzy contains matching (very light)
-            for cand in candidates:
-                key = normalize_str(str(cand)).lower()
-                for k, orig in cmap.items():
-                    if key and (key in k or k in key):
-                        return orig
-            return None
-
-        col_nom = _col(df, "Nom", "NOM", "Nom de famille", "Surname")
-        col_prenom = _col(df, "Prénom", "Prenom", "PRENOM", "First name", "Firstname", "Given name")
-        col_dob = _col(df, "Date de naissance", "Date naissance", "Date de Naissance", "Naissance", "DOB", "Birth date", "Birthdate")
-        col_photo = _col(df, "Photo", "PHOTO", "photo", "Lien photo", "URL Photo", "Url photo")
-        col_dn = _col(df, "Date de naissance (texte)", "Date naissance (texte)")
-
-        col_poste1 = _col(df, "Poste 1", "Poste1", "Poste principal", "Poste")
-        col_poste2 = _col(df, "Poste 2", "Poste2", "Poste secondaire")
-        col_pied = _col(df, "Pied Fort", "Pied", "Pied fort", "Pied préféré")
-        col_taille = _col(df, "Taille", "Taille (cm)", "Height", "Height (cm)")
-
-        def _fmt_date(val):
-            if val is None or (isinstance(val, float) and pd.isna(val)):
-                return None
-            s = str(val).strip()
-            if not s or s.lower() in {"nan", "none"}:
-                return None
-            # Try parse
-            dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
-            if pd.isna(dt):
-                return s  # keep raw if can't parse
-            return dt.strftime("%d/%m/%Y")
-
-        data = {}
+        df = read_excel_auto(passerelle_file)
+        if isinstance(df, dict):
+            df = list(df.values())[0] if len(df) else pd.DataFrame()
         for _, row in df.iterrows():
-            nom = str(row.get(col_nom, "")).strip() if col_nom else ""
-            prenom = str(row.get(col_prenom, "")).strip() if col_prenom else ""
-            if not nom and not prenom:
-                continue
+            nom = row.get("Nom", None)
+            if nom:
+                def _fmt_date(v):
+                    if v is None: return ""
+                    if hasattr(v, "strftime"): return v.strftime("%d/%m/%Y")
+                    s = str(v).strip()
+                    if s.lower() in ("nan","none","nat",""): return ""
+                    import re as _re
+                    if _re.match(r"^\d{4}-\d{2}-\d{2}", s):
+                        try:
+                            import pandas as _pd3
+                            return _pd3.to_datetime(s).strftime("%d/%m/%Y")
+                        except Exception: pass
+                    return s
+                def _clean(v):
+                    s = str(v).strip() if v is not None else ""
+                    return "" if s.lower() in ("nan","none","nat","") else s
+                passerelle_data[nom] = {
+                    "Prénom": _clean(row.get("Prénom", "")),
+                    "Photo": _clean(row.get("Photo", "")),
+                    "Date de naissance": _fmt_date(row.get("Date de naissance", "")),
+                    "Poste 1": _clean(row.get("Poste 1", "")),
+                    "Poste 2": _clean(row.get("Poste 2", "")),
+                    "Pied Fort": _clean(row.get("Pied Fort", "")),
+                    "Taille": _clean(row.get("Taille", "")),
+                }
+    except Exception:
+        pass
+    return passerelle_data
 
-            display = f"{nom} {prenom}".strip()
-            display = " ".join(display.split())
 
-            dob_raw = row.get(col_dob, None) if col_dob else None
-            if (dob_raw is None or str(dob_raw).strip() in {"", "nan", "None"}) and col_dn:
-                dob_raw = row.get(col_dn, None)
-            dob = _fmt_date(dob_raw)
-
-            info = {
-                "Nom": nom if nom else None,
-                "Prénom": prenom if prenom else None,
-                "Date de naissance": dob,
-                "Photo": str(row.get(col_photo, "")).strip() if col_photo else None,
-                "Poste 1": str(row.get(col_poste1, "")).strip() if col_poste1 else None,
-                "Poste 2": str(row.get(col_poste2, "")).strip() if col_poste2 else None,
-                "Pied Fort": str(row.get(col_pied, "")).strip() if col_pied else None,
-                "Taille": str(row.get(col_taille, "")).strip() if col_taille else None,
-            }
-
-            # Clean empty strings -> None
-            for k, v in list(info.items()):
-                if isinstance(v, str):
-                    v2 = v.strip()
-                    info[k] = v2 if v2 else None
-
-            data[display] = info
-
-        return data
-
-    except Exception as e:
-        st.warning(f"Erreur lors du chargement Passerelle: {e}")
-        return {}
+# =========================
+# PERMISSIONS HELPERS
+# =========================
 def check_permission(user_profile, required_permission, permissions):
     if user_profile not in permissions:
         return False
@@ -3386,7 +3365,6 @@ def gps_last_7_days_summary(gps_raw: pd.DataFrame, player_sel: str, end_date=Non
     return df_7j, summary
 
 
-@st.cache_data
 def _warn(msg: str) -> None:
     """Accumule les avertissements système dans session_state sans les afficher."""
     try:
@@ -3397,22 +3375,68 @@ def _warn(msg: str) -> None:
         pass  # hors contexte Streamlit (tests, import)
 
 
-def collect_data(selected_season=None):
-    # Réinitialiser le buffer d'avertissements système à chaque chargement
-    st.session_state["_system_warnings"] = []
-    download_google_drive()
 
+def _run_initial_sync():
+    """
+    Télécharge depuis Drive et synchronise GPS + Photos.
+    Exécutée UNE SEULE FOIS par session (guard _sync_done).
+    Re-déclenchée par le bouton "Mettre à jour la base".
+    """
+    st.session_state["_system_warnings"] = []
+
+    with st.spinner("🔄 Chargement des données depuis Drive..."):
+        try:
+            download_google_drive()
+        except Exception as e:
+            _warn(f"Drive: téléchargement principal échoué → {e}")
+
+        try:
+            sync_gps_from_drive_autonomous()
+        except Exception as e:
+            _warn(f"GPS: sync autonome échouée → {e}")
+
+        try:
+            sync_photos_from_drive()
+        except Exception as e:
+            _warn(f"Photos: sync échouée → {e}")
+
+        # Index photos + concordance
+        photos_index_local = build_photos_index_local()
+        st.session_state["photos_index"] = photos_index_local
+        ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
+        if not os.path.exists(ref_path):
+            ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME) or ""
+        try:
+            concordance = build_photo_concordance(ref_path, photos_index_local)
+            st.session_state["photo_concordance"] = concordance
+        except Exception as e:
+            _warn(f"Photos: concordance échouée → {e}")
+            st.session_state["photo_concordance"] = {}
+
+    st.session_state["_sync_done"] = True
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def collect_data(selected_season=None):
+    """
+    Chargement principal des données PFC + EDF + GPS.
+    Mis en cache 5 min (ttl=300) — ne re-télécharge pas Drive à chaque rerun.
+    Les syncs Drive/GPS/Photos sont faits UNE SEULE FOIS au démarrage
+    (voir _run_initial_sync) ou via le bouton "Mettre à jour".
+    """
     ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
     if not os.path.exists(ref_path):
         ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME)
     if not ref_path or not os.path.exists(ref_path):
-        st.error(f"Référentiel introuvable dans '{DATA_FOLDER}'.")
         return pd.DataFrame(), pd.DataFrame()
 
     ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons = build_referentiel_players(ref_path)
     name_report: List[dict] = []
 
     pfc_kpi, edf_kpi = pd.DataFrame(), pd.DataFrame()
+
+    if not os.path.exists(DATA_FOLDER):
+        return pd.DataFrame(), pd.DataFrame()
 
     fichiers = [
         f
@@ -3428,30 +3452,8 @@ def collect_data(selected_season=None):
             if (selected_season in f) or f.startswith(keep_always_prefixes) or (f in keep_always_names)
         ]
 
-    try:
-        sync_gps_from_drive_autonomous()
-    except Exception as e:
-        _warn(f"GPS: sync autonome échouée → {e}")
-
-    try:
-        sync_photos_from_drive()
-    except Exception as e:
-        _warn(f"Photos: sync échouée → {e}")
-
-    # Construire l'index local puis la concordance référentiel → photo
-    photos_index_local = build_photos_index_local()
-    st.session_state["photos_index"] = photos_index_local
-    try:
-        concordance = build_photo_concordance(ref_path, photos_index_local)
-        st.session_state["photo_concordance"] = concordance
-    except Exception as e:
-        _warn(f"Photos: concordance échouée → {e}")
-        st.session_state["photo_concordance"] = {}
-
     gps_raw = load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons)
     gps_week = compute_gps_weekly_metrics(gps_raw)
-    st.session_state["gps_weekly_df"] = gps_week
-    st.session_state["gps_raw_df"] = gps_raw
 
     # ======================================================
     # EDF (référentiel par poste)
@@ -3671,8 +3673,7 @@ def collect_data(selected_season=None):
             _warn(f"Match: impossible de lire {filename} → {e}")
             continue
 
-    st.session_state["name_report_df"] = pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
-    return pfc_kpi, edf_kpi
+    return pfc_kpi, edf_kpi, gps_raw, gps_week, pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
 
 
 # =========================
@@ -3897,11 +3898,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
     if check_permission(user_profile, "update_data", permissions) or check_permission(user_profile, "all", permissions):
         if st.sidebar.button("Mettre à jour la base"):
-            with st.spinner("Mise à jour..."):
-                download_google_drive()
-                _p, _e = collect_data(selected_saison)
+            st.session_state["_sync_done"] = False  # forcer re-sync
             st.cache_data.clear()
-            st.success("✅ Mise à jour terminée")
             st.rerun()
 
         if st.sidebar.button("🖼️ Reconvertir les photos"):
@@ -3917,10 +3915,13 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 st.sidebar.warning(f"✅ {ok} OK — ⚠️ {fail} échec(s) : {', '.join(errs[:3])}")
             st.rerun()
 
+    # Filtrer par saison si nécessaire (collect_data déjà appelé dans main())
     if selected_saison != "Toutes les saisons":
-        pfc_kpi, edf_kpi = collect_data(selected_saison)
-    else:
-        pfc_kpi, edf_kpi = collect_data()
+        pfc_kpi, edf_kpi, _gps, _gpsw, _nr = collect_data(selected_saison)
+        st.session_state["name_report_df"] = _nr
+        st.session_state["gps_raw_df"] = _gps
+        st.session_state["gps_weekly_df"] = _gpsw
+    # else : on garde pfc_kpi/edf_kpi passés en paramètre (déjà calculés)
 
     # Badge d'avertissements — affiché dans sidebar APRÈS collect_data
     _sys_warns = st.session_state.get("_system_warnings", [])
@@ -4935,7 +4936,16 @@ def main():
                     st.error("Nom d'utilisateur ou mot de passe incorrect")
         st.stop()
 
-    pfc_kpi, edf_kpi = collect_data()
+    # Sync Drive uniquement au premier chargement de la session
+    if not st.session_state.get("_sync_done"):
+        _run_initial_sync()
+        st.cache_data.clear()  # invalider le cache après sync
+
+    pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, name_report_df = collect_data()
+    st.session_state["name_report_df"] = name_report_df
+    st.session_state["gps_raw_df"] = gps_raw_df
+    st.session_state["gps_weekly_df"] = gps_week_df
+
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
 
 
