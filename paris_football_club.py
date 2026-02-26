@@ -4152,10 +4152,18 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             default_index=0,
             orientation="vertical",
             styles={
-                "container": {"padding": "5!important", "background-color": "#002A48"},
-                "icon": {"color": "#0078D4", "font-size": "18px"},
-                "nav-link": {"font-size": "16px", "text-align": "left", "margin": "0px", "--hover-color": "#003A58"},
-                "nav-link-selected": {"background-color": "#0078D4", "color": "white"},
+                "container": {"padding": "6px 4px !important", "background-color": "transparent"},
+                "icon": {"color": "#00A3E0", "font-size": "16px"},
+                "nav-link": {
+                    "font-size": "13px", "font-family": "Oswald, sans-serif",
+                    "font-weight": "500", "letter-spacing": "0.07em", "text-transform": "uppercase",
+                    "text-align": "left", "margin": "1px 6px", "--hover-color": "rgba(0,163,224,0.12)",
+                    "border-radius": "3px", "color": "#C8D8E8",
+                },
+                "nav-link-selected": {
+                    "background-color": "#00A3E0",
+                    "color": "#08090D", "font-weight": "600",
+                },
             },
         )
 
@@ -5145,13 +5153,246 @@ def main():
     st.markdown(
         """
     <style>
-    .stApp { background: linear-gradient(135deg, #002B5C 0%, #002B5C 100%); color: white; }
-    .main .block-container { background: linear-gradient(135deg, #003A58 0%, #0047AB 100%);
-    border-radius: 10px; padding: 20px; color: white; }
-    .stButton>button { background-color: #0078D4; color: white; border-radius: 5px; border: none; padding: 8px 16px; }
-    .stSelectbox>div>div, .stMultiselect>div>div { background-color: #003A58; color: white; border-radius: 5px; border: 1px solid #0078D4; }
-    .stMetric { background-color: rgba(0, 71, 171, 0.4); border-radius: 5px; padding: 10px; color: white; }
-    .stDataFrame table { color: white !important; }
+    /* ═══════════════════════════════════════════════
+       PARIS FC — CHARTE GRAPHIQUE OFFICIELLE 2025
+       Fond noir   : #08090D  |  Bleu ciel : #00A3E0
+       Bleu foncé  : #0C1B33  |  Blanc     : #FFFFFF
+       Gris texte  : #A8B8C8
+    ═══════════════════════════════════════════════ */
+
+    @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap');
+
+    :root {
+        --pfc-black:  #08090D;
+        --pfc-dark:   #0C1220;
+        --pfc-navy:   #0C1B33;
+        --pfc-blue:   #00A3E0;
+        --pfc-blue2:  #007AB8;
+        --pfc-white:  #FFFFFF;
+        --pfc-text:   #C8D8E8;
+        --pfc-muted:  #6A8090;
+        --pfc-border: rgba(0, 163, 224, 0.18);
+        --pfc-card:   rgba(12, 18, 32, 0.9);
+    }
+
+    /* ── Fond général ── */
+    .stApp {
+        background-color: var(--pfc-black) !important;
+        font-family: 'Inter', sans-serif;
+        color: var(--pfc-text);
+    }
+    /* Lueur bleue subtile en haut */
+    .stApp::before {
+        content: '';
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        height: 400px;
+        background: radial-gradient(ellipse 70% 40% at 50% 0%, rgba(0,163,224,0.10) 0%, transparent 80%);
+        pointer-events: none;
+        z-index: 0;
+    }
+
+    /* ── Contenu principal ── */
+    .main .block-container {
+        background: transparent !important;
+        padding: 1.5rem 2.5rem 3rem 2.5rem !important;
+        max-width: 1440px;
+    }
+
+    /* ── Sidebar ── */
+    [data-testid="stSidebar"] {
+        background: var(--pfc-dark) !important;
+        border-right: 1px solid var(--pfc-border) !important;
+    }
+    [data-testid="stSidebar"] * { color: var(--pfc-text) !important; }
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {
+        font-family: 'Oswald', sans-serif !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--pfc-white) !important;
+    }
+
+    /* ── Boutons ── */
+    .stButton > button {
+        background: var(--pfc-blue) !important;
+        color: var(--pfc-black) !important;
+        border: none !important;
+        border-radius: 3px !important;
+        font-family: 'Oswald', sans-serif !important;
+        font-weight: 600 !important;
+        font-size: 13px !important;
+        letter-spacing: 0.10em !important;
+        text-transform: uppercase !important;
+        padding: 9px 20px !important;
+        transition: all 0.18s ease !important;
+    }
+    .stButton > button:hover {
+        background: #22BBEE !important;
+        transform: translateY(-1px) !important;
+        box-shadow: 0 4px 16px rgba(0,163,224,0.35) !important;
+    }
+
+    /* ── Onglets ── */
+    .stTabs [data-baseweb="tab-list"] {
+        background: transparent !important;
+        border-bottom: 1px solid var(--pfc-border) !important;
+        gap: 0 !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+        background: transparent !important;
+        color: var(--pfc-muted) !important;
+        font-family: 'Oswald', sans-serif !important;
+        font-weight: 500 !important;
+        font-size: 14px !important;
+        letter-spacing: 0.08em !important;
+        text-transform: uppercase !important;
+        padding: 10px 22px !important;
+        border-bottom: 2px solid transparent !important;
+        transition: color 0.15s !important;
+    }
+    .stTabs [data-baseweb="tab"]:hover { color: var(--pfc-blue) !important; }
+    .stTabs [aria-selected="true"] {
+        color: var(--pfc-white) !important;
+        border-bottom: 2px solid var(--pfc-blue) !important;
+    }
+    .stTabs [data-baseweb="tab-panel"] {
+        background: transparent !important;
+        padding-top: 1.8rem !important;
+    }
+
+    /* ── Métriques ── */
+    [data-testid="stMetric"] {
+        background: var(--pfc-card) !important;
+        border: 1px solid var(--pfc-border) !important;
+        border-top: 2px solid var(--pfc-blue) !important;
+        border-radius: 4px !important;
+        padding: 18px 22px !important;
+    }
+    [data-testid="stMetric"] label {
+        color: var(--pfc-muted) !important;
+        font-family: 'Oswald', sans-serif !important;
+        font-size: 11px !important;
+        letter-spacing: 0.12em !important;
+        text-transform: uppercase !important;
+    }
+    [data-testid="stMetric"] [data-testid="stMetricValue"] {
+        color: var(--pfc-white) !important;
+        font-family: 'Oswald', sans-serif !important;
+        font-size: 30px !important;
+        font-weight: 600 !important;
+    }
+
+    /* ── Selectbox / inputs ── */
+    .stSelectbox > div > div,
+    .stMultiselect > div > div,
+    .stTextInput > div > div > input,
+    .stDateInput > div > div > input {
+        background: var(--pfc-card) !important;
+        color: var(--pfc-white) !important;
+        border: 1px solid var(--pfc-border) !important;
+        border-radius: 3px !important;
+    }
+    .stSelectbox svg, .stMultiselect svg { fill: var(--pfc-blue) !important; }
+
+    /* ── DataFrames ── */
+    .stDataFrame {
+        border: 1px solid var(--pfc-border) !important;
+        border-radius: 4px !important;
+        overflow: hidden !important;
+    }
+    .stDataFrame table {
+        color: var(--pfc-text) !important;
+        background: var(--pfc-card) !important;
+    }
+    .stDataFrame thead th {
+        background: rgba(0,163,224,0.12) !important;
+        color: var(--pfc-blue) !important;
+        font-family: 'Oswald', sans-serif !important;
+        font-size: 11px !important;
+        letter-spacing: 0.10em !important;
+        text-transform: uppercase !important;
+        border-bottom: 1px solid var(--pfc-border) !important;
+    }
+    .stDataFrame tbody tr:hover td {
+        background: rgba(0,163,224,0.07) !important;
+    }
+
+    /* ── Expanders ── */
+    .streamlit-expanderHeader {
+        background: var(--pfc-card) !important;
+        border: 1px solid var(--pfc-border) !important;
+        border-radius: 4px !important;
+        color: var(--pfc-text) !important;
+        font-family: 'Oswald', sans-serif !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.06em !important;
+        text-transform: uppercase !important;
+        font-size: 13px !important;
+    }
+    .streamlit-expanderContent {
+        background: rgba(12,18,32,0.7) !important;
+        border: 1px solid var(--pfc-border) !important;
+        border-top: none !important;
+        border-radius: 0 0 4px 4px !important;
+    }
+
+    /* ── Titres ── */
+    h1, h2, h3 {
+        font-family: 'Oswald', sans-serif !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.05em !important;
+        text-transform: uppercase !important;
+        color: var(--pfc-white) !important;
+    }
+    h1 { font-size: 2.2rem !important; }
+    h2 { font-size: 1.6rem !important; border-bottom: 1px solid var(--pfc-border); padding-bottom: 8px; }
+    h3 { font-size: 1.2rem !important; color: var(--pfc-blue) !important; }
+
+    /* ── Alerts ── */
+    .stAlert {
+        background: var(--pfc-card) !important;
+        border-radius: 3px !important;
+        border-left: 3px solid var(--pfc-blue) !important;
+        color: var(--pfc-text) !important;
+    }
+
+    /* ── Divider ── */
+    hr { border-color: var(--pfc-border) !important; margin: 1rem 0 !important; }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: var(--pfc-black); }
+    ::-webkit-scrollbar-thumb { background: var(--pfc-blue2); border-radius: 2px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--pfc-blue); }
+
+    /* ── Caption ── */
+    .stCaption, [data-testid="stCaptionContainer"] {
+        color: var(--pfc-muted) !important;
+        font-size: 12px !important;
+    }
+
+    /* ── Option menu (sidebar nav) ── */
+    .nav-link {
+        border-radius: 3px !important;
+        margin: 1px 6px !important;
+        font-family: 'Oswald', sans-serif !important;
+        font-size: 14px !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.07em !important;
+        text-transform: uppercase !important;
+        color: var(--pfc-text) !important;
+        transition: background 0.12s !important;
+    }
+    .nav-link:hover { background: rgba(0,163,224,0.12) !important; }
+    .nav-link-selected {
+        background: var(--pfc-blue) !important;
+        color: var(--pfc-black) !important;
+        font-weight: 600 !important;
+    }
+    .nav-link-selected .icon { color: var(--pfc-black) !important; }
     </style>
     """,
         unsafe_allow_html=True,
@@ -5159,13 +5400,40 @@ def main():
 
     st.markdown(
         """
-    <div style="background: linear-gradient(135deg, #002B5C 0%, #0047AB 100%);
-            color: white; padding: 2rem; border-radius: 10px; margin-bottom: 2rem;
-            text-align: center; position: relative;">
-    <img src="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png" alt="Paris FC Logo"
-         style="position:absolute; left:1rem; top:50%; transform:translateY(-50%); width:120px; opacity:0.9;">
-    <h1 style="margin:0; font-size:3rem; font-weight:bold;">Paris FC - Centre de Formation Féminin</h1>
-    <p style="margin-top:.5rem; font-size:1.2rem;">Data Center</p>
+    <div style="
+        background: #08090D;
+        border-bottom: 1px solid rgba(0,163,224,0.2);
+        padding: 1.2rem 2.5rem;
+        margin: -1.5rem -2.5rem 2rem -2.5rem;
+        display: flex;
+        align-items: center;
+        gap: 1.8rem;
+        position: relative;
+        overflow: hidden;
+    ">
+        <!-- Ligne bleue à gauche -->
+        <div style="position:absolute;left:0;top:0;bottom:0;width:3px;background:#00A3E0;"></div>
+        <!-- Lueur bleue derrière le logo -->
+        <div style="position:absolute;left:60px;top:50%;transform:translateY(-50%);width:120px;height:120px;
+            background:radial-gradient(circle,rgba(0,163,224,0.12) 0%,transparent 70%);pointer-events:none;"></div>
+
+        <img src="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png" alt="Paris FC"
+             style="width:62px;height:62px;object-fit:contain;flex-shrink:0;position:relative;z-index:1;">
+
+        <div style="position:relative;z-index:1;">
+            <div style="font-family:'Oswald',sans-serif;font-size:10px;font-weight:500;
+                letter-spacing:0.22em;text-transform:uppercase;color:#00A3E0;margin-bottom:5px;">
+                Section Féminine · Centre de Formation
+            </div>
+            <div style="font-family:'Oswald',sans-serif;font-size:1.9rem;font-weight:700;
+                letter-spacing:0.06em;text-transform:uppercase;line-height:1;color:#FFFFFF;">
+                Data Center
+            </div>
+            <div style="font-family:'Inter',sans-serif;font-size:12px;font-weight:300;
+                letter-spacing:0.10em;color:#6A8090;margin-top:5px;text-transform:uppercase;">
+                Analyse & Suivi des Joueuses
+            </div>
+        </div>
     </div>
     """,
         unsafe_allow_html=True,
