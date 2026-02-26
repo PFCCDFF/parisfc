@@ -4782,7 +4782,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         st.divider()
 
-        tab_stats, tab_obj, tab_edf, tab_gps = st.tabs(["📈 Statistiques", "🎯 Objectifs", "🆚 Comparaison EDF", "🏃 Données physiques (GPS)"])
+        tab_stats, tab_obj, tab_edf, tab_gps, tab_medical = st.tabs(["📈 Statistiques", "🎯 Objectifs", "🆚 Comparaison EDF", "🏃 Données physiques (GPS)", "🏥 Médical"])
 
         with tab_obj:
             # ── Récupération des objectifs depuis le fichier passerelle ──
