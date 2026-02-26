@@ -4139,7 +4139,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 key="download_export_xlsx",
             )
 
-    options = ["Statistiques", "Comparaison", "Données Physiques", "Joueuses Passerelles"]
+    options = ["Statistiques", "Comparaison", "Données Physiques", "Joueuses Passerelles", "Médical", "Recrutement"]
     if check_permission(user_profile, "all", permissions):
         options.insert(2, "Gestion")
 
@@ -4147,7 +4147,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         page = option_menu(
             menu_title="",
             options=options,
-            icons=["graph-up-arrow", "people", "gear", "activity", "people-fill"][: len(options)],
+            icons=["graph-up-arrow", "people", "gear", "activity", "people-fill", "heart-pulse", "search"][: len(options)],
             menu_icon="cast",
             default_index=0,
             orientation="vertical",
