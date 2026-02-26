@@ -53,6 +53,9 @@ PERMISSIONS_FILENAME = "Classeurs permissions streamlit.xlsx"
 EDF_JOUEUSES_FILENAME = "EDF_Joueuses.xlsx"
 PASSERELLE_FILENAME = "Liste Joueuses Passerelles.xlsx"
 REFERENTIEL_FILENAME = "Noms Prénoms Paris FC.xlsx"
+OBJECTIFS_EVAL_FILENAME = "Evaluations Objectifs.csv"  # Export CSV du Google Sheet lié au Forms
+DRIVE_OBJECTIFS_FOLDER_ID = ""  # À renseigner : ID du dossier Drive contenant le CSV des évaluations
+OBJECTIFS_FOLDER = "data/objectifs"
 
 # Colonnes "poste" dans les lignes match (lineups)
 POST_COLS = ["ATT", "DCD", "DCG", "DD", "DG", "GB", "MCD", "MCG", "MD", "MDef", "MG"]
@@ -2048,7 +2051,10 @@ def load_passerelle_data():
         col_p1     = _find_col(df, "Poste 1", "Poste1", "Poste principal", "Poste")
         col_p2     = _find_col(df, "Poste 2", "Poste2", "Poste secondaire")
         col_pied   = _find_col(df, "Pied Fort", "Pied", "Pied fort")
-        col_taille = _find_col(df, "Taille", "Taille (cm)", "Height")
+        col_taille   = _find_col(df, "Taille", "Taille (cm)", "Height")
+        col_obj1     = _find_col(df, "Objectif 1", "Objectifs 1", "Obj1", "Objectif1")
+        col_obj2     = _find_col(df, "Objectif 2", "Objectifs 2", "Obj2", "Objectif2")
+        col_obj3     = _find_col(df, "Objectif 3", "Objectifs 3", "Obj3", "Objectif3")
 
         def _get(row, col):
             return row.get(col) if col else None
@@ -2071,10 +2077,90 @@ def load_passerelle_data():
                 "Poste 2":   _passerelle_clean(_get(row, col_p2)),
                 "Pied Fort": _passerelle_clean(_get(row, col_pied)),
                 "Taille":    _passerelle_clean(_get(row, col_taille)),
+                "Objectif 1": _passerelle_clean(_get(row, col_obj1)),
+                "Objectif 2": _passerelle_clean(_get(row, col_obj2)),
+                "Objectif 3": _passerelle_clean(_get(row, col_obj3)),
             }
     except Exception as e:
         _warn(f"Passerelle: erreur lecture → {e}")
     return passerelle_data
+
+
+
+# =========================
+# ÉVALUATIONS OBJECTIFS (Google Forms → Google Sheet → CSV)
+# =========================
+def load_objectifs_evaluations() -> pd.DataFrame:
+    """
+    Charge le CSV exporté du Google Sheet lié au Google Forms d'évaluation des objectifs.
+    Colonnes attendues dans le CSV :
+      - Horodateur (timestamp de soumission)
+      - Joueuse     (liste déroulante : Nom Prénom de la joueuse)
+      - Objectif évalué  (texte de l'objectif, correspondant à Objectif 1/2/3)
+      - Note         (entier 1-5)
+      - Évaluateur   (optionnel)
+    Retourne un DataFrame vide si le fichier n'existe pas encore.
+    """
+    import os, glob
+    os.makedirs(OBJECTIFS_FOLDER, exist_ok=True)
+
+    # Chercher un CSV dans le dossier local
+    csv_files = sorted(glob.glob(os.path.join(OBJECTIFS_FOLDER, "*.csv")), reverse=True)
+    if not csv_files:
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_csv(csv_files[0], encoding="utf-8-sig")
+        # Normalisation des noms de colonnes (Google Forms génère des en-têtes longs)
+        rename_map = {}
+        for col in df.columns:
+            col_low = col.lower().strip()
+            if "joueuse" in col_low or "joueur" in col_low or "nom" in col_low:
+                rename_map[col] = "Joueuse"
+            elif "objectif" in col_low and "évalué" in col_low:
+                rename_map[col] = "Objectif évalué"
+            elif "note" in col_low or "évaluation" in col_low or "score" in col_low:
+                rename_map[col] = "Note"
+            elif "horodateur" in col_low or "timestamp" in col_low:
+                rename_map[col] = "Horodateur"
+            elif "évaluateur" in col_low or "evaluateur" in col_low or "staff" in col_low:
+                rename_map[col] = "Évaluateur"
+        df = df.rename(columns=rename_map)
+
+        # Normaliser la colonne Note en numérique
+        if "Note" in df.columns:
+            df["Note"] = pd.to_numeric(df["Note"], errors="coerce")
+
+        return df
+    except Exception as e:
+        _warn(f"Évaluations objectifs : erreur lecture CSV → {e}")
+        return pd.DataFrame()
+
+
+def sync_objectifs_from_drive() -> Tuple[int, int]:
+    """
+    Télécharge le CSV des évaluations depuis Google Drive (dossier DRIVE_OBJECTIFS_FOLDER_ID).
+    Retourne (nb_téléchargés, nb_erreurs).
+    """
+    if not DRIVE_OBJECTIFS_FOLDER_ID:
+        return 0, 0  # Pas encore configuré
+    try:
+        service = _get_drive_service()
+        os.makedirs(OBJECTIFS_FOLDER, exist_ok=True)
+        files = list_files_in_folder(service, DRIVE_OBJECTIFS_FOLDER_ID)
+        ok, err = 0, 0
+        for f in files:
+            if f.get("name", "").endswith(".csv"):
+                try:
+                    _download_file(service, f["id"], f["name"], OBJECTIFS_FOLDER)
+                    ok += 1
+                except Exception as e:
+                    _warn(f"Évaluations : échec téléchargement {f['name']} → {e}")
+                    err += 1
+        return ok, err
+    except Exception as e:
+        _warn(f"Évaluations objectifs : erreur Drive → {e}")
+        return 0, 1
 
 
 # =========================
@@ -4692,6 +4778,117 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         if resolved_player and resolved_player != selected:
             st.caption(f"↳ Données liées à : **{resolved_player}**")
+
+
+        # =========================
+        # BLOC OBJECTIFS
+        # =========================
+        _obj1 = info.get("Objectif 1", "") or "" if info else ""
+        _obj2 = info.get("Objectif 2", "") or "" if info else ""
+        _obj3 = info.get("Objectif 3", "") or "" if info else ""
+        _objectifs = [(f"Objectif {i+1}", o) for i, o in enumerate([_obj1, _obj2, _obj3]) if o.strip()]
+
+        if _objectifs:
+            with st.expander("🎯 Objectif(s)", expanded=True):
+                # Affichage des objectifs texte
+                for _onum, _otxt in _objectifs:
+                    st.markdown(
+                        f"<div style='background:rgba(0,120,212,0.08); border-left:3px solid #0078D4; "
+                        f"border-radius:6px; padding:8px 14px; margin-bottom:6px; color:#E0E8FF; font-size:15px;'>"
+                        f"<span style='color:#0078D4; font-weight:600; font-size:12px; text-transform:uppercase; "
+                        f"letter-spacing:0.05em;'>{_onum}</span><br/>{_otxt}</div>",
+                        unsafe_allow_html=True
+                    )
+
+                # Évaluations depuis le Google Forms
+                st.markdown("---")
+                _evals_df = load_objectifs_evaluations()
+                if _evals_df.empty:
+                    st.caption("📋 Aucune évaluation disponible — synchronisez le fichier Google Forms.")
+                else:
+                    # Filtrer par joueuse (matching souple Nom Prénom)
+                    _joueur_col = "Joueuse" if "Joueuse" in _evals_df.columns else None
+                    _obj_col    = "Objectif évalué" if "Objectif évalué" in _evals_df.columns else None
+                    _note_col   = "Note" if "Note" in _evals_df.columns else None
+
+                    if _joueur_col and _obj_col and _note_col:
+                        # Matching joueuse (insensible à la casse, correspondance partielle)
+                        _sel_norm = normalize_str(selected) if selected else ""
+                        _mask = _evals_df[_joueur_col].apply(
+                            lambda x: _sel_norm in normalize_str(str(x)) or normalize_str(str(x)) in _sel_norm
+                        )
+                        _player_evals = _evals_df[_mask].copy()
+
+                        if _player_evals.empty:
+                            st.caption(f"Aucune évaluation enregistrée pour **{selected}**.")
+                        else:
+                            import plotly.graph_objects as go
+
+                            # Un diagramme par objectif défini
+                            _cols_diag = st.columns(len(_objectifs))
+                            for _ci, (_onum, _otxt) in enumerate(_objectifs):
+                                # Filtrer les évaluations correspondant à cet objectif
+                                _obj_mask = _player_evals[_obj_col].apply(
+                                    lambda x: normalize_str(str(x)) in normalize_str(_otxt)
+                                             or normalize_str(_otxt) in normalize_str(str(x))
+                                )
+                                _obj_evals = _player_evals[_obj_mask][_note_col].dropna()
+
+                                with _cols_diag[_ci]:
+                                    if _obj_evals.empty:
+                                        st.caption(f"Pas encore d'évaluation pour cet objectif.")
+                                    else:
+                                        _moy = _obj_evals.mean()
+                                        _n_evals = len(_obj_evals)
+
+                                        # Gauge plotly 1-5
+                                        _fig = go.Figure(go.Indicator(
+                                            mode="gauge+number",
+                                            value=round(_moy, 2),
+                                            title={"text": f"<b>{_onum}</b><br><span style='font-size:11px'>{_otxt[:40]}{'…' if len(_otxt)>40 else ''}</span>",
+                                                   "font": {"size": 13}},
+                                            number={"font": {"size": 28, "color": "#0078D4"}, "suffix": " /5"},
+                                            gauge={
+                                                "axis": {"range": [0, 5], "tickwidth": 1,
+                                                         "tickcolor": "#555", "nticks": 6},
+                                                "bar": {"color": "#0078D4"},
+                                                "bgcolor": "#0a2540",
+                                                "borderwidth": 0,
+                                                "steps": [
+                                                    {"range": [0, 2],   "color": "rgba(255,60,60,0.18)"},
+                                                    {"range": [2, 3.5], "color": "rgba(255,165,0,0.18)"},
+                                                    {"range": [3.5, 5], "color": "rgba(0,200,100,0.18)"},
+                                                ],
+                                                "threshold": {
+                                                    "line": {"color": "#FFFFFF", "width": 2},
+                                                    "thickness": 0.75,
+                                                    "value": _moy
+                                                }
+                                            }
+                                        ))
+                                        _fig.update_layout(
+                                            height=220,
+                                            margin=dict(t=60, b=10, l=20, r=20),
+                                            paper_bgcolor="rgba(0,0,0,0)",
+                                            font_color="#CCDDEE"
+                                        )
+                                        st.plotly_chart(_fig, use_container_width=True)
+                                        st.caption(f"Moyenne sur {_n_evals} évaluation{'s' if _n_evals > 1 else ''}")
+                    else:
+                        st.caption("⚠️ Format du CSV inattendu — vérifiez les noms de colonnes.")
+
+                # Bouton sync (admin seulement)
+                if check_permission(user_profile, "all", permissions):
+                    if st.button("🔄 Sync évaluations objectifs", key="sync_obj_evals"):
+                        _ok, _err = sync_objectifs_from_drive()
+                        if _ok:
+                            st.success(f"{_ok} fichier(s) synchronisé(s).")
+                            st.rerun()
+                        elif not DRIVE_OBJECTIFS_FOLDER_ID:
+                            st.info("Configurez DRIVE_OBJECTIFS_FOLDER_ID dans le code pour activer la sync.")
+                        else:
+                            st.error("Aucun fichier récupéré. Vérifiez le dossier Drive.")
+
 
         st.divider()
 
