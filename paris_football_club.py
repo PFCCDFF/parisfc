@@ -5399,43 +5399,15 @@ def main():
     )
 
     st.markdown(
-        """
-    <div style="
-        background: #08090D;
-        border-bottom: 1px solid rgba(0,163,224,0.2);
-        padding: 1.2rem 2.5rem;
-        margin: -1.5rem -2.5rem 2rem -2.5rem;
-        display: flex;
-        align-items: center;
-        gap: 1.8rem;
-        position: relative;
-        overflow: hidden;
-    ">
-        <!-- Ligne bleue à gauche -->
-        <div style="position:absolute;left:0;top:0;bottom:0;width:3px;background:#00A3E0;"></div>
-        <!-- Lueur bleue derrière le logo -->
-        <div style="position:absolute;left:60px;top:50%;transform:translateY(-50%);width:120px;height:120px;
-            background:radial-gradient(circle,rgba(0,163,224,0.12) 0%,transparent 70%);pointer-events:none;"></div>
-
-        <img src="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png" alt="Paris FC"
-             style="width:62px;height:62px;object-fit:contain;flex-shrink:0;position:relative;z-index:1;">
-
-        <div style="position:relative;z-index:1;">
-            <div style="font-family:'Oswald',sans-serif;font-size:10px;font-weight:500;
-                letter-spacing:0.22em;text-transform:uppercase;color:#00A3E0;margin-bottom:5px;">
-                Section Féminine · Centre de Formation
-            </div>
-            <div style="font-family:'Oswald',sans-serif;font-size:1.9rem;font-weight:700;
-                letter-spacing:0.06em;text-transform:uppercase;line-height:1;color:#FFFFFF;">
-                Data Center
-            </div>
-            <div style="font-family:'Inter',sans-serif;font-size:12px;font-weight:300;
-                letter-spacing:0.10em;color:#6A8090;margin-top:5px;text-transform:uppercase;">
-                Analyse & Suivi des Joueuses
-            </div>
-        </div>
-    </div>
-    """,
+        "<div style='background:#08090D;border-bottom:1px solid rgba(0,163,224,0.2);padding:1.2rem 2.5rem;margin:-1.5rem -2.5rem 2rem -2.5rem;display:flex;align-items:center;gap:1.8rem;position:relative;overflow:hidden;'>"
+        "<div style='position:absolute;left:0;top:0;bottom:0;width:3px;background:#00A3E0;'></div>"
+        "<div style='position:absolute;left:60px;top:50%;transform:translateY(-50%);width:120px;height:120px;background:radial-gradient(circle,rgba(0,163,224,0.12) 0%,transparent 70%);pointer-events:none;'></div>"
+        "<img src='https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png' alt='Paris FC' style='width:62px;height:62px;object-fit:contain;flex-shrink:0;position:relative;z-index:1;'>"
+        "<div style='position:relative;z-index:1;'>"
+        "<div style='font-family:Oswald,sans-serif;font-size:10px;font-weight:500;letter-spacing:0.22em;text-transform:uppercase;color:#00A3E0;margin-bottom:5px;'>Section F&eacute;minine &middot; Centre de Formation</div>"
+        "<div style='font-family:Oswald,sans-serif;font-size:30px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;line-height:1;color:#FFFFFF;'>Data Center</div>"
+        "<div style='font-family:Inter,sans-serif;font-size:12px;font-weight:300;letter-spacing:0.10em;color:#6A8090;margin-top:5px;text-transform:uppercase;'>Analyse &amp; Suivi des Joueuses</div>"
+        "</div></div>",
         unsafe_allow_html=True,
     )
 
