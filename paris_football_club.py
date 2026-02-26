@@ -18,6 +18,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import streamlit as st
+import matplotlib.pyplot as plt
 from streamlit_option_menu import option_menu
 from mplsoccer import PyPizza, Radar, FontManager, grid
 from google.oauth2 import service_account
@@ -3328,7 +3329,6 @@ def plot_gps_md_graph(summary: pd.DataFrame, selected_lines=None):
     if summary is None or summary.empty or "MD" not in summary.columns:
         return None
 
-    import matplotlib.pyplot as plt
     import numpy as np
 
     d = summary.copy()
@@ -3984,7 +3984,6 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
     low, high = [0] * len(available), [100] * len(available)
     radar = Radar(available, low, high, num_rings=4, ring_width=1, center_circle_radius=1)
 
-    import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111)
