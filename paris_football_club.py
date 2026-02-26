@@ -1918,49 +1918,124 @@ def normalize_players_in_df(
 # PASSERELLES
 # =========================
 def load_passerelle_data():
-    passerelle_data = {}
-    passerelle_file = os.path.join(PASSERELLE_FOLDER, PASSERELLE_FILENAME)
-    if not os.path.exists(passerelle_file):
-        return passerelle_data
+    """Charge le fichier 'Passerelle' (Google Drive) et renvoie un dict { 'NOM Prénom': infos }.
+
+    Patch: rend la lecture robuste aux variations d'intitulés de colonnes (ex: 'Date naissance',
+    'Date de Naissance', 'DOB', etc.) et formate proprement la date pour l'affichage Streamlit.
+    """
     try:
-        df = read_excel_auto(passerelle_file)
-        if isinstance(df, dict):
-            df = list(df.values())[0] if len(df) else pd.DataFrame()
+        if not PAS_FOLDER_ID:
+            st.warning("Dossier 'Passerelle' non configuré (PAS_FOLDER_ID).")
+            return {}
+
+        # Télécharger le fichier Excel/CSV passerelle (si présent)
+        files = list_drive_files(PAS_FOLDER_ID)
+        if not files:
+            st.warning("Aucun fichier trouvé dans le dossier Passerelle.")
+            return {}
+
+        # On prend le premier fichier compatible (xlsx/xls/csv)
+        passerelle_file = None
+        for f in files:
+            name = str(f.get("name", ""))
+            if name.lower().endswith((".xlsx", ".xls", ".csv")):
+                passerelle_file = f
+                break
+
+        if not passerelle_file:
+            st.warning("Aucun fichier passerelle (.xlsx/.xls/.csv) trouvé dans le dossier Passerelle.")
+            return {}
+
+        content = download_drive_file(passerelle_file["id"])
+        fname = str(passerelle_file.get("name", "")).lower()
+
+        if fname.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(content), dtype=str, encoding_errors="ignore")
+        else:
+            df = pd.read_excel(io.BytesIO(content), dtype=str)
+
+        if df is None or df.empty:
+            st.warning("Le fichier passerelle est vide.")
+            return {}
+
+        # --- Robust column matching -------------------------------------------------
+        def _col(df_: pd.DataFrame, *candidates: str):
+            """Return the first matching column name in df_ given candidate labels."""
+            cmap = {normalize_str(str(c)).lower(): str(c) for c in df_.columns}
+            for cand in candidates:
+                key = normalize_str(str(cand)).lower()
+                if key in cmap:
+                    return cmap[key]
+            # try fuzzy contains matching (very light)
+            for cand in candidates:
+                key = normalize_str(str(cand)).lower()
+                for k, orig in cmap.items():
+                    if key and (key in k or k in key):
+                        return orig
+            return None
+
+        col_nom = _col(df, "Nom", "NOM", "Nom de famille", "Surname")
+        col_prenom = _col(df, "Prénom", "Prenom", "PRENOM", "First name", "Firstname", "Given name")
+        col_dob = _col(df, "Date de naissance", "Date naissance", "Date de Naissance", "Naissance", "DOB", "Birth date", "Birthdate")
+        col_photo = _col(df, "Photo", "PHOTO", "photo", "Lien photo", "URL Photo", "Url photo")
+        col_dn = _col(df, "Date de naissance (texte)", "Date naissance (texte)")
+
+        col_poste1 = _col(df, "Poste 1", "Poste1", "Poste principal", "Poste")
+        col_poste2 = _col(df, "Poste 2", "Poste2", "Poste secondaire")
+        col_pied = _col(df, "Pied Fort", "Pied", "Pied fort", "Pied préféré")
+        col_taille = _col(df, "Taille", "Taille (cm)", "Height", "Height (cm)")
+
+        def _fmt_date(val):
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                return None
+            s = str(val).strip()
+            if not s or s.lower() in {"nan", "none"}:
+                return None
+            # Try parse
+            dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
+            if pd.isna(dt):
+                return s  # keep raw if can't parse
+            return dt.strftime("%d/%m/%Y")
+
+        data = {}
         for _, row in df.iterrows():
-            nom = row.get("Nom", None)
-            if nom:
-                def _fmt_date(v):
-                    if v is None: return ""
-                    if hasattr(v, "strftime"): return v.strftime("%d/%m/%Y")
-                    s = str(v).strip()
-                    if s.lower() in ("nan","none","nat",""): return ""
-                    import re as _re
-                    if _re.match(r"^\d{4}-\d{2}-\d{2}", s):
-                        try:
-                            import pandas as _pd3
-                            return _pd3.to_datetime(s).strftime("%d/%m/%Y")
-                        except Exception: pass
-                    return s
-                def _clean(v):
-                    s = str(v).strip() if v is not None else ""
-                    return "" if s.lower() in ("nan","none","nat","") else s
-                passerelle_data[nom] = {
-                    "Prénom": _clean(row.get("Prénom", "")),
-                    "Photo": _clean(row.get("Photo", "")),
-                    "Date de naissance": _fmt_date(row.get("Date de naissance", "")),
-                    "Poste 1": _clean(row.get("Poste 1", "")),
-                    "Poste 2": _clean(row.get("Poste 2", "")),
-                    "Pied Fort": _clean(row.get("Pied Fort", "")),
-                    "Taille": _clean(row.get("Taille", "")),
-                }
-    except Exception:
-        pass
-    return passerelle_data
+            nom = str(row.get(col_nom, "")).strip() if col_nom else ""
+            prenom = str(row.get(col_prenom, "")).strip() if col_prenom else ""
+            if not nom and not prenom:
+                continue
 
+            display = f"{nom} {prenom}".strip()
+            display = " ".join(display.split())
 
-# =========================
-# PERMISSIONS HELPERS
-# =========================
+            dob_raw = row.get(col_dob, None) if col_dob else None
+            if (dob_raw is None or str(dob_raw).strip() in {"", "nan", "None"}) and col_dn:
+                dob_raw = row.get(col_dn, None)
+            dob = _fmt_date(dob_raw)
+
+            info = {
+                "Nom": nom if nom else None,
+                "Prénom": prenom if prenom else None,
+                "Date de naissance": dob,
+                "Photo": str(row.get(col_photo, "")).strip() if col_photo else None,
+                "Poste 1": str(row.get(col_poste1, "")).strip() if col_poste1 else None,
+                "Poste 2": str(row.get(col_poste2, "")).strip() if col_poste2 else None,
+                "Pied Fort": str(row.get(col_pied, "")).strip() if col_pied else None,
+                "Taille": str(row.get(col_taille, "")).strip() if col_taille else None,
+            }
+
+            # Clean empty strings -> None
+            for k, v in list(info.items()):
+                if isinstance(v, str):
+                    v2 = v.strip()
+                    info[k] = v2 if v2 else None
+
+            data[display] = info
+
+        return data
+
+    except Exception as e:
+        st.warning(f"Erreur lors du chargement Passerelle: {e}")
+        return {}
 def check_permission(user_profile, required_permission, permissions):
     if user_profile not in permissions:
         return False
