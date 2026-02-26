@@ -4103,7 +4103,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         n = len(_sys_warns)
         with st.sidebar.expander(f"⚠️ {n} avertissement{'s' if n > 1 else ''}", expanded=False):
             for w in _sys_warns:
-                st.sidebar.caption(f"• {w}")
+                st.caption(f"• {w}")
 
     # Toujours garder une copie non-filtrée pour l'export et les comparaisons
     if "pfc_kpi_all" not in st.session_state or selected_saison != st.session_state.get("_last_saison"):
