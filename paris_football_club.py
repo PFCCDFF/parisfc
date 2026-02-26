@@ -955,6 +955,7 @@ def show_photo_block(player_name: str, location: str = "stats") -> None:
         )
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_photo_bytes(path: str) -> Optional[bytes]:
     """
     Charge une image depuis le disque et retourne des bytes JPEG compatibles Streamlit.
@@ -1751,6 +1752,7 @@ st.session_state["gps_drive_downloaded"] = 0
 # =========================
 # REFERENTIEL NOMS
 # =========================
+@st.cache_data(ttl=600, show_spinner=False)
 def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], Dict[str, str], Dict[str, str], Dict[str, Set[str]], Dict[str, Set[str]]]:
     ref = read_excel_auto(ref_path)
 
@@ -2028,6 +2030,7 @@ def _find_col(df: pd.DataFrame, *candidates: str):
     return None
 
 
+@st.cache_data(ttl=600, show_spinner=False)
 def load_passerelle_data():
     passerelle_data = {}
     passerelle_file = os.path.join(PASSERELLE_FOLDER, PASSERELLE_FILENAME)
@@ -2090,6 +2093,7 @@ def load_passerelle_data():
 # =========================
 # ÉVALUATIONS OBJECTIFS (Google Forms → Google Sheet → CSV)
 # =========================
+@st.cache_data(ttl=300, show_spinner=False)
 def load_objectifs_evaluations() -> pd.DataFrame:
     """
     Charge le CSV exporté du Google Sheet lié au Google Forms d'évaluation des objectifs.
@@ -3095,6 +3099,7 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return out
 
 
+@st.cache_data(ttl=600, show_spinner=False)
 def load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons) -> pd.DataFrame:
     files = list_gps_files_local()
     if not files:
@@ -3567,7 +3572,7 @@ def _run_initial_sync():
     st.session_state["_sync_done"] = True
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def collect_data(selected_season=None):
     """
     Chargement principal des données PFC + EDF + GPS.
@@ -3830,6 +3835,7 @@ def collect_data(selected_season=None):
 # =========================
 # RADARS
 # =========================
+@st.cache_data(ttl=300, show_spinner=False)
 def create_individual_radar(df: pd.DataFrame):
     if df is None or df.empty or "Player" not in df.columns:
         return None
@@ -3881,7 +3887,7 @@ def create_individual_radar(df: pd.DataFrame):
 
     fig, ax = pizza.make_pizza(
         values=values,
-        figsize=(8, 8),
+        figsize=(7, 7),
         slice_colors=slice_colors,
         value_colors=["#FFFFFF"] * len(available),
         kwargs_slices=dict(edgecolor="#08090D", linewidth=1.8),
@@ -3946,6 +3952,7 @@ def create_individual_radar(df: pd.DataFrame):
     return fig
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_creativity: bool = False):
     if df is None or df.empty or len(df) < 2:
         return None
@@ -3979,7 +3986,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
 
     import matplotlib.pyplot as plt
 
-    fig = plt.figure(figsize=(10, 10))
+    fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111)
     fig.patch.set_facecolor("#08090D")
     ax.set_facecolor("#08090D")
@@ -4030,6 +4037,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
     fig.text(0.5, 0.075, f"⚠️ Axes d'amélioration {p1} vs {p2} : {txt_neg}", ha="center", va="center", fontsize=11.5, color="#C8D8E8")
 
     fig.text(0.98, 0.02, "Δ = (profil A - profil B)", ha="right", va="bottom", fontsize=9, color="#6A8090")
+    fig.set_dpi(90)  # DPI réduit pour rendu plus rapide
 
     return fig
 
@@ -4098,8 +4106,16 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             for w in _sys_warns:
                 st.sidebar.caption(f"• {w}")
 
-    pfc_kpi_all = pfc_kpi.copy() if isinstance(pfc_kpi, pd.DataFrame) else pd.DataFrame()
-    edf_kpi_all = edf_kpi.copy() if isinstance(edf_kpi, pd.DataFrame) else pd.DataFrame()
+    # Toujours garder une copie non-filtrée pour l'export et les comparaisons
+    if "pfc_kpi_all" not in st.session_state or selected_saison != st.session_state.get("_last_saison"):
+        pfc_kpi_all = pfc_kpi.copy() if isinstance(pfc_kpi, pd.DataFrame) else pd.DataFrame()
+        edf_kpi_all = edf_kpi.copy() if isinstance(edf_kpi, pd.DataFrame) else pd.DataFrame()
+        st.session_state["pfc_kpi_all"] = pfc_kpi_all
+        st.session_state["edf_kpi_all"] = edf_kpi_all
+        st.session_state["_last_saison"] = selected_saison
+    else:
+        pfc_kpi_all = st.session_state["pfc_kpi_all"]
+        edf_kpi_all = st.session_state["edf_kpi_all"]
 
     if player_name and pfc_kpi is not None and not pfc_kpi.empty and "Player" in pfc_kpi.columns:
         pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
@@ -4237,7 +4253,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         with tab1:
             fig = create_individual_radar(aggregated)
             if fig:
-                st.pyplot(fig)
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)  # libère la mémoire
 
         with tab2:
             kpi_order = [
@@ -4377,7 +4394,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 df2 = df2.set_index("Player").loc[[left, right]].reset_index()
                 fig = create_comparison_radar(df2, player1_name=left, player2_name=right)
                 if fig:
-                    st.pyplot(fig)
+                    st.pyplot(fig, use_container_width=True)
+                    plt.close(fig)  # libère la mémoire
                 else:
                     st.warning("Radar indisponible (données insuffisantes sur les métriques).")
 
@@ -4423,7 +4441,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 players_data = pd.concat([d1, d2], ignore_index=True)
                 fig = create_comparison_radar(players_data, player1_name=p1, player2_name=p2)
                 if fig:
-                    st.pyplot(fig)
+                    st.pyplot(fig, use_container_width=True)
+                    plt.close(fig)  # libère la mémoire
                 else:
                     st.warning("Radar indisponible (données insuffisantes sur les métriques).")
 
@@ -4455,7 +4474,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 players_data = pd.concat([player_df, edf_line], ignore_index=True, sort=False)
                 fig = create_comparison_radar(players_data, player1_name=p, player2_name=edf_label, exclude_creativity=True)
                 if fig:
-                    st.pyplot(fig)
+                    st.pyplot(fig, use_container_width=True)
+                    plt.close(fig)  # libère la mémoire
                 else:
                     st.warning("Radar indisponible (données insuffisantes).")
 
@@ -4630,6 +4650,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             fig = plot_gps_md_graph(summary_md, selected_lines=selected_lines)
             if fig is not None:
                 st.pyplot(fig, use_container_width=True)
+                plt.close(fig)  # libère la mémoire
 
     elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
@@ -4734,10 +4755,15 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         if photo_src is None and info.get("Photo"):
             photo_src = info["Photo"]
         if photo_src and os.path.exists(str(photo_src)):
-            _pb = load_photo_bytes(photo_src)
-            if _pb:
-                import base64 as _b64
-                photo_b64 = "data:image/jpeg;base64," + _b64.b64encode(_pb).decode()
+            _cache_key = f"_photo_b64_{photo_src}"
+            if _cache_key in st.session_state:
+                photo_b64 = st.session_state[_cache_key]
+            else:
+                _pb = load_photo_bytes(photo_src)
+                if _pb:
+                    import base64 as _b64
+                    photo_b64 = "data:image/jpeg;base64," + _b64.b64encode(_pb).decode()
+                    st.session_state[_cache_key] = photo_b64
 
         # Badges postes
         def _badge(txt, color="#00A3E0"):
@@ -4945,6 +4971,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             fig = create_individual_radar(aggregated)
                             if fig:
                                 st.pyplot(fig, use_container_width=True)
+                                plt.close(fig)  # libère la mémoire
                         except Exception as e:
                             st.warning(f"Radar indisponible : {e}")
 
@@ -5003,6 +5030,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         )
                         if fig is not None:
                             st.pyplot(fig, use_container_width=True)
+                            plt.close(fig)  # libère la mémoire
                         else:
                             st.info("Impossible de générer le radar de comparaison.")
 
@@ -5155,6 +5183,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                     fig = plot_gps_md_graph(summary_md, selected_lines=selected_lines)
                                     if fig is not None:
                                         st.pyplot(fig, use_container_width=True)
+                                        plt.close(fig)  # libère la mémoire
                                 except Exception as e:
                                     st.warning(f"Graphique indisponible : {e}")
 
@@ -5456,7 +5485,8 @@ def main():
         _run_initial_sync()
         st.cache_data.clear()  # invalider le cache après sync
 
-    pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, name_report_df = collect_data()
+    with st.spinner("Chargement des données…"):
+        pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, name_report_df = collect_data()
     st.session_state["name_report_df"] = name_report_df
     st.session_state["gps_raw_df"] = gps_raw_df
     st.session_state["gps_weekly_df"] = gps_week_df
