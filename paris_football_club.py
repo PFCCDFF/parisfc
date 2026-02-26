@@ -3998,9 +3998,16 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
     radar.draw_range_labels(ax=ax, fontsize=10, color="#6A8090")
     radar.draw_param_labels(ax=ax, fontsize=12, color="#C8D8E8")
 
-    fig.text(0.03, 0.965, p1, ha="left", va="top", fontsize=16, color="#00A3E0", fontweight="bold")
-    fig.text(0.97, 0.965, p2, ha="right", va="top", fontsize=16, color="#4A7FFF", fontweight="bold")
-    fig.text(0.5, 0.965, "Comparaison (0-100)", ha="center", va="top", fontsize=14, color="#C8D8E8", fontweight="bold")
+    # Titre discret centré tout en haut
+    fig.text(0.5, 0.978, "COMPARAISON  ·  0 – 100", ha="center", va="top",
+             fontsize=11, color="#6A8090", fontweight="normal")
+    # Séparateur
+    from matplotlib.lines import Line2D
+    fig.add_artist(Line2D([0.03, 0.97], [0.960, 0.960], transform=fig.transFigure,
+                          color="#1A2A3A", linewidth=0.8))
+    # Noms bien espacés en dessous, plus petits pour éviter tout chevauchement
+    fig.text(0.03, 0.955, f"\u25cf  {p1}", ha="left", va="top", fontsize=13, color="#00A3E0", fontweight="bold")
+    fig.text(0.97, 0.955, f"{p2}  \u25cf", ha="right", va="top", fontsize=13, color="#4A7FFF", fontweight="bold")
 
     delta = pd.Series(v1 - v2, index=available)
 
