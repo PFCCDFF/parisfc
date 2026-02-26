@@ -3870,13 +3870,13 @@ def create_individual_radar(df: pd.DataFrame):
 
     pizza = PyPizza(
         params=available,
-        background_color="#002B5C",
-        straight_line_color="#FFFFFF",
-        last_circle_color="#FFFFFF",
-        straight_line_lw=1.0,
-        last_circle_lw=1.4,
-        other_circle_lw=0.8,
-        other_circle_color="#8FA3BF",
+        background_color="#08090D",
+        straight_line_color="#1A2A3A",
+        last_circle_color="#00A3E0",
+        straight_line_lw=0.8,
+        last_circle_lw=1.5,
+        other_circle_lw=0.6,
+        other_circle_color="#1A2A3A",
     )
 
     fig, ax = pizza.make_pizza(
@@ -3884,16 +3884,16 @@ def create_individual_radar(df: pd.DataFrame):
         figsize=(8, 8),
         slice_colors=slice_colors,
         value_colors=["#FFFFFF"] * len(available),
-        kwargs_slices=dict(edgecolor="#FFFFFF", linewidth=2.2),
-        kwargs_params=dict(color="#FFFFFF", fontsize=12, fontproperties="monospace"),
+        kwargs_slices=dict(edgecolor="#08090D", linewidth=1.8),
+        kwargs_params=dict(color="#C8D8E8", fontsize=11, fontproperties="monospace"),
         kwargs_values=dict(
             color="#FFFFFF",
             fontsize=11,
             bbox=dict(
-                edgecolor="#FFFFFF",
-                facecolor="#002B5C",
+                edgecolor="#00A3E0",
+                facecolor="#0C1220",
                 boxstyle="round,pad=0.25",
-                lw=1.2
+                lw=1.0
             ),
         ),
     )
@@ -3910,7 +3910,7 @@ def create_individual_radar(df: pd.DataFrame):
         circ = patches.Circle((0, 0), r, transform=ax.transData._b, color=col, alpha=alpha, zorder=0)
         ax.add_artist(circ)
 
-    center = patches.Circle((0, 0), 4.0, transform=ax.transData._b, color="#001E40", zorder=10)
+    center = patches.Circle((0, 0), 4.0, transform=ax.transData._b, color="#08090D", zorder=10)
     ax.add_artist(center)
 
     fig.subplots_adjust(top=0.90, bottom=0.18)
@@ -3940,9 +3940,9 @@ def create_individual_radar(df: pd.DataFrame):
     forces_wrapped = "\n".join(textwrap.wrap(forces_txt, width=70))
     axes_wrapped = "\n".join(textwrap.wrap(axes_txt, width=70))
 
-    fig.text(0.5, 0.10, forces_wrapped, ha="center", va="center", fontsize=12, color="#DDE8F7")
-    fig.text(0.5, 0.05, axes_wrapped, ha="center", va="center", fontsize=12, color="#DDE8F7")
-    fig.set_facecolor("#002B5C")
+    fig.text(0.5, 0.10, forces_wrapped, ha="center", va="center", fontsize=12, color="#C8D8E8")
+    fig.text(0.5, 0.05, axes_wrapped, ha="center", va="center", fontsize=12, color="#6A8090")
+    fig.set_facecolor("#08090D")
     return fig
 
 
@@ -3981,26 +3981,26 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
 
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111)
-    fig.patch.set_facecolor("#002B5C")
-    ax.set_facecolor("#002B5C")
+    fig.patch.set_facecolor("#08090D")
+    ax.set_facecolor("#08090D")
 
     radar.setup_axis(ax=ax, facecolor="None")
-    radar.draw_circles(ax=ax, facecolor="#0c4281", edgecolor="#0c4281", lw=1.5)
+    radar.draw_circles(ax=ax, facecolor="#0C1220", edgecolor="#1A2A3A", lw=1.0)
 
     radar.draw_radar_compare(
         v1,
         v2,
         ax=ax,
-        kwargs_radar={"facecolor": "#00f2c1", "alpha": 0.45, "edgecolor": "#00f2c1", "lw": 2},
-        kwargs_compare={"facecolor": "#d80499", "alpha": 0.40, "edgecolor": "#d80499", "lw": 2},
+        kwargs_radar={"facecolor": "#00A3E0", "alpha": 0.40, "edgecolor": "#00A3E0", "lw": 2},
+        kwargs_compare={"facecolor": "#6ECFEF", "alpha": 0.30, "edgecolor": "#6ECFEF", "lw": 2},
     )
 
-    radar.draw_range_labels(ax=ax, fontsize=10, color="#bcd0e6")
-    radar.draw_param_labels(ax=ax, fontsize=12, color="#fcfcfc")
+    radar.draw_range_labels(ax=ax, fontsize=10, color="#6A8090")
+    radar.draw_param_labels(ax=ax, fontsize=12, color="#C8D8E8")
 
-    fig.text(0.03, 0.965, p1, ha="left", va="top", fontsize=16, color="#00f2c1", fontweight="bold")
-    fig.text(0.97, 0.965, p2, ha="right", va="top", fontsize=16, color="#d80499", fontweight="bold")
-    fig.text(0.5, 0.965, "Comparaison (0-100)", ha="center", va="top", fontsize=14, color="#ffffff", fontweight="bold")
+    fig.text(0.03, 0.965, p1, ha="left", va="top", fontsize=16, color="#00A3E0", fontweight="bold")
+    fig.text(0.97, 0.965, p2, ha="right", va="top", fontsize=16, color="#6ECFEF", fontweight="bold")
+    fig.text(0.5, 0.965, "Comparaison (0-100)", ha="center", va="top", fontsize=14, color="#C8D8E8", fontweight="bold")
 
     delta = pd.Series(v1 - v2, index=available)
 
@@ -4019,22 +4019,31 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
 
     fig.subplots_adjust(top=0.90, bottom=0.18)
 
-    fig.text(0.5, 0.11, f"✅ Avantages {p1} vs {p2} : {txt_pos}", ha="center", va="center", fontsize=11.5, color="#ffffff")
-    fig.text(0.5, 0.075, f"⚠️ Axes d'amélioration {p1} vs {p2} : {txt_neg}", ha="center", va="center", fontsize=11.5, color="#ffffff")
+    fig.text(0.5, 0.11, f"✅ Avantages {p1} vs {p2} : {txt_pos}", ha="center", va="center", fontsize=11.5, color="#C8D8E8")
+    fig.text(0.5, 0.075, f"⚠️ Axes d'amélioration {p1} vs {p2} : {txt_neg}", ha="center", va="center", fontsize=11.5, color="#C8D8E8")
 
-    fig.text(0.98, 0.02, "Δ = (profil A - profil B)", ha="right", va="bottom", fontsize=9, color="#bcd0e6")
+    fig.text(0.98, 0.02, "Δ = (profil A - profil B)", ha="right", va="bottom", fontsize=9, color="#6A8090")
 
     return fig
 
 
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     st.sidebar.markdown(
-        "<div style='display:flex;justify-content:center;'><img src='https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png' width='100'></div>",
+        "<div style='display:flex;flex-direction:column;align-items:center;padding:24px 0 16px 0;border-bottom:1px solid rgba(0,163,224,0.15);margin-bottom:8px;'>"
+        "<img src='https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png' style='width:90px;height:90px;object-fit:contain;'>"
+        "<div style='font-family:Oswald,sans-serif;font-size:9px;font-weight:500;letter-spacing:0.18em;text-transform:uppercase;color:#6A8090;margin-top:10px;'>Centre de Formation</div>"
+        "</div>",
         unsafe_allow_html=True,
     )
 
     player_name = get_player_for_profile(user_profile, permissions)
-    st.sidebar.title(f"Connecté : {user_profile}")
+    st.sidebar.markdown(
+        f"<div style='font-family:Oswald,sans-serif;font-size:11px;font-weight:500;letter-spacing:0.14em;"
+        f"text-transform:uppercase;color:#6A8090;padding:0 12px 2px 12px;'>Connecté</div>"
+        f"<div style='font-family:Oswald,sans-serif;font-size:20px;font-weight:700;letter-spacing:0.06em;"
+        f"text-transform:uppercase;color:#FFFFFF;padding:0 12px 12px 12px;'>{user_profile}</div>",
+        unsafe_allow_html=True,
+    )
 
     if player_name:
         st.sidebar.write(f"Joueuse associée : {player_name}")
@@ -4724,12 +4733,12 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 photo_b64 = "data:image/jpeg;base64," + _b64.b64encode(_pb).decode()
 
         # Badges postes
-        def _badge(txt, color="#0078D4"):
-            return f"<span style='background:{color};color:white;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600;letter-spacing:0.5px;margin-right:6px;'>{txt}</span>"
+        def _badge(txt, color="#00A3E0"):
+            return f"<span style='background:transparent;color:{color};padding:3px 10px;border-radius:2px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;margin-right:8px;border:1px solid {color};font-family:Oswald,sans-serif;'>{txt}</span>"
 
         postes_html = ""
-        if poste1_val: postes_html += _badge(poste1_val, "#0078D4")
-        if poste2_val: postes_html += _badge(poste2_val, "#005a9e")
+        if poste1_val: postes_html += _badge(poste1_val, "#00A3E0")
+        if poste2_val: postes_html += _badge(poste2_val, "#6ECFEF")
 
         pied_icon  = "🦶 " + pied_val if pied_val else ""
         taille_str = f"📏 {taille_val}" if taille_val else ""
@@ -4737,30 +4746,31 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         details_lines = [x for x in [ddn_str, taille_str, pied_icon] if x]
         details_html = "".join(
-            f"<div style='color:#8ab4d4;font-size:13px;margin-top:6px;'>{d}</div>"
+            f"<div style='color:#6A8090;font-size:13px;margin-top:7px;font-family:Inter,sans-serif;letter-spacing:0.04em;'>{d}</div>"
             for d in details_lines
         )
 
         photo_html = (
             f"<img src='{photo_b64}' style='width:160px;height:200px;object-fit:cover;object-position:top;"
-            f"border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,0.5);display:block;'/>"
+            f"border-radius:4px;box-shadow:0 0 0 1px rgba(0,163,224,0.3),0 8px 32px rgba(0,0,0,0.6);display:block;'/>"
             if photo_b64 else
-            "<div style='width:160px;height:200px;background:#0c2f52;border-radius:10px;"
+            "<div style='width:160px;height:200px;background:#0C1220;border-radius:4px;"
             "display:flex;align-items:center;justify-content:center;"
-            "font-size:56px;box-shadow:0 4px 20px rgba(0,0,0,0.4);'>👤</div>"
+            "font-size:56px;border:1px solid rgba(0,163,224,0.2);'>👤</div>"
         )
 
         card_html = f"""
         <div style='
-            background: linear-gradient(135deg, #0a2540 0%, #0d3460 60%, #0a2540 100%);
-            border: 1px solid rgba(0,120,212,0.25);
-            border-radius: 16px;
+            background: #0C1220;
+            border: 1px solid rgba(0,163,224,0.2);
+            border-top: 2px solid #00A3E0;
+            border-radius: 4px;
             padding: 28px 32px;
             display: flex;
             gap: 32px;
             align-items: flex-start;
             margin-bottom: 8px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+            box-shadow: 0 4px 24px rgba(0,0,0,0.5);
         '>
             <!-- Photo -->
             <div style='flex-shrink:0;'>
@@ -4768,11 +4778,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             </div>
             <!-- Infos -->
             <div style='flex:1;min-width:0;'>
-                <div style='color:#5a9fd4;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-bottom:4px;'>Paris FC — Joueuse Passerelle</div>
-                <div style='color:white;font-size:28px;font-weight:800;line-height:1.1;margin-bottom:2px;'>{prenom_val}</div>
-                <div style='color:#0078D4;font-size:32px;font-weight:900;letter-spacing:1px;margin-bottom:14px;'>{nom_val.upper()}</div>
-                <div style='margin-bottom:16px;'>{postes_html}</div>
-                <div style='width:40px;height:2px;background:linear-gradient(90deg,#0078D4,transparent);margin-bottom:14px;'></div>
+                <div style='color:#00A3E0;font-family:Oswald,sans-serif;font-size:10px;font-weight:500;letter-spacing:0.20em;text-transform:uppercase;margin-bottom:10px;'>Paris FC — Joueuse Passerelle</div>
+                <div style='color:#C8D8E8;font-family:Inter,sans-serif;font-size:26px;font-weight:300;line-height:1;margin-bottom:2px;'>{prenom_val}</div>
+                <div style='color:#FFFFFF;font-family:Oswald,sans-serif;font-size:36px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;line-height:1;margin-bottom:18px;'>{nom_val.upper()}</div>
+                <div style='margin-bottom:18px;'>{postes_html}</div>
+                <div style='width:32px;height:1px;background:#00A3E0;margin-bottom:14px;opacity:0.5;'></div>
                 {details_html}
             </div>
         </div>
@@ -4805,10 +4815,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 # ── Affichage des objectifs texte ──
                 for _onum, _otxt in _objectifs:
                     st.markdown(
-                        f"<div style='background:rgba(0,120,212,0.08); border-left:3px solid #0078D4; "
-                        f"border-radius:6px; padding:10px 16px; margin-bottom:8px; color:#E0E8FF; font-size:15px;'>"
-                        f"<span style='color:#0078D4; font-weight:700; font-size:11px; text-transform:uppercase; "
-                        f"letter-spacing:0.08em;'>{_onum}</span><br/><span style='font-size:15px;'>{_otxt}</span></div>",
+                        f"<div style='background:#0C1220; border-left:2px solid #00A3E0; "
+                        f"border-radius:2px; padding:12px 16px; margin-bottom:8px; color:#C8D8E8; font-size:15px;'>"
+                        f"<span style='color:#00A3E0; font-family:Oswald,sans-serif; font-weight:600; font-size:11px; text-transform:uppercase; "
+                        f"letter-spacing:0.12em;'>{_onum}</span><br/><span style='font-size:15px;font-family:Inter,sans-serif;'>{_otxt}</span></div>",
                         unsafe_allow_html=True
                     )
 
@@ -4853,25 +4863,25 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                             value=round(_moy, 2),
                                             title={"text": f"<b>{_onum}</b><br><span style='font-size:11px'>{_otxt[:45]}{'…' if len(_otxt)>45 else ''}</span>",
                                                    "font": {"size": 13, "color": "#CCDDEE"}},
-                                            number={"font": {"size": 32, "color": "#0078D4"}, "suffix": " /5"},
+                                            number={"font": {"size": 32, "color": "#00A3E0"}, "suffix": " /5"},
                                             gauge={
-                                                "axis": {"range": [0, 5], "tickwidth": 1, "tickcolor": "#555", "nticks": 6},
-                                                "bar": {"color": "#0078D4"},
-                                                "bgcolor": "#0a2540",
+                                                "axis": {"range": [0, 5], "tickwidth": 1, "tickcolor": "#1A2A3A", "nticks": 6, "tickfont": {"color": "#6A8090"}},
+                                                "bar": {"color": "#00A3E0"},
+                                                "bgcolor": "#0C1220",
                                                 "borderwidth": 0,
                                                 "steps": [
-                                                    {"range": [0, 2],   "color": "rgba(220,50,50,0.2)"},
-                                                    {"range": [2, 3.5], "color": "rgba(255,165,0,0.2)"},
-                                                    {"range": [3.5, 5], "color": "rgba(0,190,90,0.2)"},
+                                                    {"range": [0, 2],   "color": "rgba(220,50,50,0.15)"},
+                                                    {"range": [2, 3.5], "color": "rgba(255,165,0,0.15)"},
+                                                    {"range": [3.5, 5], "color": "rgba(0,163,224,0.15)"},
                                                 ],
-                                                "threshold": {"line": {"color": "#FFF", "width": 2}, "thickness": 0.75, "value": _moy}
+                                                "threshold": {"line": {"color": "#00A3E0", "width": 2}, "thickness": 0.75, "value": _moy}
                                             }
                                         ))
                                         _fig.update_layout(
                                             height=240,
                                             margin=dict(t=70, b=10, l=20, r=20),
-                                            paper_bgcolor="rgba(0,0,0,0)",
-                                            font_color="#CCDDEE"
+                                            paper_bgcolor="#08090D",
+                                            font_color="#C8D8E8"
                                         )
                                         st.plotly_chart(_fig, use_container_width=True)
                                         st.caption(f"Moyenne sur {_n_evals} évaluation{'s' if _n_evals > 1 else ''}")
