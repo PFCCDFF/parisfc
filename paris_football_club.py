@@ -4780,39 +4780,43 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.caption(f"↳ Données liées à : **{resolved_player}**")
 
 
-        # =========================
-        # BLOC OBJECTIFS
-        # =========================
-        _obj1 = info.get("Objectif 1", "") or "" if info else ""
-        _obj2 = info.get("Objectif 2", "") or "" if info else ""
-        _obj3 = info.get("Objectif 3", "") or "" if info else ""
-        _objectifs = [(f"Objectif {i+1}", o) for i, o in enumerate([_obj1, _obj2, _obj3]) if o.strip()]
+        st.divider()
 
-        if _objectifs:
-            with st.expander("🎯 Objectif(s)", expanded=True):
-                # Affichage des objectifs texte
+        tab_stats, tab_obj, tab_edf, tab_gps = st.tabs(["📈 Statistiques", "🎯 Objectifs", "🆚 Comparaison EDF", "🏃 Données physiques (GPS)"])
+
+        with tab_obj:
+            # ── Récupération des objectifs depuis le fichier passerelle ──
+            _obj1 = (info.get("Objectif 1", "") or "") if info else ""
+            _obj2 = (info.get("Objectif 2", "") or "") if info else ""
+            _obj3 = (info.get("Objectif 3", "") or "") if info else ""
+            _objectifs = [(f"Objectif {i+1}", o) for i, o in enumerate([_obj1, _obj2, _obj3]) if o.strip()]
+
+            if not _objectifs:
+                st.info("Aucun objectif défini pour cette joueuse. Ajoutez les colonnes **Objectif 1**, **Objectif 2**, **Objectif 3** dans le fichier Excel passerelle.")
+            else:
+                # ── Affichage des objectifs texte ──
                 for _onum, _otxt in _objectifs:
                     st.markdown(
                         f"<div style='background:rgba(0,120,212,0.08); border-left:3px solid #0078D4; "
-                        f"border-radius:6px; padding:8px 14px; margin-bottom:6px; color:#E0E8FF; font-size:15px;'>"
-                        f"<span style='color:#0078D4; font-weight:600; font-size:12px; text-transform:uppercase; "
-                        f"letter-spacing:0.05em;'>{_onum}</span><br/>{_otxt}</div>",
+                        f"border-radius:6px; padding:10px 16px; margin-bottom:8px; color:#E0E8FF; font-size:15px;'>"
+                        f"<span style='color:#0078D4; font-weight:700; font-size:11px; text-transform:uppercase; "
+                        f"letter-spacing:0.08em;'>{_onum}</span><br/><span style='font-size:15px;'>{_otxt}</span></div>",
                         unsafe_allow_html=True
                     )
 
-                # Évaluations depuis le Google Forms
+                # ── Évaluations depuis le CSV Google Forms ──
                 st.markdown("---")
+                st.markdown("**Évaluations du staff**")
                 _evals_df = load_objectifs_evaluations()
+
                 if _evals_df.empty:
-                    st.caption("📋 Aucune évaluation disponible — synchronisez le fichier Google Forms.")
+                    st.caption("📋 Aucune évaluation disponible. Une fois le Google Forms créé, synchronisez le CSV via le bouton ci-dessous.")
                 else:
-                    # Filtrer par joueuse (matching souple Nom Prénom)
                     _joueur_col = "Joueuse" if "Joueuse" in _evals_df.columns else None
                     _obj_col    = "Objectif évalué" if "Objectif évalué" in _evals_df.columns else None
                     _note_col   = "Note" if "Note" in _evals_df.columns else None
 
                     if _joueur_col and _obj_col and _note_col:
-                        # Matching joueuse (insensible à la casse, correspondance partielle)
                         _sel_norm = normalize_str(selected) if selected else ""
                         _mask = _evals_df[_joueur_col].apply(
                             lambda x: _sel_norm in normalize_str(str(x)) or normalize_str(str(x)) in _sel_norm
@@ -4823,76 +4827,61 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             st.caption(f"Aucune évaluation enregistrée pour **{selected}**.")
                         else:
                             import plotly.graph_objects as go
-
-                            # Un diagramme par objectif défini
-                            _cols_diag = st.columns(len(_objectifs))
+                            _cols_diag = st.columns(min(len(_objectifs), 3))
                             for _ci, (_onum, _otxt) in enumerate(_objectifs):
-                                # Filtrer les évaluations correspondant à cet objectif
                                 _obj_mask = _player_evals[_obj_col].apply(
                                     lambda x: normalize_str(str(x)) in normalize_str(_otxt)
                                              or normalize_str(_otxt) in normalize_str(str(x))
                                 )
                                 _obj_evals = _player_evals[_obj_mask][_note_col].dropna()
-
-                                with _cols_diag[_ci]:
+                                with _cols_diag[_ci % 3]:
                                     if _obj_evals.empty:
-                                        st.caption(f"Pas encore d'évaluation pour cet objectif.")
+                                        st.caption(f"Pas encore d'évaluation pour **{_onum}**.")
                                     else:
                                         _moy = _obj_evals.mean()
                                         _n_evals = len(_obj_evals)
-
-                                        # Gauge plotly 1-5
                                         _fig = go.Figure(go.Indicator(
                                             mode="gauge+number",
                                             value=round(_moy, 2),
-                                            title={"text": f"<b>{_onum}</b><br><span style='font-size:11px'>{_otxt[:40]}{'…' if len(_otxt)>40 else ''}</span>",
-                                                   "font": {"size": 13}},
-                                            number={"font": {"size": 28, "color": "#0078D4"}, "suffix": " /5"},
+                                            title={"text": f"<b>{_onum}</b><br><span style='font-size:11px'>{_otxt[:45]}{'…' if len(_otxt)>45 else ''}</span>",
+                                                   "font": {"size": 13, "color": "#CCDDEE"}},
+                                            number={"font": {"size": 32, "color": "#0078D4"}, "suffix": " /5"},
                                             gauge={
-                                                "axis": {"range": [0, 5], "tickwidth": 1,
-                                                         "tickcolor": "#555", "nticks": 6},
+                                                "axis": {"range": [0, 5], "tickwidth": 1, "tickcolor": "#555", "nticks": 6},
                                                 "bar": {"color": "#0078D4"},
                                                 "bgcolor": "#0a2540",
                                                 "borderwidth": 0,
                                                 "steps": [
-                                                    {"range": [0, 2],   "color": "rgba(255,60,60,0.18)"},
-                                                    {"range": [2, 3.5], "color": "rgba(255,165,0,0.18)"},
-                                                    {"range": [3.5, 5], "color": "rgba(0,200,100,0.18)"},
+                                                    {"range": [0, 2],   "color": "rgba(220,50,50,0.2)"},
+                                                    {"range": [2, 3.5], "color": "rgba(255,165,0,0.2)"},
+                                                    {"range": [3.5, 5], "color": "rgba(0,190,90,0.2)"},
                                                 ],
-                                                "threshold": {
-                                                    "line": {"color": "#FFFFFF", "width": 2},
-                                                    "thickness": 0.75,
-                                                    "value": _moy
-                                                }
+                                                "threshold": {"line": {"color": "#FFF", "width": 2}, "thickness": 0.75, "value": _moy}
                                             }
                                         ))
                                         _fig.update_layout(
-                                            height=220,
-                                            margin=dict(t=60, b=10, l=20, r=20),
+                                            height=240,
+                                            margin=dict(t=70, b=10, l=20, r=20),
                                             paper_bgcolor="rgba(0,0,0,0)",
                                             font_color="#CCDDEE"
                                         )
                                         st.plotly_chart(_fig, use_container_width=True)
                                         st.caption(f"Moyenne sur {_n_evals} évaluation{'s' if _n_evals > 1 else ''}")
                     else:
-                        st.caption("⚠️ Format du CSV inattendu — vérifiez les noms de colonnes.")
+                        st.caption("⚠️ Format du CSV inattendu — colonnes attendues : Joueuse, Objectif évalué, Note.")
 
-                # Bouton sync (admin seulement)
+                # Bouton sync admin
                 if check_permission(user_profile, "all", permissions):
+                    st.markdown("---")
                     if st.button("🔄 Sync évaluations objectifs", key="sync_obj_evals"):
                         _ok, _err = sync_objectifs_from_drive()
                         if _ok:
                             st.success(f"{_ok} fichier(s) synchronisé(s).")
                             st.rerun()
                         elif not DRIVE_OBJECTIFS_FOLDER_ID:
-                            st.info("Configurez DRIVE_OBJECTIFS_FOLDER_ID dans le code pour activer la sync.")
+                            st.info("Renseignez **DRIVE_OBJECTIFS_FOLDER_ID** dans le code (ligne ~60) pour activer la synchronisation Drive.")
                         else:
-                            st.error("Aucun fichier récupéré. Vérifiez le dossier Drive.")
-
-
-        st.divider()
-
-        tab_stats, tab_edf, tab_gps = st.tabs(["📈 Statistiques", "🆚 Comparaison EDF", "🏃 Données physiques (GPS)"])
+                            st.error("Aucun fichier récupéré. Vérifiez l'ID du dossier Drive.")
 
         with tab_stats:
             st.subheader("Statistiques joueuse")
