@@ -1971,6 +1971,60 @@ def normalize_players_in_df(
 # =========================
 # PASSERELLES
 # =========================
+def _passerelle_fmt_date(v) -> str:
+    """Convertit n'importe quelle valeur de date en 'dd/mm/yyyy' ou '' si vide."""
+    if v is None:
+        return ""
+    # Timestamp pandas / datetime Python
+    if hasattr(v, "strftime"):
+        try:
+            return v.strftime("%d/%m/%Y")
+        except Exception:
+            return ""
+    s = str(v).strip()
+    if not s or s.lower() in ("nan", "none", "nat", ""):
+        return ""
+    # Format ISO yyyy-mm-dd (pandas lit souvent les dates ainsi)
+    if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+        try:
+            return pd.to_datetime(s).strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    # Format dd/mm/yyyy déjà correct
+    if re.match(r"^\d{2}/\d{2}/\d{4}$", s):
+        return s
+    # Dernier recours : laisser pandas interpréter
+    try:
+        return pd.to_datetime(s, dayfirst=True).strftime("%d/%m/%Y")
+    except Exception:
+        return s  # retourner tel quel si vraiment impossible
+
+
+def _passerelle_clean(v) -> str:
+    """Nettoie une valeur : None/NaN/NAT → '', sinon strip."""
+    if v is None:
+        return ""
+    s = str(v).strip()
+    return "" if s.lower() in ("nan", "none", "nat", "") else s
+
+
+def _find_col(df: pd.DataFrame, *candidates: str):
+    """Trouve la première colonne correspondant à un des candidats (insensible casse/accents)."""
+    col_map = {normalize_str(str(c)): str(c) for c in df.columns}
+    # Correspondance exacte normalisée
+    for cand in candidates:
+        key = normalize_str(cand)
+        if key in col_map:
+            return col_map[key]
+    # Correspondance partielle
+    for cand in candidates:
+        key = normalize_str(cand)
+        for k, orig in col_map.items():
+            if key and (key in k or k in key):
+                return orig
+    return None
+
+
 def load_passerelle_data():
     passerelle_data = {}
     passerelle_file = os.path.join(PASSERELLE_FOLDER, PASSERELLE_FILENAME)
@@ -1979,36 +2033,47 @@ def load_passerelle_data():
     try:
         df = read_excel_auto(passerelle_file)
         if isinstance(df, dict):
-            df = list(df.values())[0] if len(df) else pd.DataFrame()
+            df = list(df.values())[0] if df else pd.DataFrame()
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return passerelle_data
+
+        # Détection flexible des colonnes (gère variations d'intitulé)
+        col_nom    = _find_col(df, "Nom", "NOM", "Nom de famille")
+        col_prenom = _find_col(df, "Prénom", "Prenom", "PRENOM", "Prénom")
+        col_ddn    = _find_col(df,
+                        "Date de naissance", "Date naissance",
+                        "DateNaissance", "DOB", "Naissance",
+                        "Date de Naissance", "date_naissance")
+        col_photo  = _find_col(df, "Photo", "PHOTO", "Lien photo")
+        col_p1     = _find_col(df, "Poste 1", "Poste1", "Poste principal", "Poste")
+        col_p2     = _find_col(df, "Poste 2", "Poste2", "Poste secondaire")
+        col_pied   = _find_col(df, "Pied Fort", "Pied", "Pied fort")
+        col_taille = _find_col(df, "Taille", "Taille (cm)", "Height")
+
+        def _get(row, col):
+            return row.get(col) if col else None
+
         for _, row in df.iterrows():
-            nom = row.get("Nom", None)
-            if nom:
-                def _fmt_date(v):
-                    if v is None: return ""
-                    if hasattr(v, "strftime"): return v.strftime("%d/%m/%Y")
-                    s = str(v).strip()
-                    if s.lower() in ("nan","none","nat",""): return ""
-                    import re as _re
-                    if _re.match(r"^\d{4}-\d{2}-\d{2}", s):
-                        try:
-                            import pandas as _pd3
-                            return _pd3.to_datetime(s).strftime("%d/%m/%Y")
-                        except Exception: pass
-                    return s
-                def _clean(v):
-                    s = str(v).strip() if v is not None else ""
-                    return "" if s.lower() in ("nan","none","nat","") else s
-                passerelle_data[nom] = {
-                    "Prénom": _clean(row.get("Prénom", "")),
-                    "Photo": _clean(row.get("Photo", "")),
-                    "Date de naissance": _fmt_date(row.get("Date de naissance", "")),
-                    "Poste 1": _clean(row.get("Poste 1", "")),
-                    "Poste 2": _clean(row.get("Poste 2", "")),
-                    "Pied Fort": _clean(row.get("Pied Fort", "")),
-                    "Taille": _clean(row.get("Taille", "")),
-                }
-    except Exception:
-        pass
+            nom = _passerelle_clean(_get(row, col_nom))
+            if not nom:
+                continue
+
+            # Clé du dict : "NOM Prénom" (ou juste NOM si pas de prénom)
+            prenom = _passerelle_clean(_get(row, col_prenom))
+            key = f"{nom} {prenom}".strip() if prenom else nom
+
+            passerelle_data[key] = {
+                "Nom":    nom,
+                "Prénom": prenom,
+                "Photo":  _passerelle_clean(_get(row, col_photo)),
+                "Date de naissance": _passerelle_fmt_date(_get(row, col_ddn)),
+                "Poste 1":   _passerelle_clean(_get(row, col_p1)),
+                "Poste 2":   _passerelle_clean(_get(row, col_p2)),
+                "Pied Fort": _passerelle_clean(_get(row, col_pied)),
+                "Taille":    _passerelle_clean(_get(row, col_taille)),
+            }
+    except Exception as e:
+        _warn(f"Passerelle: erreur lecture → {e}")
     return passerelle_data
 
 
@@ -4539,6 +4604,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         pied_val    = info.get("Pied Fort", "") or ""
         taille_val  = info.get("Taille", "") or ""
         ddn_val = info.get("Date de naissance", "") or ""  # déjà nettoyé dans load_passerelle_data
+
+        # DEBUG TEMPORAIRE — à retirer après validation
+        with st.expander("🔍 Debug date de naissance", expanded=False):
+            st.write(f"**Clé sélectionnée :** `{selected}`")
+            st.write(f"**Contenu brut de info :** `{info}`")
+            st.write(f"**ddn_val final :** `{repr(ddn_val)}`")
+            all_keys = list(passerelle_data.keys())[:10]
+            st.write(f"**10 premières clés du dict :** {all_keys}")
 
         if str(taille_val).lower() in ("nan", "none", ""): taille_val = ""
         if str(poste1_val).lower() in ("nan", "none", ""): poste1_val = ""
