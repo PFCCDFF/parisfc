@@ -3991,15 +3991,15 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
         v1,
         v2,
         ax=ax,
-        kwargs_radar={"facecolor": "#00A3E0", "alpha": 0.40, "edgecolor": "#00A3E0", "lw": 2},
-        kwargs_compare={"facecolor": "#6ECFEF", "alpha": 0.30, "edgecolor": "#6ECFEF", "lw": 2},
+        kwargs_radar={"facecolor": "#00A3E0", "alpha": 0.50, "edgecolor": "#00A3E0", "lw": 2.5},
+        kwargs_compare={"facecolor": "#003189", "alpha": 0.55, "edgecolor": "#FFFFFF", "lw": 1.5},
     )
 
     radar.draw_range_labels(ax=ax, fontsize=10, color="#6A8090")
     radar.draw_param_labels(ax=ax, fontsize=12, color="#C8D8E8")
 
     fig.text(0.03, 0.965, p1, ha="left", va="top", fontsize=16, color="#00A3E0", fontweight="bold")
-    fig.text(0.97, 0.965, p2, ha="right", va="top", fontsize=16, color="#6ECFEF", fontweight="bold")
+    fig.text(0.97, 0.965, p2, ha="right", va="top", fontsize=16, color="#4A7FFF", fontweight="bold")
     fig.text(0.5, 0.965, "Comparaison (0-100)", ha="center", va="top", fontsize=14, color="#C8D8E8", fontweight="bold")
 
     delta = pd.Series(v1 - v2, index=available)
