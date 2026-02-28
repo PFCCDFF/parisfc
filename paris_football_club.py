@@ -121,20 +121,37 @@ def _sanitize_df_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     def _safe(v):
         if v is None or (isinstance(v, float) and np.isnan(v)):
             return None
+        # Datetime avec timezone → retirer le tzinfo (Excel ne supporte pas)
+        if isinstance(v, datetime.datetime) and v.tzinfo is not None:
+            return v.replace(tzinfo=None)
+        if isinstance(v, datetime.date):
+            return v
         if isinstance(v, EXCEL_SAFE):
             return v
         if hasattr(v, "item"):           # numpy scalar → python natif
             try: return v.item()
             except Exception: pass
-        if isinstance(v, (np.datetime64, pd.Timestamp)):
-            try: return pd.Timestamp(v).to_pydatetime()
+        if isinstance(v, pd.Timestamp):
+            try:
+                ts = v.tz_localize(None) if v.tzinfo is not None else v
+                return ts.to_pydatetime()
             except Exception: return str(v)
-        if isinstance(v, pd.NaT.__class__):
+        if isinstance(v, np.datetime64):
+            try: return pd.Timestamp(v).tz_localize(None).to_pydatetime()
+            except Exception: return str(v)
+        if isinstance(v, type(pd.NaT)):
             return None
         # Tout le reste (list, dict, set, timedelta, etc.) → str
         return str(v)
 
     for col in df.columns:
+        # Retirer le timezone des colonnes datetime avec tz directement (plus rapide)
+        try:
+            if hasattr(df[col], "dt") and df[col].dt.tz is not None:
+                df[col] = df[col].dt.tz_localize(None)
+                continue
+        except Exception:
+            pass
         try:
             df[col] = df[col].apply(_safe)
         except Exception:
