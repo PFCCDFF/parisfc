@@ -110,6 +110,38 @@ def safe_int_numeric_only(df: pd.DataFrame, round_first: bool = True) -> pd.Data
     return out
 
 
+def _sanitize_df_for_excel(df: pd.DataFrame) -> pd.DataFrame:
+    """Convertit TOUS les types incompatibles avec Excel en types sérialisables."""
+    import numpy as np
+    import datetime
+    df = df.copy()
+
+    EXCEL_SAFE = (str, int, float, bool, type(None), datetime.datetime, datetime.date)
+
+    def _safe(v):
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return None
+        if isinstance(v, EXCEL_SAFE):
+            return v
+        if hasattr(v, "item"):           # numpy scalar → python natif
+            try: return v.item()
+            except Exception: pass
+        if isinstance(v, (np.datetime64, pd.Timestamp)):
+            try: return pd.Timestamp(v).to_pydatetime()
+            except Exception: return str(v)
+        if isinstance(v, pd.NaT.__class__):
+            return None
+        # Tout le reste (list, dict, set, timedelta, etc.) → str
+        return str(v)
+
+    for col in df.columns:
+        try:
+            df[col] = df[col].apply(_safe)
+        except Exception:
+            df[col] = df[col].astype(str)
+    return df
+
+
 def build_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -126,7 +158,7 @@ def build_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
                 k += 1
             used.add(sheet)
             if isinstance(df, pd.DataFrame) and not df.empty:
-                df.to_excel(writer, sheet_name=sheet, index=False)
+                _sanitize_df_for_excel(df).to_excel(writer, sheet_name=sheet, index=False)
             else:
                 pd.DataFrame().to_excel(writer, sheet_name=sheet, index=False)
     output.seek(0)
