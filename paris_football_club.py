@@ -3042,7 +3042,9 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
             d = d.rename(columns={k: v})
 
     if "DATE" in d.columns:
-        d["DATE"] = pd.to_datetime(d["DATE"], errors="coerce")
+        # Parser avec gestion timezone : retirer tz et ne garder que la date (sans heure)
+        _dates = pd.to_datetime(d["DATE"], errors="coerce", utc=True)
+        d["DATE"] = _dates.dt.tz_localize(None).dt.normalize()  # minuit, sans tz
     else:
         dt = parse_date_from_gf1_filename(filename)
         d["DATE"] = pd.Timestamp(dt.date()) if dt else pd.NaT
@@ -3175,8 +3177,10 @@ def load_gps_match(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon,
             df["__match_label"] = minfo["label"]
             df["__adversaire"] = minfo["adversaire"]
             df["__journee"] = minfo["journee"]
-            if minfo["date"] is not None and ("DATE" not in df.columns or df["DATE"].isna().all()):
-                df["DATE"] = minfo["date"]
+            # N'utiliser la date du filename que si la colonne DATE est absente ou entièrement vide
+            if "DATE" not in df.columns or df["DATE"].isna().all():
+                if minfo["date"] is not None:
+                    df["DATE"] = minfo["date"]
 
             # Garder colonnes plages vitesse pour barres
             for col_orig, col_std in [
