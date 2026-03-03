@@ -3708,7 +3708,7 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
         return None
 
     p = nettoyer_nom_joueuse(player_name)
-    df = df[df["Player"].astype(str) == p].copy()
+    df = df[df["Player"].astype(str).apply(nettoyer_nom_joueuse) == p].copy()
     if df.empty:
         return None
 
@@ -4870,8 +4870,13 @@ def build_tactical_report_html(df_tactic: pd.DataFrame, player_canon: str, gps_s
 
     # --- GPS panel ---
     gps_html = ""
-    if gps_summary is not None and isinstance(gps_summary, pd.DataFrame) and not gps_summary.empty:
-        row = gps_summary.iloc[0].to_dict()
+    _gps_dict = None
+    if isinstance(gps_summary, dict) and gps_summary:
+        _gps_dict = gps_summary
+    elif isinstance(gps_summary, pd.DataFrame) and not gps_summary.empty:
+        _gps_dict = gps_summary.iloc[0].to_dict()
+    if _gps_dict is not None:
+        row = _gps_dict
 
         def _gps_get(key, fmt="{:.0f}"):
             v = row.get(key, None)
@@ -4883,12 +4888,12 @@ def build_tactical_report_html(df_tactic: pd.DataFrame, player_canon: str, gps_s
             except Exception:
                 return str(v)
 
-        dist = _gps_get("Distance (m)", "{:.0f}")
-        duree = _gps_get("Durée_min", "{:.0f}")
-        hid13 = _gps_get("Distance HID (>13 km/h)", "{:.0f}")
-        hid19 = _gps_get("Distance HID (>19 km/h)", "{:.0f}")
-        vma = _gps_get("Vitesse max (km/h)", "{:.1f}")
-        charge = _gps_get("CHARGE", "{:.0f}")
+        dist = _gps_get("distance_m", "{:.0f}")
+        duree = _gps_get("duration_min", "{:.0f}")
+        hid13 = _gps_get("hid13_m", "{:.0f}")
+        hid19 = _gps_get("hid19_m", "{:.0f}")
+        vma = _gps_get("vmax_kmh", "{:.1f}")
+        charge = _gps_get("charge", "{:.0f}")
 
         gps_html = f"""
         <div class="gps-panel">
