@@ -3129,10 +3129,17 @@ def parse_match_info_from_filename(filename: str) -> dict:
 def load_gps_match(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon,
                    first_to_canons, last_to_canons) -> pd.DataFrame:
     """Charge et normalise tous les fichiers GPS match détectés localement."""
-    # Chercher dans le dossier dédié + dossier GPS général
-    search_dirs = [GPS_MATCH_FOLDER, GPS_FOLDER, DATA_FOLDER]
     paths = []
-    for d in search_dirs:
+    # Dossier dédié gps_match : TOUT fichier CSV est accepté, quel que soit son nom
+    if os.path.exists(GPS_MATCH_FOLDER):
+        for root, _, files in os.walk(GPS_MATCH_FOLDER):
+            for f in files:
+                if f.lower().endswith(".csv"):
+                    full = os.path.join(root, f)
+                    if full not in paths:
+                        paths.append(full)
+    # Dossier GPS général et DATA : filtrer par nom pour ne pas confondre avec les séances
+    for d in [GPS_FOLDER, DATA_FOLDER]:
         if not os.path.exists(d):
             continue
         for root, _, files in os.walk(d):
