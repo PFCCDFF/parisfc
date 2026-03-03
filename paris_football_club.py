@@ -211,6 +211,49 @@ def nettoyer_nom_joueuse(nom):
     return s
 
 
+def extract_any_date_from_string(s: str):
+    """Extract a date from a filename / label with many possible formats.
+
+    Supported examples:
+    - 27-01-2026, 27/01/2026, 27.01.2026
+    - 27-01-26, 27.01.26 (assumes 2000-2069 for yy<=69, else 1900s)
+    - 2026-01-27
+    - 20260127
+    Returns pandas.Timestamp (naive) or None.
+    """
+    if not s:
+        return None
+    txt = str(s)
+
+    patterns = [
+        # dd-mm-yyyy / dd.mm.yyyy / dd/mm/yyyy
+        r'(?P<d>\b\d{1,2})[\-\./](?P<m>\d{1,2})[\-\./](?P<y>\d{4})\b',
+        # yyyy-mm-dd / yyyy.mm.dd / yyyy/mm/dd
+        r'\b(?P<y>\d{4})[\-\./](?P<m>\d{1,2})[\-\./](?P<d>\d{1,2})\b',
+        # dd-mm-yy / dd.mm.yy / dd/mm/yy
+        r'(?P<d>\b\d{1,2})[\-\./](?P<m>\d{1,2})[\-\./](?P<y>\d{2})\b',
+        # yyyymmdd
+        r'\b(?P<y>\d{4})(?P<m>\d{2})(?P<d>\d{2})\b',
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, txt)
+        if not m:
+            continue
+        gd = m.groupdict()
+        try:
+            y = int(gd['y'])
+            mth = int(gd['m'])
+            d = int(gd['d'])
+            if y < 100:
+                # heuristic
+                y = 2000 + y if y <= 69 else 1900 + y
+            return pd.Timestamp(year=y, month=mth, day=d)
+        except Exception:
+            continue
+
+    return None
+
 def nettoyer_nom_equipe(nom: str) -> str:
     if nom is None:
         return ""
@@ -3284,11 +3327,64 @@ def is_tactical_file(filename: str) -> bool:
 
 def parse_tactical_filename(filename: str) -> dict:
     """Extrait date, adversaire et journée depuis le nom d'un fichier tactique.
-    Format attendu : PFC_VS__2526_U19F_HAC_J10_U19_07-12-2025.csv
+
+    Les exports Sportscode/Hudl ne sont pas toujours homogènes. On tente donc plusieurs formats de date
+    (DD-MM-YYYY, DD.MM.YY, YYYY-MM-DD, YYYYMMDD, etc.) et on garde des champs 'label' stables.
+    Exemples:
+      - PFC_VS__2526_U19F_HAC_J10_U19_07-12-2025.csv
+      - U19 NAT J12 Paris FC - OL_2026-01-27.csv
+      - ..._27.01.26.csv
     """
-    import re
     name = os.path.splitext(os.path.basename(filename))[0]
     info = {"date": None, "journee": "", "adversaire": "", "adv_norm": "", "label": name}
+
+    # Date (robuste)
+    dt = extract_any_date_from_string(name)
+    if dt is not None and pd.notna(dt):
+        try:
+            info["date"] = pd.Timestamp(dt).normalize()
+        except Exception:
+            pass
+
+    # Journée : J suivi de chiffres (J1, J12, etc.)
+    j_m = re.search(r"\bJ\s*(\d{1,2})\b", name, re.IGNORECASE) or re.search(r"[_\-]J(\d+)[_\-]", name, re.IGNORECASE)
+    if j_m:
+        info["journee"] = str(j_m.group(1)).zfill(2)
+
+    # Adversaire (heuristique)
+    # Cas 1 : pattern historique PFC_VS__..._ADV_Jxx
+    adv_m = re.search(r"PFC_VS__[^_]+_[^_]+_([A-Za-zÀ-ÿ][^_]+?)_J\d+", name, re.IGNORECASE)
+    adv = None
+    if adv_m:
+        adv = adv_m.group(1).replace("_", " ").strip()
+    else:
+        # Cas 2 : libellé 'Paris FC - ADV' ou 'PFC - ADV'
+        m2 = re.search(r"(?:Paris\s*FC|PFC)\s*[-–vsVS]+\s*([^_]+)", name, re.IGNORECASE)
+        if m2:
+            adv = m2.group(1).strip()
+            # Nettoie éventuels suffixes (date / Jxx)
+            adv = re.sub(r"\bJ\s*\d{1,2}\b.*$", "", adv, flags=re.IGNORECASE).strip()
+            adv = re.sub(r"\d{4}[-\./]\d{2}[-\./]\d{2}.*$", "", adv).strip()
+            adv = re.sub(r"\d{2}[-\./]\d{2}[-\./]\d{2,4}.*$", "", adv).strip()
+        else:
+            # Cas 3 : dans le nom, dernier token alphabétique avant la date
+            if info.get("date") is not None:
+                # retire la date détectée puis prend le dernier segment
+                tmp = name
+                # supprimer la sous-chaine correspondant au premier match de date
+                tmp = re.sub(r"\b\d{4}[-\./]\d{1,2}[-\./]\d{1,2}\b", " ", tmp)
+                tmp = re.sub(r"\b\d{1,2}[-\./]\d{1,2}[-\./]\d{2,4}\b", " ", tmp)
+                tmp = re.sub(r"\b\d{8}\b", " ", tmp)
+                tokens = [t for t in re.split(r"[_\-]", tmp) if t and any(ch.isalpha() for ch in t)]
+                if tokens:
+                    adv = tokens[-1].replace("_", " ").strip()
+
+    if adv:
+        info["adversaire"] = adv
+        info["adv_norm"] = normalize_str(adv)
+
+    return info
+
 
     # Date : DD-MM-YYYY
     date_m = re.search(r"(\d{2})-(\d{2})-(\d{4})", name)
@@ -3595,14 +3691,20 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
                                     match_date: Optional[pd.Timestamp] = None,
                                     match_label: Optional[str] = None) -> Optional[Dict[str, float]]:
     """Return a compact GPS summary for ONE player on ONE match (date/label based).
-    Robust to small date shifts and naming mismatches.
+
+    Matching model:
+    1) Prefer exact match on calendar day (DATE normalized).
+    2) Fallback to ±1 day around the match date (timezone / midnight shifts).
+    3) If match_date missing OR no rows found, try to extract a date from match_label / filename.
+    4) If still none, pick the closest activity date (±3 days) with the largest duration/distance as a best-effort.
     """
     if gps_match_df is None or getattr(gps_match_df, "empty", True):
         return None
 
     df = gps_match_df.copy()
     df = ensure_date_column(df)
-    if "Player" not in df.columns:
+
+    if "Player" not in df.columns or "DATE" not in df.columns:
         return None
 
     p = nettoyer_nom_joueuse(player_name)
@@ -3610,305 +3712,73 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
     if df.empty:
         return None
 
-    # date filtering (prefer exact day, fallback ±1 day)
+    # ---- resolve match_date if needed
+    md = None
     if match_date is not None and pd.notna(match_date):
         md = pd.to_datetime(match_date, errors="coerce")
-        if pd.notna(md):
-            md = md.normalize()
-            if "DATE" in df.columns:
-                df_exact = df[df["DATE"].dt.normalize() == md].copy()
-            else:
-                df_exact = df.iloc[0:0]
-            if df_exact.empty and "DATE" in df.columns:
-                df_pm1 = df[(df["DATE"].dt.normalize() >= (md - pd.Timedelta(days=1))) &
-                            (df["DATE"].dt.normalize() <= (md + pd.Timedelta(days=1)))].copy()
-                df = df_pm1
-            else:
-                df = df_exact
+    if (md is None or pd.isna(md)) and match_label:
+        md = extract_any_date_from_string(str(match_label))
+    if md is not None and pd.notna(md):
+        md = pd.Timestamp(md).normalize()
 
-    # label filtering if available (helps when multiple activities same day)
-    if match_label and "__match_label" in df.columns:
+    # ---- main matching by date
+    df_work = df
+    if md is not None and pd.notna(md):
+        df_exact = df_work[df_work["DATE"].dt.normalize() == md].copy()
+        if df_exact.empty:
+            df_pm1 = df_work[(df_work["DATE"].dt.normalize() >= (md - pd.Timedelta(days=1))) &
+                             (df_work["DATE"].dt.normalize() <= (md + pd.Timedelta(days=1)))].copy()
+            df_work = df_pm1
+        else:
+            df_work = df_exact
+
+    # ---- optional label match (if you stored __match_label during GPS preprocessing)
+    if match_label and "__match_label" in df_work.columns:
         ml = normalize_str(str(match_label))
-        df_lbl = df[df["__match_label"].astype(str).map(normalize_str) == ml].copy()
+        df_lbl = df_work[df_work["__match_label"].astype(str).map(normalize_str) == ml].copy()
         if not df_lbl.empty:
-            df = df_lbl
+            df_work = df_lbl
 
-    if df.empty:
+    # ---- best-effort fallback: closest day ±3d with max duration/distance
+    if df_work.empty and md is not None and pd.notna(md):
+        win = df[(df["DATE"].dt.normalize() >= (md - pd.Timedelta(days=3))) &
+                 (df["DATE"].dt.normalize() <= (md + pd.Timedelta(days=3)))].copy()
+        if not win.empty:
+            # pick the "most match-like" row(s)
+            dur = pd.to_numeric(win.get("Durée_min", win.get("Durée")), errors="coerce")
+            dist = pd.to_numeric(win.get("Distance (m)"), errors="coerce")
+            score = dur.fillna(0) * 10 + dist.fillna(0) / 1000.0
+            win["__score_match_pick"] = score
+            best_day = win.sort_values("__score_match_pick", ascending=False).iloc[0]["DATE"].normalize()
+            df_work = win[win["DATE"].dt.normalize() == best_day].copy()
+
+    if df_work.empty:
         return None
 
     def _num(col):
-        if col not in df.columns:
+        if col not in df_work.columns:
             return np.array([np.nan])
-        return pd.to_numeric(df[col], errors="coerce")
+        return pd.to_numeric(df_work[col], errors="coerce")
 
-    out = {}
-    out["duration_min"] = float(np.nanmean(_num("Durée_min"))) if "Durée_min" in df.columns else (float(np.nanmean(_num("Durée"))) if "Durée" in df.columns else np.nan)
-    out["distance_m"] = float(np.nansum(_num("Distance (m)"))) if "Distance (m)" in df.columns else np.nan
-    out["hid13_m"] = float(np.nansum(_num("Distance HID (>13 km/h)"))) if "Distance HID (>13 km/h)" in df.columns else np.nan
-    out["hid19_m"] = float(np.nansum(_num("Distance HID (>19 km/h)"))) if "Distance HID (>19 km/h)" in df.columns else np.nan
-    out["d_13_19_m"] = float(np.nansum(_num("Distance 13-19 (m)"))) if "Distance 13-19 (m)" in df.columns else np.nan
-    out["d_19_23_m"] = float(np.nansum(_num("Distance 19-23 (m)"))) if "Distance 19-23 (m)" in df.columns else np.nan
-    out["d_23p_m"] = float(np.nansum(_num("Distance >23 (m)"))) if "Distance >23 (m)" in df.columns else np.nan
-    out["acc_dec"] = float(np.nansum(_num("# Acc/Dec"))) if "# Acc/Dec" in df.columns else np.nan
-    out["vmax_kmh"] = float(np.nanmax(_num("Vitesse max (km/h)"))) if "Vitesse max (km/h)" in df.columns else np.nan
-    out["charge"] = float(np.nansum(_num("CHARGE"))) if "CHARGE" in df.columns else np.nan
-    out["rpe"] = float(np.nanmean(_num("RPE"))) if "RPE" in df.columns else np.nan
+    out: Dict[str, float] = {}
+    out["duration_min"] = float(np.nanmean(_num("Durée_min"))) if "Durée_min" in df_work.columns else (
+        float(np.nanmean(_num("Durée"))) if "Durée" in df_work.columns else np.nan
+    )
+    out["distance_m"] = float(np.nansum(_num("Distance (m)"))) if "Distance (m)" in df_work.columns else np.nan
+    out["hid13_m"] = float(np.nansum(_num("Distance HID (>13 km/h)"))) if "Distance HID (>13 km/h)" in df_work.columns else np.nan
+    out["hid19_m"] = float(np.nansum(_num("Distance HID (>19 km/h)"))) if "Distance HID (>19 km/h)" in df_work.columns else np.nan
+    out["d_13_19_m"] = float(np.nansum(_num("Distance 13-19 (m)"))) if "Distance 13-19 (m)" in df_work.columns else np.nan
+    out["d_19_23_m"] = float(np.nansum(_num("Distance 19-23 (m)"))) if "Distance 19-23 (m)" in df_work.columns else np.nan
+    out["d_23p_m"] = float(np.nansum(_num("Distance >23 (m)"))) if "Distance >23 (m)" in df_work.columns else np.nan
+    out["acc_dec"] = float(np.nansum(_num("# Acc/Dec"))) if "# Acc/Dec" in df_work.columns else np.nan
+    out["vmax_kmh"] = float(np.nanmax(_num("Vitesse max (km/h)"))) if "Vitesse max (km/h)" in df_work.columns else np.nan
+    out["charge"] = float(np.nansum(_num("CHARGE"))) if "CHARGE" in df_work.columns else np.nan
+    out["rpe"] = float(np.nanmean(_num("RPE"))) if "RPE" in df_work.columns else np.nan
 
     if all(pd.isna(v) for v in out.values()):
         return None
     return out
 
-
-def build_tactical_report_html(df_tactic, player_name: str, gps_summary: Optional[Dict[str, float]] = None) -> str:
-    """Génere le rapport HTML style Sportscode pour une seule joueuse."""
-    import json as _j
-    ctx   = _get_match_context(df_tactic)
-    stats = compute_tactical_stats(df_tactic, player_name)
-    if not stats:
-        return ("<div style='color:#6A8090;padding:20px;font-family:sans-serif;"
-                "background:#0a0a0a;'>Joueuse <b style='color:#00A3E0'>"
-                + str(player_name) + "</b> non trouvee dans ce fichier tactique.</div>")
-    stats_json  = _j.dumps(stats,  ensure_ascii=False, default=str)
-    ctx_json    = _j.dumps(ctx,    ensure_ascii=False, default=str)
-    player_json = _j.dumps(player_name)
-    css = """
-:root{--black:#0a0a0a;--dark:#111318;--border:#252830;--blue:#00A3E0;
-      --green:#22c55e;--red:#ef4444;--gold:#f59e0b;--text:#e8edf5;--muted:#6b7280;}
-*{box-sizing:border-box;margin:0;padding:0;}
-html,body{height:100%;overflow:hidden;}
-body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--black);
-     color:var(--text);display:flex;flex-direction:column;}
-.hdr{background:#111318;border-bottom:2px solid var(--blue);padding:6px 14px;
-     display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
-.hdr-logo{font-weight:800;font-size:13px;color:var(--blue);text-transform:uppercase;letter-spacing:.04em;}
-.hdr-sub{font-size:9px;color:var(--muted);margin-top:1px;}
-.badge{background:var(--blue);color:#fff;font-weight:700;font-size:9px;
-       padding:2px 8px;border-radius:2px;letter-spacing:.1em;text-transform:uppercase;}
-.hdr-meta{font-size:10px;color:var(--muted);text-align:right;line-height:1.4;}
-.main{display:grid;grid-template-columns:360px 1fr;flex:1;min-height:0;}
-.left{background:var(--dark);border-right:1px solid var(--border);
-      display:flex;flex-direction:column;overflow-y:auto;}
-.ctx-title{background:var(--blue);color:#fff;font-weight:700;font-size:9px;
-           letter-spacing:.14em;text-transform:uppercase;padding:4px 10px;text-align:center;}
-.score-row{display:grid;grid-template-columns:1fr auto 1fr;
-           align-items:center;padding:6px 10px 3px;}
-.tb{text-align:center;}
-.tn{font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.05em;}
-.ts{font-weight:900;font-size:26px;line-height:1;color:var(--blue);}
-.ts.adv{color:var(--muted);}
-.vs{font-size:9px;color:var(--muted);font-weight:600;}
-.poss-row{display:grid;grid-template-columns:1fr 1fr;padding:0 10px 5px;gap:6px;}
-.pb{text-align:center;}
-.pb-lbl{font-size:8px;color:var(--muted);font-weight:500;text-transform:uppercase;letter-spacing:.07em;}
-.pb-bg{background:var(--border);border-radius:2px;height:4px;margin:2px 0;overflow:hidden;}
-.pb-bar{height:100%;background:var(--blue);border-radius:2px;}
-.pb-val{font-size:13px;font-weight:700;}
-.ctx-dets{display:flex;border-top:1px solid var(--border);}
-.ctx-d{flex:1;padding:4px 6px;border-right:1px solid var(--border);text-align:center;}
-.ctx-d:last-child{border-right:none;}
-.ctx-d span{font-size:7px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;display:block;}
-.ctx-d b{font-size:11px;font-weight:700;color:var(--text);}
-.pbar{display:flex;align-items:center;gap:8px;padding:6px 10px;
-      background:#0e1016;border-bottom:1px solid var(--border);flex-shrink:0;}
-.pname{font-weight:800;font-size:14px;color:var(--blue);
-       text-transform:uppercase;letter-spacing:.06em;}
-.pposte{font-size:10px;color:var(--muted);background:var(--border);
-        padding:1px 7px;border-radius:2px;font-weight:600;}
-.sec{border-bottom:1px solid var(--border);}
-.sec-inner{display:flex;}
-.cat{writing-mode:vertical-rl;transform:rotate(180deg);font-size:8px;
-     font-weight:700;letter-spacing:.14em;text-transform:uppercase;
-     color:var(--muted);border-right:2px solid var(--blue);
-     flex-shrink:0;width:18px;display:flex;align-items:center;justify-content:center;}
-.stbl{flex:1;}
-.sr{display:grid;grid-template-columns:130px 26px 1fr;
-    align-items:stretch;border-bottom:1px solid var(--border);min-height:24px;}
-.sr.h{background:#0e1016;min-height:18px;}
-.snm{font-size:10px;color:var(--text);padding:0 6px 0 8px;display:flex;align-items:center;}
-.snm.sub{font-size:9px;color:var(--muted);padding-left:18px;}
-.sn{font-size:11px;font-weight:700;color:var(--blue);text-align:center;
-    border-left:1px solid var(--border);border-right:1px solid var(--border);
-    display:flex;align-items:center;justify-content:center;}
-.sn.h{font-size:8px;color:var(--muted);font-weight:600;}
-.sn.gold{color:var(--gold);}
-.sbr{padding:2px 5px;display:flex;align-items:center;}
-.sh{font-size:8px;color:var(--muted);font-weight:600;letter-spacing:.06em;
-    text-transform:uppercase;padding:2px 5px;display:flex;align-items:center;}
-.bw{display:flex;height:14px;border-radius:2px;overflow:hidden;
-    font-size:8px;font-weight:600;width:100%;}
-.bok{background:#16a34a;display:flex;align-items:center;justify-content:center;color:#fff;}
-.bko{background:#b91c1c;display:flex;align-items:center;justify-content:center;color:#fff;}
-.leg{padding:5px 10px;display:flex;gap:12px;align-items:center;
-     background:#0e1016;border-top:1px solid var(--border);margin-top:auto;flex-shrink:0;}
-.li{display:flex;align-items:center;gap:3px;font-size:8px;color:var(--text);font-weight:500;}
-.ld{width:9px;height:9px;border-radius:1px;}
-.right{background:#0d1117;display:grid;grid-template-columns:1fr 1fr;
-       grid-template-rows:28px 1fr;overflow:hidden;}
-.rtop{grid-column:1/-1;border-bottom:1px solid var(--border);padding:0 12px;
-      display:flex;align-items:center;justify-content:space-between;}
-.rn{font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;}
-.tw{display:flex;gap:3px;}
-.tog{background:transparent;border:1px solid var(--border);color:var(--muted);
-     font-size:8px;font-weight:600;padding:1px 7px;border-radius:2px;cursor:pointer;
-     letter-spacing:.06em;text-transform:uppercase;transition:all .12s;}
-.tog.on{background:var(--blue);border-color:var(--blue);color:#fff;}
-.pw{padding:8px;display:flex;flex-direction:column;align-items:center;
-    border-right:1px solid var(--border);overflow:hidden;}
-.pw:last-child{border-right:none;}
-.pwt{font-size:8px;font-weight:600;color:var(--muted);text-transform:uppercase;
-     letter-spacing:.1em;margin-bottom:3px;flex-shrink:0;}
-svg.p{width:100%;flex:1;}
-.pl{display:flex;gap:8px;margin-top:3px;flex-wrap:wrap;justify-content:center;flex-shrink:0;}
-.pli{display:flex;align-items:center;gap:2px;font-size:7px;color:var(--muted);font-weight:500;}
-.pla{width:14px;height:2px;border-radius:1px;}
-::-webkit-scrollbar{width:3px;}
-::-webkit-scrollbar-track{background:var(--dark);}
-::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
-"""
-    pitch_lines = """
-        <rect width="100" height="68" fill="#1a2f0e"/>
-        <rect x="1" y="1" width="98" height="66" fill="none" stroke="#2d5016" stroke-width=".6"/>
-        <line x1="50" y1="1" x2="50" y2="67" stroke="#2d5016" stroke-width=".5"/>
-        <circle cx="50" cy="34" r="9.15" fill="none" stroke="#2d5016" stroke-width=".5"/>
-        <circle cx="50" cy="34" r=".5" fill="#2d5016"/>
-        <rect x="1" y="13.84" width="16.5" height="40.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
-        <rect x="1" y="24.84" width="5.5" height="18.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
-        <rect x="82.5" y="13.84" width="16.5" height="40.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
-        <rect x="93.5" y="24.84" width="5.5" height="18.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
-        <rect x="0" y="29.34" width="1" height="9.32" fill="#2d5016"/>
-        <rect x="99" y="29.34" width="1" height="9.32" fill="#2d5016"/>"""
-    js = """
-const S=%%STATS%%;const C=%%CTX%%;const P=%%PLAYER%%;
-const NS='http://www.w3.org/2000/svg';
-function q(id){return document.getElementById(id);}
-function sn(id,v){var e=q(id);if(e)e.textContent=(v===null||v===undefined||v==='')?'--':String(v);}
-function bar(id,ok,ko){
-  var el=q(id);if(!el)return;
-  var tot=(ok||0)+(ko||0);
-  if(tot===0){el.innerHTML='<div style="width:100%;height:14px;background:#1a1e24;border-radius:2px;"></div>';return;}
-  var pok=Math.round((ok||0)/tot*100),pko=100-pok;
-  el.innerHTML='<div class="bok" style="width:'+pok+'%">'+(pok>=20?pok+'%':'')+'</div>'
-              +'<div class="bko" style="width:'+pko+'%">'+(pko>=20?pko+'%':'')+'</div>';
-}
-function init(){
-  sn('ctx-pfc',C.pfc||'Paris FC');sn('ctx-adv',C.adversaire||'--');
-  sn('s-pfc',C.score_pfc||'--');sn('s-adv',C.score_adv||'--');
-  sn('ctx-lieu',C.lieu||'--');sn('ctx-sys',C.systeme||'--');sn('ctx-comp',C.competition||'--');
-  q('pb-pfc').style.width=(C.poss_pfc||50)+'%';
-  q('pb-adv').style.width=(C.poss_adv||50)+'%';
-  sn('pv-pfc',(C.poss_pfc||50)+' %');sn('pv-adv',(C.poss_adv||50)+' %');
-  q('pl-adv').textContent='Possession '+(C.adversaire||'ADV');
-  q('h-comp').textContent=(C.competition||'')+(C.journee?' J'+C.journee:'');
-  q('h-meta').innerHTML='<b>'+(C.timeline||'')+'</b>';
-  sn('p-name',P);sn('rt-name',P);
-  q('p-poste').textContent=S.postes?'Poste : '+S.postes:'';
-  var ptot=(S.passes_ok||0)+(S.passes_ko||0);
-  sn('n-pt',ptot);bar('b-pt',S.passes_ok,S.passes_ko);
-  sn('n-pc',(S.courtes_ok||0)+(S.courtes_ko||0));bar('b-pc',S.courtes_ok,S.courtes_ko);
-  sn('n-pl',(S.longues_ok||0)+(S.longues_ko||0));bar('b-pl',S.longues_ok,S.longues_ko);
-  sn('n-dr',(S.drib_ok||0)+(S.drib_ko||0));bar('b-dr',S.drib_ok,S.drib_ko);
-  sn('n-ti',S.tirs_tot||0);bar('b-ti',S.tirs_cadres||0,(S.tirs_tot||0)-(S.tirs_cadres||0));
-  sn('n-bu',S.tirs_buts||0);
-  sn('n-ba',S.ballons||0);bar('b-ba',Math.max(0,(S.ballons||0)-(S.pertes||0)),S.pertes||0);
-  sn('n-re',S.recuperations||0);
-  sn('n-dd',(S.duels_gagnes||0)+(S.duels_perdus||0));bar('b-dd',S.duels_gagnes,S.duels_perdus);
-  sn('n-da',(S.aer_ok||0)+(S.aer_ko||0));bar('b-da',S.aer_ok,S.aer_ko);
-  sn('n-ds',(S.sol_ok||0)+(S.sol_ko||0));bar('b-ds',S.sol_ok,S.sol_ko);
-  sn('n-in',S.interceptions||0);
-  renderHeat();
-}
-function renderHeat(){
-  var g=q('heat-pts');g.innerHTML='';
-  var locs=S.locs||[];if(!locs.length)return;
-  var den={};
-  locs.forEach(function(p){var k=Math.round(p.x/4)*4+'_'+Math.round(p.y/4)*4;den[k]=(den[k]||0)+1;});
-  var maxD=Math.max.apply(null,Object.values(den).concat([1]));
-  var svgEl=q('svg-heat');
-  var defs=svgEl.querySelector('defs');
-  if(!defs){defs=document.createElementNS(NS,'defs');svgEl.insertBefore(defs,svgEl.firstChild);}
-  Array.from(defs.querySelectorAll('[id^="hg"]')).forEach(function(e){e.remove();});
-  Object.keys(den).forEach(function(key){
-    var count=den[key],parts=key.split('_'),x=Number(parts[0]),y=Number(parts[1]);
-    var r=4+(count/maxD)*7,op=0.2+(count/maxD)*0.65;
-    var gid='hg'+x+'x'+y;
-    var grad=document.createElementNS(NS,'radialGradient');
-    grad.setAttribute('id',gid);grad.setAttribute('cx','50%');grad.setAttribute('cy','50%');grad.setAttribute('r','50%');
-    var s1=document.createElementNS(NS,'stop');s1.setAttribute('offset','0%');s1.setAttribute('stop-color','#00A3E0');s1.setAttribute('stop-opacity',String(op));
-    var s2=document.createElementNS(NS,'stop');s2.setAttribute('offset','100%');s2.setAttribute('stop-color','#00A3E0');s2.setAttribute('stop-opacity','0');
-    grad.appendChild(s1);grad.appendChild(s2);defs.appendChild(grad);
-    var el=document.createElementNS(NS,'ellipse');
-    el.setAttribute('cx',x);el.setAttribute('cy',y);el.setAttribute('rx',r);el.setAttribute('ry',r);
-    el.setAttribute('fill','url(#'+gid+')');g.appendChild(el);
-  });
-  var cx=locs.reduce(function(a,b){return a+b.x;},0)/locs.length;
-  var cy=locs.reduce(function(a,b){return a+b.y;},0)/locs.length;
-  var c=document.createElementNS(NS,'circle');
-  c.setAttribute('cx',cx);c.setAttribute('cy',cy);c.setAttribute('r','1.8');
-  c.setAttribute('fill','#00A3E0');c.setAttribute('opacity','0.95');g.appendChild(c);
-}
-function renderPass(){
-  var g=q('pass-arrows');g.innerHTML='';
-  (S.passes_map||[]).forEach(function(p,i){
-    if(p.x==null||p.y==null)return;
-    var color=p.ok?'#22c55e':'#ef4444',marker=p.ok?'aOk':'aKo';
-    function rng(s){return((s*9301+49297)%233280)/233280;}
-    var dx=Math.min(99,p.x+(p.ok?9:5)+rng(i)*8);
-    var dy=Math.max(1,Math.min(67,p.y+(rng(i*3+1)-0.5)*14));
-    var line=document.createElementNS(NS,'line');
-    line.setAttribute('x1',p.x);line.setAttribute('y1',p.y);
-    line.setAttribute('x2',dx);line.setAttribute('y2',dy);
-    line.setAttribute('stroke',color);line.setAttribute('stroke-width',p.longue?'0.9':'0.65');
-    line.setAttribute('stroke-opacity','0.85');line.setAttribute('marker-end','url(#'+marker+')');
-    if(!p.ok)line.setAttribute('stroke-dasharray','2,1');
-    g.appendChild(line);
-    var dot=document.createElementNS(NS,'circle');
-    dot.setAttribute('cx',p.x);dot.setAttribute('cy',p.y);dot.setAttribute('r','1.2');
-    dot.setAttribute('fill',color);dot.setAttribute('opacity','0.9');g.appendChild(dot);
-  });
-}
-function setMap(mode){
-  q('panel-heat').style.display=mode==='heat'?'flex':'none';
-  q('panel-pass').style.display=mode==='pass'?'flex':'none';
-  q('tog-h').className='tog'+(mode==='heat'?' on':'');
-  q('tog-p').className='tog'+(mode==='pass'?' on':'');
-  if(mode==='pass')renderPass();
-}
-window.onload=init;
-"""
-    js = js.replace('%%STATS%%', stats_json).replace('%%CTX%%', ctx_json).replace('%%PLAYER%%', player_json)
-    # --- GPS block (optional) ---
-    gps_block = ""
-    if gps_summary:
-        def _fmt(v, unit="", nd=0):
-            try:
-                if v is None or (isinstance(v, float) and np.isnan(v)):
-                    return "—"
-                return f"{float(v):.{nd}f}{unit}"
-            except Exception:
-                return "—"
-        gps_block = f"""<div class='gps-panel'>
-  <div class='gps-title'>PHYSIQUE (GPS — match)</div>
-  <div class='gps-grid'>
-    <div class='gps-card'><div class='gps-label'>Distance</div><div class='gps-value'>{_fmt(gps_summary.get('distance_m'), ' m', 0)}</div><div class='gps-sub'>Total</div></div>
-    <div class='gps-card'><div class='gps-label'>Durée</div><div class='gps-value'>{_fmt(gps_summary.get('duration_min'), ' min', 0)}</div><div class='gps-sub'>Temps d&apos;activité</div></div>
-    <div class='gps-card'><div class='gps-label'>HID &gt;13 km/h</div><div class='gps-value'>{_fmt(gps_summary.get('hid13_m'), ' m', 0)}</div><div class='gps-sub'>Haute intensité</div></div>
-    <div class='gps-card'><div class='gps-label'>HID &gt;19 km/h</div><div class='gps-value'>{_fmt(gps_summary.get('hid19_m'), ' m', 0)}</div><div class='gps-sub'>Très haute intensité</div></div>
-    <div class='gps-card'><div class='gps-label'>Acc/Dec</div><div class='gps-value'>{_fmt(gps_summary.get('acc_dec'), '', 0)}</div><div class='gps-sub'>Nombre</div></div>
-    <div class='gps-card'><div class='gps-label'>Vitesse max</div><div class='gps-value'>{_fmt(gps_summary.get('vmax_kmh'), ' km/h', 1)}</div><div class='gps-sub'>Pic</div></div>
-  </div>
-</div>"""
-    else:
-        gps_block = "<div class='gps-panel'><div class='gps-title'>PHYSIQUE (GPS — match)</div><div class='gps-empty'>GPS non disponible pour ce match.</div></div>"
-
-    return f"""<!DOCTYPE html>
-<html lang="fr"><head><meta charset="UTF-8"><style>{css}
-/* GPS PANEL */
-.gps-panel{{margin-top:12px;padding:10px 10px 12px;border:1px solid rgba(255,255,255,.10);border-radius:10px;background:rgba(0,0,0,.18)}}
-.gps-title{{font-weight:800;letter-spacing:.08em;font-size:11px;color:rgba(255,255,255,.85);margin-bottom:8px}}
-.gps-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}
-.gps-card{{padding:8px;border-radius:10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08)}}
-.gps-label{{font-size:10px;letter-spacing:.04em;color:rgba(255,255,255,.70);margin-bottom:4px}}
-.gps-value{{font-size:16px;font-weight:800;color:#fff}}
 .gps-sub{{font-size:10px;color:rgba(255,255,255,.70);margin-top:2px}}
 .gps-empty{{font-size:12px;color:rgba(255,255,255,.75);padding:6px 0}}
 /* /GPS PANEL */
