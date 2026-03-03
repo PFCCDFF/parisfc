@@ -3418,74 +3418,459 @@ def match_tactical_to_gps(gps_row: dict, tactical_files: list) -> "pd.DataFrame 
     return best_df if best_score >= 1.5 else None
 
 
-def compute_tactical_stats(df_tactic: "pd.DataFrame", player_name: str) -> dict:
-    """Calcule les stats technico-tactiques agrégées pour une joueuse."""
-    import re
-
-    # Normaliser le nom de la joueuse pour le matching
-    player_norm = normalize_str(player_name)
-
-    # Filtrer les lignes de la joueuse (colonne Row = "NOM Prénom")
+def _filter_player_rows(df_tactic, player_name):
     if "Row" not in df_tactic.columns:
-        return {}
-
+        return df_tactic.iloc[0:0]
+    player_norm = normalize_str(player_name)
     mask = df_tactic["Row"].dropna().apply(
         lambda x: normalize_str(str(x)) == player_norm or
                   player_norm in normalize_str(str(x)) or
                   normalize_str(str(x)) in player_norm
     )
     d = df_tactic[mask].copy()
-
     if d.empty:
-        # Essayer avec matching partiel (nom de famille ou prénom seul)
-        tokens = [t for t in player_norm.split() if len(t) > 2]
-        for tok in tokens:
-            mask2 = df_tactic["Row"].dropna().apply(lambda x: tok in normalize_str(str(x)))
-            if mask2.sum() > 0:
-                d = df_tactic[mask2].copy()
-                break
+        for tok in [t for t in player_norm.split() if len(t) > 2]:
+            m2 = df_tactic["Row"].dropna().apply(lambda x: tok in normalize_str(str(x)))
+            if m2.sum() > 0:
+                return df_tactic[m2].copy()
+    return d
 
+
+def compute_tactical_stats(df_tactic, player_name):
+    """Calcule les stats technico-tactiques complètes pour une joueuse."""
+    from collections import Counter
+    d = _filter_player_rows(df_tactic, player_name)
     if d.empty:
         return {}
+    stats = {"nom_row": d["Row"].iloc[0] if "Row" in d.columns else player_name}
 
-    stats = {"nb_actions": len(d)}
+    # PASSES
+    pass_rows = d[d["Passe"].notna()].copy() if "Passe" in d.columns else d.iloc[0:0]
+    all_pass = [a.strip() for cell in pass_rows["Passe"].dropna() for a in str(cell).split(",")]
+    p_ok = all_pass.count("Réussie")
+    p_ko = all_pass.count("Ratée")
+    c_ok = sum(1 for _, r in pass_rows.iterrows() if "Courte" in str(r.get("Passe","")) and "Réussie" in str(r.get("Passe","")))
+    c_ko = sum(1 for _, r in pass_rows.iterrows() if "Courte" in str(r.get("Passe","")) and "Ratée"   in str(r.get("Passe","")))
+    l_ok = sum(1 for _, r in pass_rows.iterrows() if "Longue" in str(r.get("Passe","")) and "Réussie" in str(r.get("Passe","")))
+    l_ko = sum(1 for _, r in pass_rows.iterrows() if "Longue" in str(r.get("Passe","")) and "Ratée"   in str(r.get("Passe","")))
+    stats.update({"passes_ok":p_ok,"passes_ko":p_ko,"courtes_ok":c_ok,"courtes_ko":c_ko,"longues_ok":l_ok,"longues_ko":l_ko})
 
-    # Compter chaque type d'action atomique
-    if "Action" in d.columns:
-        all_actions = []
-        for cell in d["Action"].dropna():
-            all_actions += [a.strip() for a in str(cell).split(",")]
-        from collections import Counter
-        action_counts = Counter(all_actions)
-        stats["actions"] = dict(action_counts.most_common(15))
-        stats["nb_passes"]        = sum(v for k, v in action_counts.items() if "passe" in k.lower())
-        stats["nb_tirs"]          = sum(v for k, v in action_counts.items() if "tir" in k.lower())
-        stats["nb_pertes"]        = sum(v for k, v in action_counts.items() if "perte" in k.lower())
-        stats["nb_dribbles"]      = sum(v for k, v in action_counts.items() if "dribble" in k.lower())
-        stats["nb_duels_def"]     = sum(v for k, v in action_counts.items() if "duel" in k.lower())
-        stats["nb_interceptions"] = sum(v for k, v in action_counts.items() if "interception" in k.lower())
+    pass_map = []
+    for _, r in pass_rows.iterrows():
+        try:
+            x = float(str(r.get("X_localisation","")).split(",")[0].strip())
+            y = float(str(r.get("Y_localisation","")).split(",")[0].strip())
+            ok = "Réussie" in str(r.get("Passe",""))
+            longue = "Longue" in str(r.get("Passe",""))
+            pass_map.append({"x": x, "y": y, "ok": ok, "longue": longue})
+        except Exception:
+            pass
+    stats["passes_map"] = pass_map
 
-    # Postes joués
-    if "Poste" in d.columns:
-        postes = d["Poste"].dropna().apply(lambda x: str(x).split(",")[0].strip()).unique().tolist()
-        stats["postes"] = [p for p in postes if p and p.lower() not in ("nan","")]
+    # DRIBBLES
+    drib_rows = d[d["Dribble"].notna()] if "Dribble" in d.columns else d.iloc[0:0]
+    all_drib = [a.strip() for cell in drib_rows["Dribble"].dropna() for a in str(cell).split(",")]
+    stats["drib_ok"] = all_drib.count("Réussi")
+    stats["drib_ko"] = all_drib.count("Raté")
 
-    # Système de jeu
-    if "Système de Jeu PFC" in d.columns:
-        sysj = d["Système de Jeu PFC"].dropna().apply(lambda x: str(x).split(",")[0].strip()).unique().tolist()
-        stats["systemes"] = [s for s in sysj if s and s.lower() not in ("nan","")]
+    # TIRS
+    tir_rows = d[d["Tir"].notna()] if "Tir" in d.columns else d.iloc[0:0]
+    all_tir = [a.strip() for cell in tir_rows["Tir"].dropna() for a in str(cell).split(",")]
+    stats["tirs_tot"]    = len(tir_rows)
+    stats["tirs_cadres"] = all_tir.count("Tir Cadré") + all_tir.count("But")
+    stats["tirs_buts"]   = all_tir.count("But")
 
-    # Zone de départ des actions
-    if "Zone Départ action" in d.columns:
-        zones = d["Zone Départ action"].dropna().apply(lambda x: str(x).split(",")[0].strip())
-        stats["zones"] = zones.value_counts().to_dict()
+    # PERTES / BALLONS
+    all_actions_flat = [a.strip() for cell in d["Action"].dropna() for a in str(cell).split(",")] if "Action" in d.columns else []
+    stats["pertes"]        = sum(1 for a in all_actions_flat if "Perte" in a)
+    stats["recuperations"] = sum(1 for a in all_actions_flat if "Interception" in a)
+    stats["ballons"]       = len(d)
 
-    # Mi-temps
-    if "Mi-temps" in d.columns:
-        mt = d["Mi-temps"].dropna().apply(lambda x: str(x).split(",")[0].strip())
-        stats["mi_temps"] = mt.value_counts().to_dict()
+    # DUELS
+    duel_rows = d[d["Duel défensifs"].notna()] if "Duel défensifs" in d.columns else d.iloc[0:0]
+    all_duels = [a.strip() for cell in duel_rows["Duel défensifs"].dropna() for a in str(cell).split(",")]
+    sol_list  = [r for _, r in duel_rows.iterrows() if "Sol"    in str(r.get("Duel défensifs",""))]
+    aer_list  = [r for _, r in duel_rows.iterrows() if "Aérien" in str(r.get("Duel défensifs",""))]
+    stats.update({
+        "duels_gagnes": all_duels.count("Gagné"),
+        "duels_perdus": all_duels.count("Perdu"),
+        "sol_ok":  sum(1 for r in sol_list if "Gagné" in str(r.get("Duel défensifs",""))),
+        "sol_ko":  sum(1 for r in sol_list if "Perdu" in str(r.get("Duel défensifs",""))),
+        "aer_ok":  sum(1 for r in aer_list if "Gagné" in str(r.get("Duel défensifs",""))),
+        "aer_ko":  sum(1 for r in aer_list if "Perdu" in str(r.get("Duel défensifs",""))),
+        "interceptions": stats["recuperations"],
+    })
 
+    # LOCALISATION
+    locs = []
+    for _, r in d.iterrows():
+        try:
+            x = float(str(r.get("X_localisation","")).split(",")[0].strip())
+            y = float(str(r.get("Y_localisation","")).split(",")[0].strip())
+            locs.append({"x": x, "y": y})
+        except Exception:
+            pass
+    stats["locs"] = locs
+
+    # META
+    stats["postes"]  = ", ".join(p for p in d["Poste"].dropna().apply(lambda x: str(x).split(",")[0].strip()).unique() if p and p.lower() not in ("nan","")) if "Poste" in d.columns else ""
+    stats["systeme"] = d["Système de Jeu PFC"].dropna().apply(lambda x: str(x).split(",")[0].strip()).mode().iloc[0] if "Système de Jeu PFC" in d.columns and not d["Système de Jeu PFC"].dropna().empty else ""
+
+    # Legacy
+    stats["nb_actions"] = len(d); stats["nb_passes"] = p_ok+p_ko; stats["nb_tirs"] = stats["tirs_tot"]
+    stats["nb_pertes"] = stats["pertes"]; stats["nb_dribbles"] = stats["drib_ok"]+stats["drib_ko"]
+    stats["nb_duels_def"] = stats["duels_gagnes"]+stats["duels_perdus"]; stats["nb_interceptions"] = stats["interceptions"]
     return stats
+
+
+def _build_all_player_stats(df_tactic):
+    """Calcule les stats pour toutes les joueuses du fichier tactique."""
+    if df_tactic is None or df_tactic.empty or "Row" not in df_tactic.columns:
+        return {}
+    skip = {"START","PFC","HAC",""}
+    players = [r for r in df_tactic["Row"].dropna().unique()
+               if r not in skip and not any(k in str(r) for k in ["Transition","Carton","def "])]
+    return {p: s for p in players for s in [compute_tactical_stats(df_tactic, p)] if s}
+
+
+def _get_match_context(df_tactic):
+    """Extrait le contexte match depuis les lignes PFC du fichier tactique."""
+    import re as _re
+    if df_tactic is None or "Row" not in df_tactic.columns:
+        return {}
+    pfc = df_tactic[df_tactic["Row"] == "PFC"]
+    tl  = str(df_tactic["Timeline"].dropna().iloc[0]) if "Timeline" in df_tactic.columns and not df_tactic["Timeline"].dropna().empty else ""
+    adv_m = _re.search(r"paris\s*fc\s*[-–]\s*(.+)|(.+)\s*[-–]\s*paris\s*fc", tl, _re.IGNORECASE)
+    ctx = {"timeline": tl, "pfc": "Paris FC",
+           "adversaire": (adv_m.group(1) or adv_m.group(2) or "ADV").strip() if adv_m else "ADV"}
+    if not pfc.empty:
+        scores = pfc["Score"].dropna().apply(lambda x: str(x).split(",")[0].strip()) if "Score" in pfc.columns else pd.Series(dtype=str)
+        sf = scores.iloc[-1] if not scores.empty else "0-0"
+        pts = sf.split("-")
+        ctx["score_pfc"]    = pts[0].strip() if len(pts)>=2 else "?"
+        ctx["score_adv"]    = pts[1].strip() if len(pts)>=2 else "?"
+        ctx["lieu"]         = pfc["Lieu"].dropna().apply(lambda x: x.split(",")[0].strip()).iloc[0] if "Lieu" in pfc.columns and not pfc["Lieu"].dropna().empty else ""
+        ctx["journee"]      = str(pfc["Journée"].dropna().apply(lambda x: str(x).split(",")[0]).iloc[0]) if "Journée" in pfc.columns and not pfc["Journée"].dropna().empty else ""
+        ctx["competition"]  = pfc["Compétition"].dropna().apply(lambda x: x.split(",")[0].strip()).iloc[0] if "Compétition" in pfc.columns and not pfc["Compétition"].dropna().empty else ""
+        ctx["systeme"]      = pfc["Système de Jeu PFC"].dropna().apply(lambda x: x.split(",")[0].strip()).mode().iloc[0] if "Système de Jeu PFC" in pfc.columns and not pfc["Système de Jeu PFC"].dropna().empty else ""
+        adv_name = pfc["Teamersaire"].dropna().iloc[0] if "Teamersaire" in pfc.columns and not pfc["Teamersaire"].dropna().empty else ctx["adversaire"]
+        ctx["adversaire"] = adv_name
+        adv_seq = len(df_tactic[df_tactic["Row"] == adv_name])
+        total = len(pfc) + adv_seq
+        ctx["poss_pfc"] = round(len(pfc)/total*100, 1) if total > 0 else 50.0
+        ctx["poss_adv"] = round(100 - ctx["poss_pfc"], 1)
+    else:
+        ctx.update({"score_pfc":"?","score_adv":"?","lieu":"","journee":"","competition":"","systeme":"","poss_pfc":50.0,"poss_adv":50.0})
+    return ctx
+
+
+
+def build_tactical_report_html(df_tactic):
+    """Génère le rapport HTML style Sportscode depuis les vraies données tactiques."""
+    import json as _j
+    ctx = _get_match_context(df_tactic)
+    all_stats = _build_all_player_stats(df_tactic)
+    players_list = list(all_stats.keys())
+    if not players_list:
+        return "<div style='color:#6A8090;padding:20px;font-family:sans-serif;'>Aucune donnée joueuse trouvée dans ce fichier tactique.</div>"
+
+    data_json = _j.dumps(all_stats, ensure_ascii=False, default=str)
+    ctx_json  = _j.dumps(ctx, ensure_ascii=False, default=str)
+    first_player_json = _j.dumps(players_list[0])
+
+    btn_html = ""
+    for i, p in enumerate(players_list):
+        short = p.split()[0] if p.split() else p
+        active = "active" if i == 0 else ""
+        btn_html += f'<button class="player-btn {active}" onclick="selectPlayer({_j.dumps(p)})">{short}</button>\n'
+
+    return f"""<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8">
+<style>
+:root{{--black:#0a0a0a;--dark:#111318;--panel:#16191f;--border:#252830;--blue:#00A3E0;--green:#22c55e;--red:#ef4444;--gold:#f59e0b;--text:#e8edf5;--muted:#6b7280;}}
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{font-family:'Segoe UI',system-ui,sans-serif;background:var(--black);color:var(--text);height:100vh;overflow:hidden;display:flex;flex-direction:column;}}
+.header{{background:#111318;border-bottom:2px solid var(--blue);padding:7px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-shrink:0;}}
+.header-logo{{font-weight:800;font-size:13px;color:var(--blue);letter-spacing:.04em;text-transform:uppercase;}}
+.header-badge{{background:var(--blue);color:#fff;font-weight:700;font-size:9px;padding:2px 7px;border-radius:2px;letter-spacing:.1em;text-transform:uppercase;}}
+.header-meta{{font-size:10px;color:var(--muted);text-align:right;line-height:1.4;}}
+.header-meta strong{{color:var(--text);}}
+.selector-bar{{background:var(--panel);border-bottom:1px solid var(--border);padding:5px 12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex-shrink:0;}}
+.selector-label{{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);}}
+.player-btn{{background:transparent;border:1px solid var(--border);color:var(--muted);font-size:10px;font-weight:600;letter-spacing:.03em;padding:2px 8px;border-radius:2px;cursor:pointer;text-transform:uppercase;transition:all .12s;}}
+.player-btn:hover{{border-color:var(--blue);color:var(--blue);}}
+.player-btn.active{{background:var(--blue);border-color:var(--blue);color:#fff;}}
+.main{{display:grid;grid-template-columns:370px 1fr;flex:1;overflow:hidden;}}
+.left{{background:var(--dark);border-right:1px solid var(--border);overflow-y:auto;display:flex;flex-direction:column;}}
+.ctx-title{{background:var(--blue);color:#fff;font-weight:700;font-size:9px;letter-spacing:.14em;text-transform:uppercase;padding:4px 10px;text-align:center;}}
+.score-row{{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:6px 10px 3px;gap:5px;}}
+.team-block{{text-align:center;}}
+.team-name{{font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.05em;}}
+.team-score{{font-weight:900;font-size:24px;line-height:1;color:var(--blue);}}
+.vs-sep{{font-size:9px;color:var(--muted);font-weight:600;}}
+.poss-row{{display:grid;grid-template-columns:1fr 1fr;padding:0 10px 5px;gap:6px;}}
+.poss-block{{text-align:center;}}
+.poss-label{{font-size:8px;color:var(--muted);font-weight:500;text-transform:uppercase;letter-spacing:.07em;}}
+.poss-bar-wrap{{background:var(--border);border-radius:2px;height:4px;margin:2px 0;overflow:hidden;}}
+.poss-bar{{height:100%;background:var(--blue);border-radius:2px;}}
+.poss-val{{font-size:13px;font-weight:700;color:var(--text);}}
+.ctx-details{{display:flex;border-top:1px solid var(--border);}}
+.ctx-d{{flex:1;padding:4px 6px;border-right:1px solid var(--border);text-align:center;}}
+.ctx-d:last-child{{border-right:none;}}
+.ctx-d-label{{font-size:7px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;display:block;}}
+.ctx-d-val{{font-size:11px;font-weight:700;color:var(--text);}}
+.section{{border-bottom:1px solid var(--border);}}
+.section-inner{{display:flex;}}
+.cat-bar{{writing-mode:vertical-rl;transform:rotate(180deg);font-size:8px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);border-right:2px solid var(--blue);flex-shrink:0;width:18px;display:flex;align-items:center;justify-content:center;}}
+.stats-inner{{flex:1;}}
+.s-row{{display:grid;grid-template-columns:132px 26px 1fr;align-items:stretch;border-bottom:1px solid var(--border);min-height:24px;}}
+.s-row.hdr{{background:#0e1016;min-height:18px;}}
+.s-name{{font-size:10px;color:var(--text);padding:0 6px 0 8px;display:flex;align-items:center;}}
+.s-n{{font-size:11px;font-weight:700;color:var(--blue);text-align:center;border-left:1px solid var(--border);border-right:1px solid var(--border);display:flex;align-items:center;justify-content:center;}}
+.s-n.hdr{{font-size:8px;color:var(--muted);font-weight:600;}}
+.s-bar-cell{{padding:2px 5px;display:flex;align-items:center;}}
+.s-col-hdr{{font-size:8px;color:var(--muted);font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:2px 5px;display:flex;align-items:center;}}
+.bar-wrap{{display:flex;height:14px;border-radius:2px;overflow:hidden;font-size:8px;font-weight:600;width:100%;}}
+.b-ok{{background:#16a34a;display:flex;align-items:center;justify-content:center;color:#fff;transition:width .3s;}}
+.b-ko{{background:#b91c1c;display:flex;align-items:center;justify-content:center;color:#fff;transition:width .3s;}}
+.legend{{padding:5px 10px;display:flex;gap:12px;align-items:center;background:#0e1016;border-top:1px solid var(--border);margin-top:auto;flex-shrink:0;}}
+.leg-item{{display:flex;align-items:center;gap:3px;font-size:8px;color:var(--text);font-weight:500;}}
+.leg-dot{{width:9px;height:9px;border-radius:1px;}}
+#legend-poste{{margin-left:auto;font-size:8px;color:var(--muted);}}
+.right{{background:#0d1117;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:30px 1fr;overflow:hidden;}}
+.right-top{{grid-column:1/-1;border-bottom:1px solid var(--border);padding:0 12px;display:flex;align-items:center;justify-content:space-between;}}
+.p-name{{font-weight:800;font-size:13px;letter-spacing:.07em;color:var(--blue);text-transform:uppercase;}}
+.map-toggle{{display:flex;gap:3px;}}
+.tog-btn{{background:transparent;border:1px solid var(--border);color:var(--muted);font-size:8px;font-weight:600;padding:1px 6px;border-radius:2px;cursor:pointer;letter-spacing:.06em;text-transform:uppercase;transition:all .12s;}}
+.tog-btn.active{{background:var(--blue);border-color:var(--blue);color:#fff;}}
+.pitch-wrap{{padding:8px;display:flex;flex-direction:column;align-items:center;border-right:1px solid var(--border);overflow:hidden;}}
+.pitch-wrap:last-child{{border-right:none;}}
+.pitch-title{{font-size:8px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:3px;}}
+svg.pitch{{width:100%;flex:1;max-height:calc(100vh - 200px);}}
+.pass-leg{{display:flex;gap:8px;margin-top:3px;flex-wrap:wrap;justify-content:center;}}
+.pl-item{{display:flex;align-items:center;gap:2px;font-size:7px;color:var(--muted);font-weight:500;}}
+.pl-arrow{{width:14px;height:2px;border-radius:1px;}}
+::-webkit-scrollbar{{width:3px;}}
+::-webkit-scrollbar-track{{background:var(--dark);}}
+::-webkit-scrollbar-thumb{{background:var(--border);border-radius:2px;}}
+</style></head><body>
+<div class="header">
+  <div>
+    <div class="header-logo">Paris FC · Centre de Formation Féminin</div>
+    <div style="font-size:9px;color:var(--muted);margin-top:1px;">Rapport Technico-Tactique</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;">
+    <div class="header-badge" id="h-comp">—</div>
+    <div class="header-meta" id="h-meta">—</div>
+  </div>
+</div>
+<div class="selector-bar"><span class="selector-label">Joueuse</span>{btn_html}</div>
+<div class="main">
+  <div class="left">
+    <div style="border-bottom:1px solid var(--border);">
+      <div class="ctx-title">Contexte Match</div>
+      <div class="score-row">
+        <div class="team-block"><div class="team-name" id="ctx-pfc">Paris FC</div><div class="team-score" id="ctx-score-pfc">—</div></div>
+        <div class="vs-sep">—</div>
+        <div class="team-block"><div class="team-name" id="ctx-adv">—</div><div class="team-score" id="ctx-score-adv" style="color:var(--muted)">—</div></div>
+      </div>
+      <div class="poss-row">
+        <div class="poss-block"><div class="poss-label">Possession Paris FC</div><div class="poss-bar-wrap"><div class="poss-bar" id="poss-bar-pfc" style="width:50%"></div></div><div class="poss-val" id="poss-val-pfc">—</div></div>
+        <div class="poss-block"><div class="poss-label" id="poss-label-adv">Possession ADV</div><div class="poss-bar-wrap"><div class="poss-bar" id="poss-bar-adv" style="width:50%;background:#6b7280"></div></div><div class="poss-val" id="poss-val-adv" style="color:var(--muted)">—</div></div>
+      </div>
+      <div class="ctx-details">
+        <div class="ctx-d"><span class="ctx-d-label">Lieu</span><span class="ctx-d-val" id="ctx-lieu">—</span></div>
+        <div class="ctx-d"><span class="ctx-d-label">Système</span><span class="ctx-d-val" id="ctx-sys">—</span></div>
+        <div class="ctx-d"><span class="ctx-d-label">Compétition</span><span class="ctx-d-val" id="ctx-comp">—</span></div>
+      </div>
+    </div>
+    <div class="section"><div class="section-inner"><div class="cat-bar">Offensif</div><div class="stats-inner">
+      <div class="s-row hdr"><div class="s-name" style="font-size:8px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.07em;">Indicateur</div><div class="s-n hdr">N</div><div class="s-col-hdr">% Réussite</div></div>
+      <div class="s-row"><div class="s-name">Passes totales</div><div class="s-n" id="n-ptot">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-ptot"></div></div></div>
+      <div class="s-row"><div class="s-name">Passes courtes</div><div class="s-n" id="n-pc">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-pc"></div></div></div>
+      <div class="s-row"><div class="s-name">Passes longues</div><div class="s-n" id="n-pl">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-pl"></div></div></div>
+      <div class="s-row"><div class="s-name">Dribbles</div><div class="s-n" id="n-dr">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-dr"></div></div></div>
+      <div class="s-row hdr"><div class="s-name"></div><div class="s-n hdr">N</div><div class="s-col-hdr">% Tirs Cadrés</div></div>
+      <div class="s-row"><div class="s-name">Tirs</div><div class="s-n" id="n-tirs">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-tirs"></div></div></div>
+      <div class="s-row"><div class="s-name" style="padding-left:16px;font-size:9px;color:var(--muted)">dont Buts</div><div class="s-n" id="n-buts" style="color:var(--gold)">—</div><div class="s-bar-cell"></div></div>
+      <div class="s-row hdr"><div class="s-name"></div><div class="s-n hdr">N</div><div class="s-col-hdr">% Pertes / Touchés</div></div>
+      <div class="s-row"><div class="s-name">Ballons touchés</div><div class="s-n" id="n-ball">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-ball"></div></div></div>
+      <div class="s-row"><div class="s-name">Récupérations</div><div class="s-n" id="n-recup">—</div><div class="s-bar-cell"></div></div>
+    </div></div></div>
+    <div class="section"><div class="section-inner"><div class="cat-bar">Défensif</div><div class="stats-inner">
+      <div class="s-row hdr"><div class="s-name"></div><div class="s-n hdr">N</div><div class="s-col-hdr">% Duels Gagnés</div></div>
+      <div class="s-row"><div class="s-name">Duels défensifs</div><div class="s-n" id="n-dt">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-dt"></div></div></div>
+      <div class="s-row"><div class="s-name">Duels aériens</div><div class="s-n" id="n-aer">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-aer"></div></div></div>
+      <div class="s-row"><div class="s-name">Duels au sol</div><div class="s-n" id="n-sol">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-sol"></div></div></div>
+      <div class="s-row hdr"><div class="s-name"></div><div class="s-n hdr">N</div><div class="s-col-hdr"></div></div>
+      <div class="s-row"><div class="s-name">Interceptions</div><div class="s-n" id="n-int">—</div><div class="s-bar-cell"></div></div>
+    </div></div></div>
+    <div class="legend">
+      <div class="leg-item"><div class="leg-dot" style="background:#16a34a"></div>Réussie</div>
+      <div class="leg-item"><div class="leg-dot" style="background:#b91c1c"></div>Ratée</div>
+      <div id="legend-poste"></div>
+    </div>
+  </div>
+  <div class="right">
+    <div class="right-top">
+      <div class="p-name" id="p-name-display"></div>
+      <div class="map-toggle">
+        <button class="tog-btn active" onclick="setMap('heat')">Heatmap</button>
+        <button class="tog-btn" onclick="setMap('pass')">Passes</button>
+      </div>
+    </div>
+    <div class="pitch-wrap" id="panel-heat">
+      <div class="pitch-title">Position sur le terrain</div>
+      <svg class="pitch" id="svg-heat" viewBox="0 0 100 68">
+        <defs></defs>
+        <rect width="100" height="68" fill="#1a2f0e"/>
+        <rect x="1" y="1" width="98" height="66" fill="none" stroke="#2d5016" stroke-width=".6"/>
+        <line x1="50" y1="1" x2="50" y2="67" stroke="#2d5016" stroke-width=".5"/>
+        <circle cx="50" cy="34" r="9.15" fill="none" stroke="#2d5016" stroke-width=".5"/>
+        <circle cx="50" cy="34" r=".5" fill="#2d5016"/>
+        <rect x="1" y="13.84" width="16.5" height="40.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
+        <rect x="1" y="24.84" width="5.5" height="18.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
+        <rect x="82.5" y="13.84" width="16.5" height="40.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
+        <rect x="93.5" y="24.84" width="5.5" height="18.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
+        <rect x="0" y="29.34" width="1" height="9.32" fill="#2d5016"/>
+        <rect x="99" y="29.34" width="1" height="9.32" fill="#2d5016"/>
+        <g id="heat-pts"></g>
+      </svg>
+    </div>
+    <div class="pitch-wrap" id="panel-pass" style="display:flex">
+      <div class="pitch-title">Carte des Passes</div>
+      <svg class="pitch" id="svg-pass" viewBox="0 0 100 68">
+        <defs>
+          <marker id="aOk" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#22c55e"/></marker>
+          <marker id="aKo" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#ef4444"/></marker>
+        </defs>
+        <rect width="100" height="68" fill="#1a2f0e"/>
+        <rect x="1" y="1" width="98" height="66" fill="none" stroke="#2d5016" stroke-width=".6"/>
+        <line x1="50" y1="1" x2="50" y2="67" stroke="#2d5016" stroke-width=".5"/>
+        <circle cx="50" cy="34" r="9.15" fill="none" stroke="#2d5016" stroke-width=".5"/>
+        <circle cx="50" cy="34" r=".5" fill="#2d5016"/>
+        <rect x="1" y="13.84" width="16.5" height="40.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
+        <rect x="1" y="24.84" width="5.5" height="18.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
+        <rect x="82.5" y="13.84" width="16.5" height="40.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
+        <rect x="93.5" y="24.84" width="5.5" height="18.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
+        <rect x="0" y="29.34" width="1" height="9.32" fill="#2d5016"/>
+        <rect x="99" y="29.34" width="1" height="9.32" fill="#2d5016"/>
+        <g id="pass-arrows"></g>
+      </svg>
+      <div class="pass-leg">
+        <div class="pl-item"><div class="pl-arrow" style="background:#22c55e"></div>Réussie</div>
+        <div class="pl-item"><div class="pl-arrow" style="background:#ef4444;opacity:.7"></div>Ratée</div>
+        <div class="pl-item"><div class="pl-arrow" style="background:#22c55e;height:3px"></div>Longue</div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+const DATA={data_json};const CTX={ctx_json};
+let cur={first_player_json},mapMode='heat';
+const NS='http://www.w3.org/2000/svg';
+function renderCtx(){{
+  document.getElementById('ctx-pfc').textContent=CTX.pfc||'Paris FC';
+  document.getElementById('ctx-adv').textContent=CTX.adversaire||'—';
+  document.getElementById('ctx-score-pfc').textContent=CTX.score_pfc||'—';
+  document.getElementById('ctx-score-adv').textContent=CTX.score_adv||'—';
+  document.getElementById('ctx-lieu').textContent=CTX.lieu||'—';
+  document.getElementById('ctx-sys').textContent=CTX.systeme||'—';
+  document.getElementById('ctx-comp').textContent=CTX.competition||'—';
+  document.getElementById('poss-val-pfc').textContent=(CTX.poss_pfc||50)+' %';
+  document.getElementById('poss-val-adv').textContent=(CTX.poss_adv||50)+' %';
+  document.getElementById('poss-label-adv').textContent='Possession '+(CTX.adversaire||'ADV');
+  document.getElementById('poss-bar-pfc').style.width=(CTX.poss_pfc||50)+'%';
+  document.getElementById('poss-bar-adv').style.width=(CTX.poss_adv||50)+'%';
+  document.getElementById('h-comp').textContent=(CTX.competition||'')+( CTX.journee?' J'+CTX.journee:'');
+  document.getElementById('h-meta').innerHTML=CTX.timeline||'';
+}}
+function bar(id,ok,ko){{
+  const el=document.getElementById(id);if(!el)return;
+  const tot=ok+ko;
+  if(tot===0){{el.innerHTML='<div style="width:100%;height:14px;background:#1a1e24;border-radius:2px;"></div>';return;}}
+  const pok=Math.round(ok/tot*100),pko=100-pok;
+  el.innerHTML=`<div class="b-ok" style="width:${{pok}}%">${{pok>=20?pok+'%':''}}</div><div class="b-ko" style="width:${{pko}}%">${{pko>=20?pko+'%':''}}</div>`;
+}}
+function setN(id,v){{const e=document.getElementById(id);if(e)e.textContent=(v===null||v===undefined)?'—':String(v);}}
+function renderStats(){{
+  const s=DATA[cur];if(!s)return;
+  document.getElementById('p-name-display').textContent=cur;
+  document.getElementById('legend-poste').textContent=s.postes?'Poste : '+s.postes:'';
+  setN('n-ptot',s.passes_ok+s.passes_ko);bar('b-ptot',s.passes_ok||0,s.passes_ko||0);
+  setN('n-pc',s.courtes_ok+s.courtes_ko);bar('b-pc',s.courtes_ok||0,s.courtes_ko||0);
+  setN('n-pl',s.longues_ok+s.longues_ko);bar('b-pl',s.longues_ok||0,s.longues_ko||0);
+  setN('n-dr',(s.drib_ok||0)+(s.drib_ko||0));bar('b-dr',s.drib_ok||0,s.drib_ko||0);
+  setN('n-tirs',s.tirs_tot||0);bar('b-tirs',s.tirs_cadres||0,(s.tirs_tot||0)-(s.tirs_cadres||0));
+  setN('n-buts',s.tirs_buts||0);
+  setN('n-ball',s.ballons||0);bar('b-ball',Math.max(0,(s.ballons||0)-(s.pertes||0)),s.pertes||0);
+  setN('n-recup',s.recuperations||0);
+  setN('n-dt',(s.duels_gagnes||0)+(s.duels_perdus||0));bar('b-dt',s.duels_gagnes||0,s.duels_perdus||0);
+  setN('n-aer',(s.aer_ok||0)+(s.aer_ko||0));bar('b-aer',s.aer_ok||0,s.aer_ko||0);
+  setN('n-sol',(s.sol_ok||0)+(s.sol_ko||0));bar('b-sol',s.sol_ok||0,s.sol_ko||0);
+  setN('n-int',s.interceptions||0);
+}}
+function renderHeat(){{
+  const s=DATA[cur];if(!s)return;
+  const g=document.getElementById('heat-pts');g.innerHTML='';
+  const locs=s.locs||[];
+  const den={{}};
+  locs.forEach(p=>{{const k=Math.round(p.x/4)*4+'_'+Math.round(p.y/4)*4;den[k]=(den[k]||0)+1;}});
+  const maxD=Math.max(...Object.values(den),1);
+  const svgEl=document.getElementById('svg-heat');
+  let defs=svgEl.querySelector('defs');if(!defs){{defs=document.createElementNS(NS,'defs');svgEl.insertBefore(defs,svgEl.firstChild);}}
+  [...defs.querySelectorAll('[id^="hg_"]')].forEach(e=>e.remove());
+  Object.entries(den).forEach(([key,count])=>{{
+    const [x,y]=key.split('_').map(Number);
+    const r=4+(count/maxD)*7,op=0.15+(count/maxD)*0.7;
+    const gid='hg_'+x+'_'+y;
+    const grad=document.createElementNS(NS,'radialGradient');
+    grad.setAttribute('id',gid);grad.setAttribute('cx','50%');grad.setAttribute('cy','50%');grad.setAttribute('r','50%');
+    const s1=document.createElementNS(NS,'stop');s1.setAttribute('offset','0%');s1.setAttribute('stop-color','#00A3E0');s1.setAttribute('stop-opacity',op);
+    const s2=document.createElementNS(NS,'stop');s2.setAttribute('offset','100%');s2.setAttribute('stop-color','#00A3E0');s2.setAttribute('stop-opacity','0');
+    grad.appendChild(s1);grad.appendChild(s2);defs.appendChild(grad);
+    const el=document.createElementNS(NS,'ellipse');
+    el.setAttribute('cx',x);el.setAttribute('cy',y);el.setAttribute('rx',r);el.setAttribute('ry',r);
+    el.setAttribute('fill','url(#'+gid+')');g.appendChild(el);
+  }});
+  if(locs.length){{const cx=locs.reduce((a,b)=>a+b.x,0)/locs.length,cy=locs.reduce((a,b)=>a+b.y,0)/locs.length;
+    const c=document.createElementNS(NS,'circle');c.setAttribute('cx',cx);c.setAttribute('cy',cy);c.setAttribute('r','1.5');c.setAttribute('fill','#00A3E0');c.setAttribute('opacity','0.95');g.appendChild(c);}}
+}}
+function renderPass(){{
+  const s=DATA[cur];if(!s)return;
+  const g=document.getElementById('pass-arrows');g.innerHTML='';
+  (s.passes_map||[]).forEach((p,i)=>{{
+    if(!p.x||!p.y)return;
+    const color=p.ok?'#22c55e':'#ef4444',marker=p.ok?'aOk':'aKo';
+    const rng=seed=>((seed*9301+49297)%233280)/233280;
+    const dx=p.x+(p.ok?8:5)+rng(i)*10,dy=p.y+(rng(i*3+1)-0.5)*12;
+    const line=document.createElementNS(NS,'line');
+    line.setAttribute('x1',p.x);line.setAttribute('y1',p.y);
+    line.setAttribute('x2',Math.min(99,dx));line.setAttribute('y2',Math.max(1,Math.min(67,dy)));
+    line.setAttribute('stroke',color);line.setAttribute('stroke-width',p.longue?'0.9':'0.65');
+    line.setAttribute('stroke-opacity','0.85');line.setAttribute('marker-end','url(#'+marker+')');
+    if(!p.ok)line.setAttribute('stroke-dasharray','2,1');
+    g.appendChild(line);
+    const dot=document.createElementNS(NS,'circle');dot.setAttribute('cx',p.x);dot.setAttribute('cy',p.y);dot.setAttribute('r','1.2');dot.setAttribute('fill',color);dot.setAttribute('opacity','0.9');g.appendChild(dot);
+  }});
+}}
+function selectPlayer(name){{
+  cur=name;
+  document.querySelectorAll('.player-btn').forEach(b=>{{
+    const label=b.textContent.trim().toUpperCase(),namePart=name.split(' ')[0].toUpperCase();
+    b.classList.toggle('active',label===namePart||name.toUpperCase().includes(label));
+  }});
+  renderStats();if(mapMode==='heat')renderHeat();else renderPass();
+}}
+function setMap(mode){{
+  mapMode=mode;
+  document.querySelectorAll('.tog-btn').forEach((b,i)=>b.classList.toggle('active',(i===0&&mode==='heat')||(i===1&&mode==='pass')));
+  document.getElementById('panel-heat').style.display=mode==='heat'?'flex':'none';
+  document.getElementById('panel-pass').style.display=mode==='pass'?'flex':'none';
+  if(mode==='heat')renderHeat();else renderPass();
+}}
+renderCtx();renderStats();renderHeat();setMap('heat');
+</script></body></html>"""
 
 
 def read_csv_auto(path: str) -> pd.DataFrame:
@@ -4719,7 +5104,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
     # ── Section Technico-Tactique ──────────────────────────────────
     if tactical_files:
         st.divider()
-        st.markdown("#### 🎯 Données Technico-Tactiques")
+        st.markdown("#### 🎯 Rapport Technico-Tactique")
 
         # Construire la liste des matchs GPS avec leurs infos pour le matching
         match_rows = []
@@ -4747,99 +5132,22 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                 st.info(f"Aucun fichier tactique associé trouvé pour **{sel_match}**.")
                 st.caption("Vérifiez que le fichier CSV tactique est bien dans le dossier `data/` avec le format `PFC_VS__...csv`")
             else:
-                # Match trouvé
-                tl = str(df_tactic["Timeline"].dropna().iloc[0]) if "Timeline" in df_tactic.columns and not df_tactic["Timeline"].dropna().empty else sel_match
-                st.success(f"✅ Fichier tactique associé : **{tl}**")
+                # Générer et afficher le rapport HTML interactif
+                import streamlit.components.v1 as _components
+                html_report = build_tactical_report_html(df_tactic)
+                _components.html(html_report, height=680, scrolling=False)
 
-                # ── Onglet par joueuse ou équipe ────────────────────
-                if selected_player and selected_player != "Toutes":
-                    # Vue joueuse individuelle
-                    stats = compute_tactical_stats(df_tactic, selected_player)
-                    if not stats:
-                        st.warning(f"Joueuse **{selected_player}** non trouvée dans les données tactiques.")
-                    else:
-                        # Métriques clés
-                        tc1, tc2, tc3, tc4, tc5, tc6 = st.columns(6)
-                        tc1.metric("Actions", stats.get("nb_actions", 0))
-                        tc2.metric("Passes", stats.get("nb_passes", 0))
-                        tc3.metric("Tirs", stats.get("nb_tirs", 0))
-                        tc4.metric("Pertes", stats.get("nb_pertes", 0))
-                        tc5.metric("Dribbles", stats.get("nb_dribbles", 0))
-                        tc6.metric("Duels déf.", stats.get("nb_duels_def", 0))
-
-                        # Graphique répartition des actions
-                        actions = stats.get("actions", {})
-                        if actions:
-                            st.markdown("**Répartition des actions**")
-                            fig_tac, ax_tac = plt.subplots(figsize=(10, 3), dpi=90)
-                            fig_tac.patch.set_facecolor("#08090D")
-                            ax_tac.set_facecolor("#08090D")
-                            acts = dict(sorted(actions.items(), key=lambda x: x[1], reverse=True)[:10])
-                            bars = ax_tac.barh(list(acts.keys()), list(acts.values()),
-                                               color="#00A3E0", edgecolor="#08090D")
-                            # Étiquettes valeurs
-                            for bar, val in zip(bars, acts.values()):
-                                ax_tac.text(val + 0.1, bar.get_y() + bar.get_height()/2,
-                                           str(val), va="center", color="#C8D8E8", fontsize=9)
-                            ax_tac.tick_params(colors="#C8D8E8", labelsize=9)
-                            ax_tac.set_xlabel("Nombre", color="#6A8090", fontsize=9)
-                            for spine in ax_tac.spines.values():
-                                spine.set_color("#1A2A3A")
-                            ax_tac.spines["top"].set_visible(False)
-                            ax_tac.spines["right"].set_visible(False)
-                            ax_tac.xaxis.grid(True, color="#1A2A3A", linewidth=0.5)
-                            ax_tac.set_axisbelow(True)
-                            fig_tac.subplots_adjust(left=0.30, right=0.95, top=0.95, bottom=0.15)
-                            st.pyplot(fig_tac, use_container_width=True)
-                            plt.close(fig_tac)
-
-                        # Infos complémentaires
-                        col_i1, col_i2 = st.columns(2)
-                        with col_i1:
-                            if stats.get("postes"):
-                                st.markdown(f"**Poste(s) joué(s) :** {', '.join(stats['postes'])}")
-                            if stats.get("systemes"):
-                                st.markdown(f"**Système(s) :** {', '.join(stats['systemes'])}")
-                        with col_i2:
-                            if stats.get("zones"):
-                                top_zones = sorted(stats["zones"].items(), key=lambda x: x[1], reverse=True)[:3]
-                                st.markdown("**Top zones de départ :** " + ", ".join(f"{z} ({n})" for z, n in top_zones))
-                            if stats.get("mi_temps"):
-                                st.markdown("**Par mi-temps :** " + ", ".join(f"{k}: {v}" for k, v in stats["mi_temps"].items()))
-                else:
-                    # Vue équipe : top joueuses par nombre d'actions
-                    st.markdown("**Vue équipe — Actions par joueuse**")
-                    if "Row" in df_tactic.columns and "Action" in df_tactic.columns:
-                        df_team = df_tactic[df_tactic["Row"].notna() & ~df_tactic["Row"].isin(["START"])].copy()
-                        player_actions = df_team.groupby("Row")["Action"].count().sort_values(ascending=False)
-                        if not player_actions.empty:
-                            fig_team, ax_team = plt.subplots(figsize=(10, max(3, len(player_actions)*0.4)), dpi=90)
-                            fig_team.patch.set_facecolor("#08090D")
-                            ax_team.set_facecolor("#08090D")
-                            ax_team.barh(player_actions.index[::-1], player_actions.values[::-1],
-                                         color="#00A3E0", edgecolor="#08090D")
-                            ax_team.tick_params(colors="#C8D8E8", labelsize=9)
-                            ax_team.set_xlabel("Nombre d'actions", color="#6A8090", fontsize=9)
-                            for spine in ax_team.spines.values():
-                                spine.set_color("#1A2A3A")
-                            ax_team.spines["top"].set_visible(False)
-                            ax_team.spines["right"].set_visible(False)
-                            ax_team.xaxis.grid(True, color="#1A2A3A", linewidth=0.5)
-                            ax_team.set_axisbelow(True)
-                            fig_team.subplots_adjust(left=0.35, right=0.95, top=0.95, bottom=0.12)
-                            st.pyplot(fig_team, use_container_width=True)
-                            plt.close(fig_team)
-
-                # Données brutes tactiques
+                # Données brutes en expander (optionnel)
                 with st.expander("📋 Données tactiques brutes", expanded=False):
-                    show_tac_cols = [c for c in ["Row","Action","Poste","Zone Départ action",
-                                                  "Mi-temps","Start time","Passe","Tir","Dribble",
-                                                  "Système de Jeu PFC","Score","Lieu"] if c in df_tactic.columns]
+                    show_tac_cols = [c for c in ["Row", "Action", "Poste", "Zone Départ action",
+                                                  "Mi-temps", "Start time", "Passe", "Tir", "Dribble",
+                                                  "Système de Jeu PFC", "Score", "Lieu"] if c in df_tactic.columns]
                     df_disp = df_tactic[show_tac_cols] if show_tac_cols else df_tactic
                     if selected_player and selected_player != "Toutes":
-                        player_norm = normalize_str(selected_player)
-                        mask_p = df_tactic["Row"].dropna().apply(lambda x: normalize_str(str(x)) == player_norm or player_norm in normalize_str(str(x)))
-                        df_disp = df_tactic[mask_p][show_tac_cols] if show_tac_cols else df_tactic[mask_p]
+                        _pnorm = normalize_str(selected_player)
+                        _mask  = df_tactic["Row"].dropna().apply(
+                            lambda x: normalize_str(str(x)) == _pnorm or _pnorm in normalize_str(str(x)))
+                        df_disp = df_tactic[_mask][show_tac_cols] if show_tac_cols else df_tactic[_mask]
                     st.dataframe(df_disp, use_container_width=True)
 
     if is_admin and DRIVE_GPS_MATCH_FOLDER_ID:
