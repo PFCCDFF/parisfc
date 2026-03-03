@@ -4298,10 +4298,9 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
 
 def _make_match_bar_chart(labels, datasets, title, ylabel, figsize=(9,3.5), stacked=False):
     """Crée un graphique matplotlib barres groupées ou empilées."""
-    fig, ax = plt.subplots(figsize=figsize)
+    fig, ax = plt.subplots(figsize=figsize, dpi=90)
     fig.patch.set_facecolor("#08090D")
     ax.set_facecolor("#08090D")
-    ax.set_dpi(90)
 
     n = len(labels)
     x = range(n)
