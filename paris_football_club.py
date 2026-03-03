@@ -64,6 +64,8 @@ POST_COLS = ["ATT", "DCD", "DCG", "DD", "DG", "GB", "MCD", "MCG", "MD", "MDef", 
 BAD_TOKENS = {"CORNER", "COUP-FRANC", "COUP FRANC", "PENALTY", "CARTON", "CARTONS"}
 GPS_GF1_PREFIX = "GF1"
 GPS_MATCH_FOLDER = "data/gps_match"
+TACTICAL_FOLDER = "data"        # Les fichiers tactiques sont dans le dossier data principal
+DRIVE_TACTICAL_FOLDER_ID = ""   # À renseigner si dossier Drive dédié
 DRIVE_GPS_MATCH_FOLDER_ID = ""  # À renseigner : ID du dossier Drive GPS Match
 
 # =========================
@@ -3272,6 +3274,220 @@ def sync_gps_match_from_drive() -> Tuple[int, int]:
     return ok, fail
 
 
+# ─── DONNÉES TECHNICO-TACTIQUES ─────────────────────────────────────
+
+def is_tactical_file(filename: str) -> bool:
+    """Détecte un fichier tactique : PFC_VS__ ou contient des colonnes Timeline/Action."""
+    fn = normalize_str(filename)
+    return fn.startswith(normalize_str("PFC_VS")) or "pfc_vs" in fn
+
+
+def parse_tactical_filename(filename: str) -> dict:
+    """Extrait date, adversaire et journée depuis le nom d'un fichier tactique.
+    Format attendu : PFC_VS__2526_U19F_HAC_J10_U19_07-12-2025.csv
+    """
+    import re
+    name = os.path.splitext(os.path.basename(filename))[0]
+    info = {"date": None, "journee": "", "adversaire": "", "adv_norm": "", "label": name}
+
+    # Date : DD-MM-YYYY
+    date_m = re.search(r"(\d{2})-(\d{2})-(\d{4})", name)
+    if date_m:
+        d, m, y = date_m.groups()
+        try:
+            info["date"] = pd.Timestamp(f"{y}-{m}-{d}")
+        except Exception:
+            pass
+
+    # Journée : J suivi de chiffres
+    j_m = re.search(r"[_\-]J(\d+)[_\-]", name, re.IGNORECASE)
+    if j_m:
+        info["journee"] = j_m.group(1).zfill(2)
+
+    # Adversaire : après PFC_VS__SAISON_CAT_ et avant _Jxx
+    adv_m = re.search(r"PFC_VS__[^_]+_[^_]+_([A-Za-z][^_]+?)_J\d+", name, re.IGNORECASE)
+    if adv_m:
+        adv = adv_m.group(1).replace("_", " ").strip()
+        info["adversaire"] = adv
+        info["adv_norm"] = normalize_str(adv)
+
+    return info
+
+
+def _adv_similarity(a: str, b: str) -> float:
+    """Score de similarité entre deux noms d'adversaires normalisés."""
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    # L'un contient l'autre
+    if a in b or b in a:
+        return 0.85
+    # Chevauchement de tokens
+    ta, tb = set(re.findall(r"[a-z0-9]{2,}", a)), set(re.findall(r"[a-z0-9]{2,}", b))
+    if not ta or not tb:
+        return 0.0
+    inter = ta & tb
+    return len(inter) / max(len(ta), len(tb))
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_tactical_files() -> list:
+    """Charge tous les fichiers tactiques CSV depuis TACTICAL_FOLDER.
+    Retourne une liste de dicts : {path, date, journee, adversaire, adv_norm, df}
+    """
+    import re
+    results = []
+    search_dirs = [TACTICAL_FOLDER, "data/tactical"]
+    seen = set()
+
+    for folder in search_dirs:
+        if not os.path.exists(folder):
+            continue
+        for f in os.listdir(folder):
+            if not f.lower().endswith(".csv"):
+                continue
+            if not is_tactical_file(f):
+                continue
+            full = os.path.join(folder, f)
+            if full in seen:
+                continue
+            seen.add(full)
+            try:
+                df = read_csv_auto(full)
+                # Vérification : doit avoir Timeline et Action (colonnes tactiques)
+                if "Timeline" not in df.columns or "Action" not in df.columns:
+                    continue
+                info = parse_tactical_filename(f)
+                # Si pas de date dans le nom, essayer depuis Timeline
+                if info["date"] is None and "Timeline" in df.columns:
+                    tl = str(df["Timeline"].dropna().iloc[0]) if not df["Timeline"].dropna().empty else ""
+                    # Timeline ne contient pas de date → rester None
+                # Si pas d'adversaire dans le nom, essayer depuis Timeline
+                if not info["adversaire"] and "Timeline" in df.columns:
+                    tl = str(df["Timeline"].dropna().iloc[0]) if not df["Timeline"].dropna().empty else ""
+                    # "U19N J10 Paris FC - HAC" → extraire après le tiret
+                    adv_m = re.search(r"paris\s*fc\s*[-–]\s*(.+)|(.+)\s*[-–]\s*paris\s*fc", tl, re.IGNORECASE)
+                    if adv_m:
+                        adv = (adv_m.group(1) or adv_m.group(2) or "").strip()
+                        info["adversaire"] = adv
+                        info["adv_norm"] = normalize_str(adv)
+                results.append({**info, "path": full, "filename": f, "df": df})
+            except Exception as e:
+                _warn(f"Tactique: impossible de lire {f} → {e}")
+                continue
+
+    return results
+
+
+def match_tactical_to_gps(gps_row: dict, tactical_files: list) -> "pd.DataFrame | None":
+    """Associe un match GPS à son fichier tactique.
+    Priorité : date exacte → (date + adversaire) → (journee + adversaire).
+    Retourne le DataFrame tactique ou None.
+    """
+    gps_date = gps_row.get("date")        # pd.Timestamp ou None
+    gps_adv  = normalize_str(str(gps_row.get("adversaire", "")))
+    gps_j    = str(gps_row.get("journee", "")).lstrip("J").lstrip("0") or ""
+
+    best_score = 0.0
+    best_df = None
+
+    for t in tactical_files:
+        score = 0.0
+        t_date = t.get("date")
+        t_adv  = t.get("adv_norm", "")
+        t_j    = str(t.get("journee", "")).lstrip("0") or ""
+
+        # Date exacte = fort signal
+        if gps_date and t_date and abs((gps_date - t_date).days) <= 1:
+            score += 2.0
+
+        # Adversaire
+        adv_sim = _adv_similarity(gps_adv, t_adv)
+        score += adv_sim * 1.5
+
+        # Journée
+        if gps_j and t_j and gps_j == t_j:
+            score += 0.5
+
+        if score > best_score:
+            best_score = score
+            best_df = t["df"]
+
+    # Seuil minimal : au moins une date ou un adversaire reconnu
+    return best_df if best_score >= 1.5 else None
+
+
+def compute_tactical_stats(df_tactic: "pd.DataFrame", player_name: str) -> dict:
+    """Calcule les stats technico-tactiques agrégées pour une joueuse."""
+    import re
+
+    # Normaliser le nom de la joueuse pour le matching
+    player_norm = normalize_str(player_name)
+
+    # Filtrer les lignes de la joueuse (colonne Row = "NOM Prénom")
+    if "Row" not in df_tactic.columns:
+        return {}
+
+    mask = df_tactic["Row"].dropna().apply(
+        lambda x: normalize_str(str(x)) == player_norm or
+                  player_norm in normalize_str(str(x)) or
+                  normalize_str(str(x)) in player_norm
+    )
+    d = df_tactic[mask].copy()
+
+    if d.empty:
+        # Essayer avec matching partiel (nom de famille ou prénom seul)
+        tokens = [t for t in player_norm.split() if len(t) > 2]
+        for tok in tokens:
+            mask2 = df_tactic["Row"].dropna().apply(lambda x: tok in normalize_str(str(x)))
+            if mask2.sum() > 0:
+                d = df_tactic[mask2].copy()
+                break
+
+    if d.empty:
+        return {}
+
+    stats = {"nb_actions": len(d)}
+
+    # Compter chaque type d'action atomique
+    if "Action" in d.columns:
+        all_actions = []
+        for cell in d["Action"].dropna():
+            all_actions += [a.strip() for a in str(cell).split(",")]
+        from collections import Counter
+        action_counts = Counter(all_actions)
+        stats["actions"] = dict(action_counts.most_common(15))
+        stats["nb_passes"]        = sum(v for k, v in action_counts.items() if "passe" in k.lower())
+        stats["nb_tirs"]          = sum(v for k, v in action_counts.items() if "tir" in k.lower())
+        stats["nb_pertes"]        = sum(v for k, v in action_counts.items() if "perte" in k.lower())
+        stats["nb_dribbles"]      = sum(v for k, v in action_counts.items() if "dribble" in k.lower())
+        stats["nb_duels_def"]     = sum(v for k, v in action_counts.items() if "duel" in k.lower())
+        stats["nb_interceptions"] = sum(v for k, v in action_counts.items() if "interception" in k.lower())
+
+    # Postes joués
+    if "Poste" in d.columns:
+        postes = d["Poste"].dropna().apply(lambda x: str(x).split(",")[0].strip()).unique().tolist()
+        stats["postes"] = [p for p in postes if p and p.lower() not in ("nan","")]
+
+    # Système de jeu
+    if "Système de Jeu PFC" in d.columns:
+        sysj = d["Système de Jeu PFC"].dropna().apply(lambda x: str(x).split(",")[0].strip()).unique().tolist()
+        stats["systemes"] = [s for s in sysj if s and s.lower() not in ("nan","")]
+
+    # Zone de départ des actions
+    if "Zone Départ action" in d.columns:
+        zones = d["Zone Départ action"].dropna().apply(lambda x: str(x).split(",")[0].strip())
+        stats["zones"] = zones.value_counts().to_dict()
+
+    # Mi-temps
+    if "Mi-temps" in d.columns:
+        mt = d["Mi-temps"].dropna().apply(lambda x: str(x).split(",")[0].strip())
+        stats["mi_temps"] = mt.value_counts().to_dict()
+
+    return stats
+
+
 def read_csv_auto(path: str) -> pd.DataFrame:
     encodings = ["utf-8-sig", "utf-8", "latin1"]
     seps = [",", ";", "\t"]
@@ -4336,7 +4552,7 @@ def _make_match_bar_chart(labels, datasets, title, ylabel, figsize=(9,3.5), stac
     return fig
 
 
-def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissions: dict, user_profile: str):
+def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissions: dict, user_profile: str, tactical_files: list = None):
     """Affiche l'onglet GPS Match dans la page Données Physiques."""
 
     if gps_match is None or (hasattr(gps_match, "empty") and gps_match.empty):
@@ -4499,6 +4715,132 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
         if "DATE" in disp.columns:
             disp = disp.sort_values("DATE", ascending=False)
         st.dataframe(disp, use_container_width=True)
+
+    # ── Section Technico-Tactique ──────────────────────────────────
+    if tactical_files:
+        st.divider()
+        st.markdown("#### 🎯 Données Technico-Tactiques")
+
+        # Construire la liste des matchs GPS avec leurs infos pour le matching
+        match_rows = []
+        if "__match_label" in dm.columns:
+            for _, row in dm.drop_duplicates(subset=["__match_label"]).iterrows():
+                match_rows.append({
+                    "label":      row.get("__match_label", ""),
+                    "date":       row.get("DATE"),
+                    "adversaire": row.get("__adversaire", ""),
+                    "journee":    str(row.get("__journee", "")).lstrip("J"),
+                })
+
+        if not match_rows:
+            st.info("Aucun match GPS trouvé pour associer les données tactiques.")
+        else:
+            # Sélecteur de match
+            match_labels = [m["label"] for m in match_rows]
+            sel_match = st.selectbox("Match", match_labels, key="tactical_match_sel")
+            sel_row = next((m for m in match_rows if m["label"] == sel_match), match_rows[0])
+
+            # Trouver le fichier tactique correspondant
+            df_tactic = match_tactical_to_gps(sel_row, tactical_files)
+
+            if df_tactic is None:
+                st.info(f"Aucun fichier tactique associé trouvé pour **{sel_match}**.")
+                st.caption("Vérifiez que le fichier CSV tactique est bien dans le dossier `data/` avec le format `PFC_VS__...csv`")
+            else:
+                # Match trouvé
+                tl = str(df_tactic["Timeline"].dropna().iloc[0]) if "Timeline" in df_tactic.columns and not df_tactic["Timeline"].dropna().empty else sel_match
+                st.success(f"✅ Fichier tactique associé : **{tl}**")
+
+                # ── Onglet par joueuse ou équipe ────────────────────
+                if selected_player and selected_player != "Toutes":
+                    # Vue joueuse individuelle
+                    stats = compute_tactical_stats(df_tactic, selected_player)
+                    if not stats:
+                        st.warning(f"Joueuse **{selected_player}** non trouvée dans les données tactiques.")
+                    else:
+                        # Métriques clés
+                        tc1, tc2, tc3, tc4, tc5, tc6 = st.columns(6)
+                        tc1.metric("Actions", stats.get("nb_actions", 0))
+                        tc2.metric("Passes", stats.get("nb_passes", 0))
+                        tc3.metric("Tirs", stats.get("nb_tirs", 0))
+                        tc4.metric("Pertes", stats.get("nb_pertes", 0))
+                        tc5.metric("Dribbles", stats.get("nb_dribbles", 0))
+                        tc6.metric("Duels déf.", stats.get("nb_duels_def", 0))
+
+                        # Graphique répartition des actions
+                        actions = stats.get("actions", {})
+                        if actions:
+                            st.markdown("**Répartition des actions**")
+                            fig_tac, ax_tac = plt.subplots(figsize=(10, 3), dpi=90)
+                            fig_tac.patch.set_facecolor("#08090D")
+                            ax_tac.set_facecolor("#08090D")
+                            acts = dict(sorted(actions.items(), key=lambda x: x[1], reverse=True)[:10])
+                            bars = ax_tac.barh(list(acts.keys()), list(acts.values()),
+                                               color="#00A3E0", edgecolor="#08090D")
+                            # Étiquettes valeurs
+                            for bar, val in zip(bars, acts.values()):
+                                ax_tac.text(val + 0.1, bar.get_y() + bar.get_height()/2,
+                                           str(val), va="center", color="#C8D8E8", fontsize=9)
+                            ax_tac.tick_params(colors="#C8D8E8", labelsize=9)
+                            ax_tac.set_xlabel("Nombre", color="#6A8090", fontsize=9)
+                            for spine in ax_tac.spines.values():
+                                spine.set_color("#1A2A3A")
+                            ax_tac.spines["top"].set_visible(False)
+                            ax_tac.spines["right"].set_visible(False)
+                            ax_tac.xaxis.grid(True, color="#1A2A3A", linewidth=0.5)
+                            ax_tac.set_axisbelow(True)
+                            fig_tac.subplots_adjust(left=0.30, right=0.95, top=0.95, bottom=0.15)
+                            st.pyplot(fig_tac, use_container_width=True)
+                            plt.close(fig_tac)
+
+                        # Infos complémentaires
+                        col_i1, col_i2 = st.columns(2)
+                        with col_i1:
+                            if stats.get("postes"):
+                                st.markdown(f"**Poste(s) joué(s) :** {', '.join(stats['postes'])}")
+                            if stats.get("systemes"):
+                                st.markdown(f"**Système(s) :** {', '.join(stats['systemes'])}")
+                        with col_i2:
+                            if stats.get("zones"):
+                                top_zones = sorted(stats["zones"].items(), key=lambda x: x[1], reverse=True)[:3]
+                                st.markdown("**Top zones de départ :** " + ", ".join(f"{z} ({n})" for z, n in top_zones))
+                            if stats.get("mi_temps"):
+                                st.markdown("**Par mi-temps :** " + ", ".join(f"{k}: {v}" for k, v in stats["mi_temps"].items()))
+                else:
+                    # Vue équipe : top joueuses par nombre d'actions
+                    st.markdown("**Vue équipe — Actions par joueuse**")
+                    if "Row" in df_tactic.columns and "Action" in df_tactic.columns:
+                        df_team = df_tactic[df_tactic["Row"].notna() & ~df_tactic["Row"].isin(["START"])].copy()
+                        player_actions = df_team.groupby("Row")["Action"].count().sort_values(ascending=False)
+                        if not player_actions.empty:
+                            fig_team, ax_team = plt.subplots(figsize=(10, max(3, len(player_actions)*0.4)), dpi=90)
+                            fig_team.patch.set_facecolor("#08090D")
+                            ax_team.set_facecolor("#08090D")
+                            ax_team.barh(player_actions.index[::-1], player_actions.values[::-1],
+                                         color="#00A3E0", edgecolor="#08090D")
+                            ax_team.tick_params(colors="#C8D8E8", labelsize=9)
+                            ax_team.set_xlabel("Nombre d'actions", color="#6A8090", fontsize=9)
+                            for spine in ax_team.spines.values():
+                                spine.set_color("#1A2A3A")
+                            ax_team.spines["top"].set_visible(False)
+                            ax_team.spines["right"].set_visible(False)
+                            ax_team.xaxis.grid(True, color="#1A2A3A", linewidth=0.5)
+                            ax_team.set_axisbelow(True)
+                            fig_team.subplots_adjust(left=0.35, right=0.95, top=0.95, bottom=0.12)
+                            st.pyplot(fig_team, use_container_width=True)
+                            plt.close(fig_team)
+
+                # Données brutes tactiques
+                with st.expander("📋 Données tactiques brutes", expanded=False):
+                    show_tac_cols = [c for c in ["Row","Action","Poste","Zone Départ action",
+                                                  "Mi-temps","Start time","Passe","Tir","Dribble",
+                                                  "Système de Jeu PFC","Score","Lieu"] if c in df_tactic.columns]
+                    df_disp = df_tactic[show_tac_cols] if show_tac_cols else df_tactic
+                    if selected_player and selected_player != "Toutes":
+                        player_norm = normalize_str(selected_player)
+                        mask_p = df_tactic["Row"].dropna().apply(lambda x: normalize_str(str(x)) == player_norm or player_norm in normalize_str(str(x)))
+                        df_disp = df_tactic[mask_p][show_tac_cols] if show_tac_cols else df_tactic[mask_p]
+                    st.dataframe(df_disp, use_container_width=True)
 
     if is_admin and DRIVE_GPS_MATCH_FOLDER_ID:
         st.divider()
@@ -5124,7 +5466,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 plt.close(fig)  # libère la mémoire
 
         with tab_match:
-            _render_gps_match_tab(gps_match, player_name, permissions, user_profile)
+            tactical_files = load_tactical_files()
+            _render_gps_match_tab(gps_match, player_name, permissions, user_profile, tactical_files)
 
     elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
