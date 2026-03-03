@@ -3455,11 +3455,35 @@ def compute_tactical_stats(df_tactic, player_name):
     l_ko = sum(1 for _, r in pass_rows.iterrows() if "Longue" in str(r.get("Passe","")) and "Ratée"   in str(r.get("Passe","")))
     stats.update({"passes_ok":p_ok,"passes_ko":p_ko,"courtes_ok":c_ok,"courtes_ko":c_ko,"longues_ok":l_ok,"longues_ko":l_ko})
 
+    # Coordonnées Sportscode : 1-80 sur les deux axes
+    # SVG viewBox : 0-100 (longueur) x 0-68 (largeur)
+    _FIELD_MAX = 80.0
+    _SVG_W, _SVG_H = 100.0, 68.0
+
+    # Détecter les instances MT2 pour inverser X (changement de côté)
+    _mt2_inst: set = set()
+    if "Row" in df_tactic.columns and "Instance number" in df_tactic.columns and "Mi-temps" in df_tactic.columns:
+        _pfc_mt = df_tactic[df_tactic["Row"] == "PFC"][["Instance number", "Mi-temps"]].copy()
+        _mt2_inst = set(_pfc_mt[_pfc_mt["Mi-temps"].apply(lambda x: "MT2" in str(x))]["Instance number"].tolist())
+
+    def _inst(r):
+        try: return int(str(r.get("Instance number","")).split(",")[0].strip())
+        except: return None
+
+    def _norm_x(v, inst=None):
+        raw = float(v) * _SVG_W / _FIELD_MAX
+        if inst is not None and inst in _mt2_inst:
+            raw = _SVG_W - raw  # inversion côté MT2
+        return round(max(1.5, min(98.5, raw)), 1)
+
+    def _norm_y(v): return round(max(1.5, min(66.5, float(v) * _SVG_H / _FIELD_MAX)), 1)
+
     pass_map = []
     for _, r in pass_rows.iterrows():
         try:
-            x = float(str(r.get("X_localisation","")).split(",")[0].strip())
-            y = float(str(r.get("Y_localisation","")).split(",")[0].strip())
+            _i = _inst(r)
+            x = _norm_x(str(r.get("X_localisation","")).split(",")[0].strip(), _i)
+            y = _norm_y(str(r.get("Y_localisation","")).split(",")[0].strip())
             ok = "Réussie" in str(r.get("Passe",""))
             longue = "Longue" in str(r.get("Passe",""))
             pass_map.append({"x": x, "y": y, "ok": ok, "longue": longue})
@@ -3501,12 +3525,13 @@ def compute_tactical_stats(df_tactic, player_name):
         "interceptions": stats["recuperations"],
     })
 
-    # LOCALISATION
+    # LOCALISATION — normalisation coordonnées Sportscode (1-80) → SVG (0-100 × 0-68)
     locs = []
     for _, r in d.iterrows():
         try:
-            x = float(str(r.get("X_localisation","")).split(",")[0].strip())
-            y = float(str(r.get("Y_localisation","")).split(",")[0].strip())
+            _i = _inst(r)
+            x = _norm_x(str(r.get("X_localisation","")).split(",")[0].strip(), _i)
+            y = _norm_y(str(r.get("Y_localisation","")).split(",")[0].strip())
             locs.append({"x": x, "y": y})
         except Exception:
             pass
@@ -3852,7 +3877,7 @@ window.onload=init;
   </div>
   <div class="pw" id="panel-heat">
     <div class="pwt">Position sur le terrain</div>
-    <svg class="p" id="svg-heat" viewBox="0 0 100 68"><defs></defs>{pitch_lines}<g id="heat-pts"></g></svg>
+    <svg class="p" id="svg-heat" viewBox="0 0 100 68"><defs><clipPath id="pitch-clip"><rect x="1" y="1" width="98" height="66"/></clipPath></defs>{pitch_lines}<g id="heat-pts" clip-path="url(#pitch-clip)"></g></svg>
   </div>
   <div class="pw" id="panel-pass" style="display:none">
     <div class="pwt">Carte des Passes</div>
