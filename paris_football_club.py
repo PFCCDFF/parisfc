@@ -3779,102 +3779,6 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
         return None
     return out
 
-.gps-sub{{font-size:10px;color:rgba(255,255,255,.70);margin-top:2px}}
-.gps-empty{{font-size:12px;color:rgba(255,255,255,.75);padding:6px 0}}
-/* /GPS PANEL */
-</style></head><body>
-<div class="hdr">
-  <div><div class="hdr-logo">Paris FC - Centre de Formation Feminin</div>
-  <div class="hdr-sub">Rapport Technico-Tactique</div></div>
-  <div style="display:flex;align-items:center;gap:8px;">
-    <div class="badge" id="h-comp">--</div>
-    <div class="hdr-meta" id="h-meta">--</div>
-  </div>
-</div>
-<div class="main">
-<div class="left">
-  <div style="border-bottom:1px solid var(--border)">
-    <div class="ctx-title">Contexte Match</div>
-    <div class="score-row">
-      <div class="tb"><div class="tn" id="ctx-pfc">Paris FC</div><div class="ts" id="s-pfc">--</div></div>
-      <div class="vs">--</div>
-      <div class="tb"><div class="tn" id="ctx-adv">--</div><div class="ts adv" id="s-adv">--</div></div>
-    </div>
-    <div class="poss-row">
-      <div class="pb"><div class="pb-lbl">Possession Paris FC</div>
-        <div class="pb-bg"><div class="pb-bar" id="pb-pfc"></div></div>
-        <div class="pb-val" id="pv-pfc">--</div></div>
-      <div class="pb"><div class="pb-lbl" id="pl-adv">Possession ADV</div>
-        <div class="pb-bg"><div class="pb-bar" style="background:#6b7280" id="pb-adv"></div></div>
-        <div class="pb-val" style="color:var(--muted)" id="pv-adv">--</div></div>
-    </div>
-    <div class="ctx-dets">
-      <div class="ctx-d"><span>Lieu</span><b id="ctx-lieu">--</b></div>
-      <div class="ctx-d"><span>Systeme</span><b id="ctx-sys">--</b></div>
-      <div class="ctx-d"><span>Competition</span><b id="ctx-comp">--</b></div>
-    </div>
-  </div>
-  <div class="pbar"><div class="pname" id="p-name">--</div><div class="pposte" id="p-poste"></div></div>
-  <div class="sec"><div class="sec-inner"><div class="cat">Offensif</div><div class="stbl">
-    <div class="sr h"><div class="snm" style="font-size:8px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.07em;">Indicateur</div><div class="sn h">N</div><div class="sh">% Reussite</div></div>
-    <div class="sr"><div class="snm">Passes totales</div><div class="sn" id="n-pt">--</div><div class="sbr"><div class="bw" id="b-pt"></div></div></div>
-    <div class="sr"><div class="snm">Passes courtes</div><div class="sn" id="n-pc">--</div><div class="sbr"><div class="bw" id="b-pc"></div></div></div>
-    <div class="sr"><div class="snm">Passes longues</div><div class="sn" id="n-pl">--</div><div class="sbr"><div class="bw" id="b-pl"></div></div></div>
-    <div class="sr"><div class="snm">Dribbles</div><div class="sn" id="n-dr">--</div><div class="sbr"><div class="bw" id="b-dr"></div></div></div>
-    <div class="sr h"><div class="snm"></div><div class="sn h">N</div><div class="sh">% Tirs Cadres</div></div>
-    <div class="sr"><div class="snm">Tirs</div><div class="sn" id="n-ti">--</div><div class="sbr"><div class="bw" id="b-ti"></div></div></div>
-    <div class="sr"><div class="snm sub">dont Buts</div><div class="sn gold" id="n-bu">--</div><div class="sbr"></div></div>
-    <div class="sr h"><div class="snm"></div><div class="sn h">N</div><div class="sh">% Pertes / Touches</div></div>
-    <div class="sr"><div class="snm">Ballons touches</div><div class="sn" id="n-ba">--</div><div class="sbr"><div class="bw" id="b-ba"></div></div></div>
-    <div class="sr"><div class="snm">Recuperations</div><div class="sn" id="n-re">--</div><div class="sbr"></div></div>
-  </div></div></div>
-  <div class="sec"><div class="sec-inner"><div class="cat">Defensif</div><div class="stbl">
-    <div class="sr h"><div class="snm"></div><div class="sn h">N</div><div class="sh">% Duels Gagnes</div></div>
-    <div class="sr"><div class="snm">Duels defensifs</div><div class="sn" id="n-dd">--</div><div class="sbr"><div class="bw" id="b-dd"></div></div></div>
-    <div class="sr"><div class="snm">Duels aeriens</div><div class="sn" id="n-da">--</div><div class="sbr"><div class="bw" id="b-da"></div></div></div>
-    <div class="sr"><div class="snm">Duels au sol</div><div class="sn" id="n-ds">--</div><div class="sbr"><div class="bw" id="b-ds"></div></div></div>
-    <div class="sr h"><div class="snm"></div><div class="sn h">N</div><div class="sh"></div></div>
-    <div class="sr"><div class="snm">Interceptions</div><div class="sn" id="n-in">--</div><div class="sbr"></div></div>
-  </div></div></div>
-  <div class="leg">
-    <div class="li"><div class="ld" style="background:#16a34a"></div>Reussie</div>
-    <div class="li"><div class="ld" style="background:#b91c1c"></div>Ratee</div>
-  </div>
-{gps_block}
-</div>
-<div class="right">
-  <div class="rtop">
-    <div class="rn" id="rt-name">--</div>
-    <div class="tw">
-      <button class="tog on" id="tog-h" onclick="setMap('heat')">Heatmap</button>
-      <button class="tog"    id="tog-p" onclick="setMap('pass')">Passes</button>
-    </div>
-  </div>
-  <div class="pw" id="panel-heat">
-    <div class="pwt">Position sur le terrain</div>
-    <svg class="p" id="svg-heat" viewBox="0 0 100 68"><defs><clipPath id="pitch-clip"><rect x="1" y="1" width="98" height="66"/></clipPath></defs>{pitch_lines}<g id="heat-pts" clip-path="url(#pitch-clip)"></g></svg>
-  </div>
-  <div class="pw" id="panel-pass" style="display:none">
-    <div class="pwt">Carte des Passes</div>
-    <svg class="p" id="svg-pass" viewBox="0 0 100 68">
-      <defs>
-        <marker id="aOk" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#22c55e"/></marker>
-        <marker id="aKo" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#ef4444"/></marker>
-      </defs>
-      {pitch_lines}<g id="pass-arrows"></g>
-    </svg>
-    <div class="pl">
-      <div class="pli"><div class="pla" style="background:#22c55e"></div>Reussie</div>
-      <div class="pli"><div class="pla" style="background:#ef4444;opacity:.7"></div>Ratee</div>
-      <div class="pli"><div class="pla" style="background:#22c55e;height:3px"></div>Longue</div>
-    </div>
-  </div>
-</div>
-</div>
-<script>{js}</script>
-</body></html>"""
-
-
 def read_csv_auto(path: str) -> pd.DataFrame:
     encodings = ["utf-8-sig", "utf-8", "latin1"]
     seps = [",", ";", "\t"]
@@ -4938,6 +4842,110 @@ def _make_match_bar_chart(labels, datasets, title, ylabel, figsize=(9,3.5), stac
     fig.subplots_adjust(bottom=0.28, top=0.95, left=0.08, right=0.97)
     return fig
 
+
+def build_tactical_report_html(df_tactic: pd.DataFrame, player_canon: str, gps_summary: Optional[pd.DataFrame] = None) -> str:
+    """
+    Construit un rapport HTML (technico-tactique + panneau GPS optionnel).
+    - df_tactic : dataframe agrégé (1 ligne) pour une joueuse (celui utilisé dans l'onglet Statistiques)
+    - gps_summary : dataframe 1 ligne (résumé GPS du match) ou None
+    """
+    player_label = str(player_canon or "").strip()
+
+    # --- Tech/Tac quick cards (robuste si colonnes manquantes) ---
+    def _val(col, fmt="{:.0f}"):
+        if df_tactic is None or df_tactic.empty or col not in df_tactic.columns:
+            return "—"
+        v = pd.to_numeric(df_tactic.iloc[0][col], errors="coerce")
+        if pd.isna(v):
+            return "—"
+        try:
+            return fmt.format(float(v))
+        except Exception:
+            return str(v)
+
+    minutes = _val("Temps de jeu (en minutes)", "{:.0f}") if (df_tactic is not None and not df_tactic.empty) else "—"
+    buts = _val("Buts", "{:.0f}")
+    passes = _val("Passes", "{:.0f}")
+    dribbles = _val("Dribbles", "{:.0f}")
+
+    # --- GPS panel ---
+    gps_html = ""
+    if gps_summary is not None and isinstance(gps_summary, pd.DataFrame) and not gps_summary.empty:
+        row = gps_summary.iloc[0].to_dict()
+
+        def _gps_get(key, fmt="{:.0f}"):
+            v = row.get(key, None)
+            v = pd.to_numeric(v, errors="coerce")
+            if pd.isna(v):
+                return "—"
+            try:
+                return fmt.format(float(v))
+            except Exception:
+                return str(v)
+
+        dist = _gps_get("Distance (m)", "{:.0f}")
+        duree = _gps_get("Durée_min", "{:.0f}")
+        hid13 = _gps_get("Distance HID (>13 km/h)", "{:.0f}")
+        hid19 = _gps_get("Distance HID (>19 km/h)", "{:.0f}")
+        vma = _gps_get("Vitesse max (km/h)", "{:.1f}")
+        charge = _gps_get("CHARGE", "{:.0f}")
+
+        gps_html = f"""
+        <div class="gps-panel">
+          <div class="gps-title">Données physiques (match)</div>
+          <div class="gps-sub">Fenêtre: match sélectionné (date)</div>
+          <div class="gps-grid">
+            <div class="gps-pill"><div class="k">Distance</div><div class="v">{dist} m</div></div>
+            <div class="gps-pill"><div class="k">Durée</div><div class="v">{duree} min</div></div>
+            <div class="gps-pill"><div class="k">HID &gt;13</div><div class="v">{hid13} m</div></div>
+            <div class="gps-pill"><div class="k">HID &gt;19</div><div class="v">{hid19} m</div></div>
+            <div class="gps-pill"><div class="k">Vitesse max</div><div class="v">{vma} km/h</div></div>
+            <div class="gps-pill"><div class="k">Charge</div><div class="v">{charge}</div></div>
+          </div>
+        </div>
+        """
+
+    html = f"""
+    <div class="report-wrap">
+      <div class="header">
+        <div class="h1">{player_label}</div>
+        <div class="sub">Synthèse technico-tactique + physique (si disponible)</div>
+      </div>
+
+      <div class="cards">
+        <div class="card"><div class="k">Temps de jeu</div><div class="v">{minutes} min</div></div>
+        <div class="card"><div class="k">Buts</div><div class="v">{buts}</div></div>
+        <div class="card"><div class="k">Passes</div><div class="v">{passes}</div></div>
+        <div class="card"><div class="k">Dribbles</div><div class="v">{dribbles}</div></div>
+      </div>
+
+      {gps_html}
+    </div>
+
+    <style>
+      .report-wrap{{font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;}}
+      .header{{padding:10px 12px 0px;}}
+      .h1{{font-size:18px;font-weight:700;}}
+      .sub{{font-size:11px;color:rgba(255,255,255,.70);margin-top:2px}}
+      .cards{{display:grid;grid-template-columns:repeat(4, minmax(0,1fr));gap:10px;margin:10px 0 0;}}
+      .card{{padding:10px;border:1px solid rgba(255,255,255,.12);border-radius:10px;background:rgba(0,0,0,.16)}}
+      .card .k{{font-size:10px;color:rgba(255,255,255,.70)}}
+      .card .v{{font-size:16px;font-weight:700;margin-top:2px}}
+
+      .gps-panel{{margin-top:12px;padding:10px 10px 12px;border:1px solid rgba(255,255,255,.12);border-radius:12px;background:rgba(0,0,0,.16)}}
+      .gps-title{{font-size:13px;font-weight:700}}
+      .gps-sub{{font-size:10px;color:rgba(255,255,255,.70);margin-top:2px}}
+      .gps-grid{{display:grid;grid-template-columns:repeat(3, minmax(0,1fr));gap:10px;margin-top:10px}}
+      .gps-pill{{padding:10px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10)}}
+      .gps-pill .k{{font-size:10px;color:rgba(255,255,255,.70)}}
+      .gps-pill .v{{font-size:14px;font-weight:700;margin-top:2px}}
+      @media (max-width: 900px) {{
+        .cards{{grid-template-columns:repeat(2, minmax(0,1fr));}}
+        .gps-grid{{grid-template-columns:repeat(2, minmax(0,1fr));}}
+      }}
+    </style>
+    """
+    return html
 
 def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissions: dict, user_profile: str, tactical_files: list = None):
     """Affiche l'onglet GPS Match dans la page Données Physiques."""
