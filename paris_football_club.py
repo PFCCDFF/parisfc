@@ -4279,9 +4279,45 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
     return fig
 
 
+def _make_match_bar_chart(labels, datasets, title, ylabel, figsize=(9,3.5), stacked=False):
+    """Crée un graphique matplotlib barres groupées ou empilées."""
+    fig, ax = plt.subplots(figsize=figsize)
+    fig.patch.set_facecolor("#08090D")
+    ax.set_facecolor("#08090D")
+    ax.set_dpi(90)
+
+    n = len(labels)
+    x = range(n)
+    width = 0.8 / max(len(datasets), 1) if not stacked else 0.6
+
+    bottom = [0.0] * n if stacked else None
+    for i, (data, label, color) in enumerate(datasets):
+        vals = [float(v) if v is not None and str(v) not in ("nan","") else 0.0 for v in data]
+        if stacked:
+            ax.bar(x, vals, width, label=label, color=color, bottom=bottom, edgecolor="#08090D", linewidth=0.5)
+            bottom = [b + v for b, v in zip(bottom, vals)]
+        else:
+            offset = (i - len(datasets)/2 + 0.5) * width
+            ax.bar([xi + offset for xi in x], vals, width, label=label, color=color, edgecolor="#08090D", linewidth=0.5)
+
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=9, color="#C8D8E8")
+    ax.set_ylabel(ylabel, color="#6A8090", fontsize=9)
+    ax.tick_params(colors="#6A8090", labelsize=9)
+    ax.spines["bottom"].set_color("#1A2A3A")
+    ax.spines["left"].set_color("#1A2A3A")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.yaxis.grid(True, color="#1A2A3A", linewidth=0.5, alpha=0.7)
+    ax.set_axisbelow(True)
+    if len(datasets) > 1:
+        ax.legend(fontsize=8, facecolor="#0C1220", edgecolor="#1A2A3A", labelcolor="#C8D8E8", loc="upper right")
+    fig.subplots_adjust(bottom=0.28, top=0.95, left=0.08, right=0.97)
+    return fig
+
+
 def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissions: dict, user_profile: str):
     """Affiche l'onglet GPS Match dans la page Données Physiques."""
-    import plotly.graph_objects as go
 
     if gps_match is None or (hasattr(gps_match, "empty") and gps_match.empty):
         st.info("Aucun fichier GPS match détecté.")
@@ -4289,7 +4325,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
             "<div style='background:#0C1220;border:1px solid rgba(0,163,224,0.2);border-radius:4px;padding:16px;'>"
             "<div style='font-family:Oswald,sans-serif;font-size:13px;color:#6A8090;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;'>Comment ajouter des matchs ?</div>"
             "<div style='font-family:Inter,sans-serif;font-size:13px;color:#C8D8E8;line-height:1.7;'>"
-            "Placez vos fichiers CSV GPS match dans le dossier Drive GPS ou configurez <code style='color:#00A3E0;'>DRIVE_GPS_MATCH_FOLDER_ID</code>.<br>"
+            "Placez vos fichiers CSV GPS match dans le dossier Drive GPS.<br>"
             "Format attendu : <code style='color:#00A3E0;'>U19_2_J02_Paris_FC_-_OL_Lyonnes_25_01_26.csv</code>"
             "</div></div>",
             unsafe_allow_html=True,
@@ -4297,202 +4333,153 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
         return
 
     all_players_m = sorted(gps_match["Player"].dropna().astype(str).unique().tolist()) if "Player" in gps_match.columns else []
-    all_matches   = sorted(gps_match["__match_label"].dropna().astype(str).unique().tolist()) if "__match_label" in gps_match.columns else []
-
     is_admin = check_permission(user_profile, "all", permissions) or check_permission(user_profile, "update_data", permissions)
 
-    # ── Sélection joueuse ──
-    if player_name and nettoyer_nom_joueuse(player_name) in [nettoyer_nom_joueuse(p) for p in all_players_m]:
+    # ── Sélection joueuse ──────────────────────────────────────────
+    if player_name and any(nettoyer_nom_joueuse(player_name) == nettoyer_nom_joueuse(p) for p in all_players_m):
         selected_player = player_name
         st.caption(f"Joueuse : **{selected_player}**")
     else:
         selected_player = st.selectbox("Joueuse", ["Toutes"] + all_players_m, key="gps_match_player_sel")
 
-    # Filtrer
-    if selected_player and selected_player != "Toutes":
-        dm = gps_match[gps_match["Player"].astype(str).apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(selected_player)].copy()
-    else:
-        dm = gps_match.copy()
+    dm = gps_match[gps_match["Player"].astype(str).apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(selected_player)].copy() \
+        if selected_player and selected_player != "Toutes" else gps_match.copy()
 
     if dm.empty:
         st.info("Aucune donnée match pour cette joueuse.")
         return
 
-    # ── Métriques clés en haut ─────────────────────────────────────────
-    nb_matchs = dm["__match_label"].nunique() if "__match_label" in dm.columns else len(dm)
-    dist_moy  = dm["Distance (m)"].mean() if "Distance (m)" in dm.columns else None
-    vmax_max  = dm["Vitesse max (km/h)"].max() if "Vitesse max (km/h)" in dm.columns else None
-    sprints_moy = dm["Sprints_23"].mean() if "Sprints_23" in dm.columns else None
-    temps_moy = dm["Durée_min"].mean() if "Durée_min" in dm.columns else None
+    if "DATE" in dm.columns:
+        dm = dm.sort_values("DATE")
+    labels = dm["__match_label"].fillna("?").astype(str).tolist() if "__match_label" in dm.columns else [str(i) for i in range(len(dm))]
 
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        st.metric("Matchs", f"{nb_matchs}")
-    with col2:
-        st.metric("Distance moy.", f"{dist_moy/1000:.2f} km" if dist_moy else "—")
-    with col3:
-        st.metric("Vitesse max", f"{vmax_max:.1f} km/h" if vmax_max else "—")
-    with col4:
-        st.metric("Sprints moy. (>23)", f"{sprints_moy:.1f}" if sprints_moy else "—")
-    with col5:
-        st.metric("Temps moy.", f"{temps_moy:.0f} min" if temps_moy else "—")
+    # ── Métriques clés ─────────────────────────────────────────────
+    nb_matchs   = dm["__match_label"].nunique() if "__match_label" in dm.columns else len(dm)
+    dist_moy    = dm["Distance (m)"].mean() if "Distance (m)" in dm.columns else None
+    vmax_max    = dm["Vitesse max (km/h)"].max() if "Vitesse max (km/h)" in dm.columns else None
+    sprints_moy = dm["Sprints_23"].mean() if "Sprints_23" in dm.columns else None
+    temps_moy   = dm["Durée_min"].mean() if "Durée_min" in dm.columns else None
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Matchs", f"{nb_matchs}")
+    c2.metric("Distance moy.", f"{dist_moy/1000:.2f} km" if dist_moy else "—")
+    c3.metric("Vitesse max", f"{vmax_max:.1f} km/h" if vmax_max else "—")
+    c4.metric("Sprints moy. (>23)", f"{sprints_moy:.1f}" if sprints_moy else "—")
+    c5.metric("Temps moy.", f"{temps_moy:.0f} min" if temps_moy else "—")
 
     st.divider()
 
-    # ── Graphiques par match ────────────────────────────────────────────
-    col_l, col_r = st.columns([1, 1])
+    def _col(key): return dm[key].fillna(0).tolist() if key in dm.columns else [0]*len(labels)
 
+    # ── Distance par match ─────────────────────────────────────────
+    col_l, col_r = st.columns(2)
     with col_l:
         st.markdown("#### 📏 Distance par match")
-        if "Distance (m)" in dm.columns and "__match_label" in dm.columns:
-            fig_dist = go.Figure()
-            dm_sorted = dm.sort_values("DATE") if "DATE" in dm.columns else dm
-            # Distance totale (barre)
-            fig_dist.add_trace(go.Bar(
-                x=dm_sorted["__match_label"], y=dm_sorted["Distance (m)"] / 1000,
-                name="Distance totale",
-                marker_color="#0C1220",
-                marker_line_color="#00A3E0", marker_line_width=1.5,
-            ))
-            # Distance HID >13 (barre superposée)
-            if "Distance HID (>13 km/h)" in dm_sorted.columns:
-                fig_dist.add_trace(go.Bar(
-                    x=dm_sorted["__match_label"], y=dm_sorted["Distance HID (>13 km/h)"] / 1000,
-                    name="HID >13 km/h",
-                    marker_color="rgba(0,163,224,0.7)",
-                ))
-            if "Distance HID (>19 km/h)" in dm_sorted.columns:
-                fig_dist.add_trace(go.Bar(
-                    x=dm_sorted["__match_label"], y=dm_sorted["Distance HID (>19 km/h)"] / 1000,
-                    name="HID >19 km/h",
-                    marker_color="rgba(0,163,224,1.0)",
-                ))
-            fig_dist.update_layout(
-                barmode="overlay", height=320,
-                paper_bgcolor="#08090D", plot_bgcolor="#08090D",
-                font=dict(color="#C8D8E8", family="Inter"),
-                legend=dict(bgcolor="rgba(0,0,0,0)", font_size=11),
-                margin=dict(t=10, b=80, l=10, r=10),
-                xaxis=dict(tickangle=-30, gridcolor="#1A2A3A"),
-                yaxis=dict(title="km", gridcolor="#1A2A3A"),
-            )
-            st.plotly_chart(fig_dist, use_container_width=True)
+        fig = _make_match_bar_chart(labels, [
+            (_col("Distance (m)"),              "Distance totale",  "#1E3A5F"),
+            (_col("Distance HID (>13 km/h)"),   "HID >13 km/h",    "rgba(0,163,224,0.7)".replace("rgba(","#").replace(",0.7)","B3") if False else "#4db8e8"),
+            (_col("Distance HID (>19 km/h)"),   "HID >19 km/h",    "#00A3E0"),
+        ], "Distance (m)", "m")
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
 
+    # ── Sprints & vitesse max ──────────────────────────────────────
     with col_r:
         st.markdown("#### ⚡ Sprints & Vitesse max")
-        if "Sprints_23" in dm.columns and "__match_label" in dm.columns:
-            fig_sp = go.Figure()
-            dm_sorted = dm.sort_values("DATE") if "DATE" in dm.columns else dm
-            fig_sp.add_trace(go.Bar(
-                x=dm_sorted["__match_label"], y=dm_sorted["Sprints_23"],
-                name="Sprints >23 km/h",
-                marker_color="rgba(0,163,224,0.8)",
-            ))
-            if "Sprints_25" in dm_sorted.columns:
-                fig_sp.add_trace(go.Bar(
-                    x=dm_sorted["__match_label"], y=dm_sorted["Sprints_25"],
-                    name="Sprints >25 km/h",
-                    marker_color="#FFFFFF",
-                ))
-            if "Vitesse max (km/h)" in dm_sorted.columns:
-                fig_sp.add_trace(go.Scatter(
-                    x=dm_sorted["__match_label"], y=dm_sorted["Vitesse max (km/h)"],
-                    name="Vitesse max",
-                    mode="lines+markers+text",
-                    line=dict(color="#FFD700", width=2, dash="dot"),
-                    marker=dict(size=7, color="#FFD700"),
-                    text=dm_sorted["Vitesse max (km/h)"].round(1).astype(str),
-                    textposition="top center",
-                    textfont=dict(size=10, color="#FFD700"),
-                    yaxis="y2",
-                ))
-            fig_sp.update_layout(
-                barmode="group", height=320,
-                paper_bgcolor="#08090D", plot_bgcolor="#08090D",
-                font=dict(color="#C8D8E8", family="Inter"),
-                legend=dict(bgcolor="rgba(0,0,0,0)", font_size=11),
-                margin=dict(t=10, b=80, l=10, r=10),
-                xaxis=dict(tickangle=-30, gridcolor="#1A2A3A"),
-                yaxis=dict(title="Nombre de sprints", gridcolor="#1A2A3A"),
-                yaxis2=dict(title="km/h", overlaying="y", side="right", gridcolor="#1A2A3A", showgrid=False),
-            )
-            st.plotly_chart(fig_sp, use_container_width=True)
+        fig2, ax2 = plt.subplots(figsize=(9, 3.5))
+        fig2.patch.set_facecolor("#08090D")
+        ax2.set_facecolor("#08090D")
+        fig2.set_dpi(90)
+        x = list(range(len(labels)))
+        w = 0.35
+        if "Sprints_23" in dm.columns:
+            ax2.bar([xi - w/2 for xi in x], _col("Sprints_23"), w, label="Sprints >23", color="#00A3E0", edgecolor="#08090D")
+        if "Sprints_25" in dm.columns:
+            ax2.bar([xi + w/2 for xi in x], _col("Sprints_25"), w, label="Sprints >25", color="#FFFFFF", edgecolor="#08090D")
+        ax2b = ax2.twinx()
+        if "Vitesse max (km/h)" in dm.columns:
+            vmax_vals = dm["Vitesse max (km/h)"].fillna(0).tolist()
+            ax2b.plot(x, vmax_vals, "o--", color="#FFD700", linewidth=2, markersize=6, label="Vmax")
+            for xi, v in zip(x, vmax_vals):
+                ax2b.annotate(f"{v:.1f}", (xi, v), textcoords="offset points", xytext=(0,7),
+                              ha="center", fontsize=8, color="#FFD700")
+            ax2b.set_ylabel("km/h", color="#FFD700", fontsize=9)
+            ax2b.tick_params(colors="#6A8090")
+            ax2b.spines["right"].set_color("#1A2A3A")
+        for spine in ["bottom","left","top","right"]:
+            ax2.spines[spine].set_color("#1A2A3A")
+        ax2.spines["top"].set_visible(False)
+        ax2.set_xticks(x); ax2.set_xticklabels(labels, rotation=30, ha="right", fontsize=9, color="#C8D8E8")
+        ax2.set_ylabel("Nb sprints", color="#6A8090", fontsize=9)
+        ax2.tick_params(colors="#6A8090")
+        ax2.yaxis.grid(True, color="#1A2A3A", linewidth=0.5, alpha=0.7)
+        ax2.set_axisbelow(True)
+        lines1, labs1 = ax2.get_legend_handles_labels()
+        lines2, labs2 = ax2b.get_legend_handles_labels()
+        ax2.legend(lines1+lines2, labs1+labs2, fontsize=8, facecolor="#0C1220", edgecolor="#1A2A3A", labelcolor="#C8D8E8")
+        fig2.subplots_adjust(bottom=0.28, top=0.95, left=0.08, right=0.93)
+        st.pyplot(fig2, use_container_width=True)
+        plt.close(fig2)
 
-    # ── Plages de vitesse (stacked bar par match) ────────────────────
+    # ── Plages de vitesse (stacked) ────────────────────────────────
     st.markdown("#### 🏃 Répartition des plages de vitesse")
-    speed_cols = [("V_0_7","0-7 km/h","#1A2A3A"),("V_7_13","7-13 km/h","#1E3A5F"),
-                  ("V_13_15","13-15 km/h","rgba(0,163,224,0.3)"),("V_15_19","15-19 km/h","rgba(0,163,224,0.55)"),
-                  ("V_19_23","19-23 km/h","rgba(0,163,224,0.75)"),("V_23_25","23-25 km/h","rgba(0,163,224,0.9)"),
-                  ("V_sup25",">25 km/h","#FFFFFF")]
-    available_speed = [(c,l,col) for c,l,col in speed_cols if c in dm.columns]
-    if available_speed and "__match_label" in dm.columns:
-        dm_s = dm.sort_values("DATE") if "DATE" in dm.columns else dm
-        fig_speed = go.Figure()
-        for col_key, label, color in available_speed:
-            fig_speed.add_trace(go.Bar(
-                x=dm_s["__match_label"], y=dm_s[col_key].fillna(0),
-                name=label, marker_color=color,
-            ))
-        fig_speed.update_layout(
-            barmode="stack", height=300,
-            paper_bgcolor="#08090D", plot_bgcolor="#08090D",
-            font=dict(color="#C8D8E8", family="Inter"),
-            legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", y=-0.35, font_size=11),
-            margin=dict(t=10, b=100, l=10, r=10),
-            xaxis=dict(tickangle=-30, gridcolor="#1A2A3A"),
-            yaxis=dict(title="Distance (m)", gridcolor="#1A2A3A"),
-        )
-        st.plotly_chart(fig_speed, use_container_width=True)
+    speed_data = [
+        ("V_0_7",   "0-7 km/h",    "#1A2A3A"),
+        ("V_7_13",  "7-13 km/h",   "#1E3A5F"),
+        ("V_13_15", "13-15 km/h",  "#2A5A8F"),
+        ("V_15_19", "15-19 km/h",  "#3A80C0"),
+        ("V_19_23", "19-23 km/h",  "#50A0D8"),
+        ("V_23_25", "23-25 km/h",  "#00A3E0"),
+        ("V_sup25", ">25 km/h",    "#FFFFFF"),
+    ]
+    avail_speed = [(k,l,c) for k,l,c in speed_data if k in dm.columns]
+    if avail_speed:
+        fig3 = _make_match_bar_chart(labels,
+            [(_col(k), l, c) for k,l,c in avail_speed],
+            "Distance (m)", "m", figsize=(12, 3.5), stacked=True)
+        st.pyplot(fig3, use_container_width=True)
+        plt.close(fig3)
 
-    # ── Accélérations / Décélérations ────────────────────────────────
+    # ── Accélérations / Décélérations ─────────────────────────────
     st.markdown("#### 🔀 Accélérations & Décélérations")
-    acc_dec_cols = [("Acc_2","Acc >2","rgba(0,163,224,0.9)"),("Acc_3","Acc >3","rgba(0,163,224,0.6)"),
-                    ("Acc_4","Acc >4","rgba(0,163,224,0.3)"),
-                    ("Dec_2","Déc >2","rgba(255,100,80,0.9)"),("Dec_3","Déc >3","rgba(255,100,80,0.6)"),
-                    ("Dec_4","Déc >4","rgba(255,100,80,0.3)")]
-    available_ad = [(c,l,col) for c,l,col in acc_dec_cols if c in dm.columns]
-    if available_ad and "__match_label" in dm.columns:
-        dm_a = dm.sort_values("DATE") if "DATE" in dm.columns else dm
-        fig_ad = go.Figure()
-        for col_key, label, color in available_ad:
-            fig_ad.add_trace(go.Bar(
-                x=dm_a["__match_label"], y=dm_a[col_key].fillna(0),
-                name=label, marker_color=color,
-            ))
-        fig_ad.update_layout(
-            barmode="group", height=300,
-            paper_bgcolor="#08090D", plot_bgcolor="#08090D",
-            font=dict(color="#C8D8E8", family="Inter"),
-            legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", y=-0.35, font_size=11),
-            margin=dict(t=10, b=100, l=10, r=10),
-            xaxis=dict(tickangle=-30, gridcolor="#1A2A3A"),
-            yaxis=dict(title="Nombre", gridcolor="#1A2A3A"),
-        )
-        st.plotly_chart(fig_ad, use_container_width=True)
+    ad_data = [
+        ("Acc_2", "Acc >2 m/s²", "#1A6090"),
+        ("Acc_3", "Acc >3 m/s²", "#00A3E0"),
+        ("Acc_4", "Acc >4 m/s²", "#80D4F0"),
+        ("Dec_2", "Déc >2 m/s²", "#902020"),
+        ("Dec_3", "Déc >3 m/s²", "#D04040"),
+        ("Dec_4", "Déc >4 m/s²", "#F08080"),
+    ]
+    avail_ad = [(k,l,c) for k,l,c in ad_data if k in dm.columns]
+    if avail_ad:
+        fig4 = _make_match_bar_chart(labels,
+            [(_col(k), l, c) for k,l,c in avail_ad],
+            "Nombre", "nb", figsize=(12, 3.5))
+        st.pyplot(fig4, use_container_width=True)
+        plt.close(fig4)
 
-    # ── Tableau détaillé ─────────────────────────────────────────────
+    # ── Tableau détaillé ──────────────────────────────────────────
     with st.expander("📋 Tableau détaillé", expanded=False):
         show_cols_m = [c for c in [
-            "__match_label", "__journee", "__adversaire", "DATE", "Player", "Durée_min",
-            "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+            "__match_label","__journee","__adversaire","DATE","Player","Durée_min",
+            "Distance (m)","Distance HID (>13 km/h)","Distance HID (>19 km/h)",
             "V_0_7","V_7_13","V_13_15","V_15_19","V_19_23","V_23_25","V_sup25",
             "Sprints_23","Sprints_25","Vitesse max (km/h)","Acc_max",
             "Acc_2","Acc_3","Dec_2","Dec_3","#accel/decel",
         ] if c in dm.columns]
         rename_display = {
-            "__match_label": "Match", "__journee": "J.", "__adversaire": "Adversaire",
-            "Durée_min": "Tps (min)", "V_0_7": "0-7km/h", "V_7_13": "7-13km/h",
-            "V_13_15": "13-15km/h", "V_15_19": "15-19km/h", "V_19_23": "19-23km/h",
-            "V_23_25": "23-25km/h", "V_sup25": ">25km/h", "Sprints_23": "Spr.23",
-            "Sprints_25": "Spr.25", "Acc_max": "Acc.max", "Acc_2": "Acc>2",
-            "Acc_3": "Acc>3", "Dec_2": "Déc>2", "Dec_3": "Déc>3",
+            "__match_label":"Match","__journee":"J.","__adversaire":"Adversaire",
+            "Durée_min":"Tps(min)","V_0_7":"0-7km/h","V_7_13":"7-13km/h",
+            "V_13_15":"13-15km/h","V_15_19":"15-19km/h","V_19_23":"19-23km/h",
+            "V_23_25":"23-25km/h","V_sup25":">25km/h","Sprints_23":"Spr.23",
+            "Sprints_25":"Spr.25","Acc_max":"Acc.max","Acc_2":"Acc>2",
+            "Acc_3":"Acc>3","Dec_2":"Déc>2","Dec_3":"Déc>3",
         }
         disp = dm[show_cols_m].rename(columns=rename_display)
         if "DATE" in disp.columns:
             disp = disp.sort_values("DATE", ascending=False)
         st.dataframe(disp, use_container_width=True)
 
-    # ── Admin : sync ─────────────────────────────────────────────────
     if is_admin and DRIVE_GPS_MATCH_FOLDER_ID:
         st.divider()
         if st.button("🔄 Synchroniser GPS Match depuis Drive", key="sync_gps_match_btn"):
@@ -5344,7 +5331,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         if _player_evals.empty:
                             st.caption(f"Aucune évaluation enregistrée pour **{selected}**.")
                         else:
-                            import plotly.graph_objects as go
                             _cols_diag = st.columns(min(len(_objectifs), 3))
                             for _ci, (_onum, _otxt) in enumerate(_objectifs):
                                 _obj_mask = _player_evals[_obj_col].apply(
@@ -5358,32 +5344,43 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                     else:
                                         _moy = _obj_evals.mean()
                                         _n_evals = len(_obj_evals)
-                                        _fig = go.Figure(go.Indicator(
-                                            mode="gauge+number",
-                                            value=round(_moy, 2),
-                                            title={"text": f"<b>{_onum}</b><br><span style='font-size:11px'>{_otxt[:45]}{'…' if len(_otxt)>45 else ''}</span>",
-                                                   "font": {"size": 13, "color": "#CCDDEE"}},
-                                            number={"font": {"size": 32, "color": "#00A3E0"}, "suffix": " /5"},
-                                            gauge={
-                                                "axis": {"range": [0, 5], "tickwidth": 1, "tickcolor": "#1A2A3A", "nticks": 6, "tickfont": {"color": "#6A8090"}},
-                                                "bar": {"color": "#00A3E0"},
-                                                "bgcolor": "#0C1220",
-                                                "borderwidth": 0,
-                                                "steps": [
-                                                    {"range": [0, 2],   "color": "rgba(220,50,50,0.15)"},
-                                                    {"range": [2, 3.5], "color": "rgba(255,165,0,0.15)"},
-                                                    {"range": [3.5, 5], "color": "rgba(0,163,224,0.15)"},
-                                                ],
-                                                "threshold": {"line": {"color": "#00A3E0", "width": 2}, "thickness": 0.75, "value": _moy}
-                                            }
-                                        ))
-                                        _fig.update_layout(
-                                            height=240,
-                                            margin=dict(t=70, b=10, l=20, r=20),
-                                            paper_bgcolor="#08090D",
-                                            font_color="#C8D8E8"
-                                        )
-                                        st.plotly_chart(_fig, use_container_width=True)
+                                        # Jauge matplotlib (demi-cercle)
+                                        import numpy as _np
+                                        _gfig, _gax = plt.subplots(figsize=(3.5, 2.2), subplot_kw=dict(aspect="equal"))
+                                        _gfig.patch.set_facecolor("#08090D")
+                                        _gax.set_facecolor("#08090D")
+                                        _gfig.set_dpi(90)
+                                        # Zones de couleur
+                                        for _start, _end, _col in [(0,2,"#3A1010"),(2,3.5,"#3A2A00"),(3.5,5,"#003A50")]:
+                                            _th = _np.linspace(_np.pi, _np.pi*(1 - _start/5), 50)
+                                            _th2 = _np.linspace(_np.pi*(1 - _start/5), _np.pi*(1 - _end/5), 50)
+                                            _th_zone = _np.linspace(_np.pi*(1 - _start/5), _np.pi*(1 - _end/5), 50)
+                                            _gax.barh(0, (_end-_start)/5*_np.pi, left=_np.pi*(1-_end/5), height=0.5,
+                                                      color=_col, align="center")
+                                        # Arc de fond
+                                        _theta_bg = _np.linspace(_np.pi, 0, 200)
+                                        _gax.plot(_np.cos(_theta_bg)*0.85, _np.sin(_theta_bg)*0.85, color="#1A2A3A", lw=8)
+                                        # Arc valeur
+                                        _theta_v = _np.linspace(_np.pi, _np.pi*(1 - _moy/5), 200)
+                                        _gax.plot(_np.cos(_theta_v)*0.85, _np.sin(_theta_v)*0.85, color="#00A3E0", lw=8)
+                                        # Aiguille
+                                        _angle = _np.pi*(1 - _moy/5)
+                                        _gax.annotate("", xy=(_np.cos(_angle)*0.7, _np.sin(_angle)*0.7),
+                                                      xytext=(0,0), arrowprops=dict(arrowstyle="-|>", color="#00A3E0", lw=2))
+                                        # Texte valeur
+                                        _gax.text(0, -0.15, f"{_moy:.2f}/5", ha="center", va="center",
+                                                  fontsize=16, fontweight="bold", color="#00A3E0")
+                                        _gax.text(0, -0.45, f"{_onum}", ha="center", va="center",
+                                                  fontsize=9, color="#C8D8E8", fontfamily="monospace")
+                                        _short_txt = _otxt[:35]+"…" if len(_otxt)>35 else _otxt
+                                        _gax.text(0, -0.65, _short_txt, ha="center", va="center",
+                                                  fontsize=7, color="#6A8090")
+                                        _gax.set_xlim(-1.1, 1.1)
+                                        _gax.set_ylim(-0.8, 1.1)
+                                        _gax.axis("off")
+                                        _gfig.subplots_adjust(top=1, bottom=0, left=0, right=1)
+                                        st.pyplot(_gfig, use_container_width=True)
+                                        plt.close(_gfig)
                                         st.caption(f"Moyenne sur {_n_evals} évaluation{'s' if _n_evals > 1 else ''}")
                     else:
                         st.caption("⚠️ Format du CSV inattendu — colonnes attendues : Joueuse, Objectif évalué, Note.")
