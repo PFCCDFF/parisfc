@@ -63,6 +63,8 @@ POST_COLS = ["ATT", "DCD", "DCG", "DD", "DG", "GB", "MCD", "MCG", "MD", "MDef", 
 
 BAD_TOKENS = {"CORNER", "COUP-FRANC", "COUP FRANC", "PENALTY", "CARTON", "CARTONS"}
 GPS_GF1_PREFIX = "GF1"
+GPS_MATCH_FOLDER = "data/gps_match"
+DRIVE_GPS_MATCH_FOLDER_ID = ""  # À renseigner : ID du dossier Drive GPS Match
 
 # =========================
 # UTILS
@@ -3063,6 +3065,192 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return d
 
 
+
+# ─── GPS MATCH ──────────────────────────────────────────────────────
+
+def is_gps_match_file(filename: str) -> bool:
+    """Détecte un fichier GPS de match : U19_, U17_, J0x_, vs _, - _, etc."""
+    fn = normalize_str(filename)
+    match_patterns = ["u19", "u17", "u16", "u15", "_j0", "_j1", "_j2", " vs ", "match", "contre"]
+    seance_patterns = ["gf1", "seance", "séance", "entrainement", "entraînement"]
+    has_match = any(p in fn for p in match_patterns)
+    has_seance = any(p in fn for p in seance_patterns)
+    return has_match and not has_seance
+
+
+def parse_match_info_from_filename(filename: str) -> dict:
+    """Extrait adversaire, date et journée depuis le nom de fichier GPS match."""
+    import re
+    name = os.path.splitext(filename)[0]
+    info = {"adversaire": "", "date": None, "journee": "", "label": name}
+
+    # Date : format DDMMYYYY ou DD_MM_YY à la fin
+    date_match = re.search(r'(\d{2})[_\-](\d{2})[_\-](\d{2,4})', name)
+    if date_match:
+        d, m, y = date_match.groups()
+        y = "20" + y if len(y) == 2 else y
+        try:
+            info["date"] = pd.Timestamp(f"{y}-{m}-{d}")
+        except Exception:
+            pass
+
+    # Journée : J0x ou J1x
+    j_match = re.search(r'[_\-](J\d+)[_\-]', name, re.IGNORECASE)
+    if j_match:
+        info["journee"] = j_match.group(1).upper()
+
+    # Adversaire : pattern "PFC - XXX" ou "XXX - PFC" ou "PFC_XXX"
+    adv_match = re.search(r'Paris[_\s]FC[_\s\-]+([^_\-\d]+)|([^_\-\d]+)[_\s\-]+Paris[_\s]FC', name, re.IGNORECASE)
+    if adv_match:
+        adv = (adv_match.group(1) or adv_match.group(2) or "").strip().strip("_- ")
+        # Nettoyer les mots parasites
+        adv = re.sub(r'(U19|U17|U16|U15|J\d+)', '', adv, flags=re.IGNORECASE).strip().strip("_- ")
+        info["adversaire"] = adv[:40] if adv else ""
+
+    # Label lisible
+    date_str = info["date"].strftime("%d/%m/%Y") if info["date"] else ""
+    parts = [p for p in [info["journee"], info["adversaire"], date_str] if p]
+    info["label"] = " · ".join(parts) if parts else name
+
+    return info
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_gps_match(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon,
+                   first_to_canons, last_to_canons) -> pd.DataFrame:
+    """Charge et normalise tous les fichiers GPS match détectés localement."""
+    # Chercher dans le dossier dédié + dossier GPS général
+    search_dirs = [GPS_MATCH_FOLDER, GPS_FOLDER, DATA_FOLDER]
+    paths = []
+    for d in search_dirs:
+        if not os.path.exists(d):
+            continue
+        for root, _, files in os.walk(d):
+            for f in files:
+                if not f.lower().endswith(".csv"):
+                    continue
+                if is_gps_match_file(f):
+                    full = os.path.join(root, f)
+                    if full not in paths:
+                        paths.append(full)
+
+    if not paths:
+        return pd.DataFrame()
+
+    frames = []
+    for p in sorted(paths):
+        try:
+            df = read_csv_auto(p)
+            fname = os.path.basename(p)
+
+            # Filtrer les lignes agrégats (Nom de joueur vide = totaux/moyennes)
+            if "Nom de joueur" in df.columns:
+                df = df[df["Nom de joueur"].notna() & (df["Nom de joueur"].astype(str).str.strip() != "")].copy()
+
+            # Réutiliser la standardisation GF1 existante
+            if is_gf1_export_format(df):
+                df = standardize_gps_gf1_export(df, fname)
+            else:
+                continue  # format inconnu
+
+            # Infos match depuis nom de fichier
+            minfo = parse_match_info_from_filename(fname)
+            df["__match_label"] = minfo["label"]
+            df["__adversaire"] = minfo["adversaire"]
+            df["__journee"] = minfo["journee"]
+            if minfo["date"] is not None and ("DATE" not in df.columns or df["DATE"].isna().all()):
+                df["DATE"] = minfo["date"]
+
+            # Garder colonnes plages vitesse pour barres
+            for col_orig, col_std in [
+                ("Distance par plage de vitesse (0-7 km/h)", "V_0_7"),
+                ("Distance par plage de vitesse (7-13 km/h)", "V_7_13"),
+                ("Distance par plage de vitesse (13-15 km/h)", "V_13_15"),
+                ("Distance par plage de vitesse (15-19 km/h)", "V_15_19"),
+                ("Distance par plage de vitesse (19-23 km/h)", "V_19_23"),
+                ("Distance par plage de vitesse (23-25 km/h)", "V_23_25"),
+                ("Distance par plage de vitesse (>25 km/h)", "V_sup25"),
+                ("# of Accelerations (>2 m/s²)", "Acc_2"),
+                ("# of Accelerations (>3 m/s²)", "Acc_3"),
+                ("# of Accelerations (>4 m/s²)", "Acc_4"),
+                ("# of Decélerations (>2 m/s²)", "Dec_2"),
+                ("# of Decélerations (>3 m/s²)", "Dec_3"),
+                ("# of Decélerations (>4 m/s²)", "Dec_4"),
+                ("Accélération maximale (m/s²)", "Acc_max"),
+                ("#accel/decel", "#accel/decel"),
+                ("Unnamed: 25", "#accel/decel"),
+            ]:
+                # Chercher dans le df original (avant standardize, qui l'a renommé)
+                if col_orig in df.columns:
+                    df[col_std] = pd.to_numeric(df[col_orig], errors="coerce")
+                elif col_std not in df.columns:
+                    # Chercher via le df original avant rename
+                    pass
+
+            df["__source_file"] = fname
+            frames.append(df)
+        except Exception as e:
+            _warn(f"GPS Match: impossible de lire {os.path.basename(p)} → {e}")
+            continue
+
+    if not frames:
+        return pd.DataFrame()
+
+    result = pd.concat(frames, ignore_index=True)
+
+    # Mapper les noms vers les noms canoniques
+    if "NOM" in result.columns:
+        mapped, statuses = [], []
+        for v in result["NOM"].astype(str).tolist():
+            m, status, _ = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon,
+                                           compact_to_canon, first_to_canons, last_to_canons, cutoff_fuzzy=0.88)
+            mapped.append(m)
+            statuses.append(status)
+        result["Player"] = mapped
+        result["__name_status"] = statuses
+
+    # Convertir colonnes numériques
+    for c in ["Durée_min", "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+              "Sprints_23", "Sprints_25", "Vitesse max (km/h)",
+              "V_0_7","V_7_13","V_13_15","V_15_19","V_19_23","V_23_25","V_sup25",
+              "Acc_2","Acc_3","Acc_4","Dec_2","Dec_3","Dec_4","Acc_max","#accel/decel"]:
+        if c in result.columns:
+            result[c] = pd.to_numeric(result[c], errors="coerce")
+
+    result["DATE"] = pd.to_datetime(result.get("DATE", pd.NaT), errors="coerce")
+    return result
+
+
+def sync_gps_match_from_drive() -> Tuple[int, int]:
+    """Télécharge les fichiers GPS match depuis le dossier Drive dédié."""
+    if not DRIVE_GPS_MATCH_FOLDER_ID:
+        # Chercher automatiquement dans le dossier GPS principal
+        return 0, 0
+    os.makedirs(GPS_MATCH_FOLDER, exist_ok=True)
+    service = authenticate_google_drive()
+    ok, fail = 0, 0
+    try:
+        items = list_files_in_folder_paged(service, DRIVE_GPS_MATCH_FOLDER_ID, page_size=200)
+        for f in items:
+            name = f.get("name", "")
+            if not name.lower().endswith(".csv"):
+                continue
+            fid = f["id"]
+            dest = os.path.join(GPS_MATCH_FOLDER, name)
+            if os.path.exists(dest):
+                ok += 1
+                continue
+            try:
+                download_drive_csv_to_local(service, fid, name, dest_folder=GPS_MATCH_FOLDER)
+                ok += 1
+            except Exception as e:
+                _warn(f"GPS Match sync: {name} → {e}")
+                fail += 1
+    except Exception as e:
+        _warn(f"GPS Match sync Drive: {e}")
+    return ok, fail
+
+
 def read_csv_auto(path: str) -> pd.DataFrame:
     encodings = ["utf-8-sig", "utf-8", "latin1"]
     seps = [",", ";", "\t"]
@@ -3659,6 +3847,7 @@ def collect_data(selected_season=None):
 
     gps_raw = load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons)
     gps_week = compute_gps_weekly_metrics(gps_raw)
+    gps_match = load_gps_match(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons)
 
     # ======================================================
     # EDF (référentiel par poste)
@@ -3878,7 +4067,7 @@ def collect_data(selected_season=None):
             _warn(f"Match: impossible de lire {filename} → {e}")
             continue
 
-    return pfc_kpi, edf_kpi, gps_raw, gps_week, pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
+    return pfc_kpi, edf_kpi, gps_raw, gps_week, gps_match, pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
 
 
 # =========================
@@ -4090,6 +4279,230 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
     return fig
 
 
+def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissions: dict, user_profile: str):
+    """Affiche l'onglet GPS Match dans la page Données Physiques."""
+    import plotly.graph_objects as go
+
+    if gps_match is None or (hasattr(gps_match, "empty") and gps_match.empty):
+        st.info("Aucun fichier GPS match détecté.")
+        st.markdown(
+            "<div style='background:#0C1220;border:1px solid rgba(0,163,224,0.2);border-radius:4px;padding:16px;'>"
+            "<div style='font-family:Oswald,sans-serif;font-size:13px;color:#6A8090;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;'>Comment ajouter des matchs ?</div>"
+            "<div style='font-family:Inter,sans-serif;font-size:13px;color:#C8D8E8;line-height:1.7;'>"
+            "Placez vos fichiers CSV GPS match dans le dossier Drive GPS ou configurez <code style='color:#00A3E0;'>DRIVE_GPS_MATCH_FOLDER_ID</code>.<br>"
+            "Format attendu : <code style='color:#00A3E0;'>U19_2_J02_Paris_FC_-_OL_Lyonnes_25_01_26.csv</code>"
+            "</div></div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    all_players_m = sorted(gps_match["Player"].dropna().astype(str).unique().tolist()) if "Player" in gps_match.columns else []
+    all_matches   = sorted(gps_match["__match_label"].dropna().astype(str).unique().tolist()) if "__match_label" in gps_match.columns else []
+
+    is_admin = check_permission(user_profile, "all", permissions) or check_permission(user_profile, "update_data", permissions)
+
+    # ── Sélection joueuse ──
+    if player_name and nettoyer_nom_joueuse(player_name) in [nettoyer_nom_joueuse(p) for p in all_players_m]:
+        selected_player = player_name
+        st.caption(f"Joueuse : **{selected_player}**")
+    else:
+        selected_player = st.selectbox("Joueuse", ["Toutes"] + all_players_m, key="gps_match_player_sel")
+
+    # Filtrer
+    if selected_player and selected_player != "Toutes":
+        dm = gps_match[gps_match["Player"].astype(str).apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(selected_player)].copy()
+    else:
+        dm = gps_match.copy()
+
+    if dm.empty:
+        st.info("Aucune donnée match pour cette joueuse.")
+        return
+
+    # ── Métriques clés en haut ─────────────────────────────────────────
+    nb_matchs = dm["__match_label"].nunique() if "__match_label" in dm.columns else len(dm)
+    dist_moy  = dm["Distance (m)"].mean() if "Distance (m)" in dm.columns else None
+    vmax_max  = dm["Vitesse max (km/h)"].max() if "Vitesse max (km/h)" in dm.columns else None
+    sprints_moy = dm["Sprints_23"].mean() if "Sprints_23" in dm.columns else None
+    temps_moy = dm["Durée_min"].mean() if "Durée_min" in dm.columns else None
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.metric("Matchs", f"{nb_matchs}")
+    with col2:
+        st.metric("Distance moy.", f"{dist_moy/1000:.2f} km" if dist_moy else "—")
+    with col3:
+        st.metric("Vitesse max", f"{vmax_max:.1f} km/h" if vmax_max else "—")
+    with col4:
+        st.metric("Sprints moy. (>23)", f"{sprints_moy:.1f}" if sprints_moy else "—")
+    with col5:
+        st.metric("Temps moy.", f"{temps_moy:.0f} min" if temps_moy else "—")
+
+    st.divider()
+
+    # ── Graphiques par match ────────────────────────────────────────────
+    col_l, col_r = st.columns([1, 1])
+
+    with col_l:
+        st.markdown("#### 📏 Distance par match")
+        if "Distance (m)" in dm.columns and "__match_label" in dm.columns:
+            fig_dist = go.Figure()
+            dm_sorted = dm.sort_values("DATE") if "DATE" in dm.columns else dm
+            # Distance totale (barre)
+            fig_dist.add_trace(go.Bar(
+                x=dm_sorted["__match_label"], y=dm_sorted["Distance (m)"] / 1000,
+                name="Distance totale",
+                marker_color="#0C1220",
+                marker_line_color="#00A3E0", marker_line_width=1.5,
+            ))
+            # Distance HID >13 (barre superposée)
+            if "Distance HID (>13 km/h)" in dm_sorted.columns:
+                fig_dist.add_trace(go.Bar(
+                    x=dm_sorted["__match_label"], y=dm_sorted["Distance HID (>13 km/h)"] / 1000,
+                    name="HID >13 km/h",
+                    marker_color="rgba(0,163,224,0.7)",
+                ))
+            if "Distance HID (>19 km/h)" in dm_sorted.columns:
+                fig_dist.add_trace(go.Bar(
+                    x=dm_sorted["__match_label"], y=dm_sorted["Distance HID (>19 km/h)"] / 1000,
+                    name="HID >19 km/h",
+                    marker_color="rgba(0,163,224,1.0)",
+                ))
+            fig_dist.update_layout(
+                barmode="overlay", height=320,
+                paper_bgcolor="#08090D", plot_bgcolor="#08090D",
+                font=dict(color="#C8D8E8", family="Inter"),
+                legend=dict(bgcolor="rgba(0,0,0,0)", font_size=11),
+                margin=dict(t=10, b=80, l=10, r=10),
+                xaxis=dict(tickangle=-30, gridcolor="#1A2A3A"),
+                yaxis=dict(title="km", gridcolor="#1A2A3A"),
+            )
+            st.plotly_chart(fig_dist, use_container_width=True)
+
+    with col_r:
+        st.markdown("#### ⚡ Sprints & Vitesse max")
+        if "Sprints_23" in dm.columns and "__match_label" in dm.columns:
+            fig_sp = go.Figure()
+            dm_sorted = dm.sort_values("DATE") if "DATE" in dm.columns else dm
+            fig_sp.add_trace(go.Bar(
+                x=dm_sorted["__match_label"], y=dm_sorted["Sprints_23"],
+                name="Sprints >23 km/h",
+                marker_color="rgba(0,163,224,0.8)",
+            ))
+            if "Sprints_25" in dm_sorted.columns:
+                fig_sp.add_trace(go.Bar(
+                    x=dm_sorted["__match_label"], y=dm_sorted["Sprints_25"],
+                    name="Sprints >25 km/h",
+                    marker_color="#FFFFFF",
+                ))
+            if "Vitesse max (km/h)" in dm_sorted.columns:
+                fig_sp.add_trace(go.Scatter(
+                    x=dm_sorted["__match_label"], y=dm_sorted["Vitesse max (km/h)"],
+                    name="Vitesse max",
+                    mode="lines+markers+text",
+                    line=dict(color="#FFD700", width=2, dash="dot"),
+                    marker=dict(size=7, color="#FFD700"),
+                    text=dm_sorted["Vitesse max (km/h)"].round(1).astype(str),
+                    textposition="top center",
+                    textfont=dict(size=10, color="#FFD700"),
+                    yaxis="y2",
+                ))
+            fig_sp.update_layout(
+                barmode="group", height=320,
+                paper_bgcolor="#08090D", plot_bgcolor="#08090D",
+                font=dict(color="#C8D8E8", family="Inter"),
+                legend=dict(bgcolor="rgba(0,0,0,0)", font_size=11),
+                margin=dict(t=10, b=80, l=10, r=10),
+                xaxis=dict(tickangle=-30, gridcolor="#1A2A3A"),
+                yaxis=dict(title="Nombre de sprints", gridcolor="#1A2A3A"),
+                yaxis2=dict(title="km/h", overlaying="y", side="right", gridcolor="#1A2A3A", showgrid=False),
+            )
+            st.plotly_chart(fig_sp, use_container_width=True)
+
+    # ── Plages de vitesse (stacked bar par match) ────────────────────
+    st.markdown("#### 🏃 Répartition des plages de vitesse")
+    speed_cols = [("V_0_7","0-7 km/h","#1A2A3A"),("V_7_13","7-13 km/h","#1E3A5F"),
+                  ("V_13_15","13-15 km/h","rgba(0,163,224,0.3)"),("V_15_19","15-19 km/h","rgba(0,163,224,0.55)"),
+                  ("V_19_23","19-23 km/h","rgba(0,163,224,0.75)"),("V_23_25","23-25 km/h","rgba(0,163,224,0.9)"),
+                  ("V_sup25",">25 km/h","#FFFFFF")]
+    available_speed = [(c,l,col) for c,l,col in speed_cols if c in dm.columns]
+    if available_speed and "__match_label" in dm.columns:
+        dm_s = dm.sort_values("DATE") if "DATE" in dm.columns else dm
+        fig_speed = go.Figure()
+        for col_key, label, color in available_speed:
+            fig_speed.add_trace(go.Bar(
+                x=dm_s["__match_label"], y=dm_s[col_key].fillna(0),
+                name=label, marker_color=color,
+            ))
+        fig_speed.update_layout(
+            barmode="stack", height=300,
+            paper_bgcolor="#08090D", plot_bgcolor="#08090D",
+            font=dict(color="#C8D8E8", family="Inter"),
+            legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", y=-0.35, font_size=11),
+            margin=dict(t=10, b=100, l=10, r=10),
+            xaxis=dict(tickangle=-30, gridcolor="#1A2A3A"),
+            yaxis=dict(title="Distance (m)", gridcolor="#1A2A3A"),
+        )
+        st.plotly_chart(fig_speed, use_container_width=True)
+
+    # ── Accélérations / Décélérations ────────────────────────────────
+    st.markdown("#### 🔀 Accélérations & Décélérations")
+    acc_dec_cols = [("Acc_2","Acc >2","rgba(0,163,224,0.9)"),("Acc_3","Acc >3","rgba(0,163,224,0.6)"),
+                    ("Acc_4","Acc >4","rgba(0,163,224,0.3)"),
+                    ("Dec_2","Déc >2","rgba(255,100,80,0.9)"),("Dec_3","Déc >3","rgba(255,100,80,0.6)"),
+                    ("Dec_4","Déc >4","rgba(255,100,80,0.3)")]
+    available_ad = [(c,l,col) for c,l,col in acc_dec_cols if c in dm.columns]
+    if available_ad and "__match_label" in dm.columns:
+        dm_a = dm.sort_values("DATE") if "DATE" in dm.columns else dm
+        fig_ad = go.Figure()
+        for col_key, label, color in available_ad:
+            fig_ad.add_trace(go.Bar(
+                x=dm_a["__match_label"], y=dm_a[col_key].fillna(0),
+                name=label, marker_color=color,
+            ))
+        fig_ad.update_layout(
+            barmode="group", height=300,
+            paper_bgcolor="#08090D", plot_bgcolor="#08090D",
+            font=dict(color="#C8D8E8", family="Inter"),
+            legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", y=-0.35, font_size=11),
+            margin=dict(t=10, b=100, l=10, r=10),
+            xaxis=dict(tickangle=-30, gridcolor="#1A2A3A"),
+            yaxis=dict(title="Nombre", gridcolor="#1A2A3A"),
+        )
+        st.plotly_chart(fig_ad, use_container_width=True)
+
+    # ── Tableau détaillé ─────────────────────────────────────────────
+    with st.expander("📋 Tableau détaillé", expanded=False):
+        show_cols_m = [c for c in [
+            "__match_label", "__journee", "__adversaire", "DATE", "Player", "Durée_min",
+            "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+            "V_0_7","V_7_13","V_13_15","V_15_19","V_19_23","V_23_25","V_sup25",
+            "Sprints_23","Sprints_25","Vitesse max (km/h)","Acc_max",
+            "Acc_2","Acc_3","Dec_2","Dec_3","#accel/decel",
+        ] if c in dm.columns]
+        rename_display = {
+            "__match_label": "Match", "__journee": "J.", "__adversaire": "Adversaire",
+            "Durée_min": "Tps (min)", "V_0_7": "0-7km/h", "V_7_13": "7-13km/h",
+            "V_13_15": "13-15km/h", "V_15_19": "15-19km/h", "V_19_23": "19-23km/h",
+            "V_23_25": "23-25km/h", "V_sup25": ">25km/h", "Sprints_23": "Spr.23",
+            "Sprints_25": "Spr.25", "Acc_max": "Acc.max", "Acc_2": "Acc>2",
+            "Acc_3": "Acc>3", "Dec_2": "Déc>2", "Dec_3": "Déc>3",
+        }
+        disp = dm[show_cols_m].rename(columns=rename_display)
+        if "DATE" in disp.columns:
+            disp = disp.sort_values("DATE", ascending=False)
+        st.dataframe(disp, use_container_width=True)
+
+    # ── Admin : sync ─────────────────────────────────────────────────
+    if is_admin and DRIVE_GPS_MATCH_FOLDER_ID:
+        st.divider()
+        if st.button("🔄 Synchroniser GPS Match depuis Drive", key="sync_gps_match_btn"):
+            with st.spinner("Synchronisation…"):
+                ok, fail = sync_gps_match_from_drive()
+                st.cache_data.clear()
+                st.success(f"✅ {ok} fichier(s) OK — {fail} échec(s)")
+                st.rerun()
+
+
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     st.sidebar.markdown(
         "<div style='display:flex;flex-direction:column;align-items:center;padding:24px 0 16px 0;border-bottom:1px solid rgba(0,163,224,0.15);margin-bottom:8px;'>"
@@ -4140,10 +4553,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
     # Filtrer par saison si nécessaire (collect_data déjà appelé dans main())
     if selected_saison != "Toutes les saisons":
-        pfc_kpi, edf_kpi, _gps, _gpsw, _nr = collect_data(selected_saison)
+        pfc_kpi, edf_kpi, _gps, _gpsw, _gps_match, _nr = collect_data(selected_saison)
         st.session_state["name_report_df"] = _nr
         st.session_state["gps_raw_df"] = _gps
         st.session_state["gps_weekly_df"] = _gpsw
+        st.session_state["gps_match_df"] = _gps_match
     # else : on garde pfc_kpi/edf_kpi passés en paramètre (déjà calculés)
 
     # Badge d'avertissements — affiché dans sidebar APRÈS collect_data
@@ -4544,8 +4958,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             st.warning("Aucune joueuse détectée dans les données GPS.")
             return
 
-        tab_raw, tab_week, tab_graph = st.tabs(
-            ["🧾 Données brutes par joueuse", "📅 Moyennes 7 jours (glissant)", "📈 Graphique MD-6 → MD"]
+        gps_match = st.session_state.get("gps_match_df", pd.DataFrame())
+
+        tab_raw, tab_week, tab_graph, tab_match = st.tabs(
+            ["🧾 Données brutes par joueuse", "📅 Moyennes 7 jours (glissant)", "📈 Graphique MD-6 → MD", "⚽ GPS Match"]
         )
 
         with tab_raw:
@@ -4699,6 +5115,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             if fig is not None:
                 st.pyplot(fig, use_container_width=True)
                 plt.close(fig)  # libère la mémoire
+
+        with tab_match:
+            _render_gps_match_tab(gps_match, player_name, permissions, user_profile)
 
     elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
@@ -5534,10 +5953,11 @@ def main():
         st.cache_data.clear()  # invalider le cache après sync
 
     with st.spinner("Chargement des données…"):
-        pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, name_report_df = collect_data()
+        pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, gps_match_df, name_report_df = collect_data()
     st.session_state["name_report_df"] = name_report_df
     st.session_state["gps_raw_df"] = gps_raw_df
     st.session_state["gps_weekly_df"] = gps_week_df
+    st.session_state["gps_match_df"] = gps_match_df
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
 
