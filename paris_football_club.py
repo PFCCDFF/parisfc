@@ -3565,164 +3565,113 @@ def _get_match_context(df_tactic):
 
 
 
-def build_tactical_report_html(df_tactic):
-    """Génère le rapport HTML style Sportscode depuis les vraies données tactiques."""
+def build_tactical_report_html(df_tactic, player_name: str) -> str:
+    """Génere le rapport HTML style Sportscode pour une seule joueuse."""
     import json as _j
-    ctx = _get_match_context(df_tactic)
-    all_stats = _build_all_player_stats(df_tactic)
-    players_list = list(all_stats.keys())
-    if not players_list:
-        return "<div style='color:#6A8090;padding:20px;font-family:sans-serif;'>Aucune donnée joueuse trouvée dans ce fichier tactique.</div>"
-
-    data_json = _j.dumps(all_stats, ensure_ascii=False, default=str)
-    ctx_json  = _j.dumps(ctx, ensure_ascii=False, default=str)
-    first_player_json = _j.dumps(players_list[0])
-
-    btn_html = ""
-    for i, p in enumerate(players_list):
-        short = p.split()[0] if p.split() else p
-        active = "active" if i == 0 else ""
-        btn_html += f'<button class="player-btn {active}" onclick="selectPlayer({_j.dumps(p)})">{short}</button>\n'
-
-    return f"""<!DOCTYPE html>
-<html lang="fr"><head><meta charset="UTF-8">
-<style>
-:root{{--black:#0a0a0a;--dark:#111318;--panel:#16191f;--border:#252830;--blue:#00A3E0;--green:#22c55e;--red:#ef4444;--gold:#f59e0b;--text:#e8edf5;--muted:#6b7280;}}
-*{{box-sizing:border-box;margin:0;padding:0;}}
-body{{font-family:'Segoe UI',system-ui,sans-serif;background:var(--black);color:var(--text);height:100vh;overflow:hidden;display:flex;flex-direction:column;}}
-.header{{background:#111318;border-bottom:2px solid var(--blue);padding:7px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-shrink:0;}}
-.header-logo{{font-weight:800;font-size:13px;color:var(--blue);letter-spacing:.04em;text-transform:uppercase;}}
-.header-badge{{background:var(--blue);color:#fff;font-weight:700;font-size:9px;padding:2px 7px;border-radius:2px;letter-spacing:.1em;text-transform:uppercase;}}
-.header-meta{{font-size:10px;color:var(--muted);text-align:right;line-height:1.4;}}
-.header-meta strong{{color:var(--text);}}
-.selector-bar{{background:var(--panel);border-bottom:1px solid var(--border);padding:5px 12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex-shrink:0;}}
-.selector-label{{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);}}
-.player-btn{{background:transparent;border:1px solid var(--border);color:var(--muted);font-size:10px;font-weight:600;letter-spacing:.03em;padding:2px 8px;border-radius:2px;cursor:pointer;text-transform:uppercase;transition:all .12s;}}
-.player-btn:hover{{border-color:var(--blue);color:var(--blue);}}
-.player-btn.active{{background:var(--blue);border-color:var(--blue);color:#fff;}}
-.main{{display:grid;grid-template-columns:370px 1fr;flex:1;overflow:hidden;}}
-.left{{background:var(--dark);border-right:1px solid var(--border);overflow-y:auto;display:flex;flex-direction:column;}}
-.ctx-title{{background:var(--blue);color:#fff;font-weight:700;font-size:9px;letter-spacing:.14em;text-transform:uppercase;padding:4px 10px;text-align:center;}}
-.score-row{{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:6px 10px 3px;gap:5px;}}
-.team-block{{text-align:center;}}
-.team-name{{font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.05em;}}
-.team-score{{font-weight:900;font-size:24px;line-height:1;color:var(--blue);}}
-.vs-sep{{font-size:9px;color:var(--muted);font-weight:600;}}
-.poss-row{{display:grid;grid-template-columns:1fr 1fr;padding:0 10px 5px;gap:6px;}}
-.poss-block{{text-align:center;}}
-.poss-label{{font-size:8px;color:var(--muted);font-weight:500;text-transform:uppercase;letter-spacing:.07em;}}
-.poss-bar-wrap{{background:var(--border);border-radius:2px;height:4px;margin:2px 0;overflow:hidden;}}
-.poss-bar{{height:100%;background:var(--blue);border-radius:2px;}}
-.poss-val{{font-size:13px;font-weight:700;color:var(--text);}}
-.ctx-details{{display:flex;border-top:1px solid var(--border);}}
-.ctx-d{{flex:1;padding:4px 6px;border-right:1px solid var(--border);text-align:center;}}
-.ctx-d:last-child{{border-right:none;}}
-.ctx-d-label{{font-size:7px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;display:block;}}
-.ctx-d-val{{font-size:11px;font-weight:700;color:var(--text);}}
-.section{{border-bottom:1px solid var(--border);}}
-.section-inner{{display:flex;}}
-.cat-bar{{writing-mode:vertical-rl;transform:rotate(180deg);font-size:8px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);border-right:2px solid var(--blue);flex-shrink:0;width:18px;display:flex;align-items:center;justify-content:center;}}
-.stats-inner{{flex:1;}}
-.s-row{{display:grid;grid-template-columns:132px 26px 1fr;align-items:stretch;border-bottom:1px solid var(--border);min-height:24px;}}
-.s-row.hdr{{background:#0e1016;min-height:18px;}}
-.s-name{{font-size:10px;color:var(--text);padding:0 6px 0 8px;display:flex;align-items:center;}}
-.s-n{{font-size:11px;font-weight:700;color:var(--blue);text-align:center;border-left:1px solid var(--border);border-right:1px solid var(--border);display:flex;align-items:center;justify-content:center;}}
-.s-n.hdr{{font-size:8px;color:var(--muted);font-weight:600;}}
-.s-bar-cell{{padding:2px 5px;display:flex;align-items:center;}}
-.s-col-hdr{{font-size:8px;color:var(--muted);font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:2px 5px;display:flex;align-items:center;}}
-.bar-wrap{{display:flex;height:14px;border-radius:2px;overflow:hidden;font-size:8px;font-weight:600;width:100%;}}
-.b-ok{{background:#16a34a;display:flex;align-items:center;justify-content:center;color:#fff;transition:width .3s;}}
-.b-ko{{background:#b91c1c;display:flex;align-items:center;justify-content:center;color:#fff;transition:width .3s;}}
-.legend{{padding:5px 10px;display:flex;gap:12px;align-items:center;background:#0e1016;border-top:1px solid var(--border);margin-top:auto;flex-shrink:0;}}
-.leg-item{{display:flex;align-items:center;gap:3px;font-size:8px;color:var(--text);font-weight:500;}}
-.leg-dot{{width:9px;height:9px;border-radius:1px;}}
-#legend-poste{{margin-left:auto;font-size:8px;color:var(--muted);}}
-.right{{background:#0d1117;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:30px 1fr;overflow:hidden;}}
-.right-top{{grid-column:1/-1;border-bottom:1px solid var(--border);padding:0 12px;display:flex;align-items:center;justify-content:space-between;}}
-.p-name{{font-weight:800;font-size:13px;letter-spacing:.07em;color:var(--blue);text-transform:uppercase;}}
-.map-toggle{{display:flex;gap:3px;}}
-.tog-btn{{background:transparent;border:1px solid var(--border);color:var(--muted);font-size:8px;font-weight:600;padding:1px 6px;border-radius:2px;cursor:pointer;letter-spacing:.06em;text-transform:uppercase;transition:all .12s;}}
-.tog-btn.active{{background:var(--blue);border-color:var(--blue);color:#fff;}}
-.pitch-wrap{{padding:8px;display:flex;flex-direction:column;align-items:center;border-right:1px solid var(--border);overflow:hidden;}}
-.pitch-wrap:last-child{{border-right:none;}}
-.pitch-title{{font-size:8px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:3px;}}
-svg.pitch{{width:100%;flex:1;max-height:calc(100vh - 200px);}}
-.pass-leg{{display:flex;gap:8px;margin-top:3px;flex-wrap:wrap;justify-content:center;}}
-.pl-item{{display:flex;align-items:center;gap:2px;font-size:7px;color:var(--muted);font-weight:500;}}
-.pl-arrow{{width:14px;height:2px;border-radius:1px;}}
-::-webkit-scrollbar{{width:3px;}}
-::-webkit-scrollbar-track{{background:var(--dark);}}
-::-webkit-scrollbar-thumb{{background:var(--border);border-radius:2px;}}
-</style></head><body>
-<div class="header">
-  <div>
-    <div class="header-logo">Paris FC · Centre de Formation Féminin</div>
-    <div style="font-size:9px;color:var(--muted);margin-top:1px;">Rapport Technico-Tactique</div>
-  </div>
-  <div style="display:flex;align-items:center;gap:8px;">
-    <div class="header-badge" id="h-comp">—</div>
-    <div class="header-meta" id="h-meta">—</div>
-  </div>
-</div>
-<div class="selector-bar"><span class="selector-label">Joueuse</span>{btn_html}</div>
-<div class="main">
-  <div class="left">
-    <div style="border-bottom:1px solid var(--border);">
-      <div class="ctx-title">Contexte Match</div>
-      <div class="score-row">
-        <div class="team-block"><div class="team-name" id="ctx-pfc">Paris FC</div><div class="team-score" id="ctx-score-pfc">—</div></div>
-        <div class="vs-sep">—</div>
-        <div class="team-block"><div class="team-name" id="ctx-adv">—</div><div class="team-score" id="ctx-score-adv" style="color:var(--muted)">—</div></div>
-      </div>
-      <div class="poss-row">
-        <div class="poss-block"><div class="poss-label">Possession Paris FC</div><div class="poss-bar-wrap"><div class="poss-bar" id="poss-bar-pfc" style="width:50%"></div></div><div class="poss-val" id="poss-val-pfc">—</div></div>
-        <div class="poss-block"><div class="poss-label" id="poss-label-adv">Possession ADV</div><div class="poss-bar-wrap"><div class="poss-bar" id="poss-bar-adv" style="width:50%;background:#6b7280"></div></div><div class="poss-val" id="poss-val-adv" style="color:var(--muted)">—</div></div>
-      </div>
-      <div class="ctx-details">
-        <div class="ctx-d"><span class="ctx-d-label">Lieu</span><span class="ctx-d-val" id="ctx-lieu">—</span></div>
-        <div class="ctx-d"><span class="ctx-d-label">Système</span><span class="ctx-d-val" id="ctx-sys">—</span></div>
-        <div class="ctx-d"><span class="ctx-d-label">Compétition</span><span class="ctx-d-val" id="ctx-comp">—</span></div>
-      </div>
-    </div>
-    <div class="section"><div class="section-inner"><div class="cat-bar">Offensif</div><div class="stats-inner">
-      <div class="s-row hdr"><div class="s-name" style="font-size:8px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.07em;">Indicateur</div><div class="s-n hdr">N</div><div class="s-col-hdr">% Réussite</div></div>
-      <div class="s-row"><div class="s-name">Passes totales</div><div class="s-n" id="n-ptot">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-ptot"></div></div></div>
-      <div class="s-row"><div class="s-name">Passes courtes</div><div class="s-n" id="n-pc">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-pc"></div></div></div>
-      <div class="s-row"><div class="s-name">Passes longues</div><div class="s-n" id="n-pl">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-pl"></div></div></div>
-      <div class="s-row"><div class="s-name">Dribbles</div><div class="s-n" id="n-dr">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-dr"></div></div></div>
-      <div class="s-row hdr"><div class="s-name"></div><div class="s-n hdr">N</div><div class="s-col-hdr">% Tirs Cadrés</div></div>
-      <div class="s-row"><div class="s-name">Tirs</div><div class="s-n" id="n-tirs">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-tirs"></div></div></div>
-      <div class="s-row"><div class="s-name" style="padding-left:16px;font-size:9px;color:var(--muted)">dont Buts</div><div class="s-n" id="n-buts" style="color:var(--gold)">—</div><div class="s-bar-cell"></div></div>
-      <div class="s-row hdr"><div class="s-name"></div><div class="s-n hdr">N</div><div class="s-col-hdr">% Pertes / Touchés</div></div>
-      <div class="s-row"><div class="s-name">Ballons touchés</div><div class="s-n" id="n-ball">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-ball"></div></div></div>
-      <div class="s-row"><div class="s-name">Récupérations</div><div class="s-n" id="n-recup">—</div><div class="s-bar-cell"></div></div>
-    </div></div></div>
-    <div class="section"><div class="section-inner"><div class="cat-bar">Défensif</div><div class="stats-inner">
-      <div class="s-row hdr"><div class="s-name"></div><div class="s-n hdr">N</div><div class="s-col-hdr">% Duels Gagnés</div></div>
-      <div class="s-row"><div class="s-name">Duels défensifs</div><div class="s-n" id="n-dt">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-dt"></div></div></div>
-      <div class="s-row"><div class="s-name">Duels aériens</div><div class="s-n" id="n-aer">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-aer"></div></div></div>
-      <div class="s-row"><div class="s-name">Duels au sol</div><div class="s-n" id="n-sol">—</div><div class="s-bar-cell"><div class="bar-wrap" id="b-sol"></div></div></div>
-      <div class="s-row hdr"><div class="s-name"></div><div class="s-n hdr">N</div><div class="s-col-hdr"></div></div>
-      <div class="s-row"><div class="s-name">Interceptions</div><div class="s-n" id="n-int">—</div><div class="s-bar-cell"></div></div>
-    </div></div></div>
-    <div class="legend">
-      <div class="leg-item"><div class="leg-dot" style="background:#16a34a"></div>Réussie</div>
-      <div class="leg-item"><div class="leg-dot" style="background:#b91c1c"></div>Ratée</div>
-      <div id="legend-poste"></div>
-    </div>
-  </div>
-  <div class="right">
-    <div class="right-top">
-      <div class="p-name" id="p-name-display"></div>
-      <div class="map-toggle">
-        <button class="tog-btn active" onclick="setMap('heat')">Heatmap</button>
-        <button class="tog-btn" onclick="setMap('pass')">Passes</button>
-      </div>
-    </div>
-    <div class="pitch-wrap" id="panel-heat">
-      <div class="pitch-title">Position sur le terrain</div>
-      <svg class="pitch" id="svg-heat" viewBox="0 0 100 68">
-        <defs></defs>
+    ctx   = _get_match_context(df_tactic)
+    stats = compute_tactical_stats(df_tactic, player_name)
+    if not stats:
+        return ("<div style='color:#6A8090;padding:20px;font-family:sans-serif;"
+                "background:#0a0a0a;'>Joueuse <b style='color:#00A3E0'>"
+                + str(player_name) + "</b> non trouvee dans ce fichier tactique.</div>")
+    stats_json  = _j.dumps(stats,  ensure_ascii=False, default=str)
+    ctx_json    = _j.dumps(ctx,    ensure_ascii=False, default=str)
+    player_json = _j.dumps(player_name)
+    css = """
+:root{--black:#0a0a0a;--dark:#111318;--border:#252830;--blue:#00A3E0;
+      --green:#22c55e;--red:#ef4444;--gold:#f59e0b;--text:#e8edf5;--muted:#6b7280;}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;overflow:hidden;}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--black);
+     color:var(--text);display:flex;flex-direction:column;}
+.hdr{background:#111318;border-bottom:2px solid var(--blue);padding:6px 14px;
+     display:flex;align-items:center;justify-content:space-between;flex-shrink:0;}
+.hdr-logo{font-weight:800;font-size:13px;color:var(--blue);text-transform:uppercase;letter-spacing:.04em;}
+.hdr-sub{font-size:9px;color:var(--muted);margin-top:1px;}
+.badge{background:var(--blue);color:#fff;font-weight:700;font-size:9px;
+       padding:2px 8px;border-radius:2px;letter-spacing:.1em;text-transform:uppercase;}
+.hdr-meta{font-size:10px;color:var(--muted);text-align:right;line-height:1.4;}
+.main{display:grid;grid-template-columns:360px 1fr;flex:1;min-height:0;}
+.left{background:var(--dark);border-right:1px solid var(--border);
+      display:flex;flex-direction:column;overflow-y:auto;}
+.ctx-title{background:var(--blue);color:#fff;font-weight:700;font-size:9px;
+           letter-spacing:.14em;text-transform:uppercase;padding:4px 10px;text-align:center;}
+.score-row{display:grid;grid-template-columns:1fr auto 1fr;
+           align-items:center;padding:6px 10px 3px;}
+.tb{text-align:center;}
+.tn{font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.05em;}
+.ts{font-weight:900;font-size:26px;line-height:1;color:var(--blue);}
+.ts.adv{color:var(--muted);}
+.vs{font-size:9px;color:var(--muted);font-weight:600;}
+.poss-row{display:grid;grid-template-columns:1fr 1fr;padding:0 10px 5px;gap:6px;}
+.pb{text-align:center;}
+.pb-lbl{font-size:8px;color:var(--muted);font-weight:500;text-transform:uppercase;letter-spacing:.07em;}
+.pb-bg{background:var(--border);border-radius:2px;height:4px;margin:2px 0;overflow:hidden;}
+.pb-bar{height:100%;background:var(--blue);border-radius:2px;}
+.pb-val{font-size:13px;font-weight:700;}
+.ctx-dets{display:flex;border-top:1px solid var(--border);}
+.ctx-d{flex:1;padding:4px 6px;border-right:1px solid var(--border);text-align:center;}
+.ctx-d:last-child{border-right:none;}
+.ctx-d span{font-size:7px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;display:block;}
+.ctx-d b{font-size:11px;font-weight:700;color:var(--text);}
+.pbar{display:flex;align-items:center;gap:8px;padding:6px 10px;
+      background:#0e1016;border-bottom:1px solid var(--border);flex-shrink:0;}
+.pname{font-weight:800;font-size:14px;color:var(--blue);
+       text-transform:uppercase;letter-spacing:.06em;}
+.pposte{font-size:10px;color:var(--muted);background:var(--border);
+        padding:1px 7px;border-radius:2px;font-weight:600;}
+.sec{border-bottom:1px solid var(--border);}
+.sec-inner{display:flex;}
+.cat{writing-mode:vertical-rl;transform:rotate(180deg);font-size:8px;
+     font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+     color:var(--muted);border-right:2px solid var(--blue);
+     flex-shrink:0;width:18px;display:flex;align-items:center;justify-content:center;}
+.stbl{flex:1;}
+.sr{display:grid;grid-template-columns:130px 26px 1fr;
+    align-items:stretch;border-bottom:1px solid var(--border);min-height:24px;}
+.sr.h{background:#0e1016;min-height:18px;}
+.snm{font-size:10px;color:var(--text);padding:0 6px 0 8px;display:flex;align-items:center;}
+.snm.sub{font-size:9px;color:var(--muted);padding-left:18px;}
+.sn{font-size:11px;font-weight:700;color:var(--blue);text-align:center;
+    border-left:1px solid var(--border);border-right:1px solid var(--border);
+    display:flex;align-items:center;justify-content:center;}
+.sn.h{font-size:8px;color:var(--muted);font-weight:600;}
+.sn.gold{color:var(--gold);}
+.sbr{padding:2px 5px;display:flex;align-items:center;}
+.sh{font-size:8px;color:var(--muted);font-weight:600;letter-spacing:.06em;
+    text-transform:uppercase;padding:2px 5px;display:flex;align-items:center;}
+.bw{display:flex;height:14px;border-radius:2px;overflow:hidden;
+    font-size:8px;font-weight:600;width:100%;}
+.bok{background:#16a34a;display:flex;align-items:center;justify-content:center;color:#fff;}
+.bko{background:#b91c1c;display:flex;align-items:center;justify-content:center;color:#fff;}
+.leg{padding:5px 10px;display:flex;gap:12px;align-items:center;
+     background:#0e1016;border-top:1px solid var(--border);margin-top:auto;flex-shrink:0;}
+.li{display:flex;align-items:center;gap:3px;font-size:8px;color:var(--text);font-weight:500;}
+.ld{width:9px;height:9px;border-radius:1px;}
+.right{background:#0d1117;display:grid;grid-template-columns:1fr 1fr;
+       grid-template-rows:28px 1fr;overflow:hidden;}
+.rtop{grid-column:1/-1;border-bottom:1px solid var(--border);padding:0 12px;
+      display:flex;align-items:center;justify-content:space-between;}
+.rn{font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;}
+.tw{display:flex;gap:3px;}
+.tog{background:transparent;border:1px solid var(--border);color:var(--muted);
+     font-size:8px;font-weight:600;padding:1px 7px;border-radius:2px;cursor:pointer;
+     letter-spacing:.06em;text-transform:uppercase;transition:all .12s;}
+.tog.on{background:var(--blue);border-color:var(--blue);color:#fff;}
+.pw{padding:8px;display:flex;flex-direction:column;align-items:center;
+    border-right:1px solid var(--border);overflow:hidden;}
+.pw:last-child{border-right:none;}
+.pwt{font-size:8px;font-weight:600;color:var(--muted);text-transform:uppercase;
+     letter-spacing:.1em;margin-bottom:3px;flex-shrink:0;}
+svg.p{width:100%;flex:1;}
+.pl{display:flex;gap:8px;margin-top:3px;flex-wrap:wrap;justify-content:center;flex-shrink:0;}
+.pli{display:flex;align-items:center;gap:2px;font-size:7px;color:var(--muted);font-weight:500;}
+.pla{width:14px;height:2px;border-radius:1px;}
+::-webkit-scrollbar{width:3px;}
+::-webkit-scrollbar-track{background:var(--dark);}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+"""
+    pitch_lines = """
         <rect width="100" height="68" fill="#1a2f0e"/>
         <rect x="1" y="1" width="98" height="66" fill="none" stroke="#2d5016" stroke-width=".6"/>
         <line x1="50" y1="1" x2="50" y2="67" stroke="#2d5016" stroke-width=".5"/>
@@ -3733,144 +3682,197 @@ svg.pitch{{width:100%;flex:1;max-height:calc(100vh - 200px);}}
         <rect x="82.5" y="13.84" width="16.5" height="40.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
         <rect x="93.5" y="24.84" width="5.5" height="18.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
         <rect x="0" y="29.34" width="1" height="9.32" fill="#2d5016"/>
-        <rect x="99" y="29.34" width="1" height="9.32" fill="#2d5016"/>
-        <g id="heat-pts"></g>
-      </svg>
-    </div>
-    <div class="pitch-wrap" id="panel-pass" style="display:flex">
-      <div class="pitch-title">Carte des Passes</div>
-      <svg class="pitch" id="svg-pass" viewBox="0 0 100 68">
-        <defs>
-          <marker id="aOk" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#22c55e"/></marker>
-          <marker id="aKo" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#ef4444"/></marker>
-        </defs>
-        <rect width="100" height="68" fill="#1a2f0e"/>
-        <rect x="1" y="1" width="98" height="66" fill="none" stroke="#2d5016" stroke-width=".6"/>
-        <line x1="50" y1="1" x2="50" y2="67" stroke="#2d5016" stroke-width=".5"/>
-        <circle cx="50" cy="34" r="9.15" fill="none" stroke="#2d5016" stroke-width=".5"/>
-        <circle cx="50" cy="34" r=".5" fill="#2d5016"/>
-        <rect x="1" y="13.84" width="16.5" height="40.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
-        <rect x="1" y="24.84" width="5.5" height="18.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
-        <rect x="82.5" y="13.84" width="16.5" height="40.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
-        <rect x="93.5" y="24.84" width="5.5" height="18.32" fill="none" stroke="#2d5016" stroke-width=".5"/>
-        <rect x="0" y="29.34" width="1" height="9.32" fill="#2d5016"/>
-        <rect x="99" y="29.34" width="1" height="9.32" fill="#2d5016"/>
-        <g id="pass-arrows"></g>
-      </svg>
-      <div class="pass-leg">
-        <div class="pl-item"><div class="pl-arrow" style="background:#22c55e"></div>Réussie</div>
-        <div class="pl-item"><div class="pl-arrow" style="background:#ef4444;opacity:.7"></div>Ratée</div>
-        <div class="pl-item"><div class="pl-arrow" style="background:#22c55e;height:3px"></div>Longue</div>
-      </div>
-    </div>
-  </div>
-</div>
-<script>
-const DATA={data_json};const CTX={ctx_json};
-let cur={first_player_json},mapMode='heat';
+        <rect x="99" y="29.34" width="1" height="9.32" fill="#2d5016"/>"""
+    js = """
+const S=%%STATS%%;const C=%%CTX%%;const P=%%PLAYER%%;
 const NS='http://www.w3.org/2000/svg';
-function renderCtx(){{
-  document.getElementById('ctx-pfc').textContent=CTX.pfc||'Paris FC';
-  document.getElementById('ctx-adv').textContent=CTX.adversaire||'—';
-  document.getElementById('ctx-score-pfc').textContent=CTX.score_pfc||'—';
-  document.getElementById('ctx-score-adv').textContent=CTX.score_adv||'—';
-  document.getElementById('ctx-lieu').textContent=CTX.lieu||'—';
-  document.getElementById('ctx-sys').textContent=CTX.systeme||'—';
-  document.getElementById('ctx-comp').textContent=CTX.competition||'—';
-  document.getElementById('poss-val-pfc').textContent=(CTX.poss_pfc||50)+' %';
-  document.getElementById('poss-val-adv').textContent=(CTX.poss_adv||50)+' %';
-  document.getElementById('poss-label-adv').textContent='Possession '+(CTX.adversaire||'ADV');
-  document.getElementById('poss-bar-pfc').style.width=(CTX.poss_pfc||50)+'%';
-  document.getElementById('poss-bar-adv').style.width=(CTX.poss_adv||50)+'%';
-  document.getElementById('h-comp').textContent=(CTX.competition||'')+( CTX.journee?' J'+CTX.journee:'');
-  document.getElementById('h-meta').innerHTML=CTX.timeline||'';
-}}
-function bar(id,ok,ko){{
-  const el=document.getElementById(id);if(!el)return;
-  const tot=ok+ko;
-  if(tot===0){{el.innerHTML='<div style="width:100%;height:14px;background:#1a1e24;border-radius:2px;"></div>';return;}}
-  const pok=Math.round(ok/tot*100),pko=100-pok;
-  el.innerHTML=`<div class="b-ok" style="width:${{pok}}%">${{pok>=20?pok+'%':''}}</div><div class="b-ko" style="width:${{pko}}%">${{pko>=20?pko+'%':''}}</div>`;
-}}
-function setN(id,v){{const e=document.getElementById(id);if(e)e.textContent=(v===null||v===undefined)?'—':String(v);}}
-function renderStats(){{
-  const s=DATA[cur];if(!s)return;
-  document.getElementById('p-name-display').textContent=cur;
-  document.getElementById('legend-poste').textContent=s.postes?'Poste : '+s.postes:'';
-  setN('n-ptot',s.passes_ok+s.passes_ko);bar('b-ptot',s.passes_ok||0,s.passes_ko||0);
-  setN('n-pc',s.courtes_ok+s.courtes_ko);bar('b-pc',s.courtes_ok||0,s.courtes_ko||0);
-  setN('n-pl',s.longues_ok+s.longues_ko);bar('b-pl',s.longues_ok||0,s.longues_ko||0);
-  setN('n-dr',(s.drib_ok||0)+(s.drib_ko||0));bar('b-dr',s.drib_ok||0,s.drib_ko||0);
-  setN('n-tirs',s.tirs_tot||0);bar('b-tirs',s.tirs_cadres||0,(s.tirs_tot||0)-(s.tirs_cadres||0));
-  setN('n-buts',s.tirs_buts||0);
-  setN('n-ball',s.ballons||0);bar('b-ball',Math.max(0,(s.ballons||0)-(s.pertes||0)),s.pertes||0);
-  setN('n-recup',s.recuperations||0);
-  setN('n-dt',(s.duels_gagnes||0)+(s.duels_perdus||0));bar('b-dt',s.duels_gagnes||0,s.duels_perdus||0);
-  setN('n-aer',(s.aer_ok||0)+(s.aer_ko||0));bar('b-aer',s.aer_ok||0,s.aer_ko||0);
-  setN('n-sol',(s.sol_ok||0)+(s.sol_ko||0));bar('b-sol',s.sol_ok||0,s.sol_ko||0);
-  setN('n-int',s.interceptions||0);
-}}
-function renderHeat(){{
-  const s=DATA[cur];if(!s)return;
-  const g=document.getElementById('heat-pts');g.innerHTML='';
-  const locs=s.locs||[];
-  const den={{}};
-  locs.forEach(p=>{{const k=Math.round(p.x/4)*4+'_'+Math.round(p.y/4)*4;den[k]=(den[k]||0)+1;}});
-  const maxD=Math.max(...Object.values(den),1);
-  const svgEl=document.getElementById('svg-heat');
-  let defs=svgEl.querySelector('defs');if(!defs){{defs=document.createElementNS(NS,'defs');svgEl.insertBefore(defs,svgEl.firstChild);}}
-  [...defs.querySelectorAll('[id^="hg_"]')].forEach(e=>e.remove());
-  Object.entries(den).forEach(([key,count])=>{{
-    const [x,y]=key.split('_').map(Number);
-    const r=4+(count/maxD)*7,op=0.15+(count/maxD)*0.7;
-    const gid='hg_'+x+'_'+y;
-    const grad=document.createElementNS(NS,'radialGradient');
+function q(id){return document.getElementById(id);}
+function sn(id,v){var e=q(id);if(e)e.textContent=(v===null||v===undefined||v==='')?'--':String(v);}
+function bar(id,ok,ko){
+  var el=q(id);if(!el)return;
+  var tot=(ok||0)+(ko||0);
+  if(tot===0){el.innerHTML='<div style="width:100%;height:14px;background:#1a1e24;border-radius:2px;"></div>';return;}
+  var pok=Math.round((ok||0)/tot*100),pko=100-pok;
+  el.innerHTML='<div class="bok" style="width:'+pok+'%">'+(pok>=20?pok+'%':'')+'</div>'
+              +'<div class="bko" style="width:'+pko+'%">'+(pko>=20?pko+'%':'')+'</div>';
+}
+function init(){
+  sn('ctx-pfc',C.pfc||'Paris FC');sn('ctx-adv',C.adversaire||'--');
+  sn('s-pfc',C.score_pfc||'--');sn('s-adv',C.score_adv||'--');
+  sn('ctx-lieu',C.lieu||'--');sn('ctx-sys',C.systeme||'--');sn('ctx-comp',C.competition||'--');
+  q('pb-pfc').style.width=(C.poss_pfc||50)+'%';
+  q('pb-adv').style.width=(C.poss_adv||50)+'%';
+  sn('pv-pfc',(C.poss_pfc||50)+' %');sn('pv-adv',(C.poss_adv||50)+' %');
+  q('pl-adv').textContent='Possession '+(C.adversaire||'ADV');
+  q('h-comp').textContent=(C.competition||'')+(C.journee?' J'+C.journee:'');
+  q('h-meta').innerHTML='<b>'+(C.timeline||'')+'</b>';
+  sn('p-name',P);sn('rt-name',P);
+  q('p-poste').textContent=S.postes?'Poste : '+S.postes:'';
+  var ptot=(S.passes_ok||0)+(S.passes_ko||0);
+  sn('n-pt',ptot);bar('b-pt',S.passes_ok,S.passes_ko);
+  sn('n-pc',(S.courtes_ok||0)+(S.courtes_ko||0));bar('b-pc',S.courtes_ok,S.courtes_ko);
+  sn('n-pl',(S.longues_ok||0)+(S.longues_ko||0));bar('b-pl',S.longues_ok,S.longues_ko);
+  sn('n-dr',(S.drib_ok||0)+(S.drib_ko||0));bar('b-dr',S.drib_ok,S.drib_ko);
+  sn('n-ti',S.tirs_tot||0);bar('b-ti',S.tirs_cadres||0,(S.tirs_tot||0)-(S.tirs_cadres||0));
+  sn('n-bu',S.tirs_buts||0);
+  sn('n-ba',S.ballons||0);bar('b-ba',Math.max(0,(S.ballons||0)-(S.pertes||0)),S.pertes||0);
+  sn('n-re',S.recuperations||0);
+  sn('n-dd',(S.duels_gagnes||0)+(S.duels_perdus||0));bar('b-dd',S.duels_gagnes,S.duels_perdus);
+  sn('n-da',(S.aer_ok||0)+(S.aer_ko||0));bar('b-da',S.aer_ok,S.aer_ko);
+  sn('n-ds',(S.sol_ok||0)+(S.sol_ko||0));bar('b-ds',S.sol_ok,S.sol_ko);
+  sn('n-in',S.interceptions||0);
+  renderHeat();
+}
+function renderHeat(){
+  var g=q('heat-pts');g.innerHTML='';
+  var locs=S.locs||[];if(!locs.length)return;
+  var den={};
+  locs.forEach(function(p){var k=Math.round(p.x/4)*4+'_'+Math.round(p.y/4)*4;den[k]=(den[k]||0)+1;});
+  var maxD=Math.max.apply(null,Object.values(den).concat([1]));
+  var svgEl=q('svg-heat');
+  var defs=svgEl.querySelector('defs');
+  if(!defs){defs=document.createElementNS(NS,'defs');svgEl.insertBefore(defs,svgEl.firstChild);}
+  Array.from(defs.querySelectorAll('[id^="hg"]')).forEach(function(e){e.remove();});
+  Object.keys(den).forEach(function(key){
+    var count=den[key],parts=key.split('_'),x=Number(parts[0]),y=Number(parts[1]);
+    var r=4+(count/maxD)*7,op=0.2+(count/maxD)*0.65;
+    var gid='hg'+x+'x'+y;
+    var grad=document.createElementNS(NS,'radialGradient');
     grad.setAttribute('id',gid);grad.setAttribute('cx','50%');grad.setAttribute('cy','50%');grad.setAttribute('r','50%');
-    const s1=document.createElementNS(NS,'stop');s1.setAttribute('offset','0%');s1.setAttribute('stop-color','#00A3E0');s1.setAttribute('stop-opacity',op);
-    const s2=document.createElementNS(NS,'stop');s2.setAttribute('offset','100%');s2.setAttribute('stop-color','#00A3E0');s2.setAttribute('stop-opacity','0');
+    var s1=document.createElementNS(NS,'stop');s1.setAttribute('offset','0%');s1.setAttribute('stop-color','#00A3E0');s1.setAttribute('stop-opacity',String(op));
+    var s2=document.createElementNS(NS,'stop');s2.setAttribute('offset','100%');s2.setAttribute('stop-color','#00A3E0');s2.setAttribute('stop-opacity','0');
     grad.appendChild(s1);grad.appendChild(s2);defs.appendChild(grad);
-    const el=document.createElementNS(NS,'ellipse');
+    var el=document.createElementNS(NS,'ellipse');
     el.setAttribute('cx',x);el.setAttribute('cy',y);el.setAttribute('rx',r);el.setAttribute('ry',r);
     el.setAttribute('fill','url(#'+gid+')');g.appendChild(el);
-  }});
-  if(locs.length){{const cx=locs.reduce((a,b)=>a+b.x,0)/locs.length,cy=locs.reduce((a,b)=>a+b.y,0)/locs.length;
-    const c=document.createElementNS(NS,'circle');c.setAttribute('cx',cx);c.setAttribute('cy',cy);c.setAttribute('r','1.5');c.setAttribute('fill','#00A3E0');c.setAttribute('opacity','0.95');g.appendChild(c);}}
-}}
-function renderPass(){{
-  const s=DATA[cur];if(!s)return;
-  const g=document.getElementById('pass-arrows');g.innerHTML='';
-  (s.passes_map||[]).forEach((p,i)=>{{
-    if(!p.x||!p.y)return;
-    const color=p.ok?'#22c55e':'#ef4444',marker=p.ok?'aOk':'aKo';
-    const rng=seed=>((seed*9301+49297)%233280)/233280;
-    const dx=p.x+(p.ok?8:5)+rng(i)*10,dy=p.y+(rng(i*3+1)-0.5)*12;
-    const line=document.createElementNS(NS,'line');
+  });
+  var cx=locs.reduce(function(a,b){return a+b.x;},0)/locs.length;
+  var cy=locs.reduce(function(a,b){return a+b.y;},0)/locs.length;
+  var c=document.createElementNS(NS,'circle');
+  c.setAttribute('cx',cx);c.setAttribute('cy',cy);c.setAttribute('r','1.8');
+  c.setAttribute('fill','#00A3E0');c.setAttribute('opacity','0.95');g.appendChild(c);
+}
+function renderPass(){
+  var g=q('pass-arrows');g.innerHTML='';
+  (S.passes_map||[]).forEach(function(p,i){
+    if(p.x==null||p.y==null)return;
+    var color=p.ok?'#22c55e':'#ef4444',marker=p.ok?'aOk':'aKo';
+    function rng(s){return((s*9301+49297)%233280)/233280;}
+    var dx=Math.min(99,p.x+(p.ok?9:5)+rng(i)*8);
+    var dy=Math.max(1,Math.min(67,p.y+(rng(i*3+1)-0.5)*14));
+    var line=document.createElementNS(NS,'line');
     line.setAttribute('x1',p.x);line.setAttribute('y1',p.y);
-    line.setAttribute('x2',Math.min(99,dx));line.setAttribute('y2',Math.max(1,Math.min(67,dy)));
+    line.setAttribute('x2',dx);line.setAttribute('y2',dy);
     line.setAttribute('stroke',color);line.setAttribute('stroke-width',p.longue?'0.9':'0.65');
     line.setAttribute('stroke-opacity','0.85');line.setAttribute('marker-end','url(#'+marker+')');
     if(!p.ok)line.setAttribute('stroke-dasharray','2,1');
     g.appendChild(line);
-    const dot=document.createElementNS(NS,'circle');dot.setAttribute('cx',p.x);dot.setAttribute('cy',p.y);dot.setAttribute('r','1.2');dot.setAttribute('fill',color);dot.setAttribute('opacity','0.9');g.appendChild(dot);
-  }});
-}}
-function selectPlayer(name){{
-  cur=name;
-  document.querySelectorAll('.player-btn').forEach(b=>{{
-    const label=b.textContent.trim().toUpperCase(),namePart=name.split(' ')[0].toUpperCase();
-    b.classList.toggle('active',label===namePart||name.toUpperCase().includes(label));
-  }});
-  renderStats();if(mapMode==='heat')renderHeat();else renderPass();
-}}
-function setMap(mode){{
-  mapMode=mode;
-  document.querySelectorAll('.tog-btn').forEach((b,i)=>b.classList.toggle('active',(i===0&&mode==='heat')||(i===1&&mode==='pass')));
-  document.getElementById('panel-heat').style.display=mode==='heat'?'flex':'none';
-  document.getElementById('panel-pass').style.display=mode==='pass'?'flex':'none';
-  if(mode==='heat')renderHeat();else renderPass();
-}}
-renderCtx();renderStats();renderHeat();setMap('heat');
-</script></body></html>"""
+    var dot=document.createElementNS(NS,'circle');
+    dot.setAttribute('cx',p.x);dot.setAttribute('cy',p.y);dot.setAttribute('r','1.2');
+    dot.setAttribute('fill',color);dot.setAttribute('opacity','0.9');g.appendChild(dot);
+  });
+}
+function setMap(mode){
+  q('panel-heat').style.display=mode==='heat'?'flex':'none';
+  q('panel-pass').style.display=mode==='pass'?'flex':'none';
+  q('tog-h').className='tog'+(mode==='heat'?' on':'');
+  q('tog-p').className='tog'+(mode==='pass'?' on':'');
+  if(mode==='pass')renderPass();
+}
+window.onload=init;
+"""
+    js = js.replace('%%STATS%%', stats_json).replace('%%CTX%%', ctx_json).replace('%%PLAYER%%', player_json)
+    return f"""<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8"><style>{css}</style></head><body>
+<div class="hdr">
+  <div><div class="hdr-logo">Paris FC - Centre de Formation Feminin</div>
+  <div class="hdr-sub">Rapport Technico-Tactique</div></div>
+  <div style="display:flex;align-items:center;gap:8px;">
+    <div class="badge" id="h-comp">--</div>
+    <div class="hdr-meta" id="h-meta">--</div>
+  </div>
+</div>
+<div class="main">
+<div class="left">
+  <div style="border-bottom:1px solid var(--border)">
+    <div class="ctx-title">Contexte Match</div>
+    <div class="score-row">
+      <div class="tb"><div class="tn" id="ctx-pfc">Paris FC</div><div class="ts" id="s-pfc">--</div></div>
+      <div class="vs">--</div>
+      <div class="tb"><div class="tn" id="ctx-adv">--</div><div class="ts adv" id="s-adv">--</div></div>
+    </div>
+    <div class="poss-row">
+      <div class="pb"><div class="pb-lbl">Possession Paris FC</div>
+        <div class="pb-bg"><div class="pb-bar" id="pb-pfc"></div></div>
+        <div class="pb-val" id="pv-pfc">--</div></div>
+      <div class="pb"><div class="pb-lbl" id="pl-adv">Possession ADV</div>
+        <div class="pb-bg"><div class="pb-bar" style="background:#6b7280" id="pb-adv"></div></div>
+        <div class="pb-val" style="color:var(--muted)" id="pv-adv">--</div></div>
+    </div>
+    <div class="ctx-dets">
+      <div class="ctx-d"><span>Lieu</span><b id="ctx-lieu">--</b></div>
+      <div class="ctx-d"><span>Systeme</span><b id="ctx-sys">--</b></div>
+      <div class="ctx-d"><span>Competition</span><b id="ctx-comp">--</b></div>
+    </div>
+  </div>
+  <div class="pbar"><div class="pname" id="p-name">--</div><div class="pposte" id="p-poste"></div></div>
+  <div class="sec"><div class="sec-inner"><div class="cat">Offensif</div><div class="stbl">
+    <div class="sr h"><div class="snm" style="font-size:8px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.07em;">Indicateur</div><div class="sn h">N</div><div class="sh">% Reussite</div></div>
+    <div class="sr"><div class="snm">Passes totales</div><div class="sn" id="n-pt">--</div><div class="sbr"><div class="bw" id="b-pt"></div></div></div>
+    <div class="sr"><div class="snm">Passes courtes</div><div class="sn" id="n-pc">--</div><div class="sbr"><div class="bw" id="b-pc"></div></div></div>
+    <div class="sr"><div class="snm">Passes longues</div><div class="sn" id="n-pl">--</div><div class="sbr"><div class="bw" id="b-pl"></div></div></div>
+    <div class="sr"><div class="snm">Dribbles</div><div class="sn" id="n-dr">--</div><div class="sbr"><div class="bw" id="b-dr"></div></div></div>
+    <div class="sr h"><div class="snm"></div><div class="sn h">N</div><div class="sh">% Tirs Cadres</div></div>
+    <div class="sr"><div class="snm">Tirs</div><div class="sn" id="n-ti">--</div><div class="sbr"><div class="bw" id="b-ti"></div></div></div>
+    <div class="sr"><div class="snm sub">dont Buts</div><div class="sn gold" id="n-bu">--</div><div class="sbr"></div></div>
+    <div class="sr h"><div class="snm"></div><div class="sn h">N</div><div class="sh">% Pertes / Touches</div></div>
+    <div class="sr"><div class="snm">Ballons touches</div><div class="sn" id="n-ba">--</div><div class="sbr"><div class="bw" id="b-ba"></div></div></div>
+    <div class="sr"><div class="snm">Recuperations</div><div class="sn" id="n-re">--</div><div class="sbr"></div></div>
+  </div></div></div>
+  <div class="sec"><div class="sec-inner"><div class="cat">Defensif</div><div class="stbl">
+    <div class="sr h"><div class="snm"></div><div class="sn h">N</div><div class="sh">% Duels Gagnes</div></div>
+    <div class="sr"><div class="snm">Duels defensifs</div><div class="sn" id="n-dd">--</div><div class="sbr"><div class="bw" id="b-dd"></div></div></div>
+    <div class="sr"><div class="snm">Duels aeriens</div><div class="sn" id="n-da">--</div><div class="sbr"><div class="bw" id="b-da"></div></div></div>
+    <div class="sr"><div class="snm">Duels au sol</div><div class="sn" id="n-ds">--</div><div class="sbr"><div class="bw" id="b-ds"></div></div></div>
+    <div class="sr h"><div class="snm"></div><div class="sn h">N</div><div class="sh"></div></div>
+    <div class="sr"><div class="snm">Interceptions</div><div class="sn" id="n-in">--</div><div class="sbr"></div></div>
+  </div></div></div>
+  <div class="leg">
+    <div class="li"><div class="ld" style="background:#16a34a"></div>Reussie</div>
+    <div class="li"><div class="ld" style="background:#b91c1c"></div>Ratee</div>
+  </div>
+</div>
+<div class="right">
+  <div class="rtop">
+    <div class="rn" id="rt-name">--</div>
+    <div class="tw">
+      <button class="tog on" id="tog-h" onclick="setMap('heat')">Heatmap</button>
+      <button class="tog"    id="tog-p" onclick="setMap('pass')">Passes</button>
+    </div>
+  </div>
+  <div class="pw" id="panel-heat">
+    <div class="pwt">Position sur le terrain</div>
+    <svg class="p" id="svg-heat" viewBox="0 0 100 68"><defs></defs>{pitch_lines}<g id="heat-pts"></g></svg>
+  </div>
+  <div class="pw" id="panel-pass" style="display:none">
+    <div class="pwt">Carte des Passes</div>
+    <svg class="p" id="svg-pass" viewBox="0 0 100 68">
+      <defs>
+        <marker id="aOk" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#22c55e"/></marker>
+        <marker id="aKo" markerWidth="5" markerHeight="5" refX="2.5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#ef4444"/></marker>
+      </defs>
+      {pitch_lines}<g id="pass-arrows"></g>
+    </svg>
+    <div class="pl">
+      <div class="pli"><div class="pla" style="background:#22c55e"></div>Reussie</div>
+      <div class="pli"><div class="pla" style="background:#ef4444;opacity:.7"></div>Ratee</div>
+      <div class="pli"><div class="pla" style="background:#22c55e;height:3px"></div>Longue</div>
+    </div>
+  </div>
+</div>
+</div>
+<script>{js}</script>
+</body></html>"""
 
 
 def read_csv_auto(path: str) -> pd.DataFrame:
@@ -5132,10 +5134,35 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                 st.info(f"Aucun fichier tactique associé trouvé pour **{sel_match}**.")
                 st.caption("Vérifiez que le fichier CSV tactique est bien dans le dossier `data/` avec le format `PFC_VS__...csv`")
             else:
-                # Générer et afficher le rapport HTML interactif
-                import streamlit.components.v1 as _components
-                html_report = build_tactical_report_html(df_tactic)
-                _components.html(html_report, height=680, scrolling=False)
+                # Lister les joueuses présentes dans ce fichier tactique
+                skip_rows = {"START", "PFC", "HAC", ""}
+                tac_players = [
+                    r for r in df_tactic["Row"].dropna().unique()
+                    if r not in skip_rows
+                    and not any(k in str(r) for k in ["Transition", "Carton", "def "])
+                ] if "Row" in df_tactic.columns else []
+
+                if not tac_players:
+                    st.warning("Aucune joueuse trouvée dans ce fichier tactique.")
+                else:
+                    # Sélecteur de joueuse — pré-sélectionner si contexte joueuse
+                    default_idx = 0
+                    if selected_player and selected_player != "Toutes":
+                        _pnorm = normalize_str(selected_player)
+                        for _i, _p in enumerate(tac_players):
+                            if normalize_str(_p) == _pnorm or _pnorm in normalize_str(_p) or normalize_str(_p) in _pnorm:
+                                default_idx = _i
+                                break
+                    sel_tac_player = st.selectbox(
+                        "Joueuse", tac_players,
+                        index=default_idx,
+                        key="tactical_player_sel"
+                    )
+
+                    # Générer et afficher le rapport HTML pour la joueuse sélectionnée
+                    import streamlit.components.v1 as _components
+                    html_report = build_tactical_report_html(df_tactic, sel_tac_player)
+                    _components.html(html_report, height=650, scrolling=False)
 
                 # Données brutes en expander (optionnel)
                 with st.expander("📋 Données tactiques brutes", expanded=False):
