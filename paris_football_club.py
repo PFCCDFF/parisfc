@@ -3903,14 +3903,14 @@ window.onload=init;
     return f"""<!DOCTYPE html>
 <html lang="fr"><head><meta charset="UTF-8"><style>{css}
 /* GPS PANEL */
-.gps-panel{margin-top:12px;padding:10px 10px 12px;border:1px solid rgba(255,255,255,.10);border-radius:10px;background:rgba(0,0,0,.18)}
-.gps-title{font-weight:800;letter-spacing:.08em;font-size:11px;color:rgba(255,255,255,.85);margin-bottom:8px}
-.gps-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-.gps-card{padding:8px;border-radius:10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08)}
-.gps-label{font-size:10px;letter-spacing:.04em;color:rgba(255,255,255,.70);margin-bottom:4px}
-.gps-value{font-size:16px;font-weight:800;color:#fff}
-.gps-sub{font-size:10px;color:rgba(255,255,255,.70);margin-top:2px}
-.gps-empty{font-size:12px;color:rgba(255,255,255,.75);padding:6px 0}
+.gps-panel{{margin-top:12px;padding:10px 10px 12px;border:1px solid rgba(255,255,255,.10);border-radius:10px;background:rgba(0,0,0,.18)}}
+.gps-title{{font-weight:800;letter-spacing:.08em;font-size:11px;color:rgba(255,255,255,.85);margin-bottom:8px}}
+.gps-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}}
+.gps-card{{padding:8px;border-radius:10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08)}}
+.gps-label{{font-size:10px;letter-spacing:.04em;color:rgba(255,255,255,.70);margin-bottom:4px}}
+.gps-value{{font-size:16px;font-weight:800;color:#fff}}
+.gps-sub{{font-size:10px;color:rgba(255,255,255,.70);margin-top:2px}}
+.gps-empty{{font-size:12px;color:rgba(255,255,255,.75);padding:6px 0}}
 /* /GPS PANEL */
 </style></head><body>
 <div class="hdr">
