@@ -3590,7 +3590,76 @@ def _get_match_context(df_tactic):
 
 
 
-def build_tactical_report_html(df_tactic, player_name: str) -> str:
+def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
+                                    player_name: str,
+                                    match_date: Optional[pd.Timestamp] = None,
+                                    match_label: Optional[str] = None) -> Optional[Dict[str, float]]:
+    """Return a compact GPS summary for ONE player on ONE match (date/label based).
+    Robust to small date shifts and naming mismatches.
+    """
+    if gps_match_df is None or getattr(gps_match_df, "empty", True):
+        return None
+
+    df = gps_match_df.copy()
+    df = ensure_date_column(df)
+    if "Player" not in df.columns:
+        return None
+
+    p = nettoyer_nom_joueuse(player_name)
+    df = df[df["Player"].astype(str) == p].copy()
+    if df.empty:
+        return None
+
+    # date filtering (prefer exact day, fallback ±1 day)
+    if match_date is not None and pd.notna(match_date):
+        md = pd.to_datetime(match_date, errors="coerce")
+        if pd.notna(md):
+            md = md.normalize()
+            if "DATE" in df.columns:
+                df_exact = df[df["DATE"].dt.normalize() == md].copy()
+            else:
+                df_exact = df.iloc[0:0]
+            if df_exact.empty and "DATE" in df.columns:
+                df_pm1 = df[(df["DATE"].dt.normalize() >= (md - pd.Timedelta(days=1))) &
+                            (df["DATE"].dt.normalize() <= (md + pd.Timedelta(days=1)))].copy()
+                df = df_pm1
+            else:
+                df = df_exact
+
+    # label filtering if available (helps when multiple activities same day)
+    if match_label and "__match_label" in df.columns:
+        ml = normalize_str(str(match_label))
+        df_lbl = df[df["__match_label"].astype(str).map(normalize_str) == ml].copy()
+        if not df_lbl.empty:
+            df = df_lbl
+
+    if df.empty:
+        return None
+
+    def _num(col):
+        if col not in df.columns:
+            return np.array([np.nan])
+        return pd.to_numeric(df[col], errors="coerce")
+
+    out = {}
+    out["duration_min"] = float(np.nanmean(_num("Durée_min"))) if "Durée_min" in df.columns else (float(np.nanmean(_num("Durée"))) if "Durée" in df.columns else np.nan)
+    out["distance_m"] = float(np.nansum(_num("Distance (m)"))) if "Distance (m)" in df.columns else np.nan
+    out["hid13_m"] = float(np.nansum(_num("Distance HID (>13 km/h)"))) if "Distance HID (>13 km/h)" in df.columns else np.nan
+    out["hid19_m"] = float(np.nansum(_num("Distance HID (>19 km/h)"))) if "Distance HID (>19 km/h)" in df.columns else np.nan
+    out["d_13_19_m"] = float(np.nansum(_num("Distance 13-19 (m)"))) if "Distance 13-19 (m)" in df.columns else np.nan
+    out["d_19_23_m"] = float(np.nansum(_num("Distance 19-23 (m)"))) if "Distance 19-23 (m)" in df.columns else np.nan
+    out["d_23p_m"] = float(np.nansum(_num("Distance >23 (m)"))) if "Distance >23 (m)" in df.columns else np.nan
+    out["acc_dec"] = float(np.nansum(_num("# Acc/Dec"))) if "# Acc/Dec" in df.columns else np.nan
+    out["vmax_kmh"] = float(np.nanmax(_num("Vitesse max (km/h)"))) if "Vitesse max (km/h)" in df.columns else np.nan
+    out["charge"] = float(np.nansum(_num("CHARGE"))) if "CHARGE" in df.columns else np.nan
+    out["rpe"] = float(np.nanmean(_num("RPE"))) if "RPE" in df.columns else np.nan
+
+    if all(pd.isna(v) for v in out.values()):
+        return None
+    return out
+
+
+def build_tactical_report_html(df_tactic, player_name: str, gps_summary: Optional[Dict[str, float]] = None) -> str:
     """Génere le rapport HTML style Sportscode pour une seule joueuse."""
     import json as _j
     ctx   = _get_match_context(df_tactic)
@@ -3807,8 +3876,43 @@ function setMap(mode){
 window.onload=init;
 """
     js = js.replace('%%STATS%%', stats_json).replace('%%CTX%%', ctx_json).replace('%%PLAYER%%', player_json)
+    # --- GPS block (optional) ---
+    gps_block = ""
+    if gps_summary:
+        def _fmt(v, unit="", nd=0):
+            try:
+                if v is None or (isinstance(v, float) and np.isnan(v)):
+                    return "—"
+                return f"{float(v):.{nd}f}{unit}"
+            except Exception:
+                return "—"
+        gps_block = f"""<div class='gps-panel'>
+  <div class='gps-title'>PHYSIQUE (GPS — match)</div>
+  <div class='gps-grid'>
+    <div class='gps-card'><div class='gps-label'>Distance</div><div class='gps-value'>{_fmt(gps_summary.get('distance_m'), ' m', 0)}</div><div class='gps-sub'>Total</div></div>
+    <div class='gps-card'><div class='gps-label'>Durée</div><div class='gps-value'>{_fmt(gps_summary.get('duration_min'), ' min', 0)}</div><div class='gps-sub'>Temps d&apos;activité</div></div>
+    <div class='gps-card'><div class='gps-label'>HID &gt;13 km/h</div><div class='gps-value'>{_fmt(gps_summary.get('hid13_m'), ' m', 0)}</div><div class='gps-sub'>Haute intensité</div></div>
+    <div class='gps-card'><div class='gps-label'>HID &gt;19 km/h</div><div class='gps-value'>{_fmt(gps_summary.get('hid19_m'), ' m', 0)}</div><div class='gps-sub'>Très haute intensité</div></div>
+    <div class='gps-card'><div class='gps-label'>Acc/Dec</div><div class='gps-value'>{_fmt(gps_summary.get('acc_dec'), '', 0)}</div><div class='gps-sub'>Nombre</div></div>
+    <div class='gps-card'><div class='gps-label'>Vitesse max</div><div class='gps-value'>{_fmt(gps_summary.get('vmax_kmh'), ' km/h', 1)}</div><div class='gps-sub'>Pic</div></div>
+  </div>
+</div>"""
+    else:
+        gps_block = "<div class='gps-panel'><div class='gps-title'>PHYSIQUE (GPS — match)</div><div class='gps-empty'>GPS non disponible pour ce match.</div></div>"
+
     return f"""<!DOCTYPE html>
-<html lang="fr"><head><meta charset="UTF-8"><style>{css}</style></head><body>
+<html lang="fr"><head><meta charset="UTF-8"><style>{css}
+/* GPS PANEL */
+.gps-panel{margin-top:12px;padding:10px 10px 12px;border:1px solid rgba(255,255,255,.10);border-radius:10px;background:rgba(0,0,0,.18)}
+.gps-title{font-weight:800;letter-spacing:.08em;font-size:11px;color:rgba(255,255,255,.85);margin-bottom:8px}
+.gps-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.gps-card{padding:8px;border-radius:10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.08)}
+.gps-label{font-size:10px;letter-spacing:.04em;color:rgba(255,255,255,.70);margin-bottom:4px}
+.gps-value{font-size:16px;font-weight:800;color:#fff}
+.gps-sub{font-size:10px;color:rgba(255,255,255,.70);margin-top:2px}
+.gps-empty{font-size:12px;color:rgba(255,255,255,.75);padding:6px 0}
+/* /GPS PANEL */
+</style></head><body>
 <div class="hdr">
   <div><div class="hdr-logo">Paris FC - Centre de Formation Feminin</div>
   <div class="hdr-sub">Rapport Technico-Tactique</div></div>
@@ -3866,6 +3970,7 @@ window.onload=init;
     <div class="li"><div class="ld" style="background:#16a34a"></div>Reussie</div>
     <div class="li"><div class="ld" style="background:#b91c1c"></div>Ratee</div>
   </div>
+{gps_block}
 </div>
 <div class="right">
   <div class="rtop">
@@ -5186,7 +5291,14 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
 
                     # Générer et afficher le rapport HTML pour la joueuse sélectionnée
                     import streamlit.components.v1 as _components
-                    html_report = build_tactical_report_html(df_tactic, sel_tac_player)
+                    gps_match_df = st.session_state.get("gps_match_df", pd.DataFrame())
+                    gps_summary = get_gps_match_summary_for_player(
+                        gps_match_df,
+                        sel_tac_player,
+                        match_date=pd.to_datetime(sel_row.get("date", None), errors="coerce") if isinstance(sel_row, dict) else None,
+                        match_label=sel_match,
+                    )
+                    html_report = build_tactical_report_html(df_tactic, sel_tac_player, gps_summary=gps_summary)
                     _components.html(html_report, height=650, scrolling=False)
 
                 # Données brutes en expander (optionnel)
@@ -5395,6 +5507,81 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             matches = df_player["Adversaire"].unique()
             game = st.multiselect("Choisissez un ou plusieurs matchs", matches)
             filtered = df_player[df_player["Adversaire"].isin(game)] if game else df_player
+            # --- GPS du match sélectionné (si 1 seul match) ---
+            if game and len(game) == 1:
+                try:
+                    gps_raw_df = st.session_state.get("gps_raw_df", pd.DataFrame())
+                    if gps_raw_df is not None and not gps_raw_df.empty:
+                        gps_raw_df = ensure_date_column(gps_raw_df)
+
+                        # Date du match depuis les données technico-tactiques
+                        _row = df_player[df_player["Adversaire"].astype(str) == str(game[0])].head(1)
+                        match_date_val = _row["Date"].iloc[0] if (not _row.empty and "Date" in _row.columns) else None
+                        match_dt = pd.to_datetime(match_date_val, errors="coerce", dayfirst=True)
+
+                        if pd.notna(match_dt):
+                            match_dt = pd.Timestamp(match_dt).normalize()
+                            gm = gps_raw_df[gps_raw_df["DATE"].dt.normalize() == match_dt].copy()
+
+                            # Filtre joueuse (concordance robuste)
+                            sel_clean = nettoyer_nom_joueuse(player_sel)
+                            if "Player" in gm.columns:
+                                gm = gm[gm["Player"].astype(str) == sel_clean].copy()
+
+                            if not gm.empty:
+                                st.markdown("#### 🛰️ Données physiques (GPS) — match sélectionné")
+                                cols_pref = [
+                                    "Durée_min",
+                                    "Distance (m)",
+                                    "Distance HID (>13 km/h)",
+                                    "Distance HID (>19 km/h)",
+                                    "Distance 13-19 (m)",
+                                    "Distance 19-23 (m)",
+                                    "Distance >23 (m)",
+                                    "Sprints_23",
+                                    "Sprints_25",
+                                    "Vitesse max (km/h)",
+                                    "# Acc/Dec",
+                                    "Distance relative (m/min)",
+                                    "CHARGE",
+                                    "RPE",
+                                ]
+                                show_cols = [c for c in cols_pref if c in gm.columns]
+
+                                # Plusieurs lignes le même jour -> on agrège
+                                agg = {}
+                                for c in show_cols:
+                                    cl = c.lower()
+                                    if "vitesse" in cl:
+                                        agg[c] = "max"
+                                    elif "rpe" in cl:
+                                        agg[c] = "mean"
+                                    else:
+                                        agg[c] = "sum"
+
+                                gnum = gm[show_cols].apply(pd.to_numeric, errors="coerce") if show_cols else pd.DataFrame()
+                                gsum = gnum.agg(agg) if not gnum.empty else pd.Series(dtype=float)
+
+                                c1, c2, c3, c4 = st.columns(4)
+                                if "Distance (m)" in gsum.index:
+                                    c1.metric("Distance", f"{gsum['Distance (m)']:.0f} m" if pd.notna(gsum['Distance (m)']) else "—")
+                                if "Distance HID (>13 km/h)" in gsum.index:
+                                    c2.metric("HID >13", f"{gsum['Distance HID (>13 km/h)']:.0f} m" if pd.notna(gsum['Distance HID (>13 km/h)']) else "—")
+                                if "Distance HID (>19 km/h)" in gsum.index:
+                                    c3.metric("HID >19", f"{gsum['Distance HID (>19 km/h)']:.0f} m" if pd.notna(gsum['Distance HID (>19 km/h)']) else "—")
+                                if "Vitesse max (km/h)" in gsum.index:
+                                    c4.metric("Vmax", f"{gsum['Vitesse max (km/h)']:.1f} km/h" if pd.notna(gsum['Vitesse max (km/h)']) else "—")
+
+                                with st.expander("Voir le détail GPS (lignes sources)"):
+                                    cols_show = ["DATE"] + (["__source_file"] if "__source_file" in gm.columns else []) + show_cols
+                                    st.dataframe(gm.sort_values("DATE", ascending=False)[cols_show], use_container_width=True)
+                            else:
+                                st.info("GPS: aucune ligne trouvée pour ce match (date) et cette joueuse.")
+                        else:
+                            st.info("GPS: date de match non exploitable.")
+                except Exception as _e:
+                    st.warning(f"GPS: impossible d'afficher les données du match sélectionné → {_e}")
+
         else:
             filtered = df_player
 
