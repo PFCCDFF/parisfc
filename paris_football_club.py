@@ -1392,8 +1392,9 @@ def walk_drive_folders(service, root_folder_id: str, state: dict):
             state.setdefault("folders_failed", {})[fid] = time.time()
             continue
 
-def _safe_local_path(filename: str, file_id: str) -> str:
-    os.makedirs(GPS_FOLDER, exist_ok=True)
+def _safe_local_path(filename: str, file_id: str, dest_folder: str = None) -> str:
+    base_folder = dest_folder if dest_folder else GPS_FOLDER
+    os.makedirs(base_folder, exist_ok=True)
 
     rel = "" if filename is None else str(filename)
     rel = os.path.normpath(rel).lstrip("/")
@@ -1402,7 +1403,7 @@ def _safe_local_path(filename: str, file_id: str) -> str:
     base = os.path.basename(rel)
     base_noext, ext = os.path.splitext(base)
 
-    target_dir = os.path.join(GPS_FOLDER, rel_dir) if rel_dir else GPS_FOLDER
+    target_dir = os.path.join(base_folder, rel_dir) if rel_dir else base_folder
     os.makedirs(target_dir, exist_ok=True)
 
     return os.path.join(target_dir, f"{base_noext}__{file_id[:8]}{ext}")
@@ -1432,12 +1433,12 @@ def download_drive_file_to_local(service, file_id: str, file_name: str, mime_typ
 
     return final_path
 
-def download_drive_csv_to_local(service, file_id: str, file_name: str) -> str:
+def download_drive_csv_to_local(service, file_id: str, file_name: str, dest_folder: str = None) -> str:
     request = service.files().get_media(fileId=file_id)
     if not str(file_name).lower().endswith(".csv"):
         file_name = os.path.splitext(str(file_name))[0] + ".csv"
 
-    final_path = _safe_local_path(str(file_name), file_id)
+    final_path = _safe_local_path(str(file_name), file_id, dest_folder=dest_folder)
 
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
@@ -1453,11 +1454,11 @@ def download_drive_csv_to_local(service, file_id: str, file_name: str) -> str:
     return final_path
 
 
-def export_sheet_to_csv_local(service, file_id: str, file_name: str) -> str:
+def export_sheet_to_csv_local(service, file_id: str, file_name: str, dest_folder: str = None) -> str:
     request = service.files().export_media(fileId=file_id, mimeType="text/csv")
     file_name = os.path.splitext(str(file_name))[0] + ".csv"
 
-    final_path = _safe_local_path(str(file_name), file_id)
+    final_path = _safe_local_path(str(file_name), file_id, dest_folder=dest_folder)
 
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
@@ -1522,7 +1523,13 @@ def sync_gps_from_drive_autonomous():
             return False
         if not (name.endswith(".csv") or mt == "application/vnd.google-apps.spreadsheet"):
             return False
-        return ("gf1" in name) or ("seance" in name) or ("séance" in name) or ("gps" in name)
+        # Séances d'entraînement (GF1)
+        if ("gf1" in name) or ("seance" in name) or ("séance" in name) or ("gps" in name):
+            return True
+        # Fichiers de match : U19_, U17_, U16_, U15_, _J0x_, etc.
+        if is_gps_match_file(name):
+            return True
+        return False
 
     for folder_id in walk_drive_folders(service, DRIVE_GPS_FOLDER_ID, state):
         try:
@@ -1538,10 +1545,13 @@ def sync_gps_from_drive_autonomous():
                 mt = f.get("mimeType", "")
 
                 try:
+                    # Router les fichiers match vers leur dossier dédié
+                    _dest_folder = GPS_MATCH_FOLDER if is_gps_match_file(name) else GPS_FOLDER
+                    os.makedirs(_dest_folder, exist_ok=True)
                     if mt == "application/vnd.google-apps.spreadsheet":
-                        export_sheet_to_csv_local(service, fid, name)
+                        export_sheet_to_csv_local(service, fid, name, dest_folder=_dest_folder)
                     elif name.lower().endswith(".csv"):
-                        download_drive_csv_to_local(service, fid, name)
+                        download_drive_csv_to_local(service, fid, name, dest_folder=_dest_folder)
                 except Exception as e:
                     st.warning(f"GPS: téléchargement/export CSV impossible {name} -> {e}")
 
