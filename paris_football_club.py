@@ -4843,115 +4843,492 @@ def _make_match_bar_chart(labels, datasets, title, ylabel, figsize=(9,3.5), stac
     return fig
 
 
-def build_tactical_report_html(df_tactic: pd.DataFrame, player_canon: str, gps_summary: Optional[pd.DataFrame] = None) -> str:
-    """
-    Construit un rapport HTML (technico-tactique + panneau GPS optionnel).
-    - df_tactic : dataframe agrégé (1 ligne) pour une joueuse (celui utilisé dans l'onglet Statistiques)
-    - gps_summary : dataframe 1 ligne (résumé GPS du match) ou None
-    """
-    player_label = str(player_canon or "").strip()
+def build_tactical_report_html(
+    df_tactic,
+    player_canon: str,
+    gps_summary=None,
+    photo_b64: str = "",
+    match_info: dict = None,
+    pfc_kpi_row=None,
+) -> str:
+    """Rapport match A4 HTML imprimable : photo + KPI radar + stats tactiques + GPS."""
+    import json as _json, math as _math
 
-    # --- Tech/Tac quick cards (robuste si colonnes manquantes) ---
-    def _val(col, fmt="{:.0f}"):
-        if df_tactic is None or df_tactic.empty or col not in df_tactic.columns:
-            return "—"
-        v = pd.to_numeric(df_tactic.iloc[0][col], errors="coerce")
-        if pd.isna(v):
-            return "—"
+    player_label = str(player_canon or "").strip()
+    mi = match_info or {}
+
+    # ── GPS ──────────────────────────────────────────────────────────────────
+    _gps = None
+    if isinstance(gps_summary, dict) and gps_summary:
+        _gps = gps_summary
+    elif isinstance(gps_summary, pd.DataFrame) and not gps_summary.empty:
+        _gps = gps_summary.iloc[0].to_dict()
+
+    def _g(key, fmt="{:.0f}", fb="—"):
+        if _gps is None: return fb
+        v = pd.to_numeric(_gps.get(key, None), errors="coerce")
+        return fb if pd.isna(v) else (lambda x: fmt.format(x))(float(v))
+
+    # ── Stats tactiques ───────────────────────────────────────────────────────
+    s = compute_tactical_stats(df_tactic, player_canon) if df_tactic is not None else {}
+
+    def _s(key, fb="—"):
+        v = s.get(key, None)
+        if v is None: return fb
         try:
-            return fmt.format(float(v))
+            fv = float(v)
+            return fb if _math.isnan(fv) else str(int(fv)) if fv == int(fv) else str(fv)
         except Exception:
             return str(v)
 
-    minutes = _val("Temps de jeu (en minutes)", "{:.0f}") if (df_tactic is not None and not df_tactic.empty) else "—"
-    buts = _val("Buts", "{:.0f}")
-    passes = _val("Passes", "{:.0f}")
-    dribbles = _val("Dribbles", "{:.0f}")
+    passes_ok  = int(s.get("passes_ok",  0) or 0)
+    passes_ko  = int(s.get("passes_ko",  0) or 0)
+    passes_tot = passes_ok + passes_ko
+    passes_pct = int(passes_ok / passes_tot * 100) if passes_tot else 0
+    courtes_tot = int((s.get("courtes_ok",0) or 0) + (s.get("courtes_ko",0) or 0))
+    longues_tot = int((s.get("longues_ok",0) or 0) + (s.get("longues_ko",0) or 0))
+    drib_ok  = int(s.get("drib_ok",  0) or 0)
+    drib_ko  = int(s.get("drib_ko",  0) or 0)
+    drib_tot = drib_ok + drib_ko
+    drib_pct = int(drib_ok / drib_tot * 100) if drib_tot else 0
+    duels_ok  = int(s.get("duels_gagnes", 0) or 0)
+    duels_ko  = int(s.get("duels_perdus", 0) or 0)
+    duels_tot = duels_ok + duels_ko
+    duels_pct = int(duels_ok / duels_tot * 100) if duels_tot else 0
+    poste_str   = s.get("postes",  "") or ""
+    systeme_str = s.get("systeme", "") or ""
 
-    # --- GPS panel ---
-    gps_html = ""
-    _gps_dict = None
-    if isinstance(gps_summary, dict) and gps_summary:
-        _gps_dict = gps_summary
-    elif isinstance(gps_summary, pd.DataFrame) and not gps_summary.empty:
-        _gps_dict = gps_summary.iloc[0].to_dict()
-    if _gps_dict is not None:
-        row = _gps_dict
+    # ── KPI Radar SVG ─────────────────────────────────────────────────────────
+    RADAR_PARAMS = [
+        ("Timing","#38BDF8"),("Force physique","#38BDF8"),
+        ("Intelligence tactique","#FB923C"),
+        ("Technique 1","#F87171"),("Technique 2","#F87171"),("Technique 3","#F87171"),
+        ("Explosivité","#A78BFA"),("Prise de risque","#A78BFA"),
+        ("Précision","#94A3B8"),("Sang-froid","#94A3B8"),
+        ("Créativité 1","#818CF8"),("Créativité 2","#818CF8"),
+    ]
+    _kpi = {}
+    if pfc_kpi_row is not None:
+        _kpi = pfc_kpi_row.to_dict() if isinstance(pfc_kpi_row, pd.Series) else (pfc_kpi_row if isinstance(pfc_kpi_row, dict) else {})
+    avail = [(p, c) for p, c in RADAR_PARAMS if p in _kpi]
 
-        def _gps_get(key, fmt="{:.0f}"):
-            v = row.get(key, None)
-            v = pd.to_numeric(v, errors="coerce")
-            if pd.isna(v):
-                return "—"
-            try:
-                return fmt.format(float(v))
-            except Exception:
-                return str(v)
+    def _build_radar(params_colors, kpi, sz=210):
+        n = len(params_colors)
+        if n < 3: return ""
+        cx = cy = sz / 2; r_max = sz * 0.36; r_min = sz * 0.04
+        ang = [_math.pi/2 + 2*_math.pi*i/n for i in range(n)]
+        def P(a, r): return cx + r*_math.cos(a), cy - r*_math.sin(a)
+        lines = []
+        for fr in [0.25, 0.5, 0.75, 1.0]:
+            pts = " ".join(f"{P(a,r_min+(r_max-r_min)*fr)[0]:.1f},{P(a,r_min+(r_max-r_min)*fr)[1]:.1f}" for a in ang)
+            op = "0.4" if fr==1.0 else "0.2"
+            lines.append(f'<polygon points="{pts}" fill="none" stroke="#334155" stroke-width="0.7" opacity="{op}"/>')
+        for a in ang:
+            x2,y2=P(a,r_max); lines.append(f'<line x1="{cx:.1f}" y1="{cy:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" stroke="#334155" stroke-width="0.7" opacity="0.4"/>')
+        poly_pts = []
+        for i,(param,color) in enumerate(params_colors):
+            val = float(pd.to_numeric(kpi.get(param,0),errors="coerce") or 0)
+            val = max(0.0,min(100.0,val))
+            r = r_min + (r_max-r_min)*val/100.0
+            px,py = P(ang[i],r)
+            poly_pts.append((px,py,color,param,val))
+        pts_str = " ".join(f"{p[0]:.1f},{p[1]:.1f}" for p in poly_pts)
+        lines.append(f'<polygon points="{pts_str}" fill="#00A3E0" fill-opacity="0.15" stroke="#00A3E0" stroke-width="1.2" stroke-opacity="0.8"/>')
+        for i,(px,py,color,param,val) in enumerate(poly_pts):
+            lines.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="2.5" fill="{color}" stroke="#0F172A" stroke-width="0.8"/>')
+            lx,ly = P(ang[i], r_max*1.24)
+            anchor = "middle"
+            if lx < cx-4: anchor="end"
+            elif lx > cx+4: anchor="start"
+            short = (param.replace("physique","phys.").replace("Intelligence tactique","Intel.tact.")
+                        .replace("Créativité ","Créa.").replace("Technique ","Tech.")
+                        .replace("Explosivité","Explos.").replace("Prise de risque","P.risque")
+                        .replace("Sang-froid","Sang-fr."))
+            lines.append(f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="{anchor}" dominant-baseline="central" font-size="7.5" fill="#94A3B8" font-family="DM Sans,sans-serif">{short}</text>')
+            lines.append(f'<text x="{px:.1f}" y="{py-4:.1f}" text-anchor="middle" font-size="7" fill="{color}" font-family="DM Sans,sans-serif" font-weight="700">{int(val)}</text>')
+        return f'<svg viewBox="0 0 {sz} {sz}" width="{sz}" height="{sz}" xmlns="http://www.w3.org/2000/svg">{"".join(lines)}</svg>'
 
-        dist = _gps_get("distance_m", "{:.0f}")
-        duree = _gps_get("duration_min", "{:.0f}")
-        hid13 = _gps_get("hid13_m", "{:.0f}")
-        hid19 = _gps_get("hid19_m", "{:.0f}")
-        vma = _gps_get("vmax_kmh", "{:.1f}")
-        charge = _gps_get("charge", "{:.0f}")
+    radar_svg = _build_radar(avail, _kpi) if avail else ""
 
-        gps_html = f"""
-        <div class="gps-panel">
-          <div class="gps-title">Données physiques (match)</div>
-          <div class="gps-sub">Fenêtre: match sélectionné (date)</div>
-          <div class="gps-grid">
-            <div class="gps-pill"><div class="k">Distance</div><div class="v">{dist} m</div></div>
-            <div class="gps-pill"><div class="k">Durée</div><div class="v">{duree} min</div></div>
-            <div class="gps-pill"><div class="k">HID &gt;13</div><div class="v">{hid13} m</div></div>
-            <div class="gps-pill"><div class="k">HID &gt;19</div><div class="v">{hid19} m</div></div>
-            <div class="gps-pill"><div class="k">Vitesse max</div><div class="v">{vma} km/h</div></div>
-            <div class="gps-pill"><div class="k">Charge</div><div class="v">{charge}</div></div>
-          </div>
-        </div>
-        """
+    # ── GPS speed zones ───────────────────────────────────────────────────────
+    spd_keys = [("0-7",None),("7-13",None),("13-19","d_13_19_m"),("19-23","d_19_23_m"),(">23","d_23p_m")]
+    spd_vals = []
+    for lbl, key in spd_keys:
+        val = 0.0
+        if key and _gps:
+            try: val = max(0.0, float(pd.to_numeric(_gps.get(key,0),errors="coerce") or 0))
+            except: pass
+        spd_vals.append((lbl, val))
+    mx_spd = max(v for _,v in spd_vals) or 1.0
+    spd_colors = ["#334155","#475569","#38BDF8","#0EA5E9","#0284C7"]
+    speed_bars = "".join(
+        f'<div class="sz-row"><span class="sz-lbl">{l}</span>'
+        f'<div class="sz-wrap"><div class="sz-bar" style="width:{int(v/mx_spd*100)}%;background:{spd_colors[i]}"></div></div>'
+        f'<span class="sz-val">{int(v)}m</span></div>'
+        for i,(l,v) in enumerate(spd_vals)
+    )
 
-    html = f"""
-    <div class="report-wrap">
-      <div class="header">
-        <div class="h1">{player_label}</div>
-        <div class="sub">Synthèse technico-tactique + physique (si disponible)</div>
+    # ── Match header ──────────────────────────────────────────────────────────
+    adversaire  = mi.get("adversaire","") or ""
+    journee     = mi.get("journee","") or ""
+    score       = mi.get("score","") or ""
+    lieu        = mi.get("lieu","") or ""
+    match_label = mi.get("label","") or ""
+    match_date  = ""
+    try: match_date = pd.Timestamp(mi["date"]).strftime("%d/%m/%Y") if mi.get("date") else ""
+    except: pass
+    vs_line   = f"vs {adversaire}" if adversaire else match_label
+    meta_parts= [p for p in [match_date, journee and f"J{journee}", lieu] if p]
+    meta_line = " · ".join(meta_parts)
+
+    # ── Photo ─────────────────────────────────────────────────────────────────
+    photo_html = (
+        f'<img src="{photo_b64}" class="player-photo" alt="{player_label}"/>'
+        if photo_b64
+        else f'<div class="player-photo-placeholder"><span>{player_label[:2].upper()}</span></div>'
+    )
+
+    # ── Terrain pitch SVG ─────────────────────────────────────────────────────
+    pitch_svg_inner = """
+        <rect width="100" height="68" fill="#0d2408"/>
+        <rect x="1" y="1" width="98" height="66" fill="none" stroke="#1e4010" stroke-width=".6"/>
+        <line x1="50" y1="1" x2="50" y2="67" stroke="#1e4010" stroke-width=".5"/>
+        <circle cx="50" cy="34" r="9.15" fill="none" stroke="#1e4010" stroke-width=".5"/>
+        <circle cx="50" cy="34" r=".5" fill="#1e4010"/>
+        <rect x="1" y="13.84" width="16.5" height="40.32" fill="none" stroke="#1e4010" stroke-width=".5"/>
+        <rect x="1" y="24.84" width="5.5" height="18.32" fill="none" stroke="#1e4010" stroke-width=".5"/>
+        <rect x="82.5" y="13.84" width="16.5" height="40.32" fill="none" stroke="#1e4010" stroke-width=".5"/>
+        <rect x="93.5" y="24.84" width="5.5" height="18.32" fill="none" stroke="#1e4010" stroke-width=".5"/>
+        <rect x="0" y="29.34" width="1" height="9.32" fill="#1e4010"/>
+        <rect x="99" y="29.34" width="1" height="9.32" fill="#1e4010"/>"""
+
+    # ── JSON pour JS ──────────────────────────────────────────────────────────
+    locs_json   = _json.dumps(s.get("locs", []))
+    passes_json = _json.dumps(s.get("passes_map", []))
+
+    return f"""<!DOCTYPE html>
+<html lang="fr"><head>
+<meta charset="UTF-8"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box;}}
+:root{{
+  --bg:#080D18;--bg2:#0D1424;--bg3:#121B30;--bd:#1C2B42;
+  --acc:#00A3E0;--acc2:#38BDF8;--grn:#22C55E;--red:#EF4444;--org:#F97316;
+  --txt:#DDE5F0;--mt:#64748B;--mt2:#94A3B8;
+  --ff:'DM Sans',sans-serif;--fm:'DM Mono',monospace;
+}}
+body{{font-family:var(--ff);background:var(--bg);color:var(--txt);font-size:10px;line-height:1.4;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;}}
+.page{{width:210mm;min-height:296mm;max-height:296mm;overflow:hidden;padding:5.5mm 6mm;
+  background:var(--bg);display:flex;flex-direction:column;gap:5px;}}
+
+/* Header */
+.hdr{{display:grid;grid-template-columns:62px 1fr auto;gap:10px;align-items:center;
+  padding-bottom:7px;border-bottom:1px solid var(--bd);}}
+.player-photo{{width:62px;height:76px;object-fit:cover;object-position:top;
+  border-radius:7px;border:2px solid var(--acc);}}
+.player-photo-placeholder{{width:62px;height:76px;border-radius:7px;background:var(--bg3);
+  border:2px solid var(--bd);display:flex;align-items:center;justify-content:center;
+  font-size:20px;font-weight:700;color:var(--mt);}}
+.pi-name{{font-size:19px;font-weight:700;letter-spacing:-.3px;color:#FFF;line-height:1.1;}}
+.pi-meta{{display:flex;gap:5px;flex-wrap:wrap;margin-top:3px;}}
+.tag{{background:var(--bg3);border:1px solid var(--bd);border-radius:4px;
+  padding:1px 6px;font-size:8px;color:var(--mt2);}}
+.pi-sub{{font-size:8.5px;color:var(--mt);margin-top:3px;}}
+.hr-vs{{font-size:14px;font-weight:700;color:var(--acc2);text-align:right;}}
+.hr-score{{display:inline-block;background:var(--bg3);border:1.5px solid var(--acc);
+  border-radius:7px;padding:2px 10px;font-size:15px;font-weight:700;font-family:var(--fm);
+  color:#FFF;margin-top:3px;}}
+.hr-sub{{font-size:7.5px;color:var(--mt);text-align:right;margin-top:3px;letter-spacing:.5px;}}
+
+/* 2-col body */
+.body{{display:grid;grid-template-columns:1fr 1fr;gap:6px;flex:1;min-height:0;}}
+.col{{display:flex;flex-direction:column;gap:5px;}}
+
+/* Cards */
+.card{{background:var(--bg2);border:1px solid var(--bd);border-radius:8px;padding:6px 8px;}}
+.sec-title{{font-size:7.5px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;
+  color:var(--acc);margin-bottom:5px;display:flex;align-items:center;gap:5px;}}
+.sec-title::after{{content:"";flex:1;height:1px;background:var(--bd);}}
+
+/* KPI summary pills */
+.kpi-g{{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}}
+.kpi-p{{background:var(--bg3);border:1px solid var(--bd);border-radius:6px;
+  padding:5px 3px;text-align:center;}}
+.kpi-p .kv{{font-size:15px;font-weight:700;color:#FFF;line-height:1;}}
+.kpi-p .kl{{font-size:7px;color:var(--mt2);margin-top:1px;}}
+
+/* Stat rows */
+.s-row{{display:grid;grid-template-columns:1fr 70px 30px;align-items:center;gap:4px;margin-bottom:1px;}}
+.s-nm{{font-size:8.5px;color:var(--mt2);}}
+.s-bw{{height:5px;background:var(--bg3);border-radius:3px;overflow:hidden;}}
+.s-bb{{height:100%;border-radius:3px;}}
+.s-vl{{font-size:9px;font-weight:700;font-family:var(--fm);text-align:right;}}
+.s-sub{{font-size:7px;color:var(--mt);padding-left:2px;margin-bottom:3px;}}
+.dv{{height:1px;background:var(--bd);margin:3px 0;}}
+
+/* Three-stat mini-grid */
+.tri{{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-top:3px;}}
+.tri-c .tl{{font-size:7.5px;color:var(--mt2);}}
+.tri-c .tv{{font-size:13px;font-weight:700;}}
+
+/* GPS */
+.gps-g{{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;}}
+.gps-p{{background:var(--bg3);border:1px solid var(--bd);border-radius:6px;padding:5px 4px;}}
+.gps-p .gk{{font-size:7px;color:var(--mt2);}}
+.gps-p .gv{{font-size:12px;font-weight:700;color:var(--acc2);margin-top:1px;font-family:var(--fm);}}
+.gps-p .gu{{font-size:7px;color:var(--mt);}}
+.no-gps{{font-size:8px;color:var(--mt);font-style:italic;}}
+
+/* Speed zones */
+.sz-row{{display:grid;grid-template-columns:24px 1fr 38px;align-items:center;gap:3px;margin-bottom:2px;}}
+.sz-lbl{{font-size:7px;color:var(--mt2);font-family:var(--fm);}}
+.sz-wrap{{height:5px;background:var(--bg3);border-radius:3px;overflow:hidden;}}
+.sz-bar{{height:100%;border-radius:3px;}}
+.sz-val{{font-size:7px;font-family:var(--fm);text-align:right;color:var(--mt2);}}
+
+/* Radar */
+.radar-center{{display:flex;justify-content:center;align-items:center;padding:4px 0;}}
+.no-radar{{font-size:8px;color:var(--mt);font-style:italic;text-align:center;padding:20px 0;}}
+
+/* Terrain toggle */
+.tog-bar{{display:flex;gap:4px;margin-bottom:4px;}}
+.tog-btn{{font-size:8px;padding:2px 8px;border-radius:4px;cursor:pointer;
+  font-family:var(--ff);border:1px solid var(--bd);background:transparent;
+  color:var(--mt2);transition:all .15s;}}
+.tog-btn.on{{background:var(--acc);border-color:var(--acc);color:#FFF;}}
+
+/* Map legend */
+.map-legend{{display:flex;gap:8px;margin-top:3px;flex-wrap:wrap;}}
+.ml-item{{font-size:7px;color:var(--mt2);display:flex;align-items:center;gap:3px;}}
+.ml-dot{{width:7px;height:7px;border-radius:50%;display:inline-block;}}
+.ml-line{{width:10px;height:2px;display:inline-block;}}
+
+/* Footer */
+.footer{{padding-top:4px;border-top:1px solid var(--bd);
+  display:flex;justify-content:space-between;font-size:7.5px;color:var(--mt);}}
+.footer .conf{{color:var(--acc2);font-weight:600;}}
+
+@media print{{
+  body,html{{background:#080D18!important;}}
+  .page{{page-break-inside:avoid;}}
+  @page{{size:A4;margin:0;}}
+}}
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- HEADER -->
+<div class="hdr">
+  {photo_html}
+  <div>
+    <div class="pi-name">{player_label}</div>
+    <div class="pi-meta">
+      {'<span class="tag">'+poste_str+'</span>' if poste_str else ''}
+      {'<span class="tag">'+systeme_str+'</span>' if systeme_str else ''}
+      <span class="tag">{_g("duration_min", fb="—")} min de jeu</span>
+    </div>
+    <div class="pi-sub">{meta_line}</div>
+  </div>
+  <div>
+    <div class="hr-vs">{vs_line}</div>
+    {'<div class="hr-score">'+score+'</div>' if score else ''}
+    <div class="hr-sub">PARIS FC &nbsp;·&nbsp; RAPPORT MATCH</div>
+  </div>
+</div>
+
+<!-- BODY -->
+<div class="body">
+
+  <!-- COL GAUCHE -->
+  <div class="col">
+
+    <!-- Résumé rapide -->
+    <div class="card">
+      <div class="sec-title">Résumé du match</div>
+      <div class="kpi-g">
+        <div class="kpi-p"><div class="kv">{passes_tot}</div><div class="kl">Passes</div></div>
+        <div class="kpi-p"><div class="kv">{_s("tirs_tot","—")}</div><div class="kl">Tirs</div></div>
+        <div class="kpi-p"><div class="kv">{drib_tot}</div><div class="kl">Dribbles</div></div>
+        <div class="kpi-p"><div class="kv">{duels_tot}</div><div class="kl">Duels déf.</div></div>
       </div>
-
-      <div class="cards">
-        <div class="card"><div class="k">Temps de jeu</div><div class="v">{minutes} min</div></div>
-        <div class="card"><div class="k">Buts</div><div class="v">{buts}</div></div>
-        <div class="card"><div class="k">Passes</div><div class="v">{passes}</div></div>
-        <div class="card"><div class="k">Dribbles</div><div class="v">{dribbles}</div></div>
-      </div>
-
-      {gps_html}
     </div>
 
-    <style>
-      .report-wrap{{font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;}}
-      .header{{padding:10px 12px 0px;}}
-      .h1{{font-size:18px;font-weight:700;}}
-      .sub{{font-size:11px;color:rgba(255,255,255,.70);margin-top:2px}}
-      .cards{{display:grid;grid-template-columns:repeat(4, minmax(0,1fr));gap:10px;margin:10px 0 0;}}
-      .card{{padding:10px;border:1px solid rgba(255,255,255,.12);border-radius:10px;background:rgba(0,0,0,.16)}}
-      .card .k{{font-size:10px;color:rgba(255,255,255,.70)}}
-      .card .v{{font-size:16px;font-weight:700;margin-top:2px}}
+    <!-- Stats tactiques -->
+    <div class="card" style="flex:1;">
+      <div class="sec-title">Technico-Tactique</div>
 
-      .gps-panel{{margin-top:12px;padding:10px 10px 12px;border:1px solid rgba(255,255,255,.12);border-radius:12px;background:rgba(0,0,0,.16)}}
-      .gps-title{{font-size:13px;font-weight:700}}
-      .gps-sub{{font-size:10px;color:rgba(255,255,255,.70);margin-top:2px}}
-      .gps-grid{{display:grid;grid-template-columns:repeat(3, minmax(0,1fr));gap:10px;margin-top:10px}}
-      .gps-pill{{padding:10px;border-radius:12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.10)}}
-      .gps-pill .k{{font-size:10px;color:rgba(255,255,255,.70)}}
-      .gps-pill .v{{font-size:14px;font-weight:700;margin-top:2px}}
-      @media (max-width: 900px) {{
-        .cards{{grid-template-columns:repeat(2, minmax(0,1fr));}}
-        .gps-grid{{grid-template-columns:repeat(2, minmax(0,1fr));}}
-      }}
-    </style>
-    """
-    return html
+      <div class="s-row">
+        <span class="s-nm">Passes réussies</span>
+        <div class="s-bw"><div class="s-bb" style="width:{passes_pct}%;background:var(--grn);"></div></div>
+        <span class="s-vl" style="color:var(--grn);">{passes_pct}%</span>
+      </div>
+      <div class="s-sub">{passes_ok} réussies · {passes_ko} ratées · {courtes_tot} courtes · {longues_tot} longues</div>
 
+      <div class="dv"></div>
+
+      <div class="s-row">
+        <span class="s-nm">Dribbles réussis</span>
+        <div class="s-bw"><div class="s-bb" style="width:{drib_pct}%;background:var(--acc2);"></div></div>
+        <span class="s-vl" style="color:var(--acc2);">{drib_pct}%</span>
+      </div>
+      <div class="s-sub">{drib_ok} réussis · {drib_ko} ratés</div>
+
+      <div class="dv"></div>
+
+      <div class="s-row">
+        <span class="s-nm">Duels déf. gagnés</span>
+        <div class="s-bw"><div class="s-bb" style="width:{duels_pct}%;background:var(--org);"></div></div>
+        <span class="s-vl" style="color:var(--org);">{duels_pct}%</span>
+      </div>
+      <div class="s-sub">{duels_ok} gagnés · {duels_ko} perdus</div>
+
+      <div class="dv"></div>
+
+      <div class="tri">
+        <div class="tri-c"><div class="tl">Tirs cadrés</div>
+          <div class="tv">{_s("tirs_cadres","—")}<span style="font-size:8px;color:var(--mt2);"> / {_s("tirs_tot","—")}</span></div></div>
+        <div class="tri-c"><div class="tl">Récupérations</div>
+          <div class="tv" style="color:var(--grn);">{_s("recuperations","—")}</div></div>
+        <div class="tri-c"><div class="tl">Pertes de balle</div>
+          <div class="tv" style="color:var(--red);">{_s("pertes","—")}</div></div>
+      </div>
+    </div>
+
+    <!-- GPS -->
+    <div class="card">
+      <div class="sec-title">Physique Match GPS</div>
+      {'<div class="no-gps">Données GPS non disponibles pour ce match.</div>' if _gps is None else f"""
+      <div class="gps-g">
+        <div class="gps-p"><div class="gk">Distance</div><div class="gv">{_g("distance_m")}</div><div class="gu">m</div></div>
+        <div class="gps-p"><div class="gk">HID &gt;13 km/h</div><div class="gv">{_g("hid13_m")}</div><div class="gu">m</div></div>
+        <div class="gps-p"><div class="gk">HID &gt;19 km/h</div><div class="gv">{_g("hid19_m")}</div><div class="gu">m</div></div>
+        <div class="gps-p"><div class="gk">Vitesse max</div><div class="gv">{_g("vmax_kmh","{:.1f}")}</div><div class="gu">km/h</div></div>
+        <div class="gps-p"><div class="gk">Acc/Déc totaux</div><div class="gv">{_g("acc_dec")}</div><div class="gu">nb</div></div>
+        <div class="gps-p"><div class="gk">Charge</div><div class="gv">{_g("charge")}</div><div class="gu">UA</div></div>
+      </div>
+      <div style="margin-top:6px;">
+        <div style="font-size:7px;color:var(--mt2);margin-bottom:3px;">RÉPARTITION PAR PLAGE DE VITESSE</div>
+        {speed_bars}
+      </div>"""}
+    </div>
+
+  </div>
+
+  <!-- COL DROITE -->
+  <div class="col">
+
+    <!-- Radar KPI -->
+    <div class="card">
+      <div class="sec-title">Profil KPI</div>
+      {'<div class="radar-center">'+radar_svg+'</div>' if radar_svg else '<div class="no-radar">Données KPI non disponibles.</div>'}
+    </div>
+
+    <!-- Carte terrain -->
+    <div class="card" style="flex:1;">
+      <div class="sec-title">Carte du terrain</div>
+      <div class="tog-bar">
+        <button class="tog-btn on" id="btn-heat" onclick="setView(\'heat\')">🔥 Heatmap</button>
+        <button class="tog-btn" id="btn-pass" onclick="setView(\'pass\')">🎯 Passes</button>
+      </div>
+      <svg id="svg-heat" viewBox="0 0 100 68" width="100%" style="display:block;border-radius:4px;">
+        <defs>
+          <clipPath id="clip-h"><rect x="1" y="1" width="98" height="66"/></clipPath>
+          <radialGradient id="hg" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#00A3E0" stop-opacity="0.75"/>
+            <stop offset="100%" stop-color="#00A3E0" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        {pitch_svg_inner}
+        <g id="heat-pts" clip-path="url(#clip-h)"></g>
+      </svg>
+      <svg id="svg-pass" viewBox="0 0 100 68" width="100%" style="display:none;border-radius:4px;">
+        <defs>
+          <clipPath id="clip-p"><rect x="1" y="1" width="98" height="66"/></clipPath>
+          <marker id="aOk" markerWidth="4" markerHeight="4" refX="2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#22C55E"/></marker>
+          <marker id="aKo" markerWidth="4" markerHeight="4" refX="2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#EF4444"/></marker>
+        </defs>
+        {pitch_svg_inner}
+        <g id="pass-arrows" clip-path="url(#clip-p)"></g>
+      </svg>
+      <div class="map-legend">
+        <span class="ml-item"><span class="ml-dot" style="background:#22C55E;"></span>Passe réussie</span>
+        <span class="ml-item"><span class="ml-dot" style="background:#EF4444;"></span>Passe ratée</span>
+        <span class="ml-item"><span class="ml-line" style="background:var(--acc2);opacity:.7;"></span>Zone d'action</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- FOOTER -->
+<div class="footer">
+  <span>Paris Football Club · Rapport individuel de match</span>
+  <span>{match_label}</span>
+  <span class="conf">CONFIDENTIEL</span>
+</div>
+
+</div>
+<script>
+var LOCS={locs_json},PASSES={passes_json},NS="http://www.w3.org/2000/svg";
+function renderHeat(){{
+  var g=document.getElementById("heat-pts");g.innerHTML="";
+  var den={{}};
+  LOCS.forEach(function(p){{var k=Math.round(p.x/4)*4+"_"+Math.round(p.y/4)*4;den[k]=(den[k]||0)+1;}});
+  LOCS.forEach(function(p){{
+    var k=Math.round(p.x/4)*4+"_"+Math.round(p.y/4)*4;
+    var d=Math.min(den[k],6);
+    var el=document.createElementNS(NS,"ellipse");
+    el.setAttribute("cx",p.x);el.setAttribute("cy",p.y);
+    el.setAttribute("rx",6+d);el.setAttribute("ry",4+d*0.6);
+    el.setAttribute("fill","url(#hg)");el.setAttribute("opacity",0.35+d*0.08);
+    g.appendChild(el);
+  }});
+  if(LOCS.length>0){{
+    var cx=LOCS.reduce(function(a,b){{return a+b.x;}},0)/LOCS.length;
+    var cy=LOCS.reduce(function(a,b){{return a+b.y;}},0)/LOCS.length;
+    var c=document.createElementNS(NS,"circle");
+    c.setAttribute("cx",cx.toFixed(1));c.setAttribute("cy",cy.toFixed(1));
+    c.setAttribute("r","2");c.setAttribute("fill","#00A3E0");c.setAttribute("opacity","0.95");
+    g.appendChild(c);
+  }}
+}}
+function renderPass(){{
+  var g=document.getElementById("pass-arrows");g.innerHTML="";
+  var seen={{}};
+  PASSES.forEach(function(p){{
+    if(p.x1==null||p.x2==null)return;
+    var col=p.ok?"#22C55E":"#EF4444",mk=p.ok?"aOk":"aKo";
+    var key=Math.round(p.x1/3)+"_"+Math.round(p.y1/3)+"_"+Math.round(p.x2/3)+"_"+Math.round(p.y2/3);
+    var n=seen[key]||0;seen[key]=n+1;
+    var dx=p.x2-p.x1,dy=p.y2-p.y1,ln=Math.sqrt(dx*dx+dy*dy)||1;
+    var ox=(-dy/ln)*n*1.2,oy=(dx/ln)*n*1.2;
+    var line=document.createElementNS(NS,"line");
+    line.setAttribute("x1",p.x1+ox);line.setAttribute("y1",p.y1+oy);
+    line.setAttribute("x2",p.x2+ox);line.setAttribute("y2",p.y2+oy);
+    line.setAttribute("stroke",col);line.setAttribute("stroke-width",p.longue?"0.9":"0.6");
+    line.setAttribute("stroke-opacity",p.ok?"0.85":"0.65");
+    line.setAttribute("marker-end","url(#"+mk+")");
+    if(!p.ok)line.setAttribute("stroke-dasharray","1.5,1");
+    g.appendChild(line);
+    var dot=document.createElementNS(NS,"circle");
+    dot.setAttribute("cx",p.x1+ox);dot.setAttribute("cy",p.y1+oy);
+    dot.setAttribute("r","1");dot.setAttribute("fill",col);dot.setAttribute("opacity","0.9");
+    g.appendChild(dot);
+  }});
+}}
+function setView(m){{
+  document.getElementById("svg-heat").style.display=m==="heat"?"block":"none";
+  document.getElementById("svg-pass").style.display=m==="pass"?"block":"none";
+  document.getElementById("btn-heat").className="tog-btn"+(m==="heat"?" on":"");
+  document.getElementById("btn-pass").className="tog-btn"+(m==="pass"?" on":"");
+  if(m==="pass")renderPass();
+}}
+window.onload=function(){{renderHeat();}};
+</script>
+</body></html>"""
 def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissions: dict, user_profile: str, tactical_files: list = None):
     """Affiche l'onglet GPS Match dans la page Données Physiques."""
 
@@ -5181,8 +5558,37 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                         match_date=pd.to_datetime(sel_row.get("date", None), errors="coerce") if isinstance(sel_row, dict) else None,
                         match_label=sel_match,
                     )
-                    html_report = build_tactical_report_html(df_tactic, sel_tac_player, gps_summary=gps_summary)
-                    _components.html(html_report, height=650, scrolling=False)
+                    # Photo joueuse en base64
+                    _tac_photo_b64 = ''
+                    try:
+                        _cc = st.session_state.get('photo_concordance', {})
+                        _pi = st.session_state.get('photos_index', {})
+                        _pp = find_photo_for_player(sel_tac_player, concordance=_cc, photos_index=_pi)
+                        if _pp and os.path.exists(_pp):
+                            import base64 as _b64r
+                            with open(_pp, 'rb') as _pf:
+                                _tac_photo_b64 = 'data:image/jpeg;base64,' + _b64r.b64encode(_pf.read()).decode()
+                    except Exception:
+                        pass
+                    # KPI joueuse
+                    _tac_kpi_row = None
+                    try:
+                        _kpi_all = st.session_state.get('pfc_kpi_all', pd.DataFrame())
+                        if not _kpi_all.empty and 'Player' in _kpi_all.columns:
+                            _nm = nettoyer_nom_joueuse(sel_tac_player)
+                            _kdf = _kpi_all[_kpi_all['Player'].astype(str).apply(nettoyer_nom_joueuse) == _nm]
+                            if not _kdf.empty:
+                                _tac_kpi_row = _kdf.iloc[0]
+                    except Exception:
+                        pass
+                    html_report = build_tactical_report_html(
+                        df_tactic, sel_tac_player,
+                        gps_summary=gps_summary,
+                        photo_b64=_tac_photo_b64,
+                        match_info=sel_row,
+                        pfc_kpi_row=_tac_kpi_row,
+                    )
+                    _components.html(html_report, height=1120, scrolling=False)
 
                 # Données brutes en expander (optionnel)
                 with st.expander("📋 Données tactiques brutes", expanded=False):
