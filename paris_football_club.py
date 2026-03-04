@@ -5480,7 +5480,7 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
 
     <!-- PASSES + ROSE -->
     <div style="padding:9px 10px;border-bottom:1px solid #0F1E2E;flex-shrink:0;">
-      {stitle("Passes depuis centroïde · directions")}
+      {stitle("Rose des directions de passe")}
       <svg id="svg-pass" viewBox="0 0 100 68" width="100%" style="border-radius:5px;display:block;"
            xmlns="http://www.w3.org/2000/svg">
         <defs>
@@ -5495,13 +5495,9 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
       </svg>
       <div style="display:flex;gap:10px;margin:3px 0 4px;">
         <span style="font-size:9.5px;color:#5A7A98;display:flex;align-items:center;gap:3px;">
-          <span style="width:7px;height:7px;border-radius:50%;background:#22C55E;display:inline-block;"></span>Réussie</span>
-        <span style="font-size:9.5px;color:#5A7A98;display:flex;align-items:center;gap:3px;">
-          <span style="width:7px;height:7px;border-radius:50%;background:#EF4444;display:inline-block;"></span>Ratée</span>
-        <span style="font-size:9px;color:#4A6A88;">↗ AV=avant · ←AR=arrière</span>
+          <span style="width:7px;height:7px;border-radius:50%;background:#00A3E0;display:inline-block;"></span>Centroïde joueuse</span>
+        <span style="font-size:9px;color:#4A6A88;">↑ AV=vers but adverse · ↓ AR=arrière</span>
       </div>
-      <svg id="svg-rose" viewBox="-5 0 210 110" width="100%" height="105"
-           style="display:block;" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
 
     <!-- DESTINATIONS -->
@@ -5533,17 +5529,6 @@ var PC={_player_centroid_json};
 // ── HEATMAP avec centroïdes par poste ────────────────────────────────────────
 (function(){{
   var g=document.getElementById("heat-g");if(!g)return;
-  // Density ellipses
-  var den={{}};
-  LD.forEach(function(p){{var k=Math.round(p.x/6)*6+"_"+Math.round(p.y/6)*6;den[k]=(den[k]||0)+1;}});
-  LD.forEach(function(p){{
-    var k=Math.round(p.x/6)*6+"_"+Math.round(p.y/6)*6;var d=Math.min(den[k],10);
-    var el=document.createElementNS(NS,"ellipse");
-    el.setAttribute("cx",p.x.toFixed(1));el.setAttribute("cy",p.y.toFixed(1));
-    el.setAttribute("rx",(4.5+d*0.75).toFixed(1));el.setAttribute("ry",(3.2+d*0.55).toFixed(1));
-    el.setAttribute("fill","url(#hg)");el.setAttribute("opacity",(0.30+d*0.065).toFixed(2));
-    g.appendChild(el);
-  }});
   // Centroïdes par poste (petits losanges gris + label)
   RC.forEach(function(rc){{
     if(rc.isPlayer) return; // la joueuse sera tracée en rouge après
@@ -5613,30 +5598,24 @@ var PC={_player_centroid_json};
 }})();
 (function(){{
   var g=document.getElementById("pass-g");if(!g)return;
+  // Centroïde uniquement (pas de flèches)
   var cd=document.createElementNS(NS,"circle");
   cd.setAttribute("cx",CX.toFixed(1));cd.setAttribute("cy",CY.toFixed(1));
   cd.setAttribute("r","2.5");cd.setAttribute("fill","#00A3E0");
   cd.setAttribute("stroke","#060F1A");cd.setAttribute("stroke-width","1");
   g.appendChild(cd);
-  PD.forEach(function(p){{
-    if(p.x==null||p.x===undefined)return;
-    var col=p.ok?"#22C55E":"#EF4444",mk=p.ok?"mOk":"mKo";
-    var line=document.createElementNS(NS,"line");
-    line.setAttribute("x1",CX.toFixed(1));line.setAttribute("y1",CY.toFixed(1));
-    line.setAttribute("x2",p.x.toFixed(1));line.setAttribute("y2",p.y.toFixed(1));
-    line.setAttribute("stroke",col);line.setAttribute("stroke-width",p.longue?"1.0":"0.65");
-    line.setAttribute("stroke-opacity",p.ok?"0.80":"0.55");
-    line.setAttribute("marker-end","url(#"+mk+")");
-    if(!p.ok)line.setAttribute("stroke-dasharray","1.8,1");
-    g.appendChild(line);
-  }});
-}})();
-// ── ROSE DES DIRECTIONS — pleine largeur, disposition paysage ────────────────
-(function(){{
-  var svg=document.getElementById("svg-rose");if(!svg)return;
-  // viewBox "-5 0 210 100" → rose centrée à (100,50), r=38
-  var cx=100,cy=53,rMax=44,rMin=5;
-  var SC=[
+  var ring2=document.createElementNS(NS,"circle");
+  ring2.setAttribute("cx",CX.toFixed(1));ring2.setAttribute("cy",CY.toFixed(1));
+  ring2.setAttribute("r","4.5");ring2.setAttribute("fill","none");
+  ring2.setAttribute("stroke","#00A3E0");ring2.setAttribute("stroke-width","0.6");ring2.setAttribute("opacity","0.4");
+  g.appendChild(ring2);
+  // Rose des directions intégrée au terrain, centrée sur le centroïde de la joueuse
+  var NS2="http://www.w3.org/2000/svg";
+  var svgPass=document.getElementById("svg-pass");
+  // Le viewBox du terrain est "0 0 100 68"
+  // On place la rose centrée sur le centroïde (CX, CY), rayon max = 18 unités terrain
+  var rcx=CX, rcy=CY, rRMax=17, rRMin=2;
+  var SC2=[
     {{l:"AV",     a:-90, c:"#00A3E0"}},
     {{l:"D▸AV",   a:-45, c:"#38BDF8"}},
     {{l:"LAT▸",   a:0,   c:"#64748B"}},
@@ -5646,121 +5625,87 @@ var PC={_player_centroid_json};
     {{l:"◂LAT",   a:180, c:"#64748B"}},
     {{l:"G▸AV",   a:-135,c:"#38BDF8"}},
   ];
-  // Background circles
+  // Cercles de fond
   [0.33,0.66,1.0].forEach(function(fr){{
-    var r2=document.createElementNS(NS,"circle");
-    r2.setAttribute("cx",cx);r2.setAttribute("cy",cy);
-    r2.setAttribute("r",(rMin+(rMax-rMin)*fr).toFixed(1));
-    r2.setAttribute("fill","none");r2.setAttribute("stroke","#0D1B2A");r2.setAttribute("stroke-width","0.8");
-    svg.appendChild(r2);
+    var r2=document.createElementNS(NS2,"circle");
+    r2.setAttribute("cx",rcx.toFixed(1));r2.setAttribute("cy",rcy.toFixed(1));
+    r2.setAttribute("r",(rRMin+(rRMax-rRMin)*fr).toFixed(1));
+    r2.setAttribute("fill","#060F1A");r2.setAttribute("fill-opacity","0.55");
+    r2.setAttribute("stroke","#0D1B2A");r2.setAttribute("stroke-width","0.5");
+    svgPass.appendChild(r2);
   }});
   // Spokes
-  for(var i=0;i<8;i++){{
-    var a2=i*45*Math.PI/180;
-    var sp=document.createElementNS(NS,"line");
-    sp.setAttribute("x1",cx);sp.setAttribute("y1",cy);
-    sp.setAttribute("x2",(cx+(rMax+4)*Math.cos(a2)).toFixed(1));
-    sp.setAttribute("y2",(cy+(rMax+4)*Math.sin(a2)).toFixed(1));
-    sp.setAttribute("stroke","#0D1B2A");sp.setAttribute("stroke-width","0.8");
-    svg.appendChild(sp);
+  for(var si=0;si<8;si++){{
+    var a2=si*45*Math.PI/180;
+    var sp=document.createElementNS(NS2,"line");
+    sp.setAttribute("x1",rcx.toFixed(1));sp.setAttribute("y1",rcy.toFixed(1));
+    sp.setAttribute("x2",(rcx+(rRMax+1)*Math.cos(a2)).toFixed(1));
+    sp.setAttribute("y2",(rcy+(rRMax+1)*Math.sin(a2)).toFixed(1));
+    sp.setAttribute("stroke","#0D1B2A");sp.setAttribute("stroke-width","0.4");
+    svgPass.appendChild(sp);
   }}
-  // Count sectors
-  // Axes: dans le SVG, x+ = droite (LAT▸), y+ = bas
-  // Sur terrain: AV = vers but adverse = x+ → angle 0 en SVG = LAT droite
-  // On veut: AV = vers le bas (y+) du terrain = sens positif des x dans le fichier tactique
-  // En SVG passes: x+ = vers but adverse (droite), y est inversé terrain
-  // Mapping: AV = passes vers x+ = angle ~0° en atan2(dy,dx)
-  // Rose layout: AV en haut (angle -90 dans SVG)
-  // → garder même logique que avant mais orienter AV vers le haut
-  var counts=new Array(8).fill(0);
+  // Comptage secteurs
+  var counts2=new Array(8).fill(0);
   PD.forEach(function(p){{
     if(p.x==null)return;
     var dx=p.x-CX,dy=p.y-CY;
-    // dx+: vers but adverse (AV), dy+: vers bas terrain (dans le CSV, y petit = côté droit terrain)
-    // atan2: angle 0 = AV (x+), π/2 = bas
     var angle=Math.atan2(dy,dx)*180/Math.PI;
     var norm=(angle+360)%360;
-    // Secteurs: AV=0°±22.5°, D▸AV=45°±22.5°, LAT▸=90°, D▸AR=135°, AR=180°, G▸AR=225°, ◂LAT=270°, G▸AV=315°
     var sector=Math.round(norm/45)%8;
-    counts[sector]++;
+    counts2[sector]++;
   }});
-  var maxC=Math.max.apply(null,counts)||1;
-  // Draw petals
-  SC.forEach(function(s,i){{
-    var n=counts[i];
-    // Always draw sector frame (faint)
-    var aBase=i*45*Math.PI/180; // real angle for this sector
+  var maxC2=Math.max.apply(null,counts2)||1;
+  // Pétales
+  SC2.forEach(function(s,i){{
+    var n=counts2[i];
+    var aBase=i*45*Math.PI/180;
     var hw=16*Math.PI/180;
-    var rFull=rMin+(rMax-rMin)*1.0;
-    var framePts=[[cx,cy],
-      [cx+rFull*Math.cos(aBase-hw),cy+rFull*Math.sin(aBase-hw)],
-      [cx+rFull*Math.cos(aBase),   cy+rFull*Math.sin(aBase)],
-      [cx+rFull*Math.cos(aBase+hw),cy+rFull*Math.sin(aBase+hw)]
-    ].map(function(p){{return p[0].toFixed(1)+","+p[1].toFixed(1);}}).join(" ");
-    var frame=document.createElementNS(NS,"polygon");
+    var rFull2=rRMin+(rRMax-rRMin)*1.0;
+    var framePts=[[rcx,rcy],
+      [rcx+rFull2*Math.cos(aBase-hw),rcy+rFull2*Math.sin(aBase-hw)],
+      [rcx+rFull2*Math.cos(aBase),   rcy+rFull2*Math.sin(aBase)],
+      [rcx+rFull2*Math.cos(aBase+hw),rcy+rFull2*Math.sin(aBase+hw)]
+    ].map(function(p2){{return p2[0].toFixed(1)+","+p2[1].toFixed(1);}}).join(" ");
+    var frame=document.createElementNS(NS2,"polygon");
     frame.setAttribute("points",framePts);frame.setAttribute("fill",s.c);
-    frame.setAttribute("fill-opacity","0.06");frame.setAttribute("stroke","none");
-    svg.appendChild(frame);
+    frame.setAttribute("fill-opacity","0.07");frame.setAttribute("stroke","none");
+    svgPass.appendChild(frame);
     if(n===0){{
-      // Just label
-      var lr2=rFull+10;
-      var t2=document.createElementNS(NS,"text");
-      t2.setAttribute("x",(cx+lr2*Math.cos(aBase)).toFixed(1));
-      t2.setAttribute("y",(cy+lr2*Math.sin(aBase)).toFixed(1));
+      var lr2=rFull2+4.5;
+      var t2=document.createElementNS(NS2,"text");
+      t2.setAttribute("x",(rcx+lr2*Math.cos(aBase)).toFixed(1));
+      t2.setAttribute("y",(rcy+lr2*Math.sin(aBase)).toFixed(1));
       t2.setAttribute("text-anchor","middle");t2.setAttribute("dominant-baseline","central");
-      t2.setAttribute("font-size","7");t2.setAttribute("font-family","Barlow Condensed,sans-serif");
+      t2.setAttribute("font-size","2.8");t2.setAttribute("font-family","Barlow Condensed,sans-serif");
       t2.setAttribute("font-weight","600");t2.setAttribute("fill","#1E3050");
-      t2.textContent=s.l+":0";svg.appendChild(t2);
-      return;
+      t2.textContent=s.l+":0";svgPass.appendChild(t2);return;
     }}
-    var r=rMin+(rMax-rMin)*n/maxC;
-    var a=aBase,hw2=16*Math.PI/180;
-    var pts=[[cx,cy],
-      [cx+r*Math.cos(a-hw2),cy+r*Math.sin(a-hw2)],
-      [cx+r*Math.cos(a),    cy+r*Math.sin(a)],
-      [cx+r*Math.cos(a+hw2),cy+r*Math.sin(a+hw2)]
-    ].map(function(p){{return p[0].toFixed(1)+","+p[1].toFixed(1);}}).join(" ");
-    var poly=document.createElementNS(NS,"polygon");
-    poly.setAttribute("points",pts);poly.setAttribute("fill",s.c);
-    poly.setAttribute("fill-opacity","0.82");poly.setAttribute("stroke",s.c);poly.setAttribute("stroke-width","0.4");
-    svg.appendChild(poly);
-    // Label with count
-    var lr=r+10;
-    var t=document.createElementNS(NS,"text");
-    t.setAttribute("x",(cx+lr*Math.cos(a)).toFixed(1));
-    t.setAttribute("y",(cy+lr*Math.sin(a)).toFixed(1));
-    t.setAttribute("text-anchor","middle");t.setAttribute("dominant-baseline","central");
-    t.setAttribute("font-size","9");t.setAttribute("font-family","Barlow Condensed,sans-serif");
-    t.setAttribute("font-weight","700");t.setAttribute("fill","#C8DCF0");
-    t.textContent=s.l+":"+n;svg.appendChild(t);
+    var r3=rRMin+(rRMax-rRMin)*n/maxC2;
+    var pts2=[[rcx,rcy],
+      [rcx+r3*Math.cos(aBase-hw),rcy+r3*Math.sin(aBase-hw)],
+      [rcx+r3*Math.cos(aBase),   rcy+r3*Math.sin(aBase)],
+      [rcx+r3*Math.cos(aBase+hw),rcy+r3*Math.sin(aBase+hw)]
+    ].map(function(p2){{return p2[0].toFixed(1)+","+p2[1].toFixed(1);}}).join(" ");
+    var poly2=document.createElementNS(NS2,"polygon");
+    poly2.setAttribute("points",pts2);poly2.setAttribute("fill",s.c);
+    poly2.setAttribute("fill-opacity","0.85");poly2.setAttribute("stroke",s.c);poly2.setAttribute("stroke-width","0.3");
+    svgPass.appendChild(poly2);
+    var lr3=r3+4.5;
+    var t3=document.createElementNS(NS2,"text");
+    t3.setAttribute("x",(rcx+lr3*Math.cos(aBase)).toFixed(1));
+    t3.setAttribute("y",(rcy+lr3*Math.sin(aBase)).toFixed(1));
+    t3.setAttribute("text-anchor","middle");t3.setAttribute("dominant-baseline","central");
+    t3.setAttribute("font-size","3.2");t3.setAttribute("font-family","Barlow Condensed,sans-serif");
+    t3.setAttribute("font-weight","700");t3.setAttribute("fill","#C8DCF0");
+    t3.textContent=s.l+":"+n;svgPass.appendChild(t3);
   }});
-  // Center dot
-  var cd=document.createElementNS(NS,"circle");
-  cd.setAttribute("cx",cx);cd.setAttribute("cy",cy);
-  cd.setAttribute("r","3");cd.setAttribute("fill","#00A3E0");
-  svg.appendChild(cd);
-  // Axis labels left/right (AR / AV)
-  [[-90,"▲ AV"],[90,"▼ AR"],[-180,"◂ AR"],[0,"AV ▸"]].forEach(function(x){{
-    var a=x[0]*Math.PI/180;
-    var t=document.createElementNS(NS,"text");
-    t.setAttribute("x",(cx+(rMax+18)*Math.cos(a)).toFixed(1));
-    t.setAttribute("y",(cy+(rMax+18)*Math.sin(a)).toFixed(1));
-    t.setAttribute("text-anchor","middle");t.setAttribute("dominant-baseline","central");
-    t.setAttribute("font-size","7");t.setAttribute("fill","#3A5A70");
-    t.setAttribute("font-family","Barlow Condensed,sans-serif");
-    t.setAttribute("font-weight","700");
-    t.textContent=x[1];svg.appendChild(t);
-  }});
-  // Title
-  var ttl=document.createElementNS(NS,"text");
-  ttl.setAttribute("x","100");ttl.setAttribute("y","106");
-  ttl.setAttribute("text-anchor","middle");
-  ttl.setAttribute("font-size","6.5");ttl.setAttribute("fill","#1E3050");
-  ttl.setAttribute("font-family","Barlow Condensed,sans-serif");
-  ttl.setAttribute("font-weight","600");ttl.setAttribute("letter-spacing","1");
-  ttl.textContent="ROSE DES DIRECTIONS DE PASSE";
-  svg.appendChild(ttl);
+  // Point central cyan
+  var cdc=document.createElementNS(NS2,"circle");
+  cdc.setAttribute("cx",rcx.toFixed(1));cdc.setAttribute("cy",rcy.toFixed(1));
+  cdc.setAttribute("r","1.5");cdc.setAttribute("fill","#00A3E0");
+  svgPass.appendChild(cdc);
 }})();
+// ── FIN ──
 </script></body></html>"""
 
 
