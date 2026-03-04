@@ -6166,7 +6166,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 key="download_export_xlsx",
             )
 
-    options = ["Statistiques", "Comparaison", "Données Physiques", "Joueuses Passerelles", "Médical", "Recrutement"]
+    options = ["Rapports de matchs", "Comparaison", "Données Physiques", "Joueuses Passerelles", "Médical", "Recrutement"]
     if check_permission(user_profile, "all", permissions):
         options.insert(2, "Gestion")
 
@@ -6195,10 +6195,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         )
 
     # =====================
-    # STATISTIQUES
+    # RAPPORTS DE MATCHS
     # =====================
-    if page == "Statistiques":
-        st.header("Statistiques")
+    if page == "Rapports de matchs":
+        st.header("📋 Rapports de matchs")
 
         if pfc_kpi is None or pfc_kpi.empty:
             st.warning("Aucune donnée disponible.")
@@ -6360,6 +6360,164 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         st.metric(label, f"{int(aggregated[colname].iloc[0])}/100")
             else:
                 st.info("Notes de poste non disponibles sur cette sélection.")
+
+        # ══════════════════════════════════════════════════════════════════
+        # RAPPORT TECHNICO-TACTIQUE — en bas de page
+        # ══════════════════════════════════════════════════════════════════
+        st.divider()
+        st.markdown("## 🎯 Rapport Technico-Tactique de match")
+
+        _tac_files_stat = load_tactical_files()
+        if not _tac_files_stat:
+            st.info("Aucun fichier tactique trouvé dans le dossier `data/`.")
+        else:
+            import streamlit.components.v1 as _components_stat
+
+            # ── Sélecteurs match + joueuse ─────────────────────────────
+            _match_rows_stat = []
+            for _tac in _tac_files_stat:
+                _tl_str = ""
+                if _tac.get("df") is not None and "Timeline" in _tac["df"].columns:
+                    _tl_vals = _tac["df"]["Timeline"].dropna()
+                    _tl_str = str(_tl_vals.iloc[0]) if not _tl_vals.empty else ""
+
+                _saison = _tac.get("saison", "")
+                _saison_c = re.sub(r"20(\d{2})/20(\d{2})", r"\1/\2", _saison) if _saison else ""
+                _comp    = _tac.get("competition", "")
+                _jrnee   = _tac.get("journee", "")
+                _adv     = _tac.get("adversaire", "")
+                _parts   = [p for p in [_saison_c, _comp, f"J{_jrnee}" if _jrnee else "", _adv] if p]
+                _disp    = " · ".join(_parts) if _parts else _tac.get("filename", "")
+
+                _match_rows_stat.append({
+                    "display": _disp,
+                    "date":    _tac.get("date"),
+                    "adversaire": _adv,
+                    "journee": _jrnee,
+                    "saison":  _saison,
+                    "tac_obj": _tac,
+                    "gps_label": "",
+                })
+
+            _match_rows_stat.sort(
+                key=lambda m: m["date"] if m["date"] is not None and pd.notna(m["date"]) else pd.Timestamp("1970-01-01"),
+                reverse=True
+            )
+
+            _col_match, _col_player = st.columns([3, 2])
+            with _col_match:
+                _sel_disp_stat = st.selectbox(
+                    "Match", [m["display"] for m in _match_rows_stat],
+                    key="stat_tac_match_sel"
+                )
+            _sel_row_stat = next((m for m in _match_rows_stat if m["display"] == _sel_disp_stat), _match_rows_stat[0])
+            _df_tac_stat  = _sel_row_stat["tac_obj"].get("df")
+
+            if _df_tac_stat is not None:
+                _skip_stat = {"START", "PFC", "HAC", ""}
+                _tac_players_stat = [
+                    r for r in _df_tac_stat["Row"].dropna().unique()
+                    if r not in _skip_stat and not any(k in str(r) for k in ["Transition", "Carton", "def "])
+                ] if "Row" in _df_tac_stat.columns else []
+
+                with _col_player:
+                    _def_idx = 0
+                    if player_name and player_name != "Toutes":
+                        _pnorm = normalize_str(player_name)
+                        for _ii, _pp in enumerate(_tac_players_stat):
+                            if normalize_str(_pp) == _pnorm or _pnorm in normalize_str(_pp):
+                                _def_idx = _ii; break
+                    _sel_player_stat = st.selectbox(
+                        "Joueuse", _tac_players_stat,
+                        index=_def_idx, key="stat_tac_player_sel"
+                    ) if _tac_players_stat else None
+
+                if _sel_player_stat:
+                    # GPS summary
+                    _gps_df_stat = st.session_state.get("gps_match_df", pd.DataFrame())
+                    _gps_sum_stat = get_gps_match_summary_for_player(
+                        _gps_df_stat, _sel_player_stat,
+                        match_date=pd.to_datetime(_sel_row_stat.get("date"), errors="coerce"),
+                        match_label=_sel_row_stat.get("gps_label") or _sel_row_stat.get("display", ""),
+                    )
+
+                    # Contexte match
+                    _ctx_stat = _get_match_context(_df_tac_stat)
+                    _minfo_stat = {
+                        "adversaire": _sel_row_stat.get("adversaire") or _ctx_stat.get("adversaire",""),
+                        "journee":    _sel_row_stat.get("journee") or _ctx_stat.get("journee",""),
+                        "saison":     _sel_row_stat.get("saison",""),
+                        "score":      f"{_ctx_stat.get('score_pfc','?')} – {_ctx_stat.get('score_adv','?')}",
+                        "lieu":       _ctx_stat.get("lieu",""),
+                        "competition":_ctx_stat.get("competition",""),
+                    }
+
+                    # Photo
+                    _photo_b64_stat = ""
+                    try:
+                        _cc = st.session_state.get("photo_concordance", {})
+                        _pi = st.session_state.get("photos_index", {})
+                        _pp = find_photo_for_player(_sel_player_stat, concordance=_cc, photos_index=_pi)
+                        if _pp and os.path.exists(str(_pp)):
+                            import base64 as _b64s
+                            _pb = load_photo_bytes(str(_pp))
+                            if _pb:
+                                _photo_b64_stat = "data:image/jpeg;base64," + _b64s.b64encode(_pb).decode()
+                    except Exception:
+                        pass
+
+                    # KPI row
+                    _kpi_row_stat = None
+                    try:
+                        _kpi_all = st.session_state.get("pfc_kpi_all", pd.DataFrame())
+                        if not _kpi_all.empty and "Player" in _kpi_all.columns:
+                            _nm = nettoyer_nom_joueuse(_sel_player_stat)
+                            _kdf2 = _kpi_all[_kpi_all["Player"].astype(str).apply(nettoyer_nom_joueuse) == _nm]
+                            if not _kdf2.empty:
+                                _kpi_row_stat = _kdf2.iloc[0]
+                    except Exception:
+                        pass
+
+                    _html_stat = build_tactical_report_html(
+                        _df_tac_stat, _sel_player_stat,
+                        gps_summary=_gps_sum_stat,
+                        photo_b64=_photo_b64_stat,
+                        match_info=_minfo_stat,
+                        pfc_kpi_row=_kpi_row_stat,
+                    )
+
+                    # ── Bouton Imprimer A4 ──────────────────────────────
+                    _print_js = f"""
+<script>
+function printA4Report() {{
+    var w = window.open('', '_blank', 'width=900,height=1200');
+    w.document.write(`<!DOCTYPE html><html><head>
+    <meta charset="utf-8">
+    <title>Rapport Match</title>
+    <style>
+      @page {{ size: A4 portrait; margin: 0; }}
+      @media print {{
+        html, body {{ width: 210mm; height: 297mm; margin: 0; padding: 0; }}
+        body > * {{ page-break-inside: avoid; }}
+      }}
+      body {{ margin: 0; padding: 0; background: #060F1A; }}
+    </style>
+    </head><body>{_html_stat.replace('`', chr(96)).replace('</script>', '<\\/script>')}</body></html>`);
+    w.document.close();
+    setTimeout(function() {{ w.print(); }}, 800);
+}}
+</script>
+<button onclick="printA4Report()" style="
+    display:inline-flex;align-items:center;gap:8px;
+    background:#00A3E0;color:#060F1A;border:none;border-radius:4px;
+    padding:8px 18px;font-family:Oswald,sans-serif;font-size:13px;
+    font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+    cursor:pointer;margin-bottom:10px;">
+    🖨️ Imprimer / Zoom A4
+</button>
+"""
+                    _components_stat.html(_print_js, height=55)
+                    _components_stat.html(_html_stat, height=1120, scrolling=False)
 
     # =====================
     # COMPARAISON
@@ -6725,8 +6883,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 plt.close(fig)  # libère la mémoire
 
         with tab_match:
-            tactical_files = load_tactical_files()
-            _render_gps_match_tab(gps_match, player_name, permissions, user_profile, tactical_files)
+            _render_gps_match_tab(gps_match, player_name, permissions, user_profile, tactical_files=None)
 
         # ── CONCORDANCE GPS NOMS ────────────────────────────────────────────────
         with tab_concordance:
