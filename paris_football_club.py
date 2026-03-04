@@ -3757,7 +3757,8 @@ def compute_tactical_stats(df_tactic, player_name):
         raw = float(v) * _SVG_W / _FIELD_MAX
         if inst is not None and inst in _mt2_inst:
             raw = _SVG_W - raw  # inversion côté MT2
-        return round(max(1.5, min(98.5, raw)), 1)
+        # Inverser X : dans Sportscode, x petit = BUT PFC (droite SVG), x grand = BUT ADV (gauche SVG)
+        return round(max(1.5, min(98.5, _SVG_W - raw)), 1)
 
     def _norm_y(v): return round(max(1.5, min(66.5, float(v) * _SVG_H / _FIELD_MAX)), 1)
 
@@ -5151,7 +5152,14 @@ def build_tactical_report_html(
             _yr = _parse_coord(_r.get("Y_localisation",""))
             _pr = str(_r.get("Poste","") or "").strip().split(",")[0].strip()
             if _xr is None or _yr is None or not _pr: continue
-            _svgx = round(_xr * 100/80, 2)
+            _svgx_raw = _xr * 100/80
+            _inst_c = None
+            try: _inst_c = int(str(_r.get("Instance number","")).split(",")[0].strip())
+            except: pass
+            if _inst_c is not None and _inst_c in _mt2_inst:
+                _svgx_raw = 100.0 - _svgx_raw
+            # Inverser X : dans Sportscode, x petit = BUT PFC (droite SVG), x grand = BUT ADV (gauche SVG)
+            _svgx = round(max(1.5, min(98.5, 100.0 - _svgx_raw)), 2)
             _svgy = round(_yr * 68/80, 2)
             _player_poste_pts.setdefault((_rn, _pr), []).append((_svgx, _svgy))
 
@@ -5531,9 +5539,8 @@ var PC={_player_centroid_json};
   var g=document.getElementById("heat-g");if(!g)return;
   // Centroïdes par poste (petits losanges gris + label)
   RC.forEach(function(rc){{
-    if(rc.isPlayer) return; // la joueuse sera tracée en rouge après
+    if(rc.isPlayer) return;
     var cx2=rc.cx,cy2=rc.cy;
-    // Losange
     var sz=2.0;
     var pts=[cx2+","+( cy2-sz)+" "+(cx2+sz)+","+cy2+" "+cx2+","+(cy2+sz)+" "+(cx2-sz)+","+cy2];
     var d=document.createElementNS(NS,"polygon");
@@ -5541,50 +5548,13 @@ var PC={_player_centroid_json};
     d.setAttribute("fill","#3A5570");d.setAttribute("stroke","#07111C");d.setAttribute("stroke-width","0.5");
     d.setAttribute("opacity","0.9");
     g.appendChild(d);
-    // Label poste
     var t=document.createElementNS(NS,"text");
     t.setAttribute("x",(cx2+2.4).toFixed(1));t.setAttribute("y",(cy2-2.2).toFixed(1));
     t.setAttribute("font-size","3.8");t.setAttribute("font-family","Barlow Condensed,sans-serif");
     t.setAttribute("font-weight","700");t.setAttribute("fill","#3A5570");
     t.textContent=rc.poste;g.appendChild(t);
   }});
-  // Centroïde de référence du poste de la joueuse (= moyenne poste, en orange)
-  // puis centroïde propre de la joueuse à ce poste (rouge)
-  // D'abord marquer le centroïde de référence du poste concerné plus visible
-  RC.forEach(function(rc){{
-    if(rc.poste!==PC.poste) return;
-    var cx2=rc.cx,cy2=rc.cy;
-    var halo=document.createElementNS(NS,"circle");
-    halo.setAttribute("cx",cx2.toFixed(1));halo.setAttribute("cy",cy2.toFixed(1));
-    halo.setAttribute("r","4.5");halo.setAttribute("fill","none");
-    halo.setAttribute("stroke","#F4830A");halo.setAttribute("stroke-width","0.8");halo.setAttribute("opacity","0.5");
-    g.appendChild(halo);
-    var sz=2.2;var pts2=cx2+","+(cy2-sz)+" "+(cx2+sz)+","+cy2+" "+cx2+","+(cy2+sz)+" "+(cx2-sz)+","+cy2;
-    var d2=document.createElementNS(NS,"polygon");
-    d2.setAttribute("points",pts2);d2.setAttribute("fill","#F4830A");
-    d2.setAttribute("stroke","#07111C");d2.setAttribute("stroke-width","0.5");d2.setAttribute("opacity","0.95");
-    g.appendChild(d2);
-  }});
-  // Centroïde propre de la joueuse (rouge — sa position réelle au poste principal)
-  (function(){{
-    var cx2=PC.cx,cy2=PC.cy;
-    var halo=document.createElementNS(NS,"circle");
-    halo.setAttribute("cx",cx2.toFixed(1));halo.setAttribute("cy",cy2.toFixed(1));
-    halo.setAttribute("r","5.5");halo.setAttribute("fill","none");
-    halo.setAttribute("stroke","#EF4444");halo.setAttribute("stroke-width","0.7");halo.setAttribute("opacity","0.5");
-    g.appendChild(halo);
-    var c2=document.createElementNS(NS,"circle");
-    c2.setAttribute("cx",cx2.toFixed(1));c2.setAttribute("cy",cy2.toFixed(1));
-    c2.setAttribute("r","2.6");c2.setAttribute("fill","#EF4444");
-    c2.setAttribute("stroke","#060F1A");c2.setAttribute("stroke-width","0.8");
-    g.appendChild(c2);
-    var t2=document.createElementNS(NS,"text");
-    t2.setAttribute("x",(cx2+3.2).toFixed(1));t2.setAttribute("y",(cy2-2.6).toFixed(1));
-    t2.setAttribute("font-size","4.2");t2.setAttribute("font-family","Barlow Condensed,sans-serif");
-    t2.setAttribute("font-weight","800");t2.setAttribute("fill","#EF4444");
-    t2.textContent=PC.poste;g.appendChild(t2);
-  }})();
-  // Centroïde activité joueuse (cyan — toutes ses actions)
+  // Centroïde activité joueuse (cyan — position moyenne de toutes ses actions)
   var c=document.createElementNS(NS,"circle");
   c.setAttribute("cx",CX.toFixed(1));c.setAttribute("cy",CY.toFixed(1));
   c.setAttribute("r","2.2");c.setAttribute("fill","#00A3E0");
