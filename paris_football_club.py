@@ -3967,10 +3967,10 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
     out["d_7_13"]    = float(np.nansum(_num("Distance 7-13 (m)"))) if "Distance 7-13 (m)" in df_work.columns else np.nan
     out["sprints_23"]= float(np.nansum(_num("Nb Sprints >23")))    if "Nb Sprints >23"    in df_work.columns else np.nan
     out["sprints_25"]= float(np.nansum(_num("Nb Sprints >25")))    if "Nb Sprints >25"    in df_work.columns else np.nan
-    out["acc2"]      = float(np.nansum(_num("Acc >2")))            if "Acc >2"            in df_work.columns else np.nan
-    out["acc3"]      = float(np.nansum(_num("Acc >3")))            if "Acc >3"            in df_work.columns else np.nan
-    out["dec2"]      = float(np.nansum(_num("Dec >2")))            if "Dec >2"            in df_work.columns else np.nan
-    out["dec3"]      = float(np.nansum(_num("Dec >3")))            if "Dec >3"            in df_work.columns else np.nan
+    out["acc2"]      = float(np.nansum(_num("Acc_2")))            if "Acc_2"            in df_work.columns else np.nan
+    out["acc3"]      = float(np.nansum(_num("Acc_3")))            if "Acc_3"            in df_work.columns else np.nan
+    out["dec2"]      = float(np.nansum(_num("Dec_2")))            if "Dec_2"            in df_work.columns else np.nan
+    out["dec3"]      = float(np.nansum(_num("Dec_3")))            if "Dec_3"            in df_work.columns else np.nan
     # Also try alternative column names for acc_dec
     if pd.isna(out.get("acc_dec", np.nan)):
         out["acc_dec"] = float(np.nansum(_num("#accel/decel"))) if "#accel/decel" in df_work.columns else np.nan
@@ -5615,7 +5615,9 @@ var PC={_player_centroid_json};
   var counts2=new Array(8).fill(0);
   PD.forEach(function(p){{
     if(p.x==null)return;
-    var dx=p.x-CX,dy=p.y-CY;
+    // X est inversé dans le SVG (BUT ADV = gauche = x petit), donc inverser dx
+    // pour que AV (vers but adverse) = dx négatif → on inverse pour mapping AV=angle 0
+    var dx=CX-p.x,dy=p.y-CY;
     var angle=Math.atan2(dy,dx)*180/Math.PI;
     var norm=(angle+360)%360;
     var sector=Math.round(norm/45)%8;
