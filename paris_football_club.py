@@ -85,6 +85,93 @@ def normalize_str(s: str) -> str:
     return s
 
 
+
+# ------------------------------------------------------------------
+# Logos adversaires (cache local + matching)
+# ------------------------------------------------------------------
+def build_adv_logos_index_local(folder: str = ADV_LOGOS_FOLDER) -> Dict[str, str]:
+    """Indexe les logos adversaires présents en local.
+    Retour: {nom_normalise: chemin_fichier}
+    """
+    index: Dict[str, str] = {}
+    try:
+        if not folder:
+            return index
+        os.makedirs(folder, exist_ok=True)
+        for fn in os.listdir(folder):
+            if not isinstance(fn, str):
+                continue
+            ext = os.path.splitext(fn)[1].lower()
+            if ext not in {".png", ".jpg", ".jpeg", ".webp"}:
+                continue
+            base = os.path.splitext(fn)[0]
+            key = normalize_str(base)
+            if key:
+                index[key] = os.path.join(folder, fn)
+    except Exception:
+        # on ne bloque jamais l'app pour une histoire de logos
+        return index
+    return index
+
+
+def _best_logo_path_for_adversaire(adversaire: str, logos_index: Dict[str, str]) -> Optional[str]:
+    """Trouve le meilleur logo pour un adversaire à partir de l'index local."""
+    if not adversaire or not logos_index:
+        return None
+    target = normalize_str(adversaire)
+    if not target:
+        return None
+
+    # Match exact
+    if target in logos_index:
+        return logos_index[target]
+
+    # Match par tokens (ex: "paris fc" vs "paris-fc")
+    target_tokens = [t for t in target.split() if len(t) >= 2]
+    best_key = None
+    best_score = 0.0
+
+    for k in logos_index.keys():
+        k_tokens = [t for t in k.split() if len(t) >= 2]
+        if not k_tokens:
+            continue
+        inter = set(target_tokens).intersection(k_tokens)
+        union = set(target_tokens).union(k_tokens)
+        if not union:
+            continue
+        score = len(inter) / len(union)  # Jaccard simple
+        if score > best_score:
+            best_score = score
+            best_key = k
+
+    # fallback difflib si besoin
+    if (best_key is None) or (best_score < 0.34):
+        try:
+            from difflib import get_close_matches
+            candidates = get_close_matches(target, list(logos_index.keys()), n=1, cutoff=0.55)
+            if candidates:
+                best_key = candidates[0]
+        except Exception:
+            pass
+
+    return logos_index.get(best_key) if best_key else None
+
+
+def _logo_path_to_data_uri(path: Optional[str]) -> str:
+    """Convertit un fichier image en data URI pour l'HTML."""
+    if not path or (not os.path.exists(path)):
+        return ""
+    ext = os.path.splitext(path)[1].lower().lstrip(".")
+    if ext == "jpg":
+        ext = "jpeg"
+    mime = f"image/{ext}" if ext in {"png", "jpeg", "webp"} else "image/png"
+    try:
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        return f"data:{mime};base64,{b64}"
+    except Exception:
+        return ""
+
 def find_local_file_by_normalized_name(folder: str, target_name: str) -> Optional[str]:
     if not os.path.exists(folder):
         return None
