@@ -5153,12 +5153,9 @@ def build_tactical_report_html(
             _pr = str(_r.get("Poste","") or "").strip().split(",")[0].strip()
             if _xr is None or _yr is None or not _pr: continue
             _svgx_raw = _xr * 100/80
-            _inst_c = None
-            try: _inst_c = int(str(_r.get("Instance number","")).split(",")[0].strip())
-            except: pass
-            if _inst_c is not None and _inst_c in _mt2_inst:
-                _svgx_raw = 100.0 - _svgx_raw
             # Inverser X : dans Sportscode, x petit = BUT PFC (droite SVG), x grand = BUT ADV (gauche SVG)
+            # Pas de correction MT2 ici : les centroïdes sont des moyennes sur tout le match,
+            # les locs MT1 et MT2 étant déjà normalisées dans locs_json via _norm_x
             _svgx = round(max(1.5, min(98.5, 100.0 - _svgx_raw)), 2)
             _svgy = round(_yr * 68/80, 2)
             _player_poste_pts.setdefault((_rn, _pr), []).append((_svgx, _svgy))
