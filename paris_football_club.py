@@ -3620,19 +3620,36 @@ def load_tactical_files() -> list:
                 if "Timeline" not in df.columns or "Action" not in df.columns:
                     continue
                 info = parse_tactical_filename(f)
-                # Si pas de date dans le nom, essayer depuis Timeline
-                if info["date"] is None and "Timeline" in df.columns:
-                    tl = str(df["Timeline"].dropna().iloc[0]) if not df["Timeline"].dropna().empty else ""
-                    # Timeline ne contient pas de date → rester None
-                # Si pas d'adversaire dans le nom, essayer depuis Timeline
-                if not info["adversaire"] and "Timeline" in df.columns:
-                    tl = str(df["Timeline"].dropna().iloc[0]) if not df["Timeline"].dropna().empty else ""
-                    # "U19N J10 Paris FC - HAC" → extraire après le tiret
-                    adv_m = re.search(r"paris\s*fc\s*[-–]\s*(.+)|(.+)\s*[-–]\s*paris\s*fc", tl, re.IGNORECASE)
-                    if adv_m:
-                        adv = (adv_m.group(1) or adv_m.group(2) or "").strip()
-                        info["adversaire"] = adv
-                        info["adv_norm"] = normalize_str(adv)
+
+                # ── Enrichissement depuis la colonne Timeline ──────────────────
+                # Timeline contient ex: "U19N J10 Paris FC - HAC"
+                _tl = str(df["Timeline"].dropna().iloc[0]) if not df["Timeline"].dropna().empty else ""
+                if _tl:
+                    # Adversaire depuis Timeline (prioritaire sur nom de fichier)
+                    _adv_m = re.search(r"paris\s*fc\s*[-–]\s*(.+)|(.+)\s*[-–]\s*paris\s*fc", _tl, re.IGNORECASE)
+                    if _adv_m:
+                        _adv = (_adv_m.group(1) or _adv_m.group(2) or "").strip()
+                        if _adv:
+                            info["adversaire"] = _adv
+                            info["adv_norm"]   = normalize_str(_adv)
+
+                    # Journée depuis Timeline si absente
+                    if not info["journee"]:
+                        _pj = re.search(r'P\d+J(\d{1,2})', _tl, re.IGNORECASE)
+                        _jm = re.search(r'\bJ(\d{1,2})\b', _tl, re.IGNORECASE)
+                        if _pj:
+                            info["journee"] = _pj.group(1).zfill(2)
+                        elif _jm:
+                            info["journee"] = _jm.group(1).zfill(2)
+
+                    # Saison depuis Timeline si absente : ex "U19N" → compétition, pas saison
+                    # La saison vient du nom de fichier uniquement (AABB pattern)
+
+                    # Compétition depuis Timeline : token avant Jxx ou Paris FC
+                    _comp_m = re.search(r'^([A-Za-z0-9]+(?:\s[A-Za-z0-9]+)?)\s+(?:P\d+)?J\d+', _tl, re.IGNORECASE)
+                    if _comp_m:
+                        info["competition"] = _comp_m.group(1).strip()
+
                 results.append({**info, "path": full, "filename": f, "df": df})
             except Exception as e:
                 _warn(f"Tactique: impossible de lire {f} → {e}")
@@ -5831,19 +5848,11 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
         gps_match_df_ref = st.session_state.get("gps_match_df", pd.DataFrame())
 
         for tac in tactical_files:
-            tac_date   = tac.get("date")
-            tac_adv    = tac.get("adversaire", "")
-            tac_jrnee  = tac.get("journee", "")
-            tac_label  = tac.get("filename", tac.get("label", ""))
-
-            # Tenter de récupérer la journée depuis le contenu du fichier (colonne Timeline)
-            if not tac_jrnee and tac.get("df") is not None:
-                _tdf = tac["df"]
-                if "Timeline" in _tdf.columns:
-                    _tl = str(_tdf["Timeline"].dropna().iloc[0]) if not _tdf["Timeline"].dropna().empty else ""
-                    _jm = re.search(r"\bJ\s*(\d{1,2})\b", _tl, re.IGNORECASE)
-                    if _jm:
-                        tac_jrnee = _jm.group(1).zfill(2)
+            tac_date        = tac.get("date")
+            tac_adv         = tac.get("adversaire", "")
+            tac_jrnee       = tac.get("journee", "")
+            tac_label       = tac.get("filename", tac.get("label", ""))
+            # competition et saison déjà enrichis dans load_tactical_files
 
             # Enrichir avec GPS si dispo
             gps_label = ""
@@ -5866,13 +5875,15 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                             tac_jrnee = str(gps_row_r.get("__journee", "")).lstrip("J")
                         break
 
-            # Construire le libellé : "25/26 · J10 · HAC"  (rien d'autre)
+            # Construire le libellé : "25/26 · U19N · J10 · HAC"
             parts = []
             saison = tac.get("saison", "")
             if saison:
-                # Format court : "25/26" au lieu de "2025/2026"
                 saison_court = re.sub(r"20(\d{2})/20(\d{2})", r"\1/\2", saison)
                 parts.append(saison_court)
+            competition = tac.get("competition", "")
+            if competition:
+                parts.append(competition)
             if tac_jrnee:
                 parts.append(f"J{tac_jrnee}")
             if tac_adv:
