@@ -45,6 +45,10 @@ DRIVE_GPS_FOLDER_ID = "1v4Iit4JlEDNACp2QWQVrP89j66zBqMFH"
 
 # Photos joueuses (Drive)
 DRIVE_PHOTOS_FOLDER_ID = "1h-BwepZc96K7VpidPiy8FEqNiE10GLdE"
+
+# Logos adversaires (Drive)
+ADV_LOGOS_FOLDER_ID = "1TCKyVOHzKynm6Z1fhKnNUKYDcN7NhMCj"
+ADV_LOGOS_FOLDER = os.path.join(DATA_FOLDER, "logos_adversaires")
 PHOTOS_FOLDER_ID = DRIVE_PHOTOS_FOLDER_ID  # alias rétro-compat
 PHOTOS_FOLDER = "data/photos"
 PHOTO_MAPPING_PATH = "data/photo_mapping.json"  # mapping manuel persistant : canon → filename
@@ -3515,21 +3519,41 @@ def match_tactical_to_gps(gps_row: dict, tactical_files: list) -> "pd.DataFrame 
 
 
 def _filter_player_rows(df_tactic, player_name):
-    if "Row" not in df_tactic.columns:
+    """Filtre les lignes tactiques d'une joueuse avec une normalisation robuste.
+
+    Objectif : mieux raccorder les noms entre sources (tactique / GPS / référentiel).
+    """
+    if df_tactic is None or df_tactic.empty or "Row" not in df_tactic.columns:
+        return df_tactic.iloc[0:0] if df_tactic is not None else pd.DataFrame()
+
+    pk = nettoyer_nom_joueuse(player_name)
+    if not pk:
         return df_tactic.iloc[0:0]
-    player_norm = normalize_str(player_name)
-    mask = df_tactic["Row"].dropna().apply(
-        lambda x: normalize_str(str(x)) == player_norm or
-                  player_norm in normalize_str(str(x)) or
-                  normalize_str(str(x)) in player_norm
-    )
+
+    rows = df_tactic["Row"].dropna().astype(str)
+    rk = rows.apply(nettoyer_nom_joueuse)
+
+    # 1) match exact sur clé nettoyée
+    mask = rk == pk
     d = df_tactic[mask].copy()
-    if d.empty:
-        for tok in [t for t in player_norm.split() if len(t) > 2]:
-            m2 = df_tactic["Row"].dropna().apply(lambda x: tok in normalize_str(str(x)))
-            if m2.sum() > 0:
-                return df_tactic[m2].copy()
-    return d
+    if not d.empty:
+        return d
+
+    # 2) match par inclusion (tokens)
+    pk_tokens = [t for t in pk.split() if len(t) > 1]
+    if pk_tokens:
+        mask2 = rk.apply(lambda x: all(t in x for t in pk_tokens))
+        d2 = df_tactic[mask2].copy()
+        if not d2.empty:
+            return d2
+
+    # 3) fallback : match "au moins un token long"
+    for tok in [t for t in pk_tokens if len(t) > 3]:
+        m3 = rk.apply(lambda x: tok in x)
+        if m3.sum() > 0:
+            return df_tactic[m3].copy()
+
+    return df_tactic.iloc[0:0]
 
 
 def compute_tactical_stats(df_tactic, player_name):
@@ -4943,6 +4967,21 @@ def build_tactical_report_html(
     locs_json=_json.dumps(s.get("locs",[]))
     passes_json=_json.dumps(s.get("passes_map",[]))
     locs=s.get("locs",[])
+    flip_x_report=True  # sens de l'attaque : corrige inversion gauche/droite
+    def _fx(v):
+        try:
+            return None if v is None else (100.0 - float(v) if flip_x_report else float(v))
+        except Exception:
+            return v
+    if flip_x_report and locs:
+        locs=[{**l,'x':_fx(l.get('x'))} for l in locs]
+    # passes_map
+    _pm=s.get('passes_map',[])
+    if flip_x_report and _pm:
+        _pm=[{**p,'x':_fx(p.get('x')),'x2':_fx(p.get('x2'))} for p in _pm]
+    s['passes_map']=_pm
+    locs_json=_json.dumps(locs)
+    passes_json=_json.dumps(s.get('passes_map',[]))
     cx=sum(l["x"] for l in locs)/len(locs) if locs else 50.0
     cy=sum(l["y"] for l in locs)/len(locs) if locs else 34.0
 
@@ -4965,6 +5004,7 @@ def build_tactical_report_html(
             _pr = str(_r.get("Poste","") or "").strip().split(",")[0].strip()
             if _xr is None or _yr is None or not _pr: continue
             _svgx = round(_xr * 100/80, 2)
+            if flip_x_report: _svgx = round(100.0 - _svgx, 2)
             _svgy = round(_yr * 68/80, 2)
             _player_poste_pts.setdefault((_rn, _pr), []).append((_svgx, _svgy))
 
@@ -5285,8 +5325,8 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
           </radialGradient>
         </defs>
         {PITCH}
-        <text x="3" y="65.5" font-size="4" fill="#1A3D10" font-family="Barlow Condensed,sans-serif">◀ BUT ADV</text>
-        <text x="73" y="65.5" font-size="4" fill="#1A3D10" font-family="Barlow Condensed,sans-serif">BUT PFC ▶</text>
+        <text x="3" y="65.5" font-size="4" fill="#1A3D10" font-family="Barlow Condensed,sans-serif">◀ BUT PFC</text>
+        <text x="73" y="65.5" font-size="4" fill="#1A3D10" font-family="Barlow Condensed,sans-serif">BUT ADV ▶</text>
         <g id="heat-g" clip-path="url(#cph)"></g>
       </svg>
     </div>
@@ -5313,7 +5353,7 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
           <span style="width:7px;height:7px;border-radius:50%;background:#EF4444;display:inline-block;"></span>Ratée</span>
         <span style="font-size:9px;color:#4A6A88;">↗ AV=avant · ←AR=arrière</span>
       </div>
-      <svg id="svg-rose" viewBox="-5 0 210 110" width="100%" height="105"
+      <svg id="svg-rose" viewBox="-5 0 210 125" width="100%" height="125"
            style="display:block;" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
 
@@ -5346,54 +5386,29 @@ var PC={_player_centroid_json};
 // ── HEATMAP avec centroïdes par poste ────────────────────────────────────────
 (function(){{
   var g=document.getElementById("heat-g");if(!g)return;
-  // Density ellipses
-  var den={{}};
-  LD.forEach(function(p){{var k=Math.round(p.x/6)*6+"_"+Math.round(p.y/6)*6;den[k]=(den[k]||0)+1;}});
-  LD.forEach(function(p){{
-    var k=Math.round(p.x/6)*6+"_"+Math.round(p.y/6)*6;var d=Math.min(den[k],10);
-    var el=document.createElementNS(NS,"ellipse");
-    el.setAttribute("cx",p.x.toFixed(1));el.setAttribute("cy",p.y.toFixed(1));
-    el.setAttribute("rx",(4.5+d*0.75).toFixed(1));el.setAttribute("ry",(3.2+d*0.55).toFixed(1));
-    el.setAttribute("fill","url(#hg)");el.setAttribute("opacity",(0.30+d*0.065).toFixed(2));
-    g.appendChild(el);
-  }});
+  // Density ellipses supprimées (on garde uniquement les centroïdes)
   // Centroïdes par poste (petits losanges gris + label)
   RC.forEach(function(rc){{
     if(rc.isPlayer) return; // la joueuse sera tracée en rouge après
+    if(rc.poste===PC.poste) return; // ne pas afficher le poste de référence si la joueuse joue à ce poste
     var cx2=rc.cx,cy2=rc.cy;
     // Losange
     var sz=2.0;
     var pts=[cx2+","+( cy2-sz)+" "+(cx2+sz)+","+cy2+" "+cx2+","+(cy2+sz)+" "+(cx2-sz)+","+cy2];
     var d=document.createElementNS(NS,"polygon");
     d.setAttribute("points",pts.join(""));
-    d.setAttribute("fill","#3A5570");d.setAttribute("stroke","#07111C");d.setAttribute("stroke-width","0.5");
+    d.setAttribute("fill","#FFFFFF");d.setAttribute("stroke","#07111C");d.setAttribute("stroke-width","0.5");
     d.setAttribute("opacity","0.9");
     g.appendChild(d);
     // Label poste
     var t=document.createElementNS(NS,"text");
     t.setAttribute("x",(cx2+2.4).toFixed(1));t.setAttribute("y",(cy2-2.2).toFixed(1));
     t.setAttribute("font-size","3.8");t.setAttribute("font-family","Barlow Condensed,sans-serif");
-    t.setAttribute("font-weight","700");t.setAttribute("fill","#3A5570");
+    t.setAttribute("font-weight","700");t.setAttribute("fill","#FFFFFF");
     t.textContent=rc.poste;g.appendChild(t);
   }});
-  // Centroïde de référence du poste de la joueuse (= moyenne poste, en orange)
-  // puis centroïde propre de la joueuse à ce poste (rouge)
-  // D'abord marquer le centroïde de référence du poste concerné plus visible
-  RC.forEach(function(rc){{
-    if(rc.poste!==PC.poste) return;
-    var cx2=rc.cx,cy2=rc.cy;
-    var halo=document.createElementNS(NS,"circle");
-    halo.setAttribute("cx",cx2.toFixed(1));halo.setAttribute("cy",cy2.toFixed(1));
-    halo.setAttribute("r","4.5");halo.setAttribute("fill","none");
-    halo.setAttribute("stroke","#F4830A");halo.setAttribute("stroke-width","0.8");halo.setAttribute("opacity","0.5");
-    g.appendChild(halo);
-    var sz=2.2;var pts2=cx2+","+(cy2-sz)+" "+(cx2+sz)+","+cy2+" "+cx2+","+(cy2+sz)+" "+(cx2-sz)+","+cy2;
-    var d2=document.createElementNS(NS,"polygon");
-    d2.setAttribute("points",pts2);d2.setAttribute("fill","#F4830A");
-    d2.setAttribute("stroke","#07111C");d2.setAttribute("stroke-width","0.5");d2.setAttribute("opacity","0.95");
-    g.appendChild(d2);
-  }});
-  // Centroïde propre de la joueuse (rouge — sa position réelle au poste principal)
+    // Centroïde de référence du poste (orange) supprimé : on garde uniquement la joueuse.
+// Centroïde propre de la joueuse (rouge — sa position réelle au poste principal)
   (function(){{
     var cx2=PC.cx,cy2=PC.cy;
     var halo=document.createElementNS(NS,"circle");
@@ -5448,7 +5463,7 @@ var PC={_player_centroid_json};
 (function(){{
   var svg=document.getElementById("svg-rose");if(!svg)return;
   // viewBox "-5 0 210 100" → rose centrée à (100,50), r=38
-  var cx=100,cy=53,rMax=44,rMin=5;
+  var cx=100,cy=60,rMax=56,rMin=6;
   var SC=[
     {{l:"AV",     a:-90, c:"#00A3E0"}},
     {{l:"D▸AV",   a:-45, c:"#38BDF8"}},
@@ -5857,8 +5872,20 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                     except Exception:
                         pass
 
-                    html_report = build_tactical_report_html(
-                        df_tactic, sel_tac_player,
+                    # Logo adversaire (Drive -> cache local)
+                    try:
+                        # Reuse downloader (conversion jpg) pour les logos
+                        sync_photos_from_drive(folder_id=ADV_LOGOS_FOLDER_ID, local_folder=ADV_LOGOS_FOLDER)
+                    except Exception:
+                        pass
+                    logos_index = build_adv_logos_index_local()
+                    adv_logo_path = _best_logo_path_for_adversaire(str(sel_row.get("adversaire","") or ""), logos_index)
+                    adv_logo_data = _logo_path_to_data_uri(adv_logo_path) if adv_logo_path else ""
+                    match_info = match_info or {}
+                    if adv_logo_data:
+                        match_info["logo_adversaire"] = adv_logo_data
+
+                    html_report = build_tactical_report_html(df_tactic, sel_tac_player,
                         gps_summary=gps_summary,
                         photo_b64=_tac_photo_b64,
                         match_info=_tac_match_info,
@@ -7154,7 +7181,7 @@ def main():
         --pfc-blue:   #00A3E0;
         --pfc-blue2:  #007AB8;
         --pfc-white:  #FFFFFF;
-        --pfc-text:   #C8D8E8;
+        --pfc-text:   #FFFFFF;
         --pfc-muted:  #6A8090;
         --pfc-border: rgba(0, 163, 224, 0.18);
         --pfc-card:   rgba(12, 18, 32, 0.9);
@@ -7166,6 +7193,17 @@ def main():
         font-family: 'Inter', sans-serif;
         color: var(--pfc-text);
     }
+
+    html, body, [class*="css"]  { font-size: 18px !important; }
+    .stMarkdown, .stText, .stCaption, .stDataFrame, .stTable, .stSelectbox, .stMultiSelect, .stCheckbox, .stRadio, .stSlider,
+    .stNumberInput, .stTextInput, .stTextArea, .stDateInput, .stTimeInput, .stFileUploader, .stMetric, .stButton, .stDownloadButton,
+    .stAlert, .stExpander, .stTabs, .stForm, .stToast { color: #FFFFFF !important; }
+    label, .stSelectbox label, .stMultiSelect label, .stRadio label, .stCheckbox label, .stSlider label, .stTextInput label,
+    .stTextArea label, .stNumberInput label { color: #FFFFFF !important; font-size: 15px !important; }
+    .stMarkdown p, .stMarkdown li { font-size: 16px !important; color:#FFFFFF !important; }
+    .stMarkdown h1 { font-size: 36px !important; }
+    .stMarkdown h2 { font-size: 28px !important; }
+    .stMarkdown h3 { font-size: 22px !important; }
     /* Lueur bleue subtile en haut */
     .stApp::before {
         content: '';
