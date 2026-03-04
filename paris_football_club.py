@@ -5847,27 +5847,83 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
         st.divider()
         st.markdown("#### 🎯 Rapport Technico-Tactique")
 
-        # Construire la liste des matchs GPS avec leurs infos pour le matching
+        # Construire la liste des matchs depuis les fichiers tactiques (source primaire)
+        # enrichie par les infos GPS quand disponibles
         match_rows = []
-        if "__match_label" in dm.columns:
-            for _, row in dm.drop_duplicates(subset=["__match_label"]).iterrows():
-                match_rows.append({
-                    "label":      row.get("__match_label", ""),
-                    "date":       row.get("DATE"),
-                    "adversaire": row.get("__adversaire", ""),
-                    "journee":    str(row.get("__journee", "")).lstrip("J"),
-                })
+        gps_match_df_ref = st.session_state.get("gps_match_df", pd.DataFrame())
+
+        for tac in tactical_files:
+            tac_date   = tac.get("date")
+            tac_adv    = tac.get("adversaire", "")
+            tac_jrnee  = tac.get("journee", "")
+            tac_label  = tac.get("filename", tac.get("label", ""))
+
+            # Tenter de récupérer la journée depuis le contenu du fichier (colonne Timeline)
+            if not tac_jrnee and tac.get("df") is not None:
+                _tdf = tac["df"]
+                if "Timeline" in _tdf.columns:
+                    _tl = str(_tdf["Timeline"].dropna().iloc[0]) if not _tdf["Timeline"].dropna().empty else ""
+                    _jm = re.search(r"\bJ\s*(\d{1,2})\b", _tl, re.IGNORECASE)
+                    if _jm:
+                        tac_jrnee = _jm.group(1).zfill(2)
+
+            # Enrichir avec GPS si dispo
+            gps_label = ""
+            if not gps_match_df_ref.empty and "__match_label" in gps_match_df_ref.columns:
+                # Chercher un match GPS proche en date ou adversaire
+                for _, gps_row_r in gps_match_df_ref.drop_duplicates(subset=["__match_label"]).iterrows():
+                    _gl = str(gps_row_r.get("__match_label", ""))
+                    _gd = gps_row_r.get("DATE")
+                    _ga = str(gps_row_r.get("__adversaire", ""))
+                    date_match = (tac_date is not None and pd.notna(_gd) and
+                                  abs((pd.Timestamp(tac_date) - pd.Timestamp(_gd).normalize()).days) <= 2)
+                    adv_match  = (tac_adv and _ga and
+                                  normalize_str(tac_adv)[:4] in normalize_str(_ga) or
+                                  normalize_str(_ga)[:4] in normalize_str(tac_adv)) if tac_adv and _ga else False
+                    if date_match or adv_match:
+                        gps_label = _gl
+                        if not tac_adv and _ga:
+                            tac_adv = _ga
+                        if not tac_jrnee and gps_row_r.get("__journee"):
+                            tac_jrnee = str(gps_row_r.get("__journee", "")).lstrip("J")
+                        break
+
+            # Construire le libellé lisible : "J10 · HAC — 07/12/2025"
+            parts = []
+            if tac_jrnee:
+                parts.append(f"J{tac_jrnee}")
+            if tac_adv:
+                parts.append(tac_adv)
+            if tac_date is not None and pd.notna(tac_date):
+                try:
+                    parts.append(pd.Timestamp(tac_date).strftime("%d/%m/%Y"))
+                except Exception:
+                    pass
+            display_label = " · ".join(parts) if parts else tac_label
+
+            match_rows.append({
+                "label":         tac_label,
+                "display":       display_label,
+                "date":          tac_date,
+                "adversaire":    tac_adv,
+                "journee":       tac_jrnee,
+                "gps_label":     gps_label,
+                "tac_obj":       tac,
+            })
+
+        # Trier par date décroissante
+        match_rows.sort(key=lambda m: m["date"] if m["date"] is not None and pd.notna(m["date"]) else pd.Timestamp("1970-01-01"), reverse=True)
 
         if not match_rows:
-            st.info("Aucun match GPS trouvé pour associer les données tactiques.")
+            st.info("Aucun fichier tactique trouvé.")
         else:
-            # Sélecteur de match
-            match_labels = [m["label"] for m in match_rows]
-            sel_match = st.selectbox("Match", match_labels, key="tactical_match_sel")
-            sel_row = next((m for m in match_rows if m["label"] == sel_match), match_rows[0])
+            display_labels = [m["display"] for m in match_rows]
+            sel_display = st.selectbox("Match", display_labels, key="tactical_match_sel")
+            sel_row = next((m for m in match_rows if m["display"] == sel_display), match_rows[0])
+            sel_match = sel_row["label"]
 
-            # Trouver le fichier tactique correspondant
-            df_tactic = match_tactical_to_gps(sel_row, tactical_files)
+            # Le fichier tactique est directement dans sel_row["tac_obj"]
+            df_tactic = sel_row["tac_obj"].get("df") if sel_row.get("tac_obj") else None
 
             if df_tactic is None:
                 st.info(f"Aucun fichier tactique associé trouvé pour **{sel_match}**.")
@@ -5905,7 +5961,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                         gps_match_df,
                         sel_tac_player,
                         match_date=pd.to_datetime(sel_row.get("date", None), errors="coerce") if isinstance(sel_row, dict) else None,
-                        match_label=sel_match,
+                        match_label=sel_row.get("gps_label") or sel_match,
                     )
 
                     # Score + contexte depuis le fichier tactique (source fiable)
