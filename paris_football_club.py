@@ -4946,6 +4946,45 @@ def build_tactical_report_html(
     cx=sum(l["x"] for l in locs)/len(locs) if locs else 50.0
     cy=sum(l["y"] for l in locs)/len(locs) if locs else 34.0
 
+    # ── Centroïdes par poste (toutes joueuses PFC du fichier tactique)
+    def _parse_coord(v):
+        v=str(v).strip()
+        if not v or v in ("nan","None",""): return None
+        try: return float(v.split(",")[0].strip())
+        except: return None
+
+    _poste_pts = {}  # {poste: [(svgX, svgY), ...]}
+    if df_tactic is not None and not df_tactic.empty:
+        _skip = {"PFC","HAC","START",""}
+        for _,_r in df_tactic.iterrows():
+            _rn = str(_r.get("Row","") or "").strip()
+            if not _rn or _rn in _skip or "Transition" in _rn or "Carton" in _rn: continue
+            _xr = _parse_coord(_r.get("X_localisation",""))
+            _yr = _parse_coord(_r.get("Y_localisation",""))
+            _pr = str(_r.get("Poste","") or "").strip().split(",")[0].strip()
+            if _xr is None or _yr is None or not _pr: continue
+            _svgx = round(_xr * 100/80, 2)
+            _svgy = round(_yr * 68/80, 2)
+            _poste_pts.setdefault(_pr, []).append((_svgx, _svgy))
+
+    # Centroïde par poste → {poste: (cx, cy)}
+    _poste_centroids = {
+        p: (sum(x for x,y in pts)/len(pts), sum(y for x,y in pts)/len(pts))
+        for p, pts in _poste_pts.items() if pts
+    }
+
+    # Poste principal de la joueuse (mode des lignes Row==player_canon)
+    _player_poste = poste  # déjà calculé depuis compute_tactical_stats
+    # Centroïde de référence = centroïde du poste de la joueuse (rouge)
+    _ref_cx, _ref_cy = _poste_centroids.get(_player_poste, (None, None))
+
+    # Préparer JSON pour JS: [{poste, cx, cy, isPlayer}, ...]
+    _ref_centroids_json = _json.dumps([
+        {"poste": p, "cx": round(cx2,2), "cy": round(cy2,2),
+         "isPlayer": (p == _player_poste)}
+        for p, (cx2, cy2) in sorted(_poste_centroids.items())
+    ])
+
     # GPS vitesses
     spd_data=[
         ("0–7",   _gf("d_0_7"),     "#2D4060"),
@@ -5235,29 +5274,27 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
     <!-- PASSES + ROSE -->
     <div style="padding:9px 10px;border-bottom:1px solid #0F1E2E;flex-shrink:0;">
       {stitle("Passes depuis centroïde · directions")}
-      <div style="display:flex;gap:8px;align-items:flex-start;">
-        <svg id="svg-pass" viewBox="0 0 100 68" style="flex:1;border-radius:5px;"
-             xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <clipPath id="cpp"><rect x="1" y="1" width="98" height="66"/></clipPath>
-            <marker id="mOk" markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto">
-              <path d="M0,0.5 L4.5,2.5 L0,4.5 Z" fill="#22C55E"/></marker>
-            <marker id="mKo" markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto">
-              <path d="M0,0.5 L4.5,2.5 L0,4.5 Z" fill="#EF4444"/></marker>
-          </defs>
-          {PITCH}
-          <g id="pass-g" clip-path="url(#cpp)"></g>
-        </svg>
-        <svg id="svg-rose" viewBox="0 0 90 90" width="82" height="82"
-             style="flex-shrink:0;" xmlns="http://www.w3.org/2000/svg"></svg>
+      <svg id="svg-pass" viewBox="0 0 100 68" width="100%" style="border-radius:5px;display:block;"
+           xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <clipPath id="cpp"><rect x="1" y="1" width="98" height="66"/></clipPath>
+          <marker id="mOk" markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto">
+            <path d="M0,0.5 L4.5,2.5 L0,4.5 Z" fill="#22C55E"/></marker>
+          <marker id="mKo" markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto">
+            <path d="M0,0.5 L4.5,2.5 L0,4.5 Z" fill="#EF4444"/></marker>
+        </defs>
+        {PITCH}
+        <g id="pass-g" clip-path="url(#cpp)"></g>
+      </svg>
+      <div style="display:flex;gap:10px;margin:3px 0 4px;">
+        <span style="font-size:9.5px;color:#2A4060;display:flex;align-items:center;gap:3px;">
+          <span style="width:7px;height:7px;border-radius:50%;background:#22C55E;display:inline-block;"></span>Réussie</span>
+        <span style="font-size:9.5px;color:#2A4060;display:flex;align-items:center;gap:3px;">
+          <span style="width:7px;height:7px;border-radius:50%;background:#EF4444;display:inline-block;"></span>Ratée</span>
+        <span style="font-size:9px;color:#1A2E44;">↗ AV=avant · ←AR=arrière</span>
       </div>
-      <div style="display:flex;gap:10px;margin-top:4px;">
-        <span style="font-size:10px;color:#2A4060;display:flex;align-items:center;gap:3px;">
-          <span style="width:8px;height:8px;border-radius:50%;background:#22C55E;display:inline-block;"></span>Réussie</span>
-        <span style="font-size:10px;color:#2A4060;display:flex;align-items:center;gap:3px;">
-          <span style="width:8px;height:8px;border-radius:50%;background:#EF4444;display:inline-block;"></span>Ratée</span>
-        <span style="font-size:9.5px;color:#1A2E44;">↗ AV=avant · ←AR=arrière</span>
-      </div>
+      <svg id="svg-rose" viewBox="-5 0 210 100" width="100%" height="88"
+           style="display:block;" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
 
     <!-- DESTINATIONS -->
@@ -5283,8 +5320,12 @@ var NS="http://www.w3.org/2000/svg";
 var LD={locs_json};
 var PD={passes_json};
 var CX={cx:.2f},CY={cy:.2f};
+var RC={_ref_centroids_json};
+
+// ── HEATMAP avec centroïdes par poste ────────────────────────────────────────
 (function(){{
   var g=document.getElementById("heat-g");if(!g)return;
+  // Density ellipses
   var den={{}};
   LD.forEach(function(p){{var k=Math.round(p.x/6)*6+"_"+Math.round(p.y/6)*6;den[k]=(den[k]||0)+1;}});
   LD.forEach(function(p){{
@@ -5295,6 +5336,49 @@ var CX={cx:.2f},CY={cy:.2f};
     el.setAttribute("fill","url(#hg)");el.setAttribute("opacity",(0.30+d*0.065).toFixed(2));
     g.appendChild(el);
   }});
+  // Centroïdes par poste (petits losanges gris + label)
+  RC.forEach(function(rc){{
+    if(rc.isPlayer) return; // la joueuse sera tracée en rouge après
+    var cx2=rc.cx,cy2=rc.cy;
+    // Losange
+    var sz=2.0;
+    var pts=[cx2+","+( cy2-sz)+" "+(cx2+sz)+","+cy2+" "+cx2+","+(cy2+sz)+" "+(cx2-sz)+","+cy2];
+    var d=document.createElementNS(NS,"polygon");
+    d.setAttribute("points",pts.join(""));
+    d.setAttribute("fill","#3A5570");d.setAttribute("stroke","#07111C");d.setAttribute("stroke-width","0.5");
+    d.setAttribute("opacity","0.9");
+    g.appendChild(d);
+    // Label poste
+    var t=document.createElementNS(NS,"text");
+    t.setAttribute("x",(cx2+2.4).toFixed(1));t.setAttribute("y",(cy2-2.2).toFixed(1));
+    t.setAttribute("font-size","3.8");t.setAttribute("font-family","Barlow Condensed,sans-serif");
+    t.setAttribute("font-weight","700");t.setAttribute("fill","#3A5570");
+    t.textContent=rc.poste;g.appendChild(t);
+  }});
+  // Centroïde joueuse (rouge — son poste principal)
+  RC.forEach(function(rc){{
+    if(!rc.isPlayer) return;
+    var cx2=rc.cx,cy2=rc.cy;
+    // Halo
+    var halo=document.createElementNS(NS,"circle");
+    halo.setAttribute("cx",cx2.toFixed(1));halo.setAttribute("cy",cy2.toFixed(1));
+    halo.setAttribute("r","5.5");halo.setAttribute("fill","none");
+    halo.setAttribute("stroke","#EF4444");halo.setAttribute("stroke-width","0.6");halo.setAttribute("opacity","0.4");
+    g.appendChild(halo);
+    // Dot
+    var c=document.createElementNS(NS,"circle");
+    c.setAttribute("cx",cx2.toFixed(1));c.setAttribute("cy",cy2.toFixed(1));
+    c.setAttribute("r","2.6");c.setAttribute("fill","#EF4444");
+    c.setAttribute("stroke","#060F1A");c.setAttribute("stroke-width","0.8");
+    g.appendChild(c);
+    // Label
+    var t=document.createElementNS(NS,"text");
+    t.setAttribute("x",(cx2+3.0).toFixed(1));t.setAttribute("y",(cy2-2.4).toFixed(1));
+    t.setAttribute("font-size","4.0");t.setAttribute("font-family","Barlow Condensed,sans-serif");
+    t.setAttribute("font-weight","800");t.setAttribute("fill","#EF4444");
+    t.textContent=rc.poste;g.appendChild(t);
+  }});
+  // Centroïde activité joueuse (cyan — toutes ses actions)
   var c=document.createElementNS(NS,"circle");
   c.setAttribute("cx",CX.toFixed(1));c.setAttribute("cy",CY.toFixed(1));
   c.setAttribute("r","2.2");c.setAttribute("fill","#00A3E0");
@@ -5326,68 +5410,135 @@ var CX={cx:.2f},CY={cy:.2f};
     g.appendChild(line);
   }});
 }})();
+// ── ROSE DES DIRECTIONS — pleine largeur, disposition paysage ────────────────
 (function(){{
   var svg=document.getElementById("svg-rose");if(!svg)return;
-  var cx=45,cy=45,rMax=32,rMin=4;
+  // viewBox "-5 0 210 100" → rose centrée à (100,50), r=38
+  var cx=100,cy=50,rMax=38,rMin=5;
   var SC=[
-    {{l:"AV",a:0,c:"#00A3E0"}},{{l:"D▸AV",a:45,c:"#38BDF8"}},
-    {{l:"LAT▸",a:90,c:"#64748B"}},{{l:"D▸AR",a:135,c:"#334155"}},
-    {{l:"AR",a:180,c:"#F4830A"}},{{l:"G▸AR",a:225,c:"#334155"}},
-    {{l:"◂LAT",a:270,c:"#64748B"}},{{l:"G▸AV",a:315,c:"#38BDF8"}}
+    {{l:"AV",     a:-90, c:"#00A3E0"}},
+    {{l:"D▸AV",   a:-45, c:"#38BDF8"}},
+    {{l:"LAT▸",   a:0,   c:"#64748B"}},
+    {{l:"D▸AR",   a:45,  c:"#475569"}},
+    {{l:"AR",     a:90,  c:"#F4830A"}},
+    {{l:"G▸AR",   a:135, c:"#475569"}},
+    {{l:"◂LAT",   a:180, c:"#64748B"}},
+    {{l:"G▸AV",   a:-135,c:"#38BDF8"}},
   ];
+  // Background circles
   [0.33,0.66,1.0].forEach(function(fr){{
-    var r=document.createElementNS(NS,"circle");
-    r.setAttribute("cx",cx);r.setAttribute("cy",cy);
-    r.setAttribute("r",(rMin+(rMax-rMin)*fr).toFixed(1));
-    r.setAttribute("fill","none");r.setAttribute("stroke","#0E1E2E");r.setAttribute("stroke-width","0.8");
-    svg.appendChild(r);
+    var r2=document.createElementNS(NS,"circle");
+    r2.setAttribute("cx",cx);r2.setAttribute("cy",cy);
+    r2.setAttribute("r",(rMin+(rMax-rMin)*fr).toFixed(1));
+    r2.setAttribute("fill","none");r2.setAttribute("stroke","#0D1B2A");r2.setAttribute("stroke-width","0.8");
+    svg.appendChild(r2);
   }});
+  // Spokes
   for(var i=0;i<8;i++){{
-    var a=i*45*Math.PI/180;
+    var a2=i*45*Math.PI/180;
     var sp=document.createElementNS(NS,"line");
     sp.setAttribute("x1",cx);sp.setAttribute("y1",cy);
-    sp.setAttribute("x2",(cx+(rMax+3)*Math.cos(a)).toFixed(1));sp.setAttribute("y2",(cy+(rMax+3)*Math.sin(a)).toFixed(1));
-    sp.setAttribute("stroke","#0E1E2E");sp.setAttribute("stroke-width","0.8");
+    sp.setAttribute("x2",(cx+(rMax+4)*Math.cos(a2)).toFixed(1));
+    sp.setAttribute("y2",(cy+(rMax+4)*Math.sin(a2)).toFixed(1));
+    sp.setAttribute("stroke","#0D1B2A");sp.setAttribute("stroke-width","0.8");
     svg.appendChild(sp);
   }}
+  // Count sectors
+  // Axes: dans le SVG, x+ = droite (LAT▸), y+ = bas
+  // Sur terrain: AV = vers but adverse = x+ → angle 0 en SVG = LAT droite
+  // On veut: AV = vers le bas (y+) du terrain = sens positif des x dans le fichier tactique
+  // En SVG passes: x+ = vers but adverse (droite), y est inversé terrain
+  // Mapping: AV = passes vers x+ = angle ~0° en atan2(dy,dx)
+  // Rose layout: AV en haut (angle -90 dans SVG)
+  // → garder même logique que avant mais orienter AV vers le haut
   var counts=new Array(8).fill(0);
   PD.forEach(function(p){{
     if(p.x==null)return;
     var dx=p.x-CX,dy=p.y-CY;
+    // dx+: vers but adverse (AV), dy+: vers bas terrain (dans le CSV, y petit = côté droit terrain)
+    // atan2: angle 0 = AV (x+), π/2 = bas
     var angle=Math.atan2(dy,dx)*180/Math.PI;
     var norm=(angle+360)%360;
+    // Secteurs: AV=0°±22.5°, D▸AV=45°±22.5°, LAT▸=90°, D▸AR=135°, AR=180°, G▸AR=225°, ◂LAT=270°, G▸AV=315°
     var sector=Math.round(norm/45)%8;
     counts[sector]++;
   }});
   var maxC=Math.max.apply(null,counts)||1;
+  // Draw petals
   SC.forEach(function(s,i){{
-    var n=counts[i];if(n===0)return;
+    var n=counts[i];
+    // Always draw sector frame (faint)
+    var aBase=i*45*Math.PI/180; // real angle for this sector
+    var hw=16*Math.PI/180;
+    var rFull=rMin+(rMax-rMin)*1.0;
+    var framePts=[[cx,cy],
+      [cx+rFull*Math.cos(aBase-hw),cy+rFull*Math.sin(aBase-hw)],
+      [cx+rFull*Math.cos(aBase),   cy+rFull*Math.sin(aBase)],
+      [cx+rFull*Math.cos(aBase+hw),cy+rFull*Math.sin(aBase+hw)]
+    ].map(function(p){{return p[0].toFixed(1)+","+p[1].toFixed(1);}}).join(" ");
+    var frame=document.createElementNS(NS,"polygon");
+    frame.setAttribute("points",framePts);frame.setAttribute("fill",s.c);
+    frame.setAttribute("fill-opacity","0.06");frame.setAttribute("stroke","none");
+    svg.appendChild(frame);
+    if(n===0){{
+      // Just label
+      var lr2=rFull+10;
+      var t2=document.createElementNS(NS,"text");
+      t2.setAttribute("x",(cx+lr2*Math.cos(aBase)).toFixed(1));
+      t2.setAttribute("y",(cy+lr2*Math.sin(aBase)).toFixed(1));
+      t2.setAttribute("text-anchor","middle");t2.setAttribute("dominant-baseline","central");
+      t2.setAttribute("font-size","7");t2.setAttribute("font-family","Barlow Condensed,sans-serif");
+      t2.setAttribute("font-weight","600");t2.setAttribute("fill","#1E3050");
+      t2.textContent=s.l+":0";svg.appendChild(t2);
+      return;
+    }}
     var r=rMin+(rMax-rMin)*n/maxC;
-    var a=s.a*Math.PI/180,hw=17*Math.PI/180;
-    var pts=[[cx,cy],[cx+r*Math.cos(a-hw),cy+r*Math.sin(a-hw)],[cx+r*Math.cos(a),cy+r*Math.sin(a)],[cx+r*Math.cos(a+hw),cy+r*Math.sin(a+hw)]].map(function(p){{return p[0].toFixed(1)+","+p[1].toFixed(1);}}).join(" ");
+    var a=aBase,hw2=16*Math.PI/180;
+    var pts=[[cx,cy],
+      [cx+r*Math.cos(a-hw2),cy+r*Math.sin(a-hw2)],
+      [cx+r*Math.cos(a),    cy+r*Math.sin(a)],
+      [cx+r*Math.cos(a+hw2),cy+r*Math.sin(a+hw2)]
+    ].map(function(p){{return p[0].toFixed(1)+","+p[1].toFixed(1);}}).join(" ");
     var poly=document.createElementNS(NS,"polygon");
-    poly.setAttribute("points",pts);poly.setAttribute("fill",s.c);poly.setAttribute("fill-opacity","0.75");
-    poly.setAttribute("stroke",s.c);poly.setAttribute("stroke-width","0.6");
+    poly.setAttribute("points",pts);poly.setAttribute("fill",s.c);
+    poly.setAttribute("fill-opacity","0.82");poly.setAttribute("stroke",s.c);poly.setAttribute("stroke-width","0.4");
     svg.appendChild(poly);
-    var lr=r+9;
+    // Label with count
+    var lr=r+10;
     var t=document.createElementNS(NS,"text");
-    t.setAttribute("x",(cx+lr*Math.cos(a)).toFixed(1));t.setAttribute("y",(cy+lr*Math.sin(a)).toFixed(1));
+    t.setAttribute("x",(cx+lr*Math.cos(a)).toFixed(1));
+    t.setAttribute("y",(cy+lr*Math.sin(a)).toFixed(1));
     t.setAttribute("text-anchor","middle");t.setAttribute("dominant-baseline","central");
-    t.setAttribute("font-size","6.5");t.setAttribute("font-family","Barlow Condensed,sans-serif");
-    t.setAttribute("font-weight","700");t.setAttribute("fill","#D4E3F0");
+    t.setAttribute("font-size","8");t.setAttribute("font-family","Barlow Condensed,sans-serif");
+    t.setAttribute("font-weight","700");t.setAttribute("fill","#C8DCF0");
     t.textContent=s.l+":"+n;svg.appendChild(t);
   }});
+  // Center dot
   var cd=document.createElementNS(NS,"circle");
-  cd.setAttribute("cx",cx);cd.setAttribute("cy",cy);cd.setAttribute("r","2.5");cd.setAttribute("fill","#00A3E0");
+  cd.setAttribute("cx",cx);cd.setAttribute("cy",cy);
+  cd.setAttribute("r","3");cd.setAttribute("fill","#00A3E0");
   svg.appendChild(cd);
-  [[0,"AV→"],[180,"←AR"]].forEach(function(x){{
+  // Axis labels left/right (AR / AV)
+  [[-90,"▲ AV"],[90,"▼ AR"],[-180,"◂ AR"],[0,"AV ▸"]].forEach(function(x){{
     var a=x[0]*Math.PI/180;
     var t=document.createElementNS(NS,"text");
-    t.setAttribute("x",(cx+(rMax+12)*Math.cos(a)).toFixed(1));t.setAttribute("y",(cy+(rMax+12)*Math.sin(a)).toFixed(1));
+    t.setAttribute("x",(cx+(rMax+16)*Math.cos(a)).toFixed(1));
+    t.setAttribute("y",(cy+(rMax+16)*Math.sin(a)).toFixed(1));
     t.setAttribute("text-anchor","middle");t.setAttribute("dominant-baseline","central");
-    t.setAttribute("font-size","5.5");t.setAttribute("fill","#1A2E44");
-    t.setAttribute("font-family","Barlow Condensed,sans-serif");t.textContent=x[1];svg.appendChild(t);
+    t.setAttribute("font-size","6.5");t.setAttribute("fill","#1E3050");
+    t.setAttribute("font-family","Barlow Condensed,sans-serif");
+    t.setAttribute("font-weight","700");
+    t.textContent=x[1];svg.appendChild(t);
   }});
+  // Title
+  var ttl=document.createElementNS(NS,"text");
+  ttl.setAttribute("x","100");ttl.setAttribute("y","96");
+  ttl.setAttribute("text-anchor","middle");
+  ttl.setAttribute("font-size","6.5");ttl.setAttribute("fill","#1E3050");
+  ttl.setAttribute("font-family","Barlow Condensed,sans-serif");
+  ttl.setAttribute("font-weight","600");ttl.setAttribute("letter-spacing","1");
+  ttl.textContent="ROSE DES DIRECTIONS DE PASSE";
+  svg.appendChild(ttl);
 }})();
 </script></body></html>"""
 
