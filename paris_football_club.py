@@ -3775,6 +3775,18 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
     out["charge"] = float(np.nansum(_num("CHARGE"))) if "CHARGE" in df_work.columns else np.nan
     out["rpe"] = float(np.nanmean(_num("RPE"))) if "RPE" in df_work.columns else np.nan
 
+    out["d_0_7"]     = float(np.nansum(_num("Distance 0-7 (m)")))  if "Distance 0-7 (m)"  in df_work.columns else np.nan
+    out["d_7_13"]    = float(np.nansum(_num("Distance 7-13 (m)"))) if "Distance 7-13 (m)" in df_work.columns else np.nan
+    out["sprints_23"]= float(np.nansum(_num("Nb Sprints >23")))    if "Nb Sprints >23"    in df_work.columns else np.nan
+    out["sprints_25"]= float(np.nansum(_num("Nb Sprints >25")))    if "Nb Sprints >25"    in df_work.columns else np.nan
+    out["acc2"]      = float(np.nansum(_num("Acc >2")))            if "Acc >2"            in df_work.columns else np.nan
+    out["acc3"]      = float(np.nansum(_num("Acc >3")))            if "Acc >3"            in df_work.columns else np.nan
+    out["dec2"]      = float(np.nansum(_num("Dec >2")))            if "Dec >2"            in df_work.columns else np.nan
+    out["dec3"]      = float(np.nansum(_num("Dec >3")))            if "Dec >3"            in df_work.columns else np.nan
+    # Also try alternative column names for acc_dec
+    if pd.isna(out.get("acc_dec", np.nan)):
+        out["acc_dec"] = float(np.nansum(_num("#accel/decel"))) if "#accel/decel" in df_work.columns else np.nan
+
     if all(pd.isna(v) for v in out.values()):
         return None
     return out
@@ -4851,484 +4863,585 @@ def build_tactical_report_html(
     match_info: dict = None,
     pfc_kpi_row=None,
 ) -> str:
-    """Rapport match A4 HTML imprimable : photo + KPI radar + stats tactiques + GPS."""
+    """Rapport match A4 HTML — v3 premium.
+    Logos clubs | Heatmap | Carte passes depuis centroide | Rose directions | GPS complet.
+    """
     import json as _json, math as _math
 
     player_label = str(player_canon or "").strip()
     mi = match_info or {}
 
-    # ── GPS ──────────────────────────────────────────────────────────────────
+    # -- GPS dict
     _gps = None
     if isinstance(gps_summary, dict) and gps_summary:
         _gps = gps_summary
     elif isinstance(gps_summary, pd.DataFrame) and not gps_summary.empty:
         _gps = gps_summary.iloc[0].to_dict()
 
-    def _g(key, fmt="{:.0f}", fb="—"):
+    def _g(key, fmt="{:.0f}", fb="--"):
         if _gps is None: return fb
         v = pd.to_numeric(_gps.get(key, None), errors="coerce")
-        return fb if pd.isna(v) else (lambda x: fmt.format(x))(float(v))
+        return fb if pd.isna(v) else fmt.format(float(v))
 
-    # ── Stats tactiques ───────────────────────────────────────────────────────
+    def _gf(key, fb=0.0):
+        if _gps is None: return fb
+        v = pd.to_numeric(_gps.get(key, None), errors="coerce")
+        return float(v) if not pd.isna(v) else fb
+
+    # Temps de jeu depuis GPS uniquement — clé "duration_min" (= "Temps joué" dans le CSV GPS)
+    _tps_raw = pd.to_numeric(_gps.get("duration_min", None), errors="coerce") if _gps else float("nan")
+    import math as _m
+    temps_gps = str(int(_tps_raw)) if _gps and not _m.isnan(float(_tps_raw)) else "--"
+
+    # -- Stats tactiques
     s = compute_tactical_stats(df_tactic, player_canon) if df_tactic is not None else {}
 
-    def _s(key, fb="—"):
-        v = s.get(key, None)
-        if v is None: return fb
+    def _si(key, fb=0):
+        v = s.get(key, fb)
+        try: return int(float(v) if v is not None else fb)
+        except: return fb
+
+    p_ok = _si("passes_ok"); p_ko = _si("passes_ko"); p_tot = p_ok + p_ko
+    p_pct = int(p_ok/p_tot*100) if p_tot else 0
+    c_ok  = _si("courtes_ok"); c_ko = _si("courtes_ko"); c_tot = c_ok + c_ko
+    l_ok  = _si("longues_ok"); l_ko = _si("longues_ko"); l_tot = l_ok + l_ko
+    d_ok  = _si("drib_ok");  d_ko  = _si("drib_ko");  d_tot = d_ok + d_ko
+    d_pct = int(d_ok/d_tot*100) if d_tot else 0
+    du_ok = _si("duels_gagnes"); du_ko = _si("duels_perdus"); du_tot = du_ok + du_ko
+    du_pct = int(du_ok/du_tot*100) if du_tot else 0
+    sol_ok = _si("sol_ok"); sol_ko = _si("sol_ko")
+    aer_ok = _si("aer_ok"); aer_ko = _si("aer_ko")
+    t_tot  = _si("tirs_tot"); t_cad = _si("tirs_cadres"); t_but = _si("tirs_buts")
+    recup  = _si("recuperations"); pertes = _si("pertes"); ballons = _si("ballons")
+    poste  = str(s.get("postes","") or "")
+    systeme = str(s.get("systeme","") or "")
+
+    # Creation desequilibre + passes details
+    creation_deseq = 0; passes_dt = 0; passes_en1 = 0
+    if df_tactic is not None and not df_tactic.empty:
         try:
-            fv = float(v)
-            return fb if _math.isnan(fv) else str(int(fv)) if fv == int(fv) else str(fv)
-        except Exception:
-            return str(v)
+            d_rows = _filter_player_rows(df_tactic, player_canon)
+            if "Creation de Desequilibre" in d_rows.columns:
+                creation_deseq = int(d_rows["Creation de Desequilibre"].notna().sum())
+            elif any("quilibre" in c for c in d_rows.columns):
+                col = next(c for c in d_rows.columns if "quilibre" in c)
+                creation_deseq = int(d_rows[col].notna().sum())
+            if "Passe" in d_rows.columns:
+                pass_rows = d_rows[d_rows["Passe"].notna()]
+                all_pass = [a.strip() for cell in pass_rows["Passe"].dropna() for a in str(cell).split(",")]
+                passes_dt = all_pass.count("Passe dans dernier 1/3")
+                passes_en1 = all_pass.count("En 1")
+        except: pass
 
-    passes_ok  = int(s.get("passes_ok",  0) or 0)
-    passes_ko  = int(s.get("passes_ko",  0) or 0)
-    passes_tot = passes_ok + passes_ko
-    passes_pct = int(passes_ok / passes_tot * 100) if passes_tot else 0
-    courtes_tot = int((s.get("courtes_ok",0) or 0) + (s.get("courtes_ko",0) or 0))
-    longues_tot = int((s.get("longues_ok",0) or 0) + (s.get("longues_ko",0) or 0))
-    drib_ok  = int(s.get("drib_ok",  0) or 0)
-    drib_ko  = int(s.get("drib_ko",  0) or 0)
-    drib_tot = drib_ok + drib_ko
-    drib_pct = int(drib_ok / drib_tot * 100) if drib_tot else 0
-    duels_ok  = int(s.get("duels_gagnes", 0) or 0)
-    duels_ko  = int(s.get("duels_perdus", 0) or 0)
-    duels_tot = duels_ok + duels_ko
-    duels_pct = int(duels_ok / duels_tot * 100) if duels_tot else 0
-    poste_str   = s.get("postes",  "") or ""
-    systeme_str = s.get("systeme", "") or ""
+    # Destination passes
+    dest_counts = {}
+    if df_tactic is not None and not df_tactic.empty:
+        try:
+            d_rows = _filter_player_rows(df_tactic, player_canon)
+            if "Destination passe" in d_rows.columns and "Passe" in d_rows.columns:
+                for _, r in d_rows.iterrows():
+                    dest = str(r.get("Destination passe","")).strip()
+                    passe = str(r.get("Passe","")).strip()
+                    if dest and dest.lower() not in ("","nan") and passe:
+                        dest_counts[dest] = dest_counts.get(dest, 0) + 1
+        except: pass
 
-    # ── KPI Radar SVG ─────────────────────────────────────────────────────────
-    RADAR_PARAMS = [
-        ("Timing","#38BDF8"),("Force physique","#38BDF8"),
-        ("Intelligence tactique","#FB923C"),
-        ("Technique 1","#F87171"),("Technique 2","#F87171"),("Technique 3","#F87171"),
-        ("Explosivité","#A78BFA"),("Prise de risque","#A78BFA"),
-        ("Précision","#94A3B8"),("Sang-froid","#94A3B8"),
-        ("Créativité 1","#818CF8"),("Créativité 2","#818CF8"),
+    # Locs / passes map
+    locs_json   = _json.dumps(s.get("locs", []))
+    passes_json = _json.dumps(s.get("passes_map", []))
+    locs = s.get("locs", [])
+    if locs:
+        cx = sum(l["x"] for l in locs) / len(locs)
+        cy = sum(l["y"] for l in locs) / len(locs)
+    else:
+        cx, cy = 50.0, 34.0
+
+    # GPS speeds
+    spd_data = [
+        ("0-7",   _gf("d_0_7"),     "#334155"),
+        ("7-13",  _gf("d_7_13"),    "#4A6080"),
+        ("13-19", _gf("d_13_19_m"), "#00A3E0"),
+        ("19-23", _gf("d_19_23_m"), "#0EA5E9"),
+        (">23",   _gf("d_23p_m"),   "#0284C7"),
     ]
-    _kpi = {}
-    if pfc_kpi_row is not None:
-        _kpi = pfc_kpi_row.to_dict() if isinstance(pfc_kpi_row, pd.Series) else (pfc_kpi_row if isinstance(pfc_kpi_row, dict) else {})
-    avail = [(p, c) for p, c in RADAR_PARAMS if p in _kpi]
+    max_spd = max(v for _, v, _ in spd_data) or 1.0
+    spd_bars = ""
+    for lbl, val, col in spd_data:
+        pct = int(val/max_spd*100)
+        spd_bars += (f'<div class="spd-row"><span class="sl">{lbl}</span>'
+                     f'<div class="sw"><div class="sb2" style="width:{pct}%;background:{col};"></div></div>'
+                     f'<span class="sv">{int(val):,} m</span></div>')
 
-    def _build_radar(params_colors, kpi, sz=210):
-        n = len(params_colors)
-        if n < 3: return ""
-        cx = cy = sz / 2; r_max = sz * 0.36; r_min = sz * 0.04
-        ang = [_math.pi/2 + 2*_math.pi*i/n for i in range(n)]
-        def P(a, r): return cx + r*_math.cos(a), cy - r*_math.sin(a)
-        lines = []
-        for fr in [0.25, 0.5, 0.75, 1.0]:
-            pts = " ".join(f"{P(a,r_min+(r_max-r_min)*fr)[0]:.1f},{P(a,r_min+(r_max-r_min)*fr)[1]:.1f}" for a in ang)
-            op = "0.4" if fr==1.0 else "0.2"
-            lines.append(f'<polygon points="{pts}" fill="none" stroke="#334155" stroke-width="0.7" opacity="{op}"/>')
-        for a in ang:
-            x2,y2=P(a,r_max); lines.append(f'<line x1="{cx:.1f}" y1="{cy:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" stroke="#334155" stroke-width="0.7" opacity="0.4"/>')
-        poly_pts = []
-        for i,(param,color) in enumerate(params_colors):
-            val = float(pd.to_numeric(kpi.get(param,0),errors="coerce") or 0)
-            val = max(0.0,min(100.0,val))
-            r = r_min + (r_max-r_min)*val/100.0
-            px,py = P(ang[i],r)
-            poly_pts.append((px,py,color,param,val))
-        pts_str = " ".join(f"{p[0]:.1f},{p[1]:.1f}" for p in poly_pts)
-        lines.append(f'<polygon points="{pts_str}" fill="#00A3E0" fill-opacity="0.15" stroke="#00A3E0" stroke-width="1.2" stroke-opacity="0.8"/>')
-        for i,(px,py,color,param,val) in enumerate(poly_pts):
-            lines.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="2.5" fill="{color}" stroke="#0F172A" stroke-width="0.8"/>')
-            lx,ly = P(ang[i], r_max*1.24)
-            anchor = "middle"
-            if lx < cx-4: anchor="end"
-            elif lx > cx+4: anchor="start"
-            short = (param.replace("physique","phys.").replace("Intelligence tactique","Intel.tact.")
-                        .replace("Créativité ","Créa.").replace("Technique ","Tech.")
-                        .replace("Explosivité","Explos.").replace("Prise de risque","P.risque")
-                        .replace("Sang-froid","Sang-fr."))
-            lines.append(f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="{anchor}" dominant-baseline="central" font-size="7.5" fill="#94A3B8" font-family="DM Sans,sans-serif">{short}</text>')
-            lines.append(f'<text x="{px:.1f}" y="{py-4:.1f}" text-anchor="middle" font-size="7" fill="{color}" font-family="DM Sans,sans-serif" font-weight="700">{int(val)}</text>')
-        return f'<svg viewBox="0 0 {sz} {sz}" width="{sz}" height="{sz}" xmlns="http://www.w3.org/2000/svg">{"".join(lines)}</svg>'
-
-    radar_svg = _build_radar(avail, _kpi) if avail else ""
-
-    # ── GPS speed zones ───────────────────────────────────────────────────────
-    spd_keys = [("0-7",None),("7-13",None),("13-19","d_13_19_m"),("19-23","d_19_23_m"),(">23","d_23p_m")]
-    spd_vals = []
-    for lbl, key in spd_keys:
-        val = 0.0
-        if key and _gps:
-            try: val = max(0.0, float(pd.to_numeric(_gps.get(key,0),errors="coerce") or 0))
-            except: pass
-        spd_vals.append((lbl, val))
-    mx_spd = max(v for _,v in spd_vals) or 1.0
-    spd_colors = ["#334155","#475569","#38BDF8","#0EA5E9","#0284C7"]
-    speed_bars = "".join(
-        f'<div class="sz-row"><span class="sz-lbl">{l}</span>'
-        f'<div class="sz-wrap"><div class="sz-bar" style="width:{int(v/mx_spd*100)}%;background:{spd_colors[i]}"></div></div>'
-        f'<span class="sz-val">{int(v)}m</span></div>'
-        for i,(l,v) in enumerate(spd_vals)
-    )
-
-    # ── Match header ──────────────────────────────────────────────────────────
+    # Match info
     adversaire  = mi.get("adversaire","") or ""
     journee     = mi.get("journee","") or ""
     score       = mi.get("score","") or ""
     lieu        = mi.get("lieu","") or ""
     match_label = mi.get("label","") or ""
     match_date  = ""
-    try: match_date = pd.Timestamp(mi["date"]).strftime("%d/%m/%Y") if mi.get("date") else ""
+    try:
+        raw_dt = mi.get("date", None)
+        if raw_dt: match_date = pd.Timestamp(raw_dt).strftime("%d/%m/%Y")
     except: pass
-    vs_line   = f"vs {adversaire}" if adversaire else match_label
-    meta_parts= [p for p in [match_date, journee and f"J{journee}", lieu] if p]
-    meta_line = " · ".join(meta_parts)
+    journee_tag = f"J{journee} · " if journee else ""
+    competition = mi.get("competition","") or "Match"
+    meta_line   = " · ".join(p for p in [match_date, lieu] if p)
 
-    # ── Photo ─────────────────────────────────────────────────────────────────
-    photo_html = (
-        f'<img src="{photo_b64}" class="player-photo" alt="{player_label}"/>'
-        if photo_b64
-        else f'<div class="player-photo-placeholder"><span>{player_label[:2].upper()}</span></div>'
+    # Logos
+    PFC_LOGO = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
+    adv_logo_url = mi.get("logo_adversaire","") or ""
+    adv_init = adversaire[:3].upper() if adversaire else "ADV"
+    pfc_logo_html = (
+        f'<img src="{PFC_LOGO}" alt="Paris FC" style="width:46px;height:46px;object-fit:contain;"'
+        f' onerror="this.style.display=\'none\';this.nextSibling.style.display=\'flex\'"/>'
+        f'<div style="display:none;width:44px;height:44px;border-radius:50%;background:var(--bg3);'
+        f'border:1.5px solid var(--bd2);align-items:center;justify-content:center;'
+        f'font-family:var(--head);font-size:11px;font-weight:700;color:var(--txt3);">PFC</div>'
+    )
+    if adv_logo_url:
+        adv_logo_html = (
+            f'<img src="{adv_logo_url}" alt="{adversaire}" style="width:46px;height:46px;object-fit:contain;"'
+            f' onerror="this.style.display=\'none\';this.nextSibling.style.display=\'flex\'"/>'
+            f'<div style="display:none;width:44px;height:44px;border-radius:50%;background:var(--bg3);'
+            f'border:1.5px solid var(--bd2);align-items:center;justify-content:center;'
+            f'font-family:var(--head);font-size:11px;font-weight:700;color:var(--txt3);">{adv_init}</div>'
+        )
+    else:
+        adv_logo_html = (
+            f'<div style="width:44px;height:44px;border-radius:50%;background:var(--bg3);'
+            f'border:1.5px solid var(--bd2);display:flex;align-items:center;justify-content:center;'
+            f'font-family:var(--head);font-size:11px;font-weight:700;color:var(--txt3);">{adv_init}</div>'
+        )
+
+    # Photo
+    initials = "".join(w[0].upper() for w in player_label.split()[:2]) if player_label else "??"
+    if photo_b64:
+        photo_html = (
+            f'<img src="{photo_b64}" alt="{player_label}" style="width:64px;height:80px;'
+            f'object-fit:cover;object-position:top;border-radius:5px;border:1.5px solid var(--acc);display:block;"/>'
+        )
+    else:
+        photo_html = (
+            f'<div style="width:64px;height:80px;border-radius:5px;background:var(--bg3);'
+            f'border:1.5px solid var(--bd2);display:flex;align-items:center;justify-content:center;'
+            f'font-family:var(--head);font-size:22px;font-weight:700;color:var(--txt3);">{initials}</div>'
+        )
+
+    # Dest passes list
+    dest_html = ""
+    if dest_counts:
+        sorted_dest = sorted(dest_counts.items(), key=lambda x: -x[1])
+        max_dest = sorted_dest[0][1] if sorted_dest else 1
+        for name, cnt in sorted_dest[:8]:
+            pct2 = int(cnt/max_dest*100)
+            short_name = " ".join(name.split()[-2:]) if len(name.split()) > 2 else name
+            dest_html += (
+                f'<div style="display:grid;grid-template-columns:1fr 32px 18px;align-items:center;gap:3px;margin-bottom:2px;">'
+                f'<span style="font-size:8.5px;color:#7A97B0;">{short_name}</span>'
+                f'<div style="height:4px;background:#101826;border-radius:2px;overflow:hidden;">'
+                f'<div style="height:100%;width:{pct2}%;background:#00A3E0;border-radius:2px;"></div></div>'
+                f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:8px;color:#D4E3F0;text-align:right;">{cnt}</span>'
+                f'</div>'
+            )
+
+    # Pitch inner SVG
+    PITCH = (
+        '<rect width="100" height="68" fill="#060D03"/>'
+        '<rect x="1" y="1" width="14" height="66" fill="rgba(255,255,255,0.01)"/>'
+        '<rect x="29" y="1" width="14" height="66" fill="rgba(255,255,255,0.01)"/>'
+        '<rect x="57" y="1" width="14" height="66" fill="rgba(255,255,255,0.01)"/>'
+        '<rect x="1" y="1" width="98" height="66" fill="none" stroke="#153010" stroke-width=".6"/>'
+        '<line x1="50" y1="1" x2="50" y2="67" stroke="#153010" stroke-width=".5"/>'
+        '<circle cx="50" cy="34" r="9.15" fill="none" stroke="#153010" stroke-width=".5"/>'
+        '<circle cx="50" cy="34" r=".5" fill="#153010"/>'
+        '<rect x="1" y="13.84" width="16.5" height="40.32" fill="none" stroke="#153010" stroke-width=".5"/>'
+        '<rect x="1" y="24.84" width="5.5" height="18.32" fill="none" stroke="#153010" stroke-width=".5"/>'
+        '<rect x="82.5" y="13.84" width="16.5" height="40.32" fill="none" stroke="#153010" stroke-width=".5"/>'
+        '<rect x="93.5" y="24.84" width="5.5" height="18.32" fill="none" stroke="#153010" stroke-width=".5"/>'
+        '<rect x="0" y="29.34" width="1" height="9.32" fill="#153010"/>'
+        '<rect x="99" y="29.34" width="1" height="9.32" fill="#153010"/>'
     )
 
-    # ── Terrain pitch SVG ─────────────────────────────────────────────────────
-    pitch_svg_inner = """
-        <rect width="100" height="68" fill="#0d2408"/>
-        <rect x="1" y="1" width="98" height="66" fill="none" stroke="#1e4010" stroke-width=".6"/>
-        <line x1="50" y1="1" x2="50" y2="67" stroke="#1e4010" stroke-width=".5"/>
-        <circle cx="50" cy="34" r="9.15" fill="none" stroke="#1e4010" stroke-width=".5"/>
-        <circle cx="50" cy="34" r=".5" fill="#1e4010"/>
-        <rect x="1" y="13.84" width="16.5" height="40.32" fill="none" stroke="#1e4010" stroke-width=".5"/>
-        <rect x="1" y="24.84" width="5.5" height="18.32" fill="none" stroke="#1e4010" stroke-width=".5"/>
-        <rect x="82.5" y="13.84" width="16.5" height="40.32" fill="none" stroke="#1e4010" stroke-width=".5"/>
-        <rect x="93.5" y="24.84" width="5.5" height="18.32" fill="none" stroke="#1e4010" stroke-width=".5"/>
-        <rect x="0" y="29.34" width="1" height="9.32" fill="#1e4010"/>
-        <rect x="99" y="29.34" width="1" height="9.32" fill="#1e4010"/>"""
-
-    # ── JSON pour JS ──────────────────────────────────────────────────────────
-    locs_json   = _json.dumps(s.get("locs", []))
-    passes_json = _json.dumps(s.get("passes_map", []))
+    # Scores coloris
+    grn_cond = "var(--grn)" if du_pct >= 50 else "var(--red)"
+    t_but_str = f'{t_but} but{"s" if t_but > 1 else ""}'
+    sol_tot = sol_ok + sol_ko
+    aer_tot = aer_ok + aer_ko
+    c_pct = int(c_ok/c_tot*100) if c_tot else 0
+    l_pct = int(l_ok/l_tot*100) if l_tot else 0
+    sol_pct = int(sol_ok/sol_tot*100) if sol_tot else 0
+    deseq_bar_pct = min(100, int(creation_deseq/max(ballons, 1)*100*3)) if creation_deseq else 0
 
     return f"""<!DOCTYPE html>
 <html lang="fr"><head>
 <meta charset="UTF-8"/>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@300;400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;}}
 :root{{
-  --bg:#080D18;--bg2:#0D1424;--bg3:#121B30;--bd:#1C2B42;
-  --acc:#00A3E0;--acc2:#38BDF8;--grn:#22C55E;--red:#EF4444;--org:#F97316;
-  --txt:#DDE5F0;--mt:#64748B;--mt2:#94A3B8;
-  --ff:'DM Sans',sans-serif;--fm:'DM Mono',monospace;
+  --bg:#06090F;--bg2:#0B1120;--bg3:#101826;--bg4:#141E30;
+  --bd:#1C2A3C;--bd2:#253650;
+  --acc:#00A3E0;--acc2:#38BDF8;--acc3:rgba(0,163,224,0.12);
+  --grn:#16C452;--red:#E8383A;--org:#F4830A;--ylw:#E8B30A;
+  --txt:#D4E3F0;--txt2:#7A97B0;--txt3:#3A5570;
+  --head:'Barlow Condensed',sans-serif;--body:'Barlow',sans-serif;--mono:'JetBrains Mono',monospace;
 }}
-body{{font-family:var(--ff);background:var(--bg);color:var(--txt);font-size:10px;line-height:1.4;
-  -webkit-print-color-adjust:exact;print-color-adjust:exact;}}
-.page{{width:210mm;min-height:296mm;max-height:296mm;overflow:hidden;padding:5.5mm 6mm;
-  background:var(--bg);display:flex;flex-direction:column;gap:5px;}}
-
-/* Header */
-.hdr{{display:grid;grid-template-columns:62px 1fr auto;gap:10px;align-items:center;
-  padding-bottom:7px;border-bottom:1px solid var(--bd);}}
-.player-photo{{width:62px;height:76px;object-fit:cover;object-position:top;
-  border-radius:7px;border:2px solid var(--acc);}}
-.player-photo-placeholder{{width:62px;height:76px;border-radius:7px;background:var(--bg3);
-  border:2px solid var(--bd);display:flex;align-items:center;justify-content:center;
-  font-size:20px;font-weight:700;color:var(--mt);}}
-.pi-name{{font-size:19px;font-weight:700;letter-spacing:-.3px;color:#FFF;line-height:1.1;}}
-.pi-meta{{display:flex;gap:5px;flex-wrap:wrap;margin-top:3px;}}
-.tag{{background:var(--bg3);border:1px solid var(--bd);border-radius:4px;
-  padding:1px 6px;font-size:8px;color:var(--mt2);}}
-.pi-sub{{font-size:8.5px;color:var(--mt);margin-top:3px;}}
-.hr-vs{{font-size:14px;font-weight:700;color:var(--acc2);text-align:right;}}
-.hr-score{{display:inline-block;background:var(--bg3);border:1.5px solid var(--acc);
-  border-radius:7px;padding:2px 10px;font-size:15px;font-weight:700;font-family:var(--fm);
-  color:#FFF;margin-top:3px;}}
-.hr-sub{{font-size:7.5px;color:var(--mt);text-align:right;margin-top:3px;letter-spacing:.5px;}}
-
-/* 2-col body */
-.body{{display:grid;grid-template-columns:1fr 1fr;gap:6px;flex:1;min-height:0;}}
-.col{{display:flex;flex-direction:column;gap:5px;}}
-
-/* Cards */
-.card{{background:var(--bg2);border:1px solid var(--bd);border-radius:8px;padding:6px 8px;}}
-.sec-title{{font-size:7.5px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;
-  color:var(--acc);margin-bottom:5px;display:flex;align-items:center;gap:5px;}}
-.sec-title::after{{content:"";flex:1;height:1px;background:var(--bd);}}
-
-/* KPI summary pills */
-.kpi-g{{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}}
-.kpi-p{{background:var(--bg3);border:1px solid var(--bd);border-radius:6px;
-  padding:5px 3px;text-align:center;}}
-.kpi-p .kv{{font-size:15px;font-weight:700;color:#FFF;line-height:1;}}
-.kpi-p .kl{{font-size:7px;color:var(--mt2);margin-top:1px;}}
-
-/* Stat rows */
-.s-row{{display:grid;grid-template-columns:1fr 70px 30px;align-items:center;gap:4px;margin-bottom:1px;}}
-.s-nm{{font-size:8.5px;color:var(--mt2);}}
-.s-bw{{height:5px;background:var(--bg3);border-radius:3px;overflow:hidden;}}
-.s-bb{{height:100%;border-radius:3px;}}
-.s-vl{{font-size:9px;font-weight:700;font-family:var(--fm);text-align:right;}}
-.s-sub{{font-size:7px;color:var(--mt);padding-left:2px;margin-bottom:3px;}}
-.dv{{height:1px;background:var(--bd);margin:3px 0;}}
-
-/* Three-stat mini-grid */
-.tri{{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-top:3px;}}
-.tri-c .tl{{font-size:7.5px;color:var(--mt2);}}
-.tri-c .tv{{font-size:13px;font-weight:700;}}
-
-/* GPS */
-.gps-g{{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;}}
-.gps-p{{background:var(--bg3);border:1px solid var(--bd);border-radius:6px;padding:5px 4px;}}
-.gps-p .gk{{font-size:7px;color:var(--mt2);}}
-.gps-p .gv{{font-size:12px;font-weight:700;color:var(--acc2);margin-top:1px;font-family:var(--fm);}}
-.gps-p .gu{{font-size:7px;color:var(--mt);}}
-.no-gps{{font-size:8px;color:var(--mt);font-style:italic;}}
-
-/* Speed zones */
-.sz-row{{display:grid;grid-template-columns:24px 1fr 38px;align-items:center;gap:3px;margin-bottom:2px;}}
-.sz-lbl{{font-size:7px;color:var(--mt2);font-family:var(--fm);}}
-.sz-wrap{{height:5px;background:var(--bg3);border-radius:3px;overflow:hidden;}}
-.sz-bar{{height:100%;border-radius:3px;}}
-.sz-val{{font-size:7px;font-family:var(--fm);text-align:right;color:var(--mt2);}}
-
-/* Radar */
-.radar-center{{display:flex;justify-content:center;align-items:center;padding:4px 0;}}
-.no-radar{{font-size:8px;color:var(--mt);font-style:italic;text-align:center;padding:20px 0;}}
-
-/* Terrain toggle */
-.tog-bar{{display:flex;gap:4px;margin-bottom:4px;}}
-.tog-btn{{font-size:8px;padding:2px 8px;border-radius:4px;cursor:pointer;
-  font-family:var(--ff);border:1px solid var(--bd);background:transparent;
-  color:var(--mt2);transition:all .15s;}}
-.tog-btn.on{{background:var(--acc);border-color:var(--acc);color:#FFF;}}
-
-/* Map legend */
-.map-legend{{display:flex;gap:8px;margin-top:3px;flex-wrap:wrap;}}
-.ml-item{{font-size:7px;color:var(--mt2);display:flex;align-items:center;gap:3px;}}
-.ml-dot{{width:7px;height:7px;border-radius:50%;display:inline-block;}}
-.ml-line{{width:10px;height:2px;display:inline-block;}}
-
-/* Footer */
-.footer{{padding-top:4px;border-top:1px solid var(--bd);
-  display:flex;justify-content:space-between;font-size:7.5px;color:var(--mt);}}
-.footer .conf{{color:var(--acc2);font-weight:600;}}
-
+body{{font-family:var(--body);background:#03050A;color:var(--txt);
+  -webkit-print-color-adjust:exact;print-color-adjust:exact;
+  display:flex;justify-content:center;padding:6px;font-size:10px;}}
+.page{{width:210mm;height:297mm;overflow:hidden;background:var(--bg);
+  display:grid;grid-template-rows:auto auto 1fr auto;}}
+.stripe{{height:3.5px;background:linear-gradient(90deg,#0075A8,var(--acc) 35%,var(--acc2) 60%,transparent);}}
+.header{{display:grid;grid-template-columns:60px 1fr auto 60px;align-items:center;
+  border-bottom:1px solid var(--bd);background:var(--bg2);}}
+.logo-blk{{display:flex;align-items:center;justify-content:center;padding:6px;
+  border-right:1px solid var(--bd);height:100%;}}
+.logo-blk.r{{border-right:none;border-left:1px solid var(--bd);}}
+.pi{{padding:7px 12px;display:flex;flex-direction:column;gap:2px;}}
+.pi-name{{font-family:var(--head);font-size:27px;font-weight:800;letter-spacing:.3px;
+  color:#FFF;line-height:1;text-transform:uppercase;}}
+.tags{{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-top:3px;}}
+.tag{{font-family:var(--head);font-size:9.5px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;
+  padding:2px 7px;border-radius:3px;border:1px solid var(--bd2);color:var(--txt2);background:var(--bg3);}}
+.tag.hl{{border-color:var(--acc);color:var(--acc);background:var(--acc3);}}
+.pi-sub{{font-size:9px;color:var(--txt3);font-family:var(--head);letter-spacing:.4px;margin-top:2px;}}
+.mi{{padding:7px 12px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  border-left:1px solid var(--bd);text-align:center;min-width:90px;}}
+.mi-vs{{font-family:var(--head);font-size:11px;font-weight:600;color:var(--txt3);letter-spacing:1px;text-transform:uppercase;}}
+.mi-adv{{font-family:var(--head);font-size:16px;font-weight:800;color:var(--acc2);line-height:1;}}
+.score{{font-family:var(--mono);font-size:21px;font-weight:600;color:#FFF;
+  background:var(--bg3);border:1.5px solid var(--bd2);border-radius:6px;
+  padding:1px 10px;margin:3px 0;letter-spacing:3px;}}
+.mi-sub{{font-size:8px;color:var(--txt3);font-family:var(--head);letter-spacing:.6px;text-transform:uppercase;}}
+.kpi-bar{{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid var(--bd);background:var(--bg2);}}
+.kc{{padding:3px 8px;text-align:center;border-right:1px solid var(--bd);}}
+.kc:last-child{{border-right:none;}}
+.kn{{font-family:var(--head);font-size:19px;font-weight:800;color:#FFF;line-height:1;}}
+.kl{{font-family:var(--head);font-size:8.5px;font-weight:600;letter-spacing:.7px;text-transform:uppercase;color:var(--txt3);margin-top:1px;}}
+.body{{display:grid;grid-template-columns:1fr 1fr;min-height:0;}}
+.col-l{{border-right:1px solid var(--bd);display:flex;flex-direction:column;}}
+.col-r{{display:flex;flex-direction:column;}}
+.sec{{padding:7px 9px;border-bottom:1px solid var(--bd);}}
+.sec-hd{{font-family:var(--head);font-size:9px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;
+  color:var(--acc);display:flex;align-items:center;gap:6px;margin-bottom:6px;}}
+.sec-hd::after{{content:"";flex:1;height:1px;background:var(--bd);}}
+.sb{{margin-bottom:4px;}}
+.sb-row{{display:grid;grid-template-columns:1fr 58px 28px;align-items:center;gap:3px;margin-bottom:1px;}}
+.sb-nm{{font-size:10px;color:var(--txt2);}}
+.bw{{height:5px;background:var(--bg4);border-radius:3px;overflow:hidden;}}
+.bf{{height:100%;border-radius:3px;}}
+.bp{{font-family:var(--mono);font-size:9.5px;font-weight:600;text-align:right;}}
+.sb-sub{{font-size:8px;color:var(--txt3);line-height:1.5;}}
+.g2{{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:4px;}}
+.gc{{background:var(--bg3);border:1px solid var(--bd);border-radius:4px;padding:4px 6px;}}
+.gc .gt{{font-family:var(--head);font-size:8.5px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--txt3);}}
+.gc .gn{{font-family:var(--head);font-size:17px;font-weight:800;line-height:1;margin-top:1px;}}
+.gc .gs{{font-size:8px;color:var(--txt3);}}
+.tri{{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;margin-top:4px;}}
+.tc .tl{{font-family:var(--head);font-size:8.5px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--txt3);}}
+.tc .tv{{font-family:var(--head);font-size:19px;font-weight:800;line-height:1;margin-top:1px;}}
+.tc .ts{{font-size:8px;color:var(--txt3);}}
+.g6{{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;}}
+.gp{{background:var(--bg3);border:1px solid var(--bd);border-radius:4px;padding:4px 5px;}}
+.gp .gk{{font-family:var(--head);font-size:8px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--txt3);}}
+.gp .gv{{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--acc2);line-height:1;margin-top:1px;}}
+.gp .gu{{font-size:7.5px;color:var(--txt3);}}
+.a4{{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;margin-top:3px;}}
+.ap{{background:var(--bg4);border:1px solid var(--bd);border-radius:4px;padding:3px 4px;text-align:center;}}
+.ap .ak{{font-size:7.5px;color:var(--txt3);font-family:var(--head);}}
+.ap .av{{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--txt2);}}
+.spd-lbl{{font-family:var(--head);font-size:8px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--txt3);margin:5px 0 3px;}}
+.spd-row{{display:grid;grid-template-columns:28px 1fr 46px;align-items:center;gap:3px;margin-bottom:2.5px;}}
+.sl{{font-family:var(--mono);font-size:8px;color:var(--txt3);}}
+.sw{{height:5px;background:var(--bg4);border-radius:3px;overflow:hidden;}}
+.sb2{{height:100%;border-radius:3px;}}
+.sv{{font-family:var(--mono);font-size:8px;color:var(--txt2);text-align:right;}}
+.dv{{height:1px;background:var(--bd);margin:5px 0;}}
+.mleg{{display:flex;gap:8px;margin-top:3px;flex-wrap:wrap;}}
+.ml{{font-size:8px;color:var(--txt3);display:flex;align-items:center;gap:3px;}}
+.mldot{{width:7px;height:7px;border-radius:50%;display:inline-block;}}
+.footer{{height:16px;display:flex;align-items:center;justify-content:space-between;
+  padding:0 9px;background:var(--bg2);border-top:1px solid var(--bd);}}
+.footer span{{font-family:var(--head);font-size:8px;letter-spacing:.8px;text-transform:uppercase;color:var(--txt3);}}
+.conf{{color:var(--acc)!important;font-weight:700;}}
 @media print{{
-  body,html{{background:#080D18!important;}}
+  body{{background:#06090F!important;padding:0;}}
   .page{{page-break-inside:avoid;}}
   @page{{size:A4;margin:0;}}
 }}
-</style>
-</head>
-<body>
-<div class="page">
-
-<!-- HEADER -->
-<div class="hdr">
-  {photo_html}
-  <div>
+</style></head>
+<body><div class="page">
+<div class="stripe"></div>
+<div class="header">
+  <div class="logo-blk">{pfc_logo_html}</div>
+  <div class="pi">
     <div class="pi-name">{player_label}</div>
-    <div class="pi-meta">
-      {'<span class="tag">'+poste_str+'</span>' if poste_str else ''}
-      {'<span class="tag">'+systeme_str+'</span>' if systeme_str else ''}
-      <span class="tag">{_g("duration_min", fb="—")} min de jeu</span>
+    <div class="tags">
+      {'<span class="tag hl">'+poste+'</span>' if poste else ''}
+      {'<span class="tag">'+systeme+'</span>' if systeme else ''}
+      <span class="tag hl">{temps_gps} min</span>
+      <span class="tag">{journee_tag}{competition}</span>
     </div>
     <div class="pi-sub">{meta_line}</div>
   </div>
-  <div>
-    <div class="hr-vs">{vs_line}</div>
-    {'<div class="hr-score">'+score+'</div>' if score else ''}
-    <div class="hr-sub">PARIS FC &nbsp;·&nbsp; RAPPORT MATCH</div>
+  <div class="mi">
+    <div class="mi-vs">Paris FC vs</div>
+    <div class="mi-adv">{adversaire or '—'}</div>
+    {'<div class="score">'+score+'</div>' if score else ''}
+    <div class="mi-sub">Rapport match</div>
   </div>
+  <div class="logo-blk r">{adv_logo_html}</div>
 </div>
-
-<!-- BODY -->
+<div class="kpi-bar">
+  <div class="kc"><div class="kn">{p_tot}</div><div class="kl">Passes</div></div>
+  <div class="kc"><div class="kn">{t_tot}</div><div class="kl">Tirs ({t_but_str})</div></div>
+  <div class="kc"><div class="kn">{d_tot}</div><div class="kl">Dribbles</div></div>
+  <div class="kc"><div class="kn" style="color:{grn_cond};">{du_ok}/{du_tot}</div><div class="kl">Duels déf.</div></div>
+</div>
 <div class="body">
-
-  <!-- COL GAUCHE -->
-  <div class="col">
-
-    <!-- Résumé rapide -->
-    <div class="card">
-      <div class="sec-title">Résumé du match</div>
-      <div class="kpi-g">
-        <div class="kpi-p"><div class="kv">{passes_tot}</div><div class="kl">Passes</div></div>
-        <div class="kpi-p"><div class="kv">{_s("tirs_tot","—")}</div><div class="kl">Tirs</div></div>
-        <div class="kpi-p"><div class="kv">{drib_tot}</div><div class="kl">Dribbles</div></div>
-        <div class="kpi-p"><div class="kv">{duels_tot}</div><div class="kl">Duels déf.</div></div>
+  <div class="col-l">
+    <div class="sec" style="flex:1;">
+      <div class="sec-hd">Technico-Tactique</div>
+      <div class="sb">
+        <div class="sb-row"><span class="sb-nm">Passes réussies</span>
+          <div class="bw"><div class="bf" style="width:{p_pct}%;background:var(--grn);"></div></div>
+          <span class="bp" style="color:var(--grn);">{p_pct}%</span></div>
+        <div class="sb-sub">{p_ok} réussies · {p_ko} ratées{' · '+str(passes_dt)+' dern.tiers' if passes_dt else ''}{' · '+str(passes_en1)+' en 1 tch.' if passes_en1 else ''}</div>
       </div>
-    </div>
-
-    <!-- Stats tactiques -->
-    <div class="card" style="flex:1;">
-      <div class="sec-title">Technico-Tactique</div>
-
-      <div class="s-row">
-        <span class="s-nm">Passes réussies</span>
-        <div class="s-bw"><div class="s-bb" style="width:{passes_pct}%;background:var(--grn);"></div></div>
-        <span class="s-vl" style="color:var(--grn);">{passes_pct}%</span>
+      <div class="g2">
+        <div class="gc"><div class="gt">Courtes</div>
+          <div class="gn" style="color:var(--grn);">{c_ok}<span style="font-size:11px;font-weight:400;color:var(--txt3);"> /{c_tot}</span></div>
+          <div class="gs">Réussite {c_pct}%</div></div>
+        <div class="gc"><div class="gt">Longues</div>
+          <div class="gn" style="color:var(--ylw);">{l_ok}<span style="font-size:11px;font-weight:400;color:var(--txt3);"> /{l_tot}</span></div>
+          <div class="gs">Réussite {l_pct}%</div></div>
       </div>
-      <div class="s-sub">{passes_ok} réussies · {passes_ko} ratées · {courtes_tot} courtes · {longues_tot} longues</div>
-
       <div class="dv"></div>
-
-      <div class="s-row">
-        <span class="s-nm">Dribbles réussis</span>
-        <div class="s-bw"><div class="s-bb" style="width:{drib_pct}%;background:var(--acc2);"></div></div>
-        <span class="s-vl" style="color:var(--acc2);">{drib_pct}%</span>
+      <div class="sb">
+        <div class="sb-row"><span class="sb-nm">Dribbles réussis</span>
+          <div class="bw"><div class="bf" style="width:{d_pct}%;background:var(--acc);"></div></div>
+          <span class="bp" style="color:var(--acc);">{d_pct}%</span></div>
+        <div class="sb-sub">{d_ok} réussis · {d_ko} ratés</div>
       </div>
-      <div class="s-sub">{drib_ok} réussis · {drib_ko} ratés</div>
-
       <div class="dv"></div>
-
-      <div class="s-row">
-        <span class="s-nm">Duels déf. gagnés</span>
-        <div class="s-bw"><div class="s-bb" style="width:{duels_pct}%;background:var(--org);"></div></div>
-        <span class="s-vl" style="color:var(--org);">{duels_pct}%</span>
+      <div class="sb">
+        <div class="sb-row"><span class="sb-nm">Duels défensifs</span>
+          <div class="bw"><div class="bf" style="width:{du_pct}%;background:var(--org);"></div></div>
+          <span class="bp" style="color:var(--org);">{du_pct}%</span></div>
+        <div class="sb-sub">{du_ok} gagnés · {du_ko} perdus</div>
       </div>
-      <div class="s-sub">{duels_ok} gagnés · {duels_ko} perdus</div>
-
+      <div class="g2">
+        <div class="gc"><div class="gt">Sol</div>
+          <div class="gn" style="color:var(--org);">{sol_ok}G/{sol_tot}<span style="font-size:10px;color:var(--txt3);"> {sol_pct}%</span></div>
+          <div class="gs">duels au sol</div></div>
+        <div class="gc"><div class="gt">Aérien</div>
+          <div class="gn" style="color:{'var(--org)' if aer_tot>0 else 'var(--txt3)'};">{'—' if aer_tot==0 else str(aer_ok)+'G/'+str(aer_tot)}</div>
+          <div class="gs">{'Aucun' if aer_tot==0 else 'duels aériens'}</div></div>
+      </div>
       <div class="dv"></div>
-
       <div class="tri">
-        <div class="tri-c"><div class="tl">Tirs cadrés</div>
-          <div class="tv">{_s("tirs_cadres","—")}<span style="font-size:8px;color:var(--mt2);"> / {_s("tirs_tot","—")}</span></div></div>
-        <div class="tri-c"><div class="tl">Récupérations</div>
-          <div class="tv" style="color:var(--grn);">{_s("recuperations","—")}</div></div>
-        <div class="tri-c"><div class="tl">Pertes de balle</div>
-          <div class="tv" style="color:var(--red);">{_s("pertes","—")}</div></div>
+        <div class="tc"><div class="tl">Tirs cadrés</div>
+          <div class="tv">{t_cad}<span style="font-size:11px;color:var(--txt3);"> /{t_tot}</span></div>
+          <div class="ts" style="color:var(--grn);">{'⚽ '+t_but_str if t_but>0 else '0 but'}</div></div>
+        <div class="tc"><div class="tl">Récupérations</div>
+          <div class="tv" style="color:var(--grn);">{recup}</div>
+          <div class="ts">Interceptions</div></div>
+        <div class="tc"><div class="tl">Pertes balle</div>
+          <div class="tv" style="color:var(--red);">{pertes}</div>
+          <div class="ts">sur {ballons} ballons</div></div>
       </div>
+      {('<div style="margin-top:4px;"><div class="sb-row"><span class="sb-nm">Créations de déséquilibre</span>'
+        '<div class="bw"><div class="bf" style="width:'+str(deseq_bar_pct)+'%;background:var(--acc2);"></div></div>'
+        '<span class="bp" style="color:var(--acc2);">'+str(creation_deseq)+'</span></div>'
+        '<div class="sb-sub">actions créant un déséquilibre</div></div>') if creation_deseq else ""}
     </div>
-
-    <!-- GPS -->
-    <div class="card">
-      <div class="sec-title">Physique Match GPS</div>
-      {'<div class="no-gps">Données GPS non disponibles pour ce match.</div>' if _gps is None else f"""
-      <div class="gps-g">
-        <div class="gps-p"><div class="gk">Distance</div><div class="gv">{_g("distance_m")}</div><div class="gu">m</div></div>
-        <div class="gps-p"><div class="gk">HID &gt;13 km/h</div><div class="gv">{_g("hid13_m")}</div><div class="gu">m</div></div>
-        <div class="gps-p"><div class="gk">HID &gt;19 km/h</div><div class="gv">{_g("hid19_m")}</div><div class="gu">m</div></div>
-        <div class="gps-p"><div class="gk">Vitesse max</div><div class="gv">{_g("vmax_kmh","{:.1f}")}</div><div class="gu">km/h</div></div>
-        <div class="gps-p"><div class="gk">Acc/Déc totaux</div><div class="gv">{_g("acc_dec")}</div><div class="gu">nb</div></div>
-        <div class="gps-p"><div class="gk">Charge</div><div class="gv">{_g("charge")}</div><div class="gu">UA</div></div>
+    <div class="sec">
+      <div class="sec-hd">Physique Match GPS</div>
+      <div class="g6">
+        <div class="gp"><div class="gk">Distance</div><div class="gv">{_g("distance_m","{:,.0f}")}</div><div class="gu">m</div></div>
+        <div class="gp"><div class="gk">HID >13</div><div class="gv">{_g("hid13_m","{:,.0f}")}</div><div class="gu">m</div></div>
+        <div class="gp"><div class="gk">HID >19</div><div class="gv">{_g("hid19_m","{:,.0f}")}</div><div class="gu">m</div></div>
+        <div class="gp"><div class="gk">V. max</div><div class="gv">{_g("vmax_kmh","{:.1f}")}</div><div class="gu">km/h</div></div>
+        <div class="gp"><div class="gk">Sprints >23</div><div class="gv">{_g("sprints_23","{:.0f}")}</div><div class="gu">nb</div></div>
+        <div class="gp"><div class="gk">Acc/Déc tot.</div><div class="gv">{_g("acc_dec","{:.0f}")}</div><div class="gu">nb</div></div>
       </div>
-      <div style="margin-top:6px;">
-        <div style="font-size:7px;color:var(--mt2);margin-bottom:3px;">RÉPARTITION PAR PLAGE DE VITESSE</div>
-        {speed_bars}
-      </div>"""}
+      <div class="a4">
+        <div class="ap"><div class="ak">Acc >2</div><div class="av">{_g("acc2","{:.0f}")}</div></div>
+        <div class="ap"><div class="ak">Acc >3</div><div class="av">{_g("acc3","{:.0f}")}</div></div>
+        <div class="ap"><div class="ak">Déc >2</div><div class="av">{_g("dec2","{:.0f}")}</div></div>
+        <div class="ap"><div class="ak">Déc >3</div><div class="av">{_g("dec3","{:.0f}")}</div></div>
+      </div>
+      <div class="spd-lbl">Répartition vitesse</div>
+      {spd_bars}
     </div>
-
   </div>
-
-  <!-- COL DROITE -->
-  <div class="col">
-
-    <!-- Radar KPI -->
-    <div class="card">
-      <div class="sec-title">Profil KPI</div>
-      {'<div class="radar-center">'+radar_svg+'</div>' if radar_svg else '<div class="no-radar">Données KPI non disponibles.</div>'}
-    </div>
-
-    <!-- Carte terrain -->
-    <div class="card" style="flex:1;">
-      <div class="sec-title">Carte du terrain</div>
-      <div class="tog-bar">
-        <button class="tog-btn on" id="btn-heat" onclick="setView(\'heat\')">🔥 Heatmap</button>
-        <button class="tog-btn" id="btn-pass" onclick="setView(\'pass\')">🎯 Passes</button>
-      </div>
-      <svg id="svg-heat" viewBox="0 0 100 68" width="100%" style="display:block;border-radius:4px;">
+  <div class="col-r">
+    <div class="sec">
+      <div class="sec-hd">Heatmap — Zone d'action</div>
+      <svg viewBox="0 0 100 68" width="100%" style="border-radius:4px;" xmlns="http://www.w3.org/2000/svg">
         <defs>
-          <clipPath id="clip-h"><rect x="1" y="1" width="98" height="66"/></clipPath>
+          <clipPath id="ch"><rect x="1" y="1" width="98" height="66"/></clipPath>
           <radialGradient id="hg" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stop-color="#00A3E0" stop-opacity="0.75"/>
+            <stop offset="0%" stop-color="#00A3E0" stop-opacity="0.9"/>
+            <stop offset="60%" stop-color="#00A3E0" stop-opacity="0.3"/>
             <stop offset="100%" stop-color="#00A3E0" stop-opacity="0"/>
           </radialGradient>
         </defs>
-        {pitch_svg_inner}
-        <g id="heat-pts" clip-path="url(#clip-h)"></g>
+        {PITCH}
+        <text x="2.5" y="65.5" font-size="4.5" fill="#1A3A10" font-family="Barlow Condensed,sans-serif">◀ BUT ADV</text>
+        <text x="72" y="65.5" font-size="4.5" fill="#1A3A10" font-family="Barlow Condensed,sans-serif">BUT PFC ▶</text>
+        <g id="heat-g" clip-path="url(#ch)"></g>
       </svg>
-      <svg id="svg-pass" viewBox="0 0 100 68" width="100%" style="display:none;border-radius:4px;">
-        <defs>
-          <clipPath id="clip-p"><rect x="1" y="1" width="98" height="66"/></clipPath>
-          <marker id="aOk" markerWidth="4" markerHeight="4" refX="2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#22C55E"/></marker>
-          <marker id="aKo" markerWidth="4" markerHeight="4" refX="2" refY="2" orient="auto"><path d="M0,0 L4,2 L0,4 Z" fill="#EF4444"/></marker>
-        </defs>
-        {pitch_svg_inner}
-        <g id="pass-arrows" clip-path="url(#clip-p)"></g>
-      </svg>
-      <div class="map-legend">
-        <span class="ml-item"><span class="ml-dot" style="background:#22C55E;"></span>Passe réussie</span>
-        <span class="ml-item"><span class="ml-dot" style="background:#EF4444;"></span>Passe ratée</span>
-        <span class="ml-item"><span class="ml-line" style="background:var(--acc2);opacity:.7;"></span>Zone d'action</span>
+    </div>
+    <div class="sec">
+      <div class="sec-hd">Passes depuis centroïde · directions</div>
+      <div style="display:flex;gap:6px;align-items:flex-start;">
+        <svg id="svg-pass" viewBox="0 0 100 68" style="flex:1;border-radius:4px;" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <clipPath id="cp"><rect x="1" y="1" width="98" height="66"/></clipPath>
+            <marker id="mOk" markerWidth="4" markerHeight="4" refX="3" refY="2" orient="auto"><path d="M0,0.5 L3.5,2 L0,3.5 Z" fill="#16C452"/></marker>
+            <marker id="mKo" markerWidth="4" markerHeight="4" refX="3" refY="2" orient="auto"><path d="M0,0.5 L3.5,2 L0,3.5 Z" fill="#E8383A"/></marker>
+          </defs>
+          {PITCH}
+          <g id="pass-g" clip-path="url(#cp)"></g>
+        </svg>
+        <svg id="svg-rose" viewBox="0 0 80 80" width="76" height="76" style="flex-shrink:0;" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+      <div class="mleg">
+        <span class="ml"><span class="mldot" style="background:var(--grn);"></span>Réussie</span>
+        <span class="ml"><span class="mldot" style="background:var(--red);"></span>Ratée</span>
+        <span class="ml" style="color:var(--txt3);">↗ AV=avant · ↙ AR=arrière</span>
       </div>
     </div>
-
+    <div class="sec" style="flex:1;">
+      <div class="sec-hd">Photo · destinations passes</div>
+      <div style="display:flex;gap:10px;align-items:flex-start;">
+        <div style="flex-shrink:0;">{photo_html}</div>
+        <div style="flex:1;">{dest_html if dest_html else '<div style="font-size:8px;color:var(--txt3);font-style:italic;">Non disponible</div>'}</div>
+      </div>
+    </div>
   </div>
 </div>
-
-<!-- FOOTER -->
 <div class="footer">
   <span>Paris Football Club · Rapport individuel de match</span>
   <span>{match_label}</span>
-  <span class="conf">CONFIDENTIEL</span>
+  <span class="conf">Confidentiel</span>
 </div>
-
 </div>
 <script>
-var LOCS={locs_json},PASSES={passes_json},NS="http://www.w3.org/2000/svg";
-function renderHeat(){{
-  var g=document.getElementById("heat-pts");g.innerHTML="";
+var NS="http://www.w3.org/2000/svg";
+var LD={locs_json};
+var PD={passes_json};
+var CX={cx:.2f},CY={cy:.2f};
+(function(){{
+  var g=document.getElementById("heat-g");if(!g)return;
   var den={{}};
-  LOCS.forEach(function(p){{var k=Math.round(p.x/4)*4+"_"+Math.round(p.y/4)*4;den[k]=(den[k]||0)+1;}});
-  LOCS.forEach(function(p){{
-    var k=Math.round(p.x/4)*4+"_"+Math.round(p.y/4)*4;
-    var d=Math.min(den[k],6);
+  LD.forEach(function(p){{var k=Math.round(p.x/6)*6+"_"+Math.round(p.y/6)*6;den[k]=(den[k]||0)+1;}});
+  LD.forEach(function(p){{
+    var k=Math.round(p.x/6)*6+"_"+Math.round(p.y/6)*6;var d=Math.min(den[k],10);
     var el=document.createElementNS(NS,"ellipse");
-    el.setAttribute("cx",p.x);el.setAttribute("cy",p.y);
-    el.setAttribute("rx",6+d);el.setAttribute("ry",4+d*0.6);
-    el.setAttribute("fill","url(#hg)");el.setAttribute("opacity",0.35+d*0.08);
+    el.setAttribute("cx",p.x.toFixed(1));el.setAttribute("cy",p.y.toFixed(1));
+    el.setAttribute("rx",(4+d*0.7).toFixed(1));el.setAttribute("ry",(3+d*0.5).toFixed(1));
+    el.setAttribute("fill","url(#hg)");el.setAttribute("opacity",(0.28+d*0.065).toFixed(2));
     g.appendChild(el);
   }});
-  if(LOCS.length>0){{
-    var cx=LOCS.reduce(function(a,b){{return a+b.x;}},0)/LOCS.length;
-    var cy=LOCS.reduce(function(a,b){{return a+b.y;}},0)/LOCS.length;
-    var c=document.createElementNS(NS,"circle");
-    c.setAttribute("cx",cx.toFixed(1));c.setAttribute("cy",cy.toFixed(1));
-    c.setAttribute("r","2");c.setAttribute("fill","#00A3E0");c.setAttribute("opacity","0.95");
-    g.appendChild(c);
-  }}
-}}
-function renderPass(){{
-  var g=document.getElementById("pass-arrows");g.innerHTML="";
-  var seen={{}};
-  PASSES.forEach(function(p){{
-    if(p.x1==null||p.x2==null)return;
-    var col=p.ok?"#22C55E":"#EF4444",mk=p.ok?"aOk":"aKo";
-    var key=Math.round(p.x1/3)+"_"+Math.round(p.y1/3)+"_"+Math.round(p.x2/3)+"_"+Math.round(p.y2/3);
-    var n=seen[key]||0;seen[key]=n+1;
-    var dx=p.x2-p.x1,dy=p.y2-p.y1,ln=Math.sqrt(dx*dx+dy*dy)||1;
-    var ox=(-dy/ln)*n*1.2,oy=(dx/ln)*n*1.2;
+  var c=document.createElementNS(NS,"circle");
+  c.setAttribute("cx",CX.toFixed(1));c.setAttribute("cy",CY.toFixed(1));
+  c.setAttribute("r","2");c.setAttribute("fill","#00A3E0");g.appendChild(c);
+  var ring=document.createElementNS(NS,"circle");
+  ring.setAttribute("cx",CX.toFixed(1));ring.setAttribute("cy",CY.toFixed(1));
+  ring.setAttribute("r","4");ring.setAttribute("fill","none");
+  ring.setAttribute("stroke","#00A3E0");ring.setAttribute("stroke-width","0.6");ring.setAttribute("opacity","0.55");
+  g.appendChild(ring);
+}})();
+(function(){{
+  var g=document.getElementById("pass-g");if(!g)return;
+  var cd=document.createElementNS(NS,"circle");
+  cd.setAttribute("cx",CX.toFixed(1));cd.setAttribute("cy",CY.toFixed(1));
+  cd.setAttribute("r","2.2");cd.setAttribute("fill","#00A3E0");
+  cd.setAttribute("stroke","#06090F");cd.setAttribute("stroke-width","0.8");
+  g.appendChild(cd);
+  PD.forEach(function(p){{
+    if(p.x==null||p.x===undefined)return;
+    var col=p.ok?"#16C452":"#E8383A",mk=p.ok?"mOk":"mKo";
     var line=document.createElementNS(NS,"line");
-    line.setAttribute("x1",p.x1+ox);line.setAttribute("y1",p.y1+oy);
-    line.setAttribute("x2",p.x2+ox);line.setAttribute("y2",p.y2+oy);
-    line.setAttribute("stroke",col);line.setAttribute("stroke-width",p.longue?"0.9":"0.6");
-    line.setAttribute("stroke-opacity",p.ok?"0.85":"0.65");
+    line.setAttribute("x1",CX.toFixed(1));line.setAttribute("y1",CY.toFixed(1));
+    line.setAttribute("x2",p.x.toFixed(1));line.setAttribute("y2",p.y.toFixed(1));
+    line.setAttribute("stroke",col);line.setAttribute("stroke-width",p.longue?"0.9":"0.55");
+    line.setAttribute("stroke-opacity",p.ok?"0.75":"0.55");
     line.setAttribute("marker-end","url(#"+mk+")");
     if(!p.ok)line.setAttribute("stroke-dasharray","1.5,1");
     g.appendChild(line);
-    var dot=document.createElementNS(NS,"circle");
-    dot.setAttribute("cx",p.x1+ox);dot.setAttribute("cy",p.y1+oy);
-    dot.setAttribute("r","1");dot.setAttribute("fill",col);dot.setAttribute("opacity","0.9");
-    g.appendChild(dot);
   }});
-}}
-function setView(m){{
-  document.getElementById("svg-heat").style.display=m==="heat"?"block":"none";
-  document.getElementById("svg-pass").style.display=m==="pass"?"block":"none";
-  document.getElementById("btn-heat").className="tog-btn"+(m==="heat"?" on":"");
-  document.getElementById("btn-pass").className="tog-btn"+(m==="pass"?" on":"");
-  if(m==="pass")renderPass();
-}}
-window.onload=function(){{renderHeat();}};
-</script>
-</body></html>"""
+}})();
+(function(){{
+  var svg=document.getElementById("svg-rose");if(!svg)return;
+  var cx=40,cy=40,rMax=28,rMin=3;
+  var SC=[
+    {{l:"AV",a:0,c:"#00A3E0"}},{{l:"D-AV",a:45,c:"#38BDF8"}},
+    {{l:"LAT-D",a:90,c:"#7A97B0"}},{{l:"D-AR",a:135,c:"#3A5570"}},
+    {{l:"AR",a:180,c:"#F4830A"}},{{l:"G-AR",a:225,c:"#3A5570"}},
+    {{l:"LAT-G",a:270,c:"#7A97B0"}},{{l:"G-AV",a:315,c:"#38BDF8"}}
+  ];
+  [0.4,0.7,1.0].forEach(function(fr){{
+    var r=document.createElementNS(NS,"circle");
+    r.setAttribute("cx",cx);r.setAttribute("cy",cy);
+    r.setAttribute("r",(rMin+(rMax-rMin)*fr).toFixed(1));
+    r.setAttribute("fill","none");r.setAttribute("stroke","#1C2A3C");r.setAttribute("stroke-width","0.6");
+    svg.appendChild(r);
+  }});
+  for(var i=0;i<8;i++){{
+    var a=i*45*Math.PI/180;
+    var sp=document.createElementNS(NS,"line");
+    sp.setAttribute("x1",cx);sp.setAttribute("y1",cy);
+    sp.setAttribute("x2",(cx+(rMax+2)*Math.cos(a)).toFixed(1));sp.setAttribute("y2",(cy+(rMax+2)*Math.sin(a)).toFixed(1));
+    sp.setAttribute("stroke","#1C2A3C");sp.setAttribute("stroke-width","0.6");
+    svg.appendChild(sp);
+  }}
+  var counts=new Array(8).fill(0);
+  PD.forEach(function(p){{
+    if(p.x==null)return;
+    var dx=p.x-CX,dy=p.y-CY;
+    var angle=Math.atan2(dy,dx)*180/Math.PI;
+    var norm=(angle+360)%360;
+    var sector=Math.round(norm/45)%8;
+    counts[sector]++;
+  }});
+  var maxC=Math.max.apply(null,counts)||1;
+  SC.forEach(function(s,i){{
+    var n=counts[i];if(n===0)return;
+    var r=rMin+(rMax-rMin)*n/maxC;
+    var a=s.a*Math.PI/180,hw=18*Math.PI/180;
+    var pts=[
+      [cx,cy],[cx+r*Math.cos(a-hw),cy+r*Math.sin(a-hw)],
+      [cx+r*Math.cos(a),cy+r*Math.sin(a)],[cx+r*Math.cos(a+hw),cy+r*Math.sin(a+hw)]
+    ].map(function(p){{return p[0].toFixed(1)+","+p[1].toFixed(1);}}).join(" ");
+    var poly=document.createElementNS(NS,"polygon");
+    poly.setAttribute("points",pts);poly.setAttribute("fill",s.c);
+    poly.setAttribute("fill-opacity","0.72");poly.setAttribute("stroke",s.c);poly.setAttribute("stroke-width","0.5");
+    svg.appendChild(poly);
+    var lr=r+7;
+    var t=document.createElementNS(NS,"text");
+    t.setAttribute("x",(cx+lr*Math.cos(a)).toFixed(1));t.setAttribute("y",(cy+lr*Math.sin(a)).toFixed(1));
+    t.setAttribute("text-anchor","middle");t.setAttribute("dominant-baseline","central");
+    t.setAttribute("font-size","6");t.setAttribute("font-family","Barlow Condensed,sans-serif");
+    t.setAttribute("font-weight","700");t.setAttribute("fill","#D4E3F0");
+    t.textContent=s.l+":"+n;svg.appendChild(t);
+  }});
+  var cd=document.createElementNS(NS,"circle");
+  cd.setAttribute("cx",cx);cd.setAttribute("cy",cy);cd.setAttribute("r","2");cd.setAttribute("fill","#00A3E0");
+  svg.appendChild(cd);
+  [{{a:0,l:"→AV"}},{{a:180,l:"←AR"}}].forEach(function(cm){{
+    var a=cm.a*Math.PI/180;
+    var t=document.createElementNS(NS,"text");
+    t.setAttribute("x",(cx+(rMax+9)*Math.cos(a)).toFixed(1));t.setAttribute("y",(cy+(rMax+9)*Math.sin(a)).toFixed(1));
+    t.setAttribute("text-anchor","middle");t.setAttribute("dominant-baseline","central");
+    t.setAttribute("font-size","5");t.setAttribute("fill","#3A5570");
+    t.setAttribute("font-family","Barlow Condensed,sans-serif");t.textContent=cm.l;svg.appendChild(t);
+  }});
+}})();
+</script></body></html>"""
+
 def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissions: dict, user_profile: str, tactical_files: list = None):
     """Affiche l'onglet GPS Match dans la page Données Physiques."""
 
@@ -5558,18 +5671,45 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                         match_date=pd.to_datetime(sel_row.get("date", None), errors="coerce") if isinstance(sel_row, dict) else None,
                         match_label=sel_match,
                     )
-                    # Photo joueuse en base64
+
+                    # Score + contexte depuis le fichier tactique (source fiable)
+                    _tac_ctx = _get_match_context(df_tactic)
+                    _tac_match_info = dict(sel_row)  # copie pour ne pas muter l'original
+                    _tac_match_info["score"] = f"{_tac_ctx.get('score_pfc','?')} – {_tac_ctx.get('score_adv','?')}"
+                    if not _tac_match_info.get("adversaire"):
+                        _tac_match_info["adversaire"] = _tac_ctx.get("adversaire", "")
+                    if not _tac_match_info.get("lieu"):
+                        _tac_match_info["lieu"] = _tac_ctx.get("lieu", "")
+                    if not _tac_match_info.get("journee"):
+                        _tac_match_info["journee"] = _tac_ctx.get("journee", "")
+                    _tac_match_info["competition"] = _tac_ctx.get("competition", _tac_match_info.get("competition", ""))
+
+                    # Photo joueuse — via concordance passerelle (même logique que l'onglet Passerelles)
                     _tac_photo_b64 = ''
                     try:
                         _cc = st.session_state.get('photo_concordance', {})
                         _pi = st.session_state.get('photos_index', {})
+                        # Essayer d'abord avec le nom canonique du fichier tactique
                         _pp = find_photo_for_player(sel_tac_player, concordance=_cc, photos_index=_pi)
-                        if _pp and os.path.exists(_pp):
+                        # Fallback : chercher dans la passerelle_data par correspondance de nom
+                        if not _pp:
+                            _pass_data = load_passerelle_data()
+                            _pnorm = nettoyer_nom_joueuse(sel_tac_player)
+                            for _pk, _pv in _pass_data.items():
+                                _full = f"{_pv.get('Nom','')} {_pv.get('Prénom','')}".strip()
+                                if nettoyer_nom_joueuse(_full) == _pnorm or nettoyer_nom_joueuse(_pk) == _pnorm:
+                                    _src = _pv.get("Photo", "")
+                                    if _src and os.path.exists(str(_src)):
+                                        _pp = str(_src)
+                                    break
+                        if _pp and os.path.exists(str(_pp)):
                             import base64 as _b64r
-                            with open(_pp, 'rb') as _pf:
-                                _tac_photo_b64 = 'data:image/jpeg;base64,' + _b64r.b64encode(_pf.read()).decode()
+                            _pb = load_photo_bytes(str(_pp))
+                            if _pb:
+                                _tac_photo_b64 = 'data:image/jpeg;base64,' + _b64r.b64encode(_pb).decode()
                     except Exception:
                         pass
+
                     # KPI joueuse
                     _tac_kpi_row = None
                     try:
@@ -5581,11 +5721,12 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                                 _tac_kpi_row = _kdf.iloc[0]
                     except Exception:
                         pass
+
                     html_report = build_tactical_report_html(
                         df_tactic, sel_tac_player,
                         gps_summary=gps_summary,
                         photo_b64=_tac_photo_b64,
-                        match_info=sel_row,
+                        match_info=_tac_match_info,
                         pfc_kpi_row=_tac_kpi_row,
                     )
                     _components.html(html_report, height=1120, scrolling=False)
