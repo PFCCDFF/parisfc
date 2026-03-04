@@ -45,13 +45,10 @@ DRIVE_GPS_FOLDER_ID = "1v4Iit4JlEDNACp2QWQVrP89j66zBqMFH"
 
 # Photos joueuses (Drive)
 DRIVE_PHOTOS_FOLDER_ID = "1h-BwepZc96K7VpidPiy8FEqNiE10GLdE"
-
-# Logos adversaires (Drive)
-ADV_LOGOS_FOLDER_ID = "1TCKyVOHzKynm6Z1fhKnNUKYDcN7NhMCj"
-ADV_LOGOS_FOLDER = os.path.join(DATA_FOLDER, "logos_adversaires")
 PHOTOS_FOLDER_ID = DRIVE_PHOTOS_FOLDER_ID  # alias rétro-compat
 PHOTOS_FOLDER = "data/photos"
 PHOTO_MAPPING_PATH = "data/photo_mapping.json"  # mapping manuel persistant : canon → filename
+GPS_NAME_MAP_PATH  = "data/gps_name_map.json"   # concordance GPS nom → nom canonique tactique
 
 # Fichiers attendus
 PERMISSIONS_FILENAME = "Classeurs permissions streamlit.xlsx"
@@ -84,93 +81,6 @@ def normalize_str(s: str) -> str:
     s = " ".join(s.split()).lower()
     return s
 
-
-
-# ------------------------------------------------------------------
-# Logos adversaires (cache local + matching)
-# ------------------------------------------------------------------
-def build_adv_logos_index_local(folder: str = ADV_LOGOS_FOLDER) -> Dict[str, str]:
-    """Indexe les logos adversaires présents en local.
-    Retour: {nom_normalise: chemin_fichier}
-    """
-    index: Dict[str, str] = {}
-    try:
-        if not folder:
-            return index
-        os.makedirs(folder, exist_ok=True)
-        for fn in os.listdir(folder):
-            if not isinstance(fn, str):
-                continue
-            ext = os.path.splitext(fn)[1].lower()
-            if ext not in {".png", ".jpg", ".jpeg", ".webp"}:
-                continue
-            base = os.path.splitext(fn)[0]
-            key = normalize_str(base)
-            if key:
-                index[key] = os.path.join(folder, fn)
-    except Exception:
-        # on ne bloque jamais l'app pour une histoire de logos
-        return index
-    return index
-
-
-def _best_logo_path_for_adversaire(adversaire: str, logos_index: Dict[str, str]) -> Optional[str]:
-    """Trouve le meilleur logo pour un adversaire à partir de l'index local."""
-    if not adversaire or not logos_index:
-        return None
-    target = normalize_str(adversaire)
-    if not target:
-        return None
-
-    # Match exact
-    if target in logos_index:
-        return logos_index[target]
-
-    # Match par tokens (ex: "paris fc" vs "paris-fc")
-    target_tokens = [t for t in target.split() if len(t) >= 2]
-    best_key = None
-    best_score = 0.0
-
-    for k in logos_index.keys():
-        k_tokens = [t for t in k.split() if len(t) >= 2]
-        if not k_tokens:
-            continue
-        inter = set(target_tokens).intersection(k_tokens)
-        union = set(target_tokens).union(k_tokens)
-        if not union:
-            continue
-        score = len(inter) / len(union)  # Jaccard simple
-        if score > best_score:
-            best_score = score
-            best_key = k
-
-    # fallback difflib si besoin
-    if (best_key is None) or (best_score < 0.34):
-        try:
-            from difflib import get_close_matches
-            candidates = get_close_matches(target, list(logos_index.keys()), n=1, cutoff=0.55)
-            if candidates:
-                best_key = candidates[0]
-        except Exception:
-            pass
-
-    return logos_index.get(best_key) if best_key else None
-
-
-def _logo_path_to_data_uri(path: Optional[str]) -> str:
-    """Convertit un fichier image en data URI pour l'HTML."""
-    if not path or (not os.path.exists(path)):
-        return ""
-    ext = os.path.splitext(path)[1].lower().lstrip(".")
-    if ext == "jpg":
-        ext = "jpeg"
-    mime = f"image/{ext}" if ext in {"png", "jpeg", "webp"} else "image/png"
-    try:
-        with open(path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("utf-8")
-        return f"data:{mime};base64,{b64}"
-    except Exception:
-        return ""
 
 def find_local_file_by_normalized_name(folder: str, target_name: str) -> Optional[str]:
     if not os.path.exists(folder):
@@ -701,6 +611,183 @@ def save_photo_manual_mapping(mapping: Dict[str, str]) -> None:
     os.makedirs(os.path.dirname(PHOTO_MAPPING_PATH), exist_ok=True)
     with open(PHOTO_MAPPING_PATH, "w", encoding="utf-8") as f:
         json.dump(mapping, f, ensure_ascii=False, indent=2)
+
+
+# ──────────────────────────────────────────────────────────────────
+# CONCORDANCE GPS ↔ NOMS CANONIQUES
+# ──────────────────────────────────────────────────────────────────
+def load_gps_name_map() -> Dict[str, str]:
+    """Charge le mapping GPS nom → canon depuis JSON. {gps_nom_clean: canon_tactique}"""
+    if not os.path.exists(GPS_NAME_MAP_PATH):
+        return {}
+    try:
+        with open(GPS_NAME_MAP_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_gps_name_map(mapping: Dict[str, str]) -> None:
+    os.makedirs(os.path.dirname(GPS_NAME_MAP_PATH), exist_ok=True)
+    with open(GPS_NAME_MAP_PATH, "w", encoding="utf-8") as f:
+        json.dump(mapping, f, ensure_ascii=False, indent=2)
+
+
+def get_gps_name_map() -> Dict[str, str]:
+    m = st.session_state.get("gps_name_map")
+    if m is None:
+        m = load_gps_name_map()
+        st.session_state["gps_name_map"] = m
+    return m
+
+
+def apply_gps_name_map(gps_nom_raw: str) -> str:
+    """Retourne le nom canonique si une concordance manuelle existe, sinon le nom original."""
+    m = get_gps_name_map()
+    key = normalize_name_raw(str(gps_nom_raw))
+    return m.get(key, gps_nom_raw)
+
+
+def auto_gps_concordance(gps_names: list, tac_names: list) -> Dict[str, str]:
+    """Propose des correspondances automatiques GPS → tactique par token-set matching.
+    Retourne {gps_nom_clean: canon_tactique_clean} pour les cas trouvés automatiquement."""
+    import difflib
+    result = {}
+    tac_clean = {normalize_name_raw(n): n for n in tac_names}
+    tac_tokens = {normalize_name_raw(n): set(normalize_name_raw(n).split()) for n in tac_names}
+
+    for gps in gps_names:
+        gps_c = normalize_name_raw(gps)
+        gps_toks = set(gps_c.split())
+
+        # 1. Exact match
+        if gps_c in tac_clean:
+            result[gps_c] = gps_c; continue
+
+        # 2. Token-set: tous les tokens GPS sont dans la cible (noms composés partiels)
+        best_canon, best_score = None, 0
+        for tc, toks in tac_tokens.items():
+            common = gps_toks & toks
+            if len(common) == 0: continue
+            # Score = mots communs / max(len GPS, len TAC)
+            score = len(common) / max(len(gps_toks), len(toks))
+            if score > best_score:
+                best_score = score
+                best_canon = tc
+
+        if best_canon and best_score >= 0.60:
+            result[gps_c] = best_canon; continue
+
+        # 3. Fuzzy fallback
+        matches = difflib.get_close_matches(gps_c, list(tac_clean.keys()), n=1, cutoff=0.75)
+        if matches:
+            result[gps_c] = matches[0]
+
+    return result
+
+
+def render_gps_concordance_ui(gps_match_df, tac_players: list):
+    """Affiche l'interface de concordance GPS ↔ noms tactiques dans les paramètres."""
+    st.markdown("#### 🔗 Concordance GPS ↔ Noms tactiques")
+    st.caption(
+        "Le GPS exporte les noms au format **Prénom NOM** parfois tronqués (ex: 'Lana BOUDINE' vs 'BOUDINE FAERBER Lana'). "
+        "Ici tu peux forcer la correspondance manuellement."
+    )
+
+    if gps_match_df is None or getattr(gps_match_df, "empty", True):
+        st.info("Aucune donnée GPS match chargée.")
+        return
+
+    # Noms GPS disponibles
+    gps_raw_names = sorted(
+        gps_match_df["NOM"].dropna().astype(str).str.strip().unique().tolist()
+    ) if "NOM" in gps_match_df.columns else []
+
+    if not gps_raw_names:
+        st.warning("Aucun nom trouvé dans la colonne 'NOM' du GPS.")
+        return
+
+    current_map = get_gps_name_map()
+    # Propositions auto (ne pas écraser les manuelles)
+    auto_map = auto_gps_concordance(gps_raw_names, tac_players)
+
+    # Merge: manual overrides auto
+    effective_map = {**auto_map, **{normalize_name_raw(k): v for k, v in current_map.items()}}
+
+    st.markdown("**Correspondances détectées / configurées**")
+
+    # Afficher chaque nom GPS avec un selectbox
+    tac_options = ["(aucune correspondance)"] + sorted(tac_players)
+    updated_map = {}
+    changed = False
+
+    cols_header = st.columns([3, 3, 2])
+    cols_header[0].markdown("**Nom dans le GPS**")
+    cols_header[1].markdown("**Nom tactique associé**")
+    cols_header[2].markdown("**Statut**")
+
+    for gps_name in gps_raw_names:
+        gps_c = normalize_name_raw(gps_name)
+        current_tac = effective_map.get(gps_c, None)
+        manual_set = gps_c in {normalize_name_raw(k) for k in current_map}
+        auto_found = gps_c in auto_map
+
+        if current_tac and current_tac in tac_options:
+            idx = tac_options.index(current_tac)
+        else:
+            # Try to find by normalized
+            matches_norm = [t for t in tac_options if normalize_name_raw(t) == (normalize_name_raw(current_tac) if current_tac else "")]
+            idx = tac_options.index(matches_norm[0]) if matches_norm else 0
+
+        cols = st.columns([3, 3, 2])
+        cols[0].markdown(f"`{gps_name}`")
+        sel = cols[1].selectbox(
+            label="",
+            options=tac_options,
+            index=idx,
+            key=f"gps_map_{gps_c}",
+            label_visibility="collapsed"
+        )
+        if sel != "(aucune correspondance)":
+            updated_map[gps_c] = sel
+            if manual_set:
+                cols[2].markdown("✏️ Manuel")
+            elif auto_found:
+                cols[2].markdown("🤖 Auto")
+            else:
+                cols[2].markdown("⚠️ Nouveau")
+        else:
+            cols[2].markdown("❌ Ignoré")
+
+    col_save, col_reset = st.columns(2)
+    if col_save.button("💾 Sauvegarder la concordance", type="primary"):
+        save_gps_name_map(updated_map)
+        st.session_state["gps_name_map"] = updated_map
+        st.success(f"✅ {len(updated_map)} correspondances sauvegardées.")
+        st.rerun()
+
+    if col_reset.button("🔄 Réinitialiser (auto seulement)"):
+        save_gps_name_map(auto_map)
+        st.session_state["gps_name_map"] = auto_map
+        st.info("Concordance réinitialisée sur les correspondances automatiques.")
+        st.rerun()
+
+    # Diagnostic
+    with st.expander("🔍 Diagnostic — joueuses non trouvées"):
+        mapped_tac = set(updated_map.values())
+        not_in_gps = [p for p in tac_players if p not in mapped_tac and normalize_name_raw(p) not in {normalize_name_raw(v) for v in updated_map.values()}]
+        if not_in_gps:
+            st.warning(f"{len(not_in_gps)} joueuse(s) tactiques sans GPS :")
+            for p in not_in_gps:
+                st.markdown(f"  - `{p}`")
+        else:
+            st.success("Toutes les joueuses tactiques ont une correspondance GPS.")
+
+        gps_unmapped = [g for g in gps_raw_names if normalize_name_raw(g) not in updated_map]
+        if gps_unmapped:
+            st.info(f"{len(gps_unmapped)} nom(s) GPS non associé(s) (remplaçantes non jouées ?) :")
+            for g in gps_unmapped:
+                st.markdown(f"  - `{g}`")
 
 
 def set_manual_photo(player_name: str, filename: str) -> None:
@@ -2037,25 +2124,6 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], 
 
     return ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons
 
-
-@st.cache_data(ttl=600, show_spinner=False)
-def get_referentiel_name_index() -> Tuple[Set[str], Dict[str, str], Dict[str, str], Dict[str, str], Dict[str, Set[str]], Dict[str, Set[str]]]:
-    """Construit (et met en cache) l'index de noms basé sur le référentiel 'Noms Prénoms Paris FC.xlsx'.
-
-    Cet index est utilisé pour faire des correspondances robustes par morceaux de nom
-    (même logique que l'onglet Passerelle / normalisation joueurs).
-    """
-    try:
-        ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
-        if not os.path.exists(ref_path):
-            alt = os.path.join(PASSERELLE_FOLDER, REFERENTIEL_FILENAME)
-            ref_path = alt if os.path.exists(alt) else ref_path
-        return build_referentiel_players(ref_path)
-    except Exception as e:
-        _warn(f"Référentiel noms: index indisponible → {e}")
-        return set(), {}, {}, {}, {}, {}
-
-
 def best_from_candidates(raw_clean: str, candidates: List[str], min_score: float = 0.88) -> Tuple[Optional[str], float, Optional[float]]:
     if not candidates:
         return None, 0.0, None
@@ -3376,8 +3444,17 @@ def load_gps_match(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon,
 
     # Mapper les noms vers les noms canoniques
     if "NOM" in result.columns:
+        # Appliquer d'abord la concordance manuelle GPS → canon
+        _gps_map = load_gps_name_map()
         mapped, statuses = [], []
         for v in result["NOM"].astype(str).tolist():
+            # 1. Concordance manuelle GPS
+            _vk = normalize_name_raw(v)
+            if _vk in _gps_map:
+                mapped.append(_gps_map[_vk])
+                statuses.append("gps_manual")
+                continue
+            # 2. Matching automatique via référentiel
             m, status, _ = map_player_name(v, ref_set, alias_to_canon, tokenkey_to_canon,
                                            compact_to_canon, first_to_canons, last_to_canons, cutoff_fuzzy=0.88)
             mapped.append(m)
@@ -3624,108 +3701,22 @@ def match_tactical_to_gps(gps_row: dict, tactical_files: list) -> "pd.DataFrame 
     return best_df if best_score >= 1.5 else None
 
 
-
 def _filter_player_rows(df_tactic, player_name):
-    """Filtre les lignes tactiques d'une joueuse.
-
-    Nouvelle logique: on réutilise l'index de noms (même esprit que l'onglet Passerelle)
-    pour faire des associations robustes par morceaux de nom entre:
-    - la colonne 'Row' (technico-tactique)
-    - le nom issu de la sélection joueuse (GPS / référentiel)
-    """
-    if df_tactic is None or df_tactic.empty or "Row" not in df_tactic.columns:
-        return df_tactic.iloc[0:0] if df_tactic is not None else pd.DataFrame()
-
-    raw_target = str(player_name or "").strip()
-    if not raw_target:
+    if "Row" not in df_tactic.columns:
         return df_tactic.iloc[0:0]
-
-    # 1) correspondance via l'index référentiel (par morceaux)
-    ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons = get_referentiel_name_index()
-
-    target_canon = None
-    if ref_set:
-        canon, status, _raw = map_player_name(
-            raw_target,
-            ref_set,
-            alias_to_canon,
-            tokenkey_to_canon,
-            compact_to_canon,
-            first_to_canons,
-            last_to_canons,
-            cutoff_fuzzy=0.88,
-            cutoff_token=0.88,
-            cutoff_single=0.88,
-        )
-        if status != "unmatched" and canon:
-            target_canon = canon
-
-    if target_canon:
-        cache = {}
-
-        def _row_to_canon(v: str) -> str:
-            if v in cache:
-                return cache[v]
-            canon2, stt2, _ = map_player_name(
-                v,
-                ref_set,
-                alias_to_canon,
-                tokenkey_to_canon,
-                compact_to_canon,
-                first_to_canons,
-                last_to_canons,
-                cutoff_fuzzy=0.86,
-                cutoff_token=0.86,
-                cutoff_single=0.86,
-            )
-            cache[v] = canon2 if stt2 != "unmatched" else ""
-            return cache[v]
-
-        rows = df_tactic["Row"].dropna().astype(str)
-        row_canons = rows.apply(_row_to_canon)
-
-        mask = row_canons.eq(target_canon)
-        d = df_tactic.loc[mask].copy()
-        if not d.empty:
-            return d
-
-        # fallback: inclusion tokens du canon (cas export atypique)
-        toks = tokens_name(target_canon)
-        if toks:
-            rk = rows.map(normalize_name_raw)
-            toks2 = [t for t in toks if len(t) > 2]
-            if toks2:
-                mask2 = rk.apply(lambda x: all(t in x for t in toks2))
-                d2 = df_tactic.loc[mask2].copy()
-                if not d2.empty:
-                    return d2
-
-    # 2) fallback "ancienne méthode" (nettoyage + inclusion tokens)
-    pk = nettoyer_nom_joueuse(raw_target)
-    if not pk:
-        return df_tactic.iloc[0:0]
-
-    rows = df_tactic["Row"].dropna().astype(str)
-    rk = rows.apply(nettoyer_nom_joueuse)
-
-    mask = rk == pk
+    player_norm = normalize_str(player_name)
+    mask = df_tactic["Row"].dropna().apply(
+        lambda x: normalize_str(str(x)) == player_norm or
+                  player_norm in normalize_str(str(x)) or
+                  normalize_str(str(x)) in player_norm
+    )
     d = df_tactic[mask].copy()
-    if not d.empty:
-        return d
-
-    pk_tokens = [t for t in pk.split() if len(t) > 1]
-    if pk_tokens:
-        mask2 = rk.apply(lambda x: all(t in x for t in pk_tokens))
-        d2 = df_tactic[mask2].copy()
-        if not d2.empty:
-            return d2
-
-    for tok in [t for t in pk_tokens if len(t) > 3]:
-        m3 = rk.apply(lambda x: tok in x)
-        if m3.sum() > 0:
-            return df_tactic[m3].copy()
-
-    return df_tactic.iloc[0:0]
+    if d.empty:
+        for tok in [t for t in player_norm.split() if len(t) > 2]:
+            m2 = df_tactic["Row"].dropna().apply(lambda x: tok in normalize_str(str(x)))
+            if m2.sum() > 0:
+                return df_tactic[m2].copy()
+    return d
 
 
 def compute_tactical_stats(df_tactic, player_name):
@@ -5139,21 +5130,6 @@ def build_tactical_report_html(
     locs_json=_json.dumps(s.get("locs",[]))
     passes_json=_json.dumps(s.get("passes_map",[]))
     locs=s.get("locs",[])
-    flip_x_report=True  # sens de l'attaque : corrige inversion gauche/droite
-    def _fx(v):
-        try:
-            return None if v is None else (100.0 - float(v) if flip_x_report else float(v))
-        except Exception:
-            return v
-    if flip_x_report and locs:
-        locs=[{**l,'x':_fx(l.get('x'))} for l in locs]
-    # passes_map
-    _pm=s.get('passes_map',[])
-    if flip_x_report and _pm:
-        _pm=[{**p,'x':_fx(p.get('x')),'x2':_fx(p.get('x2'))} for p in _pm]
-    s['passes_map']=_pm
-    locs_json=_json.dumps(locs)
-    passes_json=_json.dumps(s.get('passes_map',[]))
     cx=sum(l["x"] for l in locs)/len(locs) if locs else 50.0
     cy=sum(l["y"] for l in locs)/len(locs) if locs else 34.0
 
@@ -5176,7 +5152,6 @@ def build_tactical_report_html(
             _pr = str(_r.get("Poste","") or "").strip().split(",")[0].strip()
             if _xr is None or _yr is None or not _pr: continue
             _svgx = round(_xr * 100/80, 2)
-            if flip_x_report: _svgx = round(100.0 - _svgx, 2)
             _svgy = round(_yr * 68/80, 2)
             _player_poste_pts.setdefault((_rn, _pr), []).append((_svgx, _svgy))
 
@@ -5497,8 +5472,8 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
           </radialGradient>
         </defs>
         {PITCH}
-        <text x="3" y="65.5" font-size="4" fill="#1A3D10" font-family="Barlow Condensed,sans-serif">◀ BUT PFC</text>
-        <text x="73" y="65.5" font-size="4" fill="#1A3D10" font-family="Barlow Condensed,sans-serif">BUT ADV ▶</text>
+        <text x="3" y="65.5" font-size="4" fill="#1A3D10" font-family="Barlow Condensed,sans-serif">◀ BUT ADV</text>
+        <text x="73" y="65.5" font-size="4" fill="#1A3D10" font-family="Barlow Condensed,sans-serif">BUT PFC ▶</text>
         <g id="heat-g" clip-path="url(#cph)"></g>
       </svg>
     </div>
@@ -5525,7 +5500,7 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
           <span style="width:7px;height:7px;border-radius:50%;background:#EF4444;display:inline-block;"></span>Ratée</span>
         <span style="font-size:9px;color:#4A6A88;">↗ AV=avant · ←AR=arrière</span>
       </div>
-      <svg id="svg-rose" viewBox="-5 0 210 125" width="100%" height="125"
+      <svg id="svg-rose" viewBox="-5 0 210 110" width="100%" height="105"
            style="display:block;" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
 
@@ -5558,29 +5533,54 @@ var PC={_player_centroid_json};
 // ── HEATMAP avec centroïdes par poste ────────────────────────────────────────
 (function(){{
   var g=document.getElementById("heat-g");if(!g)return;
-  // Density ellipses supprimées (on garde uniquement les centroïdes)
+  // Density ellipses
+  var den={{}};
+  LD.forEach(function(p){{var k=Math.round(p.x/6)*6+"_"+Math.round(p.y/6)*6;den[k]=(den[k]||0)+1;}});
+  LD.forEach(function(p){{
+    var k=Math.round(p.x/6)*6+"_"+Math.round(p.y/6)*6;var d=Math.min(den[k],10);
+    var el=document.createElementNS(NS,"ellipse");
+    el.setAttribute("cx",p.x.toFixed(1));el.setAttribute("cy",p.y.toFixed(1));
+    el.setAttribute("rx",(4.5+d*0.75).toFixed(1));el.setAttribute("ry",(3.2+d*0.55).toFixed(1));
+    el.setAttribute("fill","url(#hg)");el.setAttribute("opacity",(0.30+d*0.065).toFixed(2));
+    g.appendChild(el);
+  }});
   // Centroïdes par poste (petits losanges gris + label)
   RC.forEach(function(rc){{
     if(rc.isPlayer) return; // la joueuse sera tracée en rouge après
-    if(rc.poste===PC.poste) return; // ne pas afficher le poste de référence si la joueuse joue à ce poste
     var cx2=rc.cx,cy2=rc.cy;
     // Losange
     var sz=2.0;
     var pts=[cx2+","+( cy2-sz)+" "+(cx2+sz)+","+cy2+" "+cx2+","+(cy2+sz)+" "+(cx2-sz)+","+cy2];
     var d=document.createElementNS(NS,"polygon");
     d.setAttribute("points",pts.join(""));
-    d.setAttribute("fill","#FFFFFF");d.setAttribute("stroke","#07111C");d.setAttribute("stroke-width","0.5");
+    d.setAttribute("fill","#3A5570");d.setAttribute("stroke","#07111C");d.setAttribute("stroke-width","0.5");
     d.setAttribute("opacity","0.9");
     g.appendChild(d);
     // Label poste
     var t=document.createElementNS(NS,"text");
     t.setAttribute("x",(cx2+2.4).toFixed(1));t.setAttribute("y",(cy2-2.2).toFixed(1));
     t.setAttribute("font-size","3.8");t.setAttribute("font-family","Barlow Condensed,sans-serif");
-    t.setAttribute("font-weight","700");t.setAttribute("fill","#FFFFFF");
+    t.setAttribute("font-weight","700");t.setAttribute("fill","#3A5570");
     t.textContent=rc.poste;g.appendChild(t);
   }});
-    // Centroïde de référence du poste (orange) supprimé : on garde uniquement la joueuse.
-// Centroïde propre de la joueuse (rouge — sa position réelle au poste principal)
+  // Centroïde de référence du poste de la joueuse (= moyenne poste, en orange)
+  // puis centroïde propre de la joueuse à ce poste (rouge)
+  // D'abord marquer le centroïde de référence du poste concerné plus visible
+  RC.forEach(function(rc){{
+    if(rc.poste!==PC.poste) return;
+    var cx2=rc.cx,cy2=rc.cy;
+    var halo=document.createElementNS(NS,"circle");
+    halo.setAttribute("cx",cx2.toFixed(1));halo.setAttribute("cy",cy2.toFixed(1));
+    halo.setAttribute("r","4.5");halo.setAttribute("fill","none");
+    halo.setAttribute("stroke","#F4830A");halo.setAttribute("stroke-width","0.8");halo.setAttribute("opacity","0.5");
+    g.appendChild(halo);
+    var sz=2.2;var pts2=cx2+","+(cy2-sz)+" "+(cx2+sz)+","+cy2+" "+cx2+","+(cy2+sz)+" "+(cx2-sz)+","+cy2;
+    var d2=document.createElementNS(NS,"polygon");
+    d2.setAttribute("points",pts2);d2.setAttribute("fill","#F4830A");
+    d2.setAttribute("stroke","#07111C");d2.setAttribute("stroke-width","0.5");d2.setAttribute("opacity","0.95");
+    g.appendChild(d2);
+  }});
+  // Centroïde propre de la joueuse (rouge — sa position réelle au poste principal)
   (function(){{
     var cx2=PC.cx,cy2=PC.cy;
     var halo=document.createElementNS(NS,"circle");
@@ -5635,7 +5635,7 @@ var PC={_player_centroid_json};
 (function(){{
   var svg=document.getElementById("svg-rose");if(!svg)return;
   // viewBox "-5 0 210 100" → rose centrée à (100,50), r=38
-  var cx=100,cy=60,rMax=56,rMin=6;
+  var cx=100,cy=53,rMax=44,rMin=5;
   var SC=[
     {{l:"AV",     a:-90, c:"#00A3E0"}},
     {{l:"D▸AV",   a:-45, c:"#38BDF8"}},
@@ -6044,20 +6044,8 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                     except Exception:
                         pass
 
-                    # Logo adversaire (Drive -> cache local)
-                    try:
-                        # Reuse downloader (conversion jpg) pour les logos
-                        sync_photos_from_drive(folder_id=ADV_LOGOS_FOLDER_ID, local_folder=ADV_LOGOS_FOLDER)
-                    except Exception:
-                        pass
-                    logos_index = build_adv_logos_index_local()
-                    adv_logo_path = _best_logo_path_for_adversaire(str(sel_row.get("adversaire","") or ""), logos_index)
-                    adv_logo_data = _logo_path_to_data_uri(adv_logo_path) if adv_logo_path else ""
-                    # Injecter le logo adversaire dans le contexte match utilisé par le rapport
-                    if adv_logo_data:
-                        _tac_match_info["logo_adversaire"] = adv_logo_data
-
-                    html_report = build_tactical_report_html(df_tactic, sel_tac_player,
+                    html_report = build_tactical_report_html(
+                        df_tactic, sel_tac_player,
                         gps_summary=gps_summary,
                         photo_b64=_tac_photo_b64,
                         match_info=_tac_match_info,
@@ -6620,8 +6608,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
         gps_match = st.session_state.get("gps_match_df", pd.DataFrame())
 
-        tab_raw, tab_week, tab_graph, tab_match = st.tabs(
-            ["🧾 Données brutes par joueuse", "📅 Moyennes 7 jours (glissant)", "📈 Graphique MD-6 → MD", "⚽ GPS Match"]
+        tab_raw, tab_week, tab_graph, tab_match, tab_concordance = st.tabs(
+            ["🧾 Données brutes par joueuse", "📅 Moyennes 7 jours (glissant)", "📈 Graphique MD-6 → MD", "⚽ GPS Match", "🔗 Concordance noms"]
         )
 
         with tab_raw:
@@ -6779,6 +6767,23 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         with tab_match:
             tactical_files = load_tactical_files()
             _render_gps_match_tab(gps_match, player_name, permissions, user_profile, tactical_files)
+
+        # ── CONCORDANCE GPS NOMS ────────────────────────────────────────────────
+        with tab_concordance:
+            # Récupérer les joueuses tactiques disponibles depuis toutes sources
+            _tac_players_all = []
+            for _ss_key in ["kpi_df", "pfc_kpi_df"]:
+                _kdf = st.session_state.get(_ss_key)
+                if _kdf is not None and not getattr(_kdf, "empty", True) and "Player" in _kdf.columns:
+                    _tac_players_all += _kdf["Player"].dropna().astype(str).unique().tolist()
+            # Compléter avec les noms GPS déjà mappés (pour ne pas perdre des associations)
+            _gps_match_df = st.session_state.get("gps_match_df", pd.DataFrame())
+            if _tac_players_all:
+                _tac_players_all = sorted(set(_tac_players_all))
+            else:
+                st.info("Charge d'abord des données tactiques pour disposer de la liste des joueuses.")
+            render_gps_concordance_ui(_gps_match_df, _tac_players_all)
+
 
     elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
@@ -7353,7 +7358,7 @@ def main():
         --pfc-blue:   #00A3E0;
         --pfc-blue2:  #007AB8;
         --pfc-white:  #FFFFFF;
-        --pfc-text:   #FFFFFF;
+        --pfc-text:   #C8D8E8;
         --pfc-muted:  #6A8090;
         --pfc-border: rgba(0, 163, 224, 0.18);
         --pfc-card:   rgba(12, 18, 32, 0.9);
@@ -7365,17 +7370,6 @@ def main():
         font-family: 'Inter', sans-serif;
         color: var(--pfc-text);
     }
-
-    html, body, [class*="css"]  { font-size: 18px !important; }
-    .stMarkdown, .stText, .stCaption, .stDataFrame, .stTable, .stSelectbox, .stMultiSelect, .stCheckbox, .stRadio, .stSlider,
-    .stNumberInput, .stTextInput, .stTextArea, .stDateInput, .stTimeInput, .stFileUploader, .stMetric, .stButton, .stDownloadButton,
-    .stAlert, .stExpander, .stTabs, .stForm, .stToast { color: #FFFFFF !important; }
-    label, .stSelectbox label, .stMultiSelect label, .stRadio label, .stCheckbox label, .stSlider label, .stTextInput label,
-    .stTextArea label, .stNumberInput label { color: #FFFFFF !important; font-size: 15px !important; }
-    .stMarkdown p, .stMarkdown li { font-size: 16px !important; color:#FFFFFF !important; }
-    .stMarkdown h1 { font-size: 36px !important; }
-    .stMarkdown h2 { font-size: 28px !important; }
-    .stMarkdown h3 { font-size: 22px !important; }
     /* Lueur bleue subtile en haut */
     .stApp::before {
         content: '';
