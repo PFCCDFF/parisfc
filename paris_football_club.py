@@ -3513,19 +3513,25 @@ def is_tactical_file(filename: str) -> bool:
 
 
 def parse_tactical_filename(filename: str) -> dict:
-    """Extrait date, adversaire et journée depuis le nom d'un fichier tactique.
+    """Extrait date, adversaire, journée et saison depuis le nom d'un fichier tactique.
 
-    Les exports Sportscode/Hudl ne sont pas toujours homogènes. On tente donc plusieurs formats de date
-    (DD-MM-YYYY, DD.MM.YY, YYYY-MM-DD, YYYYMMDD, etc.) et on garde des champs 'label' stables.
-    Exemples:
-      - PFC_VS__2526_U19F_HAC_J10_U19_07-12-2025.csv
-      - U19 NAT J12 Paris FC - OL_2026-01-27.csv
-      - ..._27.01.26.csv
+    Formats connus :
+      - PFC_VS__2526_U19F_HAC_J10_U19_07-12-2025.csv   -> 25/26 · J10 · HAC
+      - PFC_VS_ 2425 U19F MHSC_P2J4_U19_02-03-2025.csv -> 24/25 · J04 · MHSC
+      - U19_2_J02_Paris_FC_-_OL_Lyonnes_25_01_26.csv   -> J02 · OL Lyonnes
+      - U19_2_J03_PSG_-_Paris_FC_07_02_26.csv          -> J03 · PSG
     """
     name = os.path.splitext(os.path.basename(filename))[0]
-    info = {"date": None, "journee": "", "adversaire": "", "adv_norm": "", "label": name}
+    info = {"date": None, "journee": "", "adversaire": "", "adv_norm": "", "saison": "", "label": name}
 
-    # Date (robuste)
+    # Saison : 4 chiffres AABB consecutifs (ex: 2526 = 25/26)
+    sais_m = re.search(r'(?<![0-9])(\d{2})(\d{2})(?![0-9])', name)
+    if sais_m:
+        a1, a2 = int(sais_m.group(1)), int(sais_m.group(2))
+        if 20 <= a1 <= 30 and a2 == a1 + 1:
+            info["saison"] = f"{a1}/{a2}"
+
+    # Date
     dt = extract_any_date_from_string(name)
     if dt is not None and pd.notna(dt):
         try:
@@ -3533,69 +3539,41 @@ def parse_tactical_filename(filename: str) -> dict:
         except Exception:
             pass
 
-    # Journée : J suivi de chiffres (J1, J12, etc.)
-    j_m = re.search(r"\bJ\s*(\d{1,2})\b", name, re.IGNORECASE) or re.search(r"[_\-]J(\d+)[_\-]", name, re.IGNORECASE)
-    if j_m:
-        info["journee"] = str(j_m.group(1)).zfill(2)
-
-    # Adversaire (heuristique)
-    # Cas 1 : pattern historique PFC_VS__..._ADV_Jxx
-    adv_m = re.search(r"PFC_VS__[^_]+_[^_]+_([A-Za-zÀ-ÿ][^_]+?)_J\d+", name, re.IGNORECASE)
-    adv = None
-    if adv_m:
-        adv = adv_m.group(1).replace("_", " ").strip()
-    else:
-        # Cas 2 : libellé 'Paris FC - ADV' ou 'PFC - ADV'
-        m2 = re.search(r"(?:Paris\s*FC|PFC)\s*[-–vsVS]+\s*([^_]+)", name, re.IGNORECASE)
-        if m2:
-            adv = m2.group(1).strip()
-            # Nettoie éventuels suffixes (date / Jxx)
-            adv = re.sub(r"\bJ\s*\d{1,2}\b.*$", "", adv, flags=re.IGNORECASE).strip()
-            adv = re.sub(r"\d{4}[-\./]\d{2}[-\./]\d{2}.*$", "", adv).strip()
-            adv = re.sub(r"\d{2}[-\./]\d{2}[-\./]\d{2,4}.*$", "", adv).strip()
-        else:
-            # Cas 3 : dans le nom, dernier token alphabétique avant la date
-            if info.get("date") is not None:
-                # retire la date détectée puis prend le dernier segment
-                tmp = name
-                # supprimer la sous-chaine correspondant au premier match de date
-                tmp = re.sub(r"\b\d{4}[-\./]\d{1,2}[-\./]\d{1,2}\b", " ", tmp)
-                tmp = re.sub(r"\b\d{1,2}[-\./]\d{1,2}[-\./]\d{2,4}\b", " ", tmp)
-                tmp = re.sub(r"\b\d{8}\b", " ", tmp)
-                tokens = [t for t in re.split(r"[_\-]", tmp) if t and any(ch.isalpha() for ch in t)]
-                if tokens:
-                    adv = tokens[-1].replace("_", " ").strip()
-
-    if adv:
-        info["adversaire"] = adv
-        info["adv_norm"] = normalize_str(adv)
-
-    return info
-
-
-    # Date : DD-MM-YYYY
-    date_m = re.search(r"(\d{2})-(\d{2})-(\d{4})", name)
-    if date_m:
-        d, m, y = date_m.groups()
-        try:
-            info["date"] = pd.Timestamp(f"{y}-{m}-{d}")
-        except Exception:
-            pass
-
-    # Journée : J suivi de chiffres
-    j_m = re.search(r"[_\-]J(\d+)[_\-]", name, re.IGNORECASE)
-    if j_m:
+    # Journee P2J4 ou Jxx
+    pj_m = re.search(r'[_\s]P\d+J(\d{1,2})[_\s]', name, re.IGNORECASE)
+    j_m  = re.search(r'[_\s\-]J0*(\d{1,2})[_\s\-]', name, re.IGNORECASE)
+    if pj_m:
+        info["journee"] = pj_m.group(1).zfill(2)
+    elif j_m:
         info["journee"] = j_m.group(1).zfill(2)
 
-    # Adversaire : après PFC_VS__SAISON_CAT_ et avant _Jxx
-    adv_m = re.search(r"PFC_VS__[^_]+_[^_]+_([A-Za-z][^_]+?)_J\d+", name, re.IGNORECASE)
+    # Adversaire
+    adv = None
+    # Cas 1 : PFC_VS__SSSS_CAT_ADV_Jxx
+    adv_m = re.search(
+        r'PFC_VS_[\s_]+\d{4}[\s_]+\w+[\s_]+([A-Za-z\u00C0-\u024F][\w\s]+?)[\s_]+(?:P\d+)?J\d+',
+        name, re.IGNORECASE)
     if adv_m:
         adv = adv_m.group(1).replace("_", " ").strip()
+    # Cas 2 : Paris_FC_-_ADV
+    if not adv:
+        m2 = re.search(r'Paris[_\s]+FC[_\s]*-[_\s]*([A-Za-z\u00C0-\u024F][A-Za-z\u00C0-\u024F_\s]+)', name, re.IGNORECASE)
+        if m2:
+            adv = m2.group(1).replace("_", " ").strip()
+            adv = re.sub(r'\s*\d+\s*', ' ', adv).strip()
+    # Cas 3 : ADV_-_Paris_FC
+    if not adv:
+        m3 = re.search(r'([A-Za-z\u00C0-\u024F][A-Za-z\u00C0-\u024F_\s]+?)[_\s]*-[_\s]*Paris', name, re.IGNORECASE)
+        if m3:
+            adv = m3.group(1).replace("_", " ").strip()
+            adv = re.sub(r'\s*\d+\s*', ' ', adv).strip()
+    if adv:
+        adv = re.sub(r'\b(U19F?|U17|U16|U15|NAT|CSV)\b', '', adv, flags=re.IGNORECASE)
+        adv = re.sub(r'\s{2,}', ' ', adv).strip(" _-")
         info["adversaire"] = adv
-        info["adv_norm"] = normalize_str(adv)
+        info["adv_norm"]   = normalize_str(adv)
 
     return info
-
 
 def _adv_similarity(a: str, b: str) -> float:
     """Score de similarité entre deux noms d'adversaires normalisés."""
@@ -5888,17 +5866,17 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                             tac_jrnee = str(gps_row_r.get("__journee", "")).lstrip("J")
                         break
 
-            # Construire le libellé lisible : "J10 · HAC — 07/12/2025"
+            # Construire le libellé : "25/26 · J10 · HAC"  (rien d'autre)
             parts = []
+            saison = tac.get("saison", "")
+            if saison:
+                # Format court : "25/26" au lieu de "2025/2026"
+                saison_court = re.sub(r"20(\d{2})/20(\d{2})", r"\1/\2", saison)
+                parts.append(saison_court)
             if tac_jrnee:
                 parts.append(f"J{tac_jrnee}")
             if tac_adv:
                 parts.append(tac_adv)
-            if tac_date is not None and pd.notna(tac_date):
-                try:
-                    parts.append(pd.Timestamp(tac_date).strftime("%d/%m/%Y"))
-                except Exception:
-                    pass
             display_label = " · ".join(parts) if parts else tac_label
 
             match_rows.append({
