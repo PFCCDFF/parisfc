@@ -5968,9 +5968,9 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                     logos_index = build_adv_logos_index_local()
                     adv_logo_path = _best_logo_path_for_adversaire(str(sel_row.get("adversaire","") or ""), logos_index)
                     adv_logo_data = _logo_path_to_data_uri(adv_logo_path) if adv_logo_path else ""
-                    match_info = match_info or {}
+                    # Injecter le logo adversaire dans le contexte match utilisé par le rapport
                     if adv_logo_data:
-                        match_info["logo_adversaire"] = adv_logo_data
+                        _tac_match_info["logo_adversaire"] = adv_logo_data
 
                     html_report = build_tactical_report_html(df_tactic, sel_tac_player,
                         gps_summary=gps_summary,
