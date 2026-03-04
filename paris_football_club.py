@@ -3755,7 +3755,7 @@ def compute_tactical_stats(df_tactic, player_name):
         # PFC attaque vers la droite : x grand Sportscode = BUT PFC (droite SVG)
         return round(max(1.5, min(98.5, raw)), 1)
 
-    def _norm_y(v): return round(max(1.5, min(66.5, float(v) * _SVG_H / _FIELD_MAX)), 1)
+    def _norm_y(v): return round(max(1.5, min(66.5, _SVG_H - float(v) * _SVG_H / _FIELD_MAX)), 1)
 
     pass_map = []
     for _, r in pass_rows.iterrows():
@@ -5153,7 +5153,7 @@ def build_tactical_report_html(
             _svgx_raw = _xr * 100/80
             # PFC attaque vers la droite : même mapping que _norm_x, sans inversion
             _svgx = round(max(1.5, min(98.5, _svgx_raw)), 2)
-            _svgy = round(_yr * 68/80, 2)
+            _svgy = round(max(1.5, min(66.5, 68.0 - _yr * 68/80)), 2)
             _player_poste_pts.setdefault((_rn, _pr), []).append((_svgx, _svgy))
 
     # Étape 2 : centroïde individuel par (joueuse, poste)
@@ -5612,7 +5612,8 @@ var PC={_player_centroid_json};
   PD.forEach(function(p){{
     if(p.x==null)return;
     // AV = vers BUT PFC = droite SVG = dx positif
-    var dx=p.x-CX,dy=p.y-CY;
+    // Y inversé dans SVG : dy positif SVG = vers bas = vers DG (gauche terrain)
+    var dx=p.x-CX,dy=CY-p.y;
     var angle=Math.atan2(dy,dx)*180/Math.PI;
     var norm=(angle+360)%360;
     var sector=Math.round(norm/45)%8;
