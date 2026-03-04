@@ -3757,8 +3757,8 @@ def compute_tactical_stats(df_tactic, player_name):
         raw = float(v) * _SVG_W / _FIELD_MAX
         if inst is not None and inst in _mt2_inst:
             raw = _SVG_W - raw  # inversion côté MT2
-        # Inverser X : dans Sportscode, x petit = BUT PFC (droite SVG), x grand = BUT ADV (gauche SVG)
-        return round(max(1.5, min(98.5, _SVG_W - raw)), 1)
+        # PFC attaque vers la droite : x grand Sportscode = BUT PFC (droite SVG)
+        return round(max(1.5, min(98.5, raw)), 1)
 
     def _norm_y(v): return round(max(1.5, min(66.5, float(v) * _SVG_H / _FIELD_MAX)), 1)
 
@@ -3896,6 +3896,9 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
         return None
 
     p = nettoyer_nom_joueuse(player_name)
+    # Filtrer d'abord les lignes agrégats (totaux équipe = NOM vide ou NaN)
+    if "NOM" in df.columns:
+        df = df[df["NOM"].notna() & (df["NOM"].astype(str).str.strip().str.lower() != "nan") & (df["NOM"].astype(str).str.strip() != "")].copy()
     df = df[df["Player"].astype(str).apply(nettoyer_nom_joueuse) == p].copy()
     if df.empty:
         return None
@@ -5153,10 +5156,8 @@ def build_tactical_report_html(
             _pr = str(_r.get("Poste","") or "").strip().split(",")[0].strip()
             if _xr is None or _yr is None or not _pr: continue
             _svgx_raw = _xr * 100/80
-            # Inverser X : dans Sportscode, x petit = BUT PFC (droite SVG), x grand = BUT ADV (gauche SVG)
-            # Pas de correction MT2 ici : les centroïdes sont des moyennes sur tout le match,
-            # les locs MT1 et MT2 étant déjà normalisées dans locs_json via _norm_x
-            _svgx = round(max(1.5, min(98.5, 100.0 - _svgx_raw)), 2)
+            # PFC attaque vers la droite : même mapping que _norm_x, sans inversion
+            _svgx = round(max(1.5, min(98.5, _svgx_raw)), 2)
             _svgy = round(_yr * 68/80, 2)
             _player_poste_pts.setdefault((_rn, _pr), []).append((_svgx, _svgy))
 
@@ -5583,14 +5584,14 @@ var PC={_player_centroid_json};
   // On place la rose centrée sur le centroïde (CX, CY), rayon max = 18 unités terrain
   var rcx=CX, rcy=CY, rRMax=17, rRMin=2;
   var SC2=[
-    {{l:"AV",     a:-90, c:"#00A3E0"}},
-    {{l:"D▸AV",   a:-45, c:"#38BDF8"}},
-    {{l:"LAT▸",   a:0,   c:"#64748B"}},
-    {{l:"D▸AR",   a:45,  c:"#475569"}},
-    {{l:"AR",     a:90,  c:"#F4830A"}},
-    {{l:"G▸AR",   a:135, c:"#475569"}},
-    {{l:"◂LAT",   a:180, c:"#64748B"}},
-    {{l:"G▸AV",   a:-135,c:"#38BDF8"}},
+    {{l:"AV",     a:0,   c:"#00A3E0"}},
+    {{l:"D▸AV",   a:45,  c:"#38BDF8"}},
+    {{l:"LAT▸",   a:90,  c:"#64748B"}},
+    {{l:"D▸AR",   a:135, c:"#475569"}},
+    {{l:"AR",     a:180, c:"#F4830A"}},
+    {{l:"G▸AR",   a:-135,c:"#475569"}},
+    {{l:"◂LAT",   a:-90, c:"#64748B"}},
+    {{l:"G▸AV",   a:-45, c:"#38BDF8"}},
   ];
   // Cercles de fond
   [0.33,0.66,1.0].forEach(function(fr){{
@@ -5615,9 +5616,8 @@ var PC={_player_centroid_json};
   var counts2=new Array(8).fill(0);
   PD.forEach(function(p){{
     if(p.x==null)return;
-    // X est inversé dans le SVG (BUT ADV = gauche = x petit), donc inverser dx
-    // pour que AV (vers but adverse) = dx négatif → on inverse pour mapping AV=angle 0
-    var dx=CX-p.x,dy=p.y-CY;
+    // AV = vers BUT PFC = droite SVG = dx positif
+    var dx=p.x-CX,dy=p.y-CY;
     var angle=Math.atan2(dy,dx)*180/Math.PI;
     var norm=(angle+360)%360;
     var sector=Math.round(norm/45)%8;
