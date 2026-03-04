@@ -2037,6 +2037,25 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], 
 
     return ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons
 
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_referentiel_name_index() -> Tuple[Set[str], Dict[str, str], Dict[str, str], Dict[str, str], Dict[str, Set[str]], Dict[str, Set[str]]]:
+    """Construit (et met en cache) l'index de noms basé sur le référentiel 'Noms Prénoms Paris FC.xlsx'.
+
+    Cet index est utilisé pour faire des correspondances robustes par morceaux de nom
+    (même logique que l'onglet Passerelle / normalisation joueurs).
+    """
+    try:
+        ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
+        if not os.path.exists(ref_path):
+            alt = os.path.join(PASSERELLE_FOLDER, REFERENTIEL_FILENAME)
+            ref_path = alt if os.path.exists(alt) else ref_path
+        return build_referentiel_players(ref_path)
+    except Exception as e:
+        _warn(f"Référentiel noms: index indisponible → {e}")
+        return set(), {}, {}, {}, {}, {}
+
+
 def best_from_candidates(raw_clean: str, candidates: List[str], min_score: float = 0.88) -> Tuple[Optional[str], float, Optional[float]]:
     if not candidates:
         return None, 0.0, None
@@ -3605,28 +3624,95 @@ def match_tactical_to_gps(gps_row: dict, tactical_files: list) -> "pd.DataFrame 
     return best_df if best_score >= 1.5 else None
 
 
-def _filter_player_rows(df_tactic, player_name):
-    """Filtre les lignes tactiques d'une joueuse avec une normalisation robuste.
 
-    Objectif : mieux raccorder les noms entre sources (tactique / GPS / référentiel).
+def _filter_player_rows(df_tactic, player_name):
+    """Filtre les lignes tactiques d'une joueuse.
+
+    Nouvelle logique: on réutilise l'index de noms (même esprit que l'onglet Passerelle)
+    pour faire des associations robustes par morceaux de nom entre:
+    - la colonne 'Row' (technico-tactique)
+    - le nom issu de la sélection joueuse (GPS / référentiel)
     """
     if df_tactic is None or df_tactic.empty or "Row" not in df_tactic.columns:
         return df_tactic.iloc[0:0] if df_tactic is not None else pd.DataFrame()
 
-    pk = nettoyer_nom_joueuse(player_name)
+    raw_target = str(player_name or "").strip()
+    if not raw_target:
+        return df_tactic.iloc[0:0]
+
+    # 1) correspondance via l'index référentiel (par morceaux)
+    ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons = get_referentiel_name_index()
+
+    target_canon = None
+    if ref_set:
+        canon, status, _raw = map_player_name(
+            raw_target,
+            ref_set,
+            alias_to_canon,
+            tokenkey_to_canon,
+            compact_to_canon,
+            first_to_canons,
+            last_to_canons,
+            cutoff_fuzzy=0.88,
+            cutoff_token=0.88,
+            cutoff_single=0.88,
+        )
+        if status != "unmatched" and canon:
+            target_canon = canon
+
+    if target_canon:
+        cache = {}
+
+        def _row_to_canon(v: str) -> str:
+            if v in cache:
+                return cache[v]
+            canon2, stt2, _ = map_player_name(
+                v,
+                ref_set,
+                alias_to_canon,
+                tokenkey_to_canon,
+                compact_to_canon,
+                first_to_canons,
+                last_to_canons,
+                cutoff_fuzzy=0.86,
+                cutoff_token=0.86,
+                cutoff_single=0.86,
+            )
+            cache[v] = canon2 if stt2 != "unmatched" else ""
+            return cache[v]
+
+        rows = df_tactic["Row"].dropna().astype(str)
+        row_canons = rows.apply(_row_to_canon)
+
+        mask = row_canons.eq(target_canon)
+        d = df_tactic.loc[mask].copy()
+        if not d.empty:
+            return d
+
+        # fallback: inclusion tokens du canon (cas export atypique)
+        toks = tokens_name(target_canon)
+        if toks:
+            rk = rows.map(normalize_name_raw)
+            toks2 = [t for t in toks if len(t) > 2]
+            if toks2:
+                mask2 = rk.apply(lambda x: all(t in x for t in toks2))
+                d2 = df_tactic.loc[mask2].copy()
+                if not d2.empty:
+                    return d2
+
+    # 2) fallback "ancienne méthode" (nettoyage + inclusion tokens)
+    pk = nettoyer_nom_joueuse(raw_target)
     if not pk:
         return df_tactic.iloc[0:0]
 
     rows = df_tactic["Row"].dropna().astype(str)
     rk = rows.apply(nettoyer_nom_joueuse)
 
-    # 1) match exact sur clé nettoyée
     mask = rk == pk
     d = df_tactic[mask].copy()
     if not d.empty:
         return d
 
-    # 2) match par inclusion (tokens)
     pk_tokens = [t for t in pk.split() if len(t) > 1]
     if pk_tokens:
         mask2 = rk.apply(lambda x: all(t in x for t in pk_tokens))
@@ -3634,7 +3720,6 @@ def _filter_player_rows(df_tactic, player_name):
         if not d2.empty:
             return d2
 
-    # 3) fallback : match "au moins un token long"
     for tok in [t for t in pk_tokens if len(t) > 3]:
         m3 = rk.apply(lambda x: tok in x)
         if m3.sum() > 0:
