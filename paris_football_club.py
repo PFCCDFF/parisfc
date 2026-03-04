@@ -4946,14 +4946,15 @@ def build_tactical_report_html(
     cx=sum(l["x"] for l in locs)/len(locs) if locs else 50.0
     cy=sum(l["y"] for l in locs)/len(locs) if locs else 34.0
 
-    # ── Centroïdes par poste (toutes joueuses PFC du fichier tactique)
+    # ── Centroïdes par poste — moyenne des centroïdes individuels par joueuse
     def _parse_coord(v):
         v=str(v).strip()
         if not v or v in ("nan","None",""): return None
         try: return float(v.split(",")[0].strip())
         except: return None
 
-    _poste_pts = {}  # {poste: [(svgX, svgY), ...]}
+    # Étape 1 : centroïde individuel de chaque joueuse pour chaque poste joué
+    _player_poste_pts = {}  # {(player, poste): [(svgX, svgY)]}
     if df_tactic is not None and not df_tactic.empty:
         _skip = {"PFC","HAC","START",""}
         for _,_r in df_tactic.iterrows():
@@ -4965,25 +4966,44 @@ def build_tactical_report_html(
             if _xr is None or _yr is None or not _pr: continue
             _svgx = round(_xr * 100/80, 2)
             _svgy = round(_yr * 68/80, 2)
-            _poste_pts.setdefault(_pr, []).append((_svgx, _svgy))
+            _player_poste_pts.setdefault((_rn, _pr), []).append((_svgx, _svgy))
 
-    # Centroïde par poste → {poste: (cx, cy)}
-    _poste_centroids = {
-        p: (sum(x for x,y in pts)/len(pts), sum(y for x,y in pts)/len(pts))
-        for p, pts in _poste_pts.items() if pts
+    # Étape 2 : centroïde individuel par (joueuse, poste)
+    _indiv_centroids = {
+        (pl, po): (sum(x for x,y in pts)/len(pts), sum(y for x,y in pts)/len(pts))
+        for (pl, po), pts in _player_poste_pts.items() if pts
     }
 
-    # Poste principal de la joueuse (mode des lignes Row==player_canon)
-    _player_poste = poste  # déjà calculé depuis compute_tactical_stats
-    # Centroïde de référence = centroïde du poste de la joueuse (rouge)
-    _ref_cx, _ref_cy = _poste_centroids.get(_player_poste, (None, None))
+    # Étape 3 : centroïde du poste = moyenne des centroïdes individuels de ce poste
+    _poste_indiv = {}  # {poste: [(cx_indiv, cy_indiv)]}
+    for (pl, po), (cx2, cy2) in _indiv_centroids.items():
+        _poste_indiv.setdefault(po, []).append((cx2, cy2))
+    _poste_centroids = {
+        po: (sum(x for x,y in items)/len(items), sum(y for x,y in items)/len(items))
+        for po, items in _poste_indiv.items()
+    }
 
-    # Préparer JSON pour JS: [{poste, cx, cy, isPlayer}, ...]
+    # Étape 4 : poste principal de la joueuse sélectionnée = poste le plus joué (max n actions)
+    _player_postes = {po: len(pts) for (pl, po), pts in _player_poste_pts.items()
+                      if pl == player_label and pts}
+    _player_main_poste = max(_player_postes, key=_player_postes.get) if _player_postes else poste
+
+    # Étape 5 : centroïde propre de la joueuse à son poste principal
+    _player_own_centroid = _indiv_centroids.get((player_label, _player_main_poste), (None, None))
+
+    # JSON pour JS : centroïdes de référence par poste + centroïde propre de la joueuse
     _ref_centroids_json = _json.dumps([
-        {"poste": p, "cx": round(cx2,2), "cy": round(cy2,2),
-         "isPlayer": (p == _player_poste)}
-        for p, (cx2, cy2) in sorted(_poste_centroids.items())
+        {"poste": po, "cx": round(cx2,2), "cy": round(cy2,2),
+         "isPlayer": False}
+        for po, (cx2, cy2) in sorted(_poste_centroids.items())
     ])
+    # Centroïde propre de la joueuse (rouge) — séparé pour l'afficher différemment
+    _player_cx, _player_cy = _player_own_centroid if _player_own_centroid[0] is not None else (cx, cy)
+    _player_centroid_json = _json.dumps({
+        "poste": _player_main_poste,
+        "cx": round(_player_cx, 2),
+        "cy": round(_player_cy, 2)
+    })
 
     # GPS vitesses
     spd_data=[
@@ -4999,10 +5019,10 @@ def build_tactical_report_html(
         pct=int(val/max_spd*100)
         spd_bars+=(
             f'<div style="display:grid;grid-template-columns:30px 1fr 52px;align-items:center;gap:4px;margin-bottom:3px;">'
-            f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:9px;color:#4A6580;">{lbl}</span>'
+            f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:9px;color:#7A9AB8;">{lbl}</span>'
             f'<div style="height:6px;background:#0A1520;border-radius:3px;overflow:hidden;">'
             f'<div style="height:100%;width:{pct}%;background:{col};border-radius:3px;"></div></div>'
-            f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:9px;color:#7A9AB8;text-align:right;">{int(val):,} m</span>'
+            f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:9px;color:#A0BDD0;text-align:right;">{int(val):,} m</span>'
             f'</div>'
         )
 
@@ -5061,11 +5081,11 @@ def build_tactical_report_html(
             dest_html+=(
                 f'<div style="display:grid;grid-template-columns:1fr 50px 20px;'
                 f'align-items:center;gap:4px;margin-bottom:4px;">'
-                f'<span style="font-size:11px;color:#7A9AB8;font-family:Barlow,sans-serif;">{short}</span>'
+                f'<span style="font-size:11px;color:#A8C4D8;font-family:Barlow,sans-serif;">{short}</span>'
                 f'<div style="height:5px;background:#0A1520;border-radius:3px;overflow:hidden;">'
                 f'<div style="height:100%;width:{pct2}%;background:#00A3E0;border-radius:3px;"></div></div>'
                 f'<span style="font-family:JetBrains Mono,monospace;font-size:9.5px;'
-                f'color:#D4E3F0;text-align:right;font-weight:600;">{cnt}</span>'
+                f'color:#E0EDF5;text-align:right;font-weight:600;">{cnt}</span>'
                 f'</div>'
             )
 
@@ -5091,12 +5111,12 @@ def build_tactical_report_html(
         return (
             f'<div style="margin-bottom:6px;">'
             f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px;">'
-            f'<span style="font-family:Barlow,sans-serif;font-size:12px;color:#7A9AB8;">{lbl}</span>'
+            f'<span style="font-family:Barlow,sans-serif;font-size:12px;color:#A8C4D8;">{lbl}</span>'
             f'<span style="font-family:JetBrains Mono,monospace;font-size:13px;font-weight:600;color:{col};">{pct}%</span>'
             f'</div>'
             f'<div style="height:6px;background:#0A1520;border-radius:3px;overflow:hidden;margin-bottom:2px;">'
             f'<div style="height:100%;width:{pct}%;background:{col};border-radius:3px;"></div></div>'
-            f'<div style="font-size:10px;color:#3A5570;">{detail}</div>'
+            f'<div style="font-size:10px;color:#6A8898;">{detail}</div>'
             f'</div>'
         )
 
@@ -5104,10 +5124,10 @@ def build_tactical_report_html(
         return (
             f'<div style="background:#080F1C;border:1px solid #101E2E;border-radius:5px;padding:5px 7px;">'
             f'<div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:700;'
-            f'letter-spacing:.8px;text-transform:uppercase;color:#2A4060;margin-bottom:2px;">{t}</div>'
+            f'letter-spacing:.8px;text-transform:uppercase;color:#5A7A98;margin-bottom:2px;">{t}</div>'
             f'<div style="font-family:Barlow Condensed,sans-serif;font-size:18px;font-weight:800;'
             f'color:{col};line-height:1;">{v}</div>'
-            f'<div style="font-size:9.5px;color:#2A4060;margin-top:1px;">{sub}</div>'
+            f'<div style="font-size:9.5px;color:#5A7A98;margin-top:1px;">{sub}</div>'
             f'</div>'
         )
 
@@ -5159,24 +5179,24 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
         letter-spacing:.5px;color:#FFFFFF;line-height:1;text-transform:uppercase;">{player_label}</div>
       <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;">
         {'<span style="font-family:Barlow Condensed,sans-serif;font-size:11.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;padding:3px 10px;border-radius:3px;border:1.5px solid #00A3E0;color:#00A3E0;background:rgba(0,163,224,0.1);">'+poste+'</span>' if poste else ''}
-        {'<span style="font-family:Barlow Condensed,sans-serif;font-size:11.5px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;padding:3px 10px;border-radius:3px;border:1px solid #1A2E44;color:#5A7A98;background:#09131E;">'+systeme+'</span>' if systeme else ''}
+        {'<span style="font-family:Barlow Condensed,sans-serif;font-size:11.5px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;padding:3px 10px;border-radius:3px;border:1px solid #1A2E44;color:#8AABCA;background:#09131E;">'+systeme+'</span>' if systeme else ''}
         <span style="font-family:Barlow Condensed,sans-serif;font-size:11.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;padding:3px 10px;border-radius:3px;border:1.5px solid #00A3E0;color:#00A3E0;background:rgba(0,163,224,0.1);">{temps_gps} MIN</span>
-        <span style="font-family:Barlow Condensed,sans-serif;font-size:11.5px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;padding:3px 10px;border-radius:3px;border:1px solid #1A2E44;color:#5A7A98;background:#09131E;">{journee_tag} · {competition}</span>
+        <span style="font-family:Barlow Condensed,sans-serif;font-size:11.5px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;padding:3px 10px;border-radius:3px;border:1px solid #1A2E44;color:#8AABCA;background:#09131E;">{journee_tag} · {competition}</span>
       </div>
-      <div style="font-size:10.5px;color:#2A4060;font-family:Barlow Condensed,sans-serif;letter-spacing:.5px;">{meta_line}</div>
+      <div style="font-size:10.5px;color:#5A7A98;font-family:Barlow Condensed,sans-serif;letter-spacing:.5px;">{meta_line}</div>
     </div>
   </div>
 
   <!-- Droite : score + logo adverse -->
   <div style="display:flex;align-items:center;gap:14px;padding:11px 16px;border-left:1px solid #0F1E2E;">
     <div style="text-align:center;">
-      <div style="font-family:Barlow Condensed,sans-serif;font-size:10px;font-weight:600;color:#2A4060;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:3px;">Paris FC vs {adversaire}</div>
+      <div style="font-family:Barlow Condensed,sans-serif;font-size:10px;font-weight:600;color:#5A7A98;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:3px;">Paris FC vs {adversaire}</div>
       {'<div style="font-family:JetBrains Mono,monospace;font-size:30px;font-weight:600;color:#FFFFFF;background:#09131E;border:1.5px solid #1A2E44;border-radius:8px;padding:3px 14px;letter-spacing:4px;">'+score+'</div>' if score else ''}
-      <div style="font-family:Barlow Condensed,sans-serif;font-size:9px;color:#2A4060;letter-spacing:.6px;text-transform:uppercase;margin-top:3px;">Rapport match</div>
+      <div style="font-family:Barlow Condensed,sans-serif;font-size:9px;color:#5A7A98;letter-spacing:.6px;text-transform:uppercase;margin-top:3px;">Rapport match</div>
     </div>
     <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
       {adv_logo_html}
-      <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;color:#2A4060;letter-spacing:.5px;text-transform:uppercase;">{adversaire or "ADV"}</div>
+      <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;color:#5A7A98;letter-spacing:.5px;text-transform:uppercase;">{adversaire or "ADV"}</div>
     </div>
   </div>
 </div><!-- /header -->
@@ -5191,16 +5211,16 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
     <div style="display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid #0F1E2E;background:#060F1A;flex-shrink:0;">
       <div style="padding:5px 8px;text-align:center;border-right:1px solid #0F1E2E;">
         <div style="font-family:Barlow Condensed,sans-serif;font-size:24px;font-weight:800;color:#FFF;line-height:1;">{p_tot}</div>
-        <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#2A4060;margin-top:1px;">Passes</div></div>
+        <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#5A7A98;margin-top:1px;">Passes</div></div>
       <div style="padding:5px 8px;text-align:center;border-right:1px solid #0F1E2E;">
         <div style="font-family:Barlow Condensed,sans-serif;font-size:24px;font-weight:800;color:#FFF;line-height:1;">{t_tot}</div>
-        <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#2A4060;margin-top:1px;">Tirs ({t_but_str})</div></div>
+        <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#5A7A98;margin-top:1px;">Tirs ({t_but_str})</div></div>
       <div style="padding:5px 8px;text-align:center;border-right:1px solid #0F1E2E;">
         <div style="font-family:Barlow Condensed,sans-serif;font-size:24px;font-weight:800;color:#FFF;line-height:1;">{d_tot}</div>
-        <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#2A4060;margin-top:1px;">Dribbles</div></div>
+        <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#5A7A98;margin-top:1px;">Dribbles</div></div>
       <div style="padding:5px 8px;text-align:center;">
         <div style="font-family:Barlow Condensed,sans-serif;font-size:24px;font-weight:800;color:{grn_du};line-height:1;">{du_ok}/{du_tot}</div>
-        <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#2A4060;margin-top:1px;">Duels déf.</div></div>
+        <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#5A7A98;margin-top:1px;">Duels déf.</div></div>
     </div>
 
     <!-- TECHNICO-TACTIQUE -->
@@ -5242,7 +5262,7 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
         {mcard("Déc >3", _g("dec3","{:.0f}"), "nb", "#5A7A98")}
       </div>
       <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:700;
-        letter-spacing:1.2px;text-transform:uppercase;color:#2A4060;margin-bottom:4px;">Répartition vitesse</div>
+        letter-spacing:1.2px;text-transform:uppercase;color:#6A8898;margin-bottom:4px;">Répartition vitesse</div>
       {spd_bars}
     </div>
 
@@ -5287,13 +5307,13 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
         <g id="pass-g" clip-path="url(#cpp)"></g>
       </svg>
       <div style="display:flex;gap:10px;margin:3px 0 4px;">
-        <span style="font-size:9.5px;color:#2A4060;display:flex;align-items:center;gap:3px;">
+        <span style="font-size:9.5px;color:#5A7A98;display:flex;align-items:center;gap:3px;">
           <span style="width:7px;height:7px;border-radius:50%;background:#22C55E;display:inline-block;"></span>Réussie</span>
-        <span style="font-size:9.5px;color:#2A4060;display:flex;align-items:center;gap:3px;">
+        <span style="font-size:9.5px;color:#5A7A98;display:flex;align-items:center;gap:3px;">
           <span style="width:7px;height:7px;border-radius:50%;background:#EF4444;display:inline-block;"></span>Ratée</span>
-        <span style="font-size:9px;color:#1A2E44;">↗ AV=avant · ←AR=arrière</span>
+        <span style="font-size:9px;color:#4A6A88;">↗ AV=avant · ←AR=arrière</span>
       </div>
-      <svg id="svg-rose" viewBox="-5 0 210 100" width="100%" height="88"
+      <svg id="svg-rose" viewBox="-5 0 210 110" width="100%" height="105"
            style="display:block;" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
 
@@ -5309,8 +5329,8 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
 <!-- FOOTER -->
 <div style="height:18px;display:flex;align-items:center;justify-content:space-between;
   padding:0 11px;background:#060F1A;border-top:1px solid #0F1E2E;flex-shrink:0;">
-  <span style="font-family:Barlow Condensed,sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#1A2E44;">Paris Football Club · Rapport individuel de match</span>
-  <span style="font-family:Barlow Condensed,sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#1A2E44;">{match_label}</span>
+  <span style="font-family:Barlow Condensed,sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#3A5A70;">Paris Football Club · Rapport individuel de match</span>
+  <span style="font-family:Barlow Condensed,sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#3A5A70;">{match_label}</span>
   <span style="font-family:Barlow Condensed,sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#00A3E0;font-weight:700;">Confidentiel</span>
 </div>
 
@@ -5321,6 +5341,7 @@ var LD={locs_json};
 var PD={passes_json};
 var CX={cx:.2f},CY={cy:.2f};
 var RC={_ref_centroids_json};
+var PC={_player_centroid_json};
 
 // ── HEATMAP avec centroïdes par poste ────────────────────────────────────────
 (function(){{
@@ -5355,29 +5376,42 @@ var RC={_ref_centroids_json};
     t.setAttribute("font-weight","700");t.setAttribute("fill","#3A5570");
     t.textContent=rc.poste;g.appendChild(t);
   }});
-  // Centroïde joueuse (rouge — son poste principal)
+  // Centroïde de référence du poste de la joueuse (= moyenne poste, en orange)
+  // puis centroïde propre de la joueuse à ce poste (rouge)
+  // D'abord marquer le centroïde de référence du poste concerné plus visible
   RC.forEach(function(rc){{
-    if(!rc.isPlayer) return;
+    if(rc.poste!==PC.poste) return;
     var cx2=rc.cx,cy2=rc.cy;
-    // Halo
+    var halo=document.createElementNS(NS,"circle");
+    halo.setAttribute("cx",cx2.toFixed(1));halo.setAttribute("cy",cy2.toFixed(1));
+    halo.setAttribute("r","4.5");halo.setAttribute("fill","none");
+    halo.setAttribute("stroke","#F4830A");halo.setAttribute("stroke-width","0.8");halo.setAttribute("opacity","0.5");
+    g.appendChild(halo);
+    var sz=2.2;var pts2=cx2+","+(cy2-sz)+" "+(cx2+sz)+","+cy2+" "+cx2+","+(cy2+sz)+" "+(cx2-sz)+","+cy2;
+    var d2=document.createElementNS(NS,"polygon");
+    d2.setAttribute("points",pts2);d2.setAttribute("fill","#F4830A");
+    d2.setAttribute("stroke","#07111C");d2.setAttribute("stroke-width","0.5");d2.setAttribute("opacity","0.95");
+    g.appendChild(d2);
+  }});
+  // Centroïde propre de la joueuse (rouge — sa position réelle au poste principal)
+  (function(){{
+    var cx2=PC.cx,cy2=PC.cy;
     var halo=document.createElementNS(NS,"circle");
     halo.setAttribute("cx",cx2.toFixed(1));halo.setAttribute("cy",cy2.toFixed(1));
     halo.setAttribute("r","5.5");halo.setAttribute("fill","none");
-    halo.setAttribute("stroke","#EF4444");halo.setAttribute("stroke-width","0.6");halo.setAttribute("opacity","0.4");
+    halo.setAttribute("stroke","#EF4444");halo.setAttribute("stroke-width","0.7");halo.setAttribute("opacity","0.5");
     g.appendChild(halo);
-    // Dot
-    var c=document.createElementNS(NS,"circle");
-    c.setAttribute("cx",cx2.toFixed(1));c.setAttribute("cy",cy2.toFixed(1));
-    c.setAttribute("r","2.6");c.setAttribute("fill","#EF4444");
-    c.setAttribute("stroke","#060F1A");c.setAttribute("stroke-width","0.8");
-    g.appendChild(c);
-    // Label
-    var t=document.createElementNS(NS,"text");
-    t.setAttribute("x",(cx2+3.0).toFixed(1));t.setAttribute("y",(cy2-2.4).toFixed(1));
-    t.setAttribute("font-size","4.0");t.setAttribute("font-family","Barlow Condensed,sans-serif");
-    t.setAttribute("font-weight","800");t.setAttribute("fill","#EF4444");
-    t.textContent=rc.poste;g.appendChild(t);
-  }});
+    var c2=document.createElementNS(NS,"circle");
+    c2.setAttribute("cx",cx2.toFixed(1));c2.setAttribute("cy",cy2.toFixed(1));
+    c2.setAttribute("r","2.6");c2.setAttribute("fill","#EF4444");
+    c2.setAttribute("stroke","#060F1A");c2.setAttribute("stroke-width","0.8");
+    g.appendChild(c2);
+    var t2=document.createElementNS(NS,"text");
+    t2.setAttribute("x",(cx2+3.2).toFixed(1));t2.setAttribute("y",(cy2-2.6).toFixed(1));
+    t2.setAttribute("font-size","4.2");t2.setAttribute("font-family","Barlow Condensed,sans-serif");
+    t2.setAttribute("font-weight","800");t2.setAttribute("fill","#EF4444");
+    t2.textContent=PC.poste;g.appendChild(t2);
+  }})();
   // Centroïde activité joueuse (cyan — toutes ses actions)
   var c=document.createElementNS(NS,"circle");
   c.setAttribute("cx",CX.toFixed(1));c.setAttribute("cy",CY.toFixed(1));
@@ -5414,7 +5448,7 @@ var RC={_ref_centroids_json};
 (function(){{
   var svg=document.getElementById("svg-rose");if(!svg)return;
   // viewBox "-5 0 210 100" → rose centrée à (100,50), r=38
-  var cx=100,cy=50,rMax=38,rMin=5;
+  var cx=100,cy=53,rMax=44,rMin=5;
   var SC=[
     {{l:"AV",     a:-90, c:"#00A3E0"}},
     {{l:"D▸AV",   a:-45, c:"#38BDF8"}},
@@ -5509,7 +5543,7 @@ var RC={_ref_centroids_json};
     t.setAttribute("x",(cx+lr*Math.cos(a)).toFixed(1));
     t.setAttribute("y",(cy+lr*Math.sin(a)).toFixed(1));
     t.setAttribute("text-anchor","middle");t.setAttribute("dominant-baseline","central");
-    t.setAttribute("font-size","8");t.setAttribute("font-family","Barlow Condensed,sans-serif");
+    t.setAttribute("font-size","9");t.setAttribute("font-family","Barlow Condensed,sans-serif");
     t.setAttribute("font-weight","700");t.setAttribute("fill","#C8DCF0");
     t.textContent=s.l+":"+n;svg.appendChild(t);
   }});
@@ -5522,17 +5556,17 @@ var RC={_ref_centroids_json};
   [[-90,"▲ AV"],[90,"▼ AR"],[-180,"◂ AR"],[0,"AV ▸"]].forEach(function(x){{
     var a=x[0]*Math.PI/180;
     var t=document.createElementNS(NS,"text");
-    t.setAttribute("x",(cx+(rMax+16)*Math.cos(a)).toFixed(1));
-    t.setAttribute("y",(cy+(rMax+16)*Math.sin(a)).toFixed(1));
+    t.setAttribute("x",(cx+(rMax+18)*Math.cos(a)).toFixed(1));
+    t.setAttribute("y",(cy+(rMax+18)*Math.sin(a)).toFixed(1));
     t.setAttribute("text-anchor","middle");t.setAttribute("dominant-baseline","central");
-    t.setAttribute("font-size","6.5");t.setAttribute("fill","#1E3050");
+    t.setAttribute("font-size","7");t.setAttribute("fill","#3A5A70");
     t.setAttribute("font-family","Barlow Condensed,sans-serif");
     t.setAttribute("font-weight","700");
     t.textContent=x[1];svg.appendChild(t);
   }});
   // Title
   var ttl=document.createElementNS(NS,"text");
-  ttl.setAttribute("x","100");ttl.setAttribute("y","96");
+  ttl.setAttribute("x","100");ttl.setAttribute("y","106");
   ttl.setAttribute("text-anchor","middle");
   ttl.setAttribute("font-size","6.5");ttl.setAttribute("fill","#1E3050");
   ttl.setAttribute("font-family","Barlow Condensed,sans-serif");
