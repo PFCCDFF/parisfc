@@ -67,7 +67,7 @@ GPS_GF1_PREFIX = "GF1"
 GPS_MATCH_FOLDER = "data/gps_match"
 TACTICAL_FOLDER = "data"        # Les fichiers tactiques sont dans le dossier data principal
 DRIVE_TACTICAL_FOLDER_ID = ""   # À renseigner si dossier Drive dédié
-DRIVE_GPS_MATCH_FOLDER_ID = ""  # À renseigner : ID du dossier Drive GPS Match
+DRIVE_GPS_MATCH_FOLDER_ID = "1jzLW_jR5sMtsP4lOb4mN9mJlthw3pvbu"  # Dossier Drive GPS Match
 DRIVE_LOGOS_FOLDER_ID = "1TCKyVOHzKynm6Z1fhKnNUKYDcN7NhMCj"  # Logos clubs adversaires
 LOGOS_FOLDER = "data/logos"  # Cache local
 
@@ -4079,8 +4079,14 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
     if df_work.empty:
         return None
 
-    if df_work.empty:
-        return None
+    # ── Dédoublonnage : si plusieurs lignes pour la même joueuse sur le même match
+    # (ex: 2 fichiers GPS exportés pour le même match : complet + par période),
+    # garder UNIQUEMENT la ligne avec la plus grande distance (= session complète).
+    if len(df_work) > 1 and "Distance (m)" in df_work.columns:
+        dist_col = pd.to_numeric(df_work["Distance (m)"], errors="coerce")
+        if dist_col.notna().any():
+            best_idx = dist_col.idxmax()
+            df_work = df_work.loc[[best_idx]].copy()
 
     def _num(col):
         if col not in df_work.columns:
@@ -4653,6 +4659,11 @@ def _run_initial_sync():
             _warn(f"GPS: sync autonome échouée → {e}")
 
         try:
+            sync_gps_match_from_drive()
+        except Exception as e:
+            _warn(f"GPS Match: sync échouée → {e}")
+
+        try:
             sync_photos_from_drive()
         except Exception as e:
             _warn(f"Photos: sync échouée → {e}")
@@ -4671,6 +4682,8 @@ def _run_initial_sync():
             st.session_state["photo_concordance"] = {}
 
     st.session_state["_sync_done"] = True
+    # Vider TOUS les caches après sync pour forcer le rechargement des nouveaux fichiers
+    st.cache_data.clear()
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -6583,6 +6596,32 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 if _sel_player_stat:
                     # GPS summary
                     _gps_df_stat = st.session_state.get("gps_match_df", pd.DataFrame())
+
+                    # Bouton sync GPS match si admin et données vides/incorrectes
+                    if check_permission(user_profile, "all", permissions) or check_permission(user_profile, "update_data", permissions):
+                        _col_sync, _col_info = st.columns([2, 3])
+                        with _col_sync:
+                            if st.button("🔄 Actualiser données GPS Match", key="stat_gps_sync_btn"):
+                                with st.spinner("Synchronisation GPS Match depuis Drive…"):
+                                    try:
+                                        sync_gps_match_from_drive()
+                                        st.cache_data.clear()
+                                        st.session_state["gps_match_df"] = load_gps_match(
+                                            *[st.session_state.get(k) for k in
+                                              ["ref_set","alias_to_canon","tokenkey_to_canon",
+                                               "compact_to_canon","first_to_canons","last_to_canons"]]
+                                        ) if all(st.session_state.get(k) is not None for k in
+                                                 ["ref_set","alias_to_canon","tokenkey_to_canon",
+                                                  "compact_to_canon","first_to_canons","last_to_canons"]) else pd.DataFrame()
+                                        st.success("✅ GPS Match mis à jour")
+                                        st.rerun()
+                                    except Exception as _e:
+                                        st.error(f"Erreur sync GPS: {_e}")
+                        with _col_info:
+                            _n_gps = len(_gps_df_stat) if not _gps_df_stat.empty else 0
+                            _n_files = _gps_df_stat["__source_file"].nunique() if not _gps_df_stat.empty and "__source_file" in _gps_df_stat.columns else 0
+                            st.caption(f"📊 GPS chargé : {_n_gps} lignes · {_n_files} fichier(s)")
+
                     _gps_sum_stat = get_gps_match_summary_for_player(
                         _gps_df_stat, _sel_player_stat,
                         match_date=pd.to_datetime(_sel_row_stat.get("date"), errors="coerce"),
