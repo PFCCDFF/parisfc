@@ -3992,7 +3992,7 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
     if df.empty:
         return None
 
-    # ---- resolve match_date if needed
+    # ---- resolve match_date
     md = None
     if match_date is not None and pd.notna(match_date):
         md = pd.to_datetime(match_date, errors="coerce")
@@ -4001,36 +4001,28 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
     if md is not None and pd.notna(md):
         md = pd.Timestamp(md).normalize()
 
-    # ---- main matching by date
-    df_work = df
-    if md is not None and pd.notna(md):
-        df_exact = df_work[df_work["DATE"].dt.normalize() == md].copy()
-        if df_exact.empty:
-            df_pm1 = df_work[(df_work["DATE"].dt.normalize() >= (md - pd.Timedelta(days=1))) &
-                             (df_work["DATE"].dt.normalize() <= (md + pd.Timedelta(days=1)))].copy()
-            df_work = df_pm1
-        else:
-            df_work = df_exact
+    # ---- STRICT date filter : exact day puis ±1 jour UNIQUEMENT
+    # Si aucune date n'est disponible ou aucun match ne correspond → retourner None
+    # (évite de sommer tous les matchs ou de prendre un match au hasard)
+    if md is None or pd.isna(md):
+        return None  # Pas de date = impossible de cibler le bon match
 
-    # ---- optional label match (if you stored __match_label during GPS preprocessing)
+    df_exact = df[df["DATE"].dt.normalize() == md].copy()
+    if not df_exact.empty:
+        df_work = df_exact
+    else:
+        df_pm1 = df[(df["DATE"].dt.normalize() >= (md - pd.Timedelta(days=1))) &
+                    (df["DATE"].dt.normalize() <= (md + pd.Timedelta(days=1)))].copy()
+        if df_pm1.empty:
+            return None  # Pas de GPS pour ce match précis
+        df_work = df_pm1
+
+    # ---- Affinage par label si dispo (plusieurs matches le même jour)
     if match_label and "__match_label" in df_work.columns:
         ml = normalize_str(str(match_label))
         df_lbl = df_work[df_work["__match_label"].astype(str).map(normalize_str) == ml].copy()
         if not df_lbl.empty:
             df_work = df_lbl
-
-    # ---- best-effort fallback: closest day ±3d with max duration/distance
-    if df_work.empty and md is not None and pd.notna(md):
-        win = df[(df["DATE"].dt.normalize() >= (md - pd.Timedelta(days=3))) &
-                 (df["DATE"].dt.normalize() <= (md + pd.Timedelta(days=3)))].copy()
-        if not win.empty:
-            # pick the "most match-like" row(s)
-            dur = pd.to_numeric(win.get("Durée_min", win.get("Durée")), errors="coerce")
-            dist = pd.to_numeric(win.get("Distance (m)"), errors="coerce")
-            score = dur.fillna(0) * 10 + dist.fillna(0) / 1000.0
-            win["__score_match_pick"] = score
-            best_day = win.sort_values("__score_match_pick", ascending=False).iloc[0]["DATE"].normalize()
-            df_work = win[win["DATE"].dt.normalize() == best_day].copy()
 
     if df_work.empty:
         return None
