@@ -4000,17 +4000,13 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
     def _match_player(val):
         v = str(val)
         return nom_tokens(v) == p_tokens or nettoyer_nom_joueuse(v) == p
-    df = df[df["Player"].astype(str).apply(_match_player)].copy()
-    if df.empty:
-        # Fallback sur NOM directement si Player n'est pas bien mappé
-        if "NOM" in df.columns:
-            pass  # df déjà filtré NOM non-null ci-dessus
-        # Retenter sur NOM brut
-        df_orig = gps_match_df.copy()
-        df_orig = ensure_date_column(df_orig)
-        if "NOM" in df_orig.columns:
-            df_orig = df_orig[df_orig["NOM"].notna() & (df_orig["NOM"].astype(str).str.strip() != "")].copy()
-            df = df_orig[df_orig["NOM"].astype(str).apply(_match_player)].copy()
+
+    # Essai 1 : colonne Player (issue de map_player_name)
+    df_by_player = df[df["Player"].astype(str).apply(_match_player)].copy()
+    # Essai 2 : colonne NOM brute (si map_player_name a mal mappé)
+    df_by_nom = df[df["NOM"].astype(str).apply(_match_player)].copy() if "NOM" in df.columns else pd.DataFrame()
+    # Prendre l'union (sans doublons) puis filtrer ensuite par match
+    df = pd.concat([df_by_player, df_by_nom]).drop_duplicates().copy() if not df_by_player.empty or not df_by_nom.empty else pd.DataFrame()
     if df.empty:
         return None
 
