@@ -214,6 +214,13 @@ def nettoyer_nom_joueuse(nom):
     return s
 
 
+def nom_tokens(nom: str) -> frozenset:
+    """Retourne l'ensemble des tokens (mots) d'un nom, pour comparaison ordre-indépendante.
+    Ex: 'Sharlie YERRO' et 'YERRO Sharlie' donnent le même frozenset.
+    """
+    return frozenset(nettoyer_nom_joueuse(nom).split())
+
+
 def extract_any_date_from_string(s: str):
     """Extract a date from a filename / label with many possible formats.
 
@@ -3985,10 +3992,25 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
         return None
 
     p = nettoyer_nom_joueuse(player_name)
+    p_tokens = nom_tokens(player_name)
     # Filtrer d'abord les lignes agrégats (totaux équipe = NOM vide ou NaN)
     if "NOM" in df.columns:
         df = df[df["NOM"].notna() & (df["NOM"].astype(str).str.strip().str.lower() != "nan") & (df["NOM"].astype(str).str.strip() != "")].copy()
-    df = df[df["Player"].astype(str).apply(nettoyer_nom_joueuse) == p].copy()
+    # Matching par tokens triés : "Sharlie YERRO" == "YERRO Sharlie"
+    def _match_player(val):
+        v = str(val)
+        return nom_tokens(v) == p_tokens or nettoyer_nom_joueuse(v) == p
+    df = df[df["Player"].astype(str).apply(_match_player)].copy()
+    if df.empty:
+        # Fallback sur NOM directement si Player n'est pas bien mappé
+        if "NOM" in df.columns:
+            pass  # df déjà filtré NOM non-null ci-dessus
+        # Retenter sur NOM brut
+        df_orig = gps_match_df.copy()
+        df_orig = ensure_date_column(df_orig)
+        if "NOM" in df_orig.columns:
+            df_orig = df_orig[df_orig["NOM"].notna() & (df_orig["NOM"].astype(str).str.strip() != "")].copy()
+            df = df_orig[df_orig["NOM"].astype(str).apply(_match_player)].copy()
     if df.empty:
         return None
 
