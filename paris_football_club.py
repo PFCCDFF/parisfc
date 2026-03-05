@@ -4023,28 +4023,65 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
     if md is not None and pd.notna(md):
         md = pd.Timestamp(md).normalize()
 
-    # ---- STRICT date filter : exact day puis ±1 jour UNIQUEMENT
-    # Si aucune date n'est disponible ou aucun match ne correspond → retourner None
-    # (évite de sommer tous les matchs ou de prendre un match au hasard)
-    if md is None or pd.isna(md):
-        return None  # Pas de date = impossible de cibler le bon match
+    # ---- Matching GPS : date exacte → ±1j → adversaire/journée → label
+    df_work = pd.DataFrame()
 
-    df_exact = df[df["DATE"].dt.normalize() == md].copy()
-    if not df_exact.empty:
-        df_work = df_exact
-    else:
-        df_pm1 = df[(df["DATE"].dt.normalize() >= (md - pd.Timedelta(days=1))) &
-                    (df["DATE"].dt.normalize() <= (md + pd.Timedelta(days=1)))].copy()
-        if df_pm1.empty:
-            return None  # Pas de GPS pour ce match précis
-        df_work = df_pm1
+    # 1) Par date exacte
+    if md is not None and pd.notna(md):
+        df_exact = df[df["DATE"].dt.normalize() == md].copy()
+        if not df_exact.empty:
+            df_work = df_exact
+        else:
+            # ±1 jour
+            df_pm1 = df[(df["DATE"].dt.normalize() >= (md - pd.Timedelta(days=1))) &
+                        (df["DATE"].dt.normalize() <= (md + pd.Timedelta(days=1)))].copy()
+            if not df_pm1.empty:
+                df_work = df_pm1
 
-    # ---- Affinage par label si dispo (plusieurs matches le même jour)
-    if match_label and "__match_label" in df_work.columns:
-        ml = normalize_str(str(match_label))
-        df_lbl = df_work[df_work["__match_label"].astype(str).map(normalize_str) == ml].copy()
-        if not df_lbl.empty:
-            df_work = df_lbl
+    # 2) Fallback par adversaire + journée dans __match_label / __adversaire / __journee
+    if df_work.empty and match_label:
+        ml_norm = normalize_str(str(match_label))
+        # Chercher adversaire et journée extraits du label (ex: "25/26 · U19N · J02 · OL Lyonnes")
+        _adv_tokens = set()
+        _jrnee = ""
+        _jm = re.search(r'\bJ(\d{1,2})\b', str(match_label), re.IGNORECASE)
+        if _jm:
+            _jrnee = _jm.group(1).zfill(2)
+        # Tokens non-numériques non-génériques comme adversaire potentiel
+        _generic = {'j', 'u19', 'u17', 'nat', 'u19n', 'u19f', 'pfc', 'paris', 'fc'}
+        for tok in re.split(r'[\s·\-_]+', ml_norm):
+            if tok and not tok.isdigit() and tok not in _generic and len(tok) >= 2:
+                _adv_tokens.add(tok)
+
+        if "__match_label" in df.columns:
+            def _label_match(lbl):
+                ln = normalize_str(str(lbl))
+                # Match par journée
+                if _jrnee:
+                    lj = re.search(r'\bJ(\d{1,2})\b', ln, re.IGNORECASE)
+                    if lj and lj.group(1).zfill(2) == _jrnee:
+                        return True
+                # Match par token adversaire
+                return any(tok in ln for tok in _adv_tokens)
+            df_lbl = df[df["__match_label"].astype(str).apply(_label_match)].copy()
+            if not df_lbl.empty:
+                df_work = df_lbl
+
+        # Aussi essayer via __adversaire et __journee séparément
+        if df_work.empty and ("__adversaire" in df.columns or "__journee" in df.columns):
+            mask = pd.Series([True] * len(df), index=df.index)
+            if _jrnee and "__journee" in df.columns:
+                mask &= df["__journee"].astype(str).apply(
+                    lambda j: re.sub(r'[^0-9]', '', str(j)).zfill(2) == _jrnee)
+            if _adv_tokens and "__adversaire" in df.columns:
+                mask &= df["__adversaire"].astype(str).apply(
+                    lambda a: any(tok in normalize_str(a) for tok in _adv_tokens))
+            df_adv = df[mask].copy()
+            if not df_adv.empty:
+                df_work = df_adv
+
+    if df_work.empty:
+        return None
 
     if df_work.empty:
         return None
@@ -6066,7 +6103,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                         gps_match_df,
                         sel_tac_player,
                         match_date=pd.to_datetime(sel_row.get("date", None), errors="coerce") if isinstance(sel_row, dict) else None,
-                        match_label=sel_row.get("gps_label") or sel_match,
+                        match_label=sel_row.get("gps_label") or sel_row.get("display", "") or sel_match,
                     )
 
                     # Score + contexte depuis le fichier tactique (source fiable)
