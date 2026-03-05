@@ -68,6 +68,8 @@ GPS_MATCH_FOLDER = "data/gps_match"
 TACTICAL_FOLDER = "data"        # Les fichiers tactiques sont dans le dossier data principal
 DRIVE_TACTICAL_FOLDER_ID = ""   # À renseigner si dossier Drive dédié
 DRIVE_GPS_MATCH_FOLDER_ID = ""  # À renseigner : ID du dossier Drive GPS Match
+DRIVE_LOGOS_FOLDER_ID = "1TCKyVOHzKynm6Z1fhKnNUKYDcN7NhMCj"  # Logos clubs adversaires
+LOGOS_FOLDER = "data/logos"  # Cache local
 
 # =========================
 # UTILS
@@ -1376,6 +1378,94 @@ def reconvert_photos_to_jpeg(folder: str = PHOTOS_FOLDER) -> Tuple[int, int, Lis
             errors.append(f"{fn}: {e}")
 
     return ok, fail, errors
+
+
+# ─── LOGOS CLUBS ────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def sync_logos_from_drive() -> dict:
+    """Télécharge les logos clubs depuis Drive et retourne un index {nom_normalisé: chemin_local}.
+    Les fichiers sont nommés par le nom du club (ex: HAC.png, PSG.png, OL.png).
+    """
+    folder_id = DRIVE_LOGOS_FOLDER_ID
+    local_folder = LOGOS_FOLDER
+    index = {}
+
+    if not folder_id:
+        return index
+    os.makedirs(local_folder, exist_ok=True)
+
+    try:
+        drive_service = authenticate_google_drive()
+        items = list_files_recursive(drive_service, folder_id)
+    except Exception:
+        return index
+
+    exts = ('.jpg', '.jpeg', '.png', '.webp', '.svg')
+    for it in items:
+        name = (it.get('name') or '').strip()
+        if not any(name.lower().endswith(e) for e in exts):
+            continue
+        stem = os.path.splitext(name)[0]
+        ext  = os.path.splitext(name)[1].lower()
+        local_path = os.path.join(local_folder, name)
+        # Télécharger si absent
+        if not os.path.exists(local_path):
+            try:
+                req = drive_service.files().get_media(fileId=it['id'])
+                buf = io.BytesIO()
+                from googleapiclient.http import MediaIoBaseDownload
+                dl = MediaIoBaseDownload(buf, req, chunksize=512*1024)
+                done = False
+                while not done:
+                    _, done = dl.next_chunk()
+                with open(local_path, 'wb') as f:
+                    f.write(buf.getvalue())
+            except Exception:
+                continue
+        # Indexer par nom normalisé
+        key = normalize_str(stem)
+        index[key] = local_path
+
+    return index
+
+
+def find_logo_for_club(club_name: str, logos_index: dict = None) -> str:
+    """Retourne le chemin local du logo pour un club, ou '' si non trouvé.
+    Cherche par correspondance exacte puis partielle sur le nom normalisé.
+    """
+    if not club_name or logos_index is None:
+        return ""
+    cn = normalize_str(club_name)
+    # Exact
+    if cn in logos_index:
+        return logos_index[cn]
+    # Partiel : le nom du fichier est contenu dans le nom du club ou vice versa
+    for key, path in logos_index.items():
+        if key in cn or cn in key:
+            return path
+    # Tokens : un token significatif du club matche un token du fichier
+    tokens_club = set(t for t in re.split(r'[\s\-_]+', cn) if len(t) >= 3)
+    for key, path in logos_index.items():
+        tokens_key = set(t for t in re.split(r'[\s\-_]+', key) if len(t) >= 3)
+        if tokens_club & tokens_key:
+            return path
+    return ""
+
+
+def logo_path_to_b64(path: str) -> str:
+    """Convertit un fichier logo en data URI base64."""
+    if not path or not os.path.exists(path):
+        return ""
+    ext = os.path.splitext(path)[1].lower().lstrip('.')
+    mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "webp": "image/webp", "svg": "image/svg+xml"}.get(ext, "image/png")
+    try:
+        import base64 as _b64l
+        with open(path, 'rb') as f:
+            return f"data:{mime};base64,{_b64l.b64encode(f.read()).decode()}"
+    except Exception:
+        return ""
 
 
 def sync_photos_from_drive(folder_id: str = None, local_folder: str = None):
@@ -3286,15 +3376,19 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
             return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
         return pd.Series(0.0, index=df.index)
 
-    v13_15 = _num("Distance par plage de vitesse (13-15 km/h)")
-    v15_19 = _num("Distance par plage de vitesse (15-19 km/h)")
-    v19_23 = _num("Distance par plage de vitesse (19-23 km/h)")
-    v23_25 = _num("Distance par plage de vitesse (23-25 km/h)")
+    v0_7    = _num("Distance par plage de vitesse (0-7 km/h)")
+    v7_13   = _num("Distance par plage de vitesse (7-13 km/h)")
+    v13_15  = _num("Distance par plage de vitesse (13-15 km/h)")
+    v15_19  = _num("Distance par plage de vitesse (15-19 km/h)")
+    v19_23  = _num("Distance par plage de vitesse (19-23 km/h)")
+    v23_25  = _num("Distance par plage de vitesse (23-25 km/h)")
     v_sup25 = _num("Distance par plage de vitesse (>25 km/h)")
 
+    d["V_0_7"]            = v0_7
+    d["V_7_13"]           = v7_13
     d["Distance 13-19 (m)"] = v13_15 + v15_19
     d["Distance 19-23 (m)"] = v19_23
-    d["Distance >23 (m)"] = v23_25 + v_sup25
+    d["Distance >23 (m)"]   = v23_25 + v_sup25
 
     d["__source_file"] = os.path.basename(filename)
     return d
@@ -3956,22 +4050,19 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
     out["d_13_19_m"] = float(np.nansum(_num("Distance 13-19 (m)"))) if "Distance 13-19 (m)" in df_work.columns else np.nan
     out["d_19_23_m"] = float(np.nansum(_num("Distance 19-23 (m)"))) if "Distance 19-23 (m)" in df_work.columns else np.nan
     out["d_23p_m"] = float(np.nansum(_num("Distance >23 (m)"))) if "Distance >23 (m)" in df_work.columns else np.nan
-    out["acc_dec"] = float(np.nansum(_num("# Acc/Dec"))) if "# Acc/Dec" in df_work.columns else np.nan
+    out["acc_dec"] = float(np.nansum(_num("#accel/decel"))) if "#accel/decel" in df_work.columns else np.nan
     out["vmax_kmh"] = float(np.nanmax(_num("Vitesse max (km/h)"))) if "Vitesse max (km/h)" in df_work.columns else np.nan
     out["charge"] = float(np.nansum(_num("CHARGE"))) if "CHARGE" in df_work.columns else np.nan
     out["rpe"] = float(np.nanmean(_num("RPE"))) if "RPE" in df_work.columns else np.nan
 
-    out["d_0_7"]     = float(np.nansum(_num("Distance 0-7 (m)")))  if "Distance 0-7 (m)"  in df_work.columns else np.nan
-    out["d_7_13"]    = float(np.nansum(_num("Distance 7-13 (m)"))) if "Distance 7-13 (m)" in df_work.columns else np.nan
-    out["sprints_23"]= float(np.nansum(_num("Nb Sprints >23")))    if "Nb Sprints >23"    in df_work.columns else np.nan
-    out["sprints_25"]= float(np.nansum(_num("Nb Sprints >25")))    if "Nb Sprints >25"    in df_work.columns else np.nan
+    out["d_0_7"]     = float(np.nansum(_num("V_0_7")))      if "V_0_7"      in df_work.columns else np.nan
+    out["d_7_13"]    = float(np.nansum(_num("V_7_13")))     if "V_7_13"     in df_work.columns else np.nan
+    out["sprints_23"]= float(np.nansum(_num("Sprints_23"))) if "Sprints_23" in df_work.columns else np.nan
+    out["sprints_25"]= float(np.nansum(_num("Sprints_25"))) if "Sprints_25" in df_work.columns else np.nan
     out["acc2"]      = float(np.nansum(_num("Acc_2")))            if "Acc_2"            in df_work.columns else np.nan
     out["acc3"]      = float(np.nansum(_num("Acc_3")))            if "Acc_3"            in df_work.columns else np.nan
     out["dec2"]      = float(np.nansum(_num("Dec_2")))            if "Dec_2"            in df_work.columns else np.nan
     out["dec3"]      = float(np.nansum(_num("Dec_3")))            if "Dec_3"            in df_work.columns else np.nan
-    # Also try alternative column names for acc_dec
-    if pd.isna(out.get("acc_dec", np.nan)):
-        out["acc_dec"] = float(np.nansum(_num("#accel/decel"))) if "#accel/decel" in df_work.columns else np.nan
 
     if all(pd.isna(v) for v in out.values()):
         return None
@@ -5227,8 +5318,18 @@ def build_tactical_report_html(
     meta_line=" · ".join(p for p in [match_date,lieu] if p)
 
     # Logos
-    PFC_LOGO="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
-    adv_logo_url=mi.get("logo_adversaire","") or ""
+    PFC_LOGO = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
+
+    # Logo adversaire : chercher dans l'index Drive local
+    adv_logo_url = mi.get("logo_adversaire", "") or ""
+    if not adv_logo_url and adversaire:
+        try:
+            _logos_idx = sync_logos_from_drive()
+            _logo_path = find_logo_for_club(adversaire, _logos_idx)
+            if _logo_path:
+                adv_logo_url = logo_path_to_b64(_logo_path)
+        except Exception:
+            pass
     adv_init=adversaire[:3].upper() if adversaire else "ADV"
     adv_logo_html=(
         f'<img src="{adv_logo_url}" style="width:44px;height:44px;object-fit:contain;" '
