@@ -5894,11 +5894,68 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
     col_l, col_r = st.columns(2)
     with col_l:
         st.markdown("#### 📏 Distance par match")
-        fig = _make_match_bar_chart(labels, [
-            (_col("Distance (m)"),              "Distance totale",  "#1E3A5F"),
-            (_col("Distance HID (>13 km/h)"),   "HID >13 km/h",    "rgba(0,163,224,0.7)".replace("rgba(","#").replace(",0.7)","B3") if False else "#4db8e8"),
-            (_col("Distance HID (>19 km/h)"),   "HID >19 km/h",    "#00A3E0"),
-        ], "Distance (m)", "m")
+
+        dist_vals  = _col("Distance (m)")
+        hid13_vals = _col("Distance HID (>13 km/h)")
+        hid19_vals = _col("Distance HID (>19 km/h)")
+
+        fig, ax1 = plt.subplots(figsize=(9, 3.8), dpi=90)
+        fig.patch.set_facecolor("#08090D")
+        ax1.set_facecolor("#08090D")
+
+        x = list(range(len(labels)))
+        w_tot  = 0.55   # barre Distance totale (large, en fond)
+        w_hid  = 0.22   # barres HID (fines, groupées à droite)
+
+        # Distance totale — axe gauche
+        ax1.bar(x, dist_vals, w_tot, label="Distance totale", color="#1E3A5F",
+                edgecolor="#08090D", linewidth=0.5, zorder=2)
+
+        # Axe droit pour HID
+        ax2 = ax1.twinx()
+        ax2.bar([xi + w_hid*0.6 for xi in x], hid13_vals, w_hid,
+                label="HID >13", color="#4db8e8", edgecolor="#08090D", linewidth=0.5, zorder=3)
+        ax2.bar([xi + w_hid*0.6 + w_hid for xi in x], hid19_vals, w_hid,
+                label="HID >19", color="#00A3E0", edgecolor="#08090D", linewidth=0.5, zorder=3)
+
+        # Ligne % HID>13 sur axe gauche (en %)
+        ax3 = ax1.twinx()
+        ax3.spines["right"].set_position(("axes", 1.08))
+        pct_hid = [h/d*100 if d and d > 0 else 0 for h, d in zip(hid13_vals, dist_vals)]
+        ax3.plot(x, pct_hid, "o--", color="#FFD700", linewidth=1.5, markersize=4,
+                 label="% HID >13", zorder=4, alpha=0.85)
+        ax3.set_ylabel("% HID >13", color="#FFD700", fontsize=8)
+        ax3.tick_params(axis="y", colors="#FFD700", labelsize=8)
+        ax3.spines["right"].set_color("#FFD700")
+        ax3.set_ylim(0, max(max(pct_hid)*1.5, 30) if pct_hid else 30)
+
+        # Styling axes
+        for spine in ["bottom","left","top"]:
+            ax1.spines[spine].set_color("#1A2A3A")
+        ax1.spines["right"].set_visible(False)
+        ax1.spines["top"].set_visible(False)
+        ax2.spines["right"].set_color("#1A2A3A")
+        ax2.spines["top"].set_visible(False)
+        ax2.spines["left"].set_visible(False)
+        ax2.spines["bottom"].set_visible(False)
+
+        ax1.set_xticks(x)
+        ax1.set_xticklabels(labels, rotation=30, ha="right", fontsize=9, color="#C8D8E8")
+        ax1.set_ylabel("Distance totale (m)", color="#6A8090", fontsize=9)
+        ax2.set_ylabel("Distance HID (m)", color="#4db8e8", fontsize=9)
+        ax1.tick_params(colors="#6A8090", labelsize=9)
+        ax2.tick_params(axis="y", colors="#4db8e8", labelsize=9)
+        ax1.yaxis.grid(True, color="#1A2A3A", linewidth=0.5, alpha=0.7)
+        ax1.set_axisbelow(True)
+
+        # Légende combinée
+        h1, l1 = ax1.get_legend_handles_labels()
+        h2, l2 = ax2.get_legend_handles_labels()
+        h3, l3 = ax3.get_legend_handles_labels()
+        ax1.legend(h1+h2+h3, l1+l2+l3, fontsize=7, facecolor="#0C1220",
+                   edgecolor="#1A2A3A", labelcolor="#C8D8E8", loc="upper left")
+
+        fig.subplots_adjust(bottom=0.28, top=0.95, left=0.10, right=0.86)
         st.pyplot(fig, use_container_width=True)
         plt.close(fig)
 
