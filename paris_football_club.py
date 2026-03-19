@@ -3361,6 +3361,31 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
         if k in d.columns:
             d = d.rename(columns={k: v})
 
+    # Convertir "Durée_min" (issu de "Temps joué") : format H:MM:SS → minutes
+    if "Durée_min" in d.columns:
+        def _parse_hmmss(val):
+            s = str(val).strip()
+            if not s or s.lower() in ("nan", "none", ""):
+                return np.nan
+            # Déjà numérique (minutes brutes) ?
+            try:
+                return float(s)
+            except ValueError:
+                pass
+            # Format H:MM:SS ou MM:SS
+            parts = s.split(":")
+            try:
+                if len(parts) == 3:          # H:MM:SS
+                    h, m, sec = int(parts[0]), int(parts[1]), int(parts[2])
+                    return round(h * 60 + m + sec / 60, 1)
+                elif len(parts) == 2:        # MM:SS
+                    m, sec = int(parts[0]), int(parts[1])
+                    return round(m + sec / 60, 1)
+            except Exception:
+                pass
+            return np.nan
+        d["Durée_min"] = d["Durée_min"].apply(_parse_hmmss)
+
     if "DATE" in d.columns:
         # Parser avec gestion timezone : retirer tz et ne garder que la date (sans heure)
         _dates = pd.to_datetime(d["DATE"], errors="coerce", utc=True)
@@ -3374,7 +3399,7 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     if w_file is not None:
         d["SEMAINE"] = pd.Series([w_file] * len(d), index=d.index, dtype="Int64")
 
-    for c in ["Durée_min", "Distance (m)", "Sprints_23", "Sprints_25", "Vitesse max (km/h)", "Accélération maximale (m/s²)", "#accel/decel"]:
+    for c in ["Distance (m)", "Sprints_23", "Sprints_25", "Vitesse max (km/h)", "Accélération maximale (m/s²)", "#accel/decel"]:
         if c in d.columns:
             d[c] = pd.to_numeric(d[c], errors="coerce")
 
@@ -5220,77 +5245,55 @@ def _make_match_bar_chart(labels, datasets, title, ylabel, figsize=(9,3.5), stac
 
 
 def get_playing_time_from_gps(gps_match_df, player_canon: str) -> str:
-    """Cherche le temps de jeu (Durée_min) d'une joueuse directement dans le DataFrame
-    GPS match, en utilisant un matching de nom souple (exact → tokens → partiel → concordance manuelle).
-    Retourne le temps en minutes sous forme de string entier, ou "—" si non trouvé.
+    """Retourne le temps de jeu en minutes (entier) depuis la colonne Durée_min du fichier GPS match.
+    Durée_min est déjà converti en minutes (depuis H:MM:SS) lors de la standardisation.
+    Retourne "—" si la joueuse ou la donnée est introuvable.
     """
-    if gps_match_df is None or getattr(gps_match_df, "empty", True):
+    if gps_match_df is None or getattr(gps_match_df, "empty", True) or not player_canon:
         return "—"
-    if not player_canon:
+    if "Durée_min" not in gps_match_df.columns:
         return "—"
 
-    _p      = nettoyer_nom_joueuse(player_canon)
-    _p_toks = set(normalize_name_raw(player_canon).split())
-    _p_nom_tokens = nom_tokens(player_canon)
+    _p          = nettoyer_nom_joueuse(player_canon)
+    _p_toks     = set(normalize_name_raw(player_canon).split())
+    _p_nom_toks = nom_tokens(player_canon)
 
     def _matches(val: str) -> bool:
         v = str(val).strip()
         if not v or v.lower() in ("nan", "none", ""):
             return False
-        # 1. Exact normalisé
-        if nettoyer_nom_joueuse(v) == _p:
+        if nettoyer_nom_joueuse(v) == _p or nom_tokens(v) == _p_nom_toks:
             return True
-        # 2. Token-set exact (ordre-indépendant)
-        if nom_tokens(v) == _p_nom_tokens:
-            return True
-        # 3. Concordance manuelle GPS → canon
         v_mapped = apply_gps_name_map(v)
-        if nettoyer_nom_joueuse(v_mapped) == _p or nom_tokens(v_mapped) == _p_nom_tokens:
+        if nettoyer_nom_joueuse(v_mapped) == _p or nom_tokens(v_mapped) == _p_nom_toks:
             return True
-        # 4. Overlap partiel : ≥ 2 tokens communs, ou 1 si nom simple
-        v_toks  = set(normalize_name_raw(v).split())
-        common  = _p_toks & v_toks
-        if len(common) >= 2:
-            return True
-        if len(common) == 1 and (len(_p_toks) == 1 or len(v_toks) == 1):
-            return True
-        return False
+        v_toks = set(normalize_name_raw(v).split())
+        common = _p_toks & v_toks
+        return len(common) >= 2 or (len(common) == 1 and (len(_p_toks) == 1 or len(v_toks) == 1))
 
     try:
         df = gps_match_df.copy()
-        # Filtrer les lignes agrégat (NOM vide)
         if "NOM" in df.columns:
             df = df[df["NOM"].notna() & (df["NOM"].astype(str).str.strip() != "")
                     & (df["NOM"].astype(str).str.strip().str.lower() != "nan")]
 
-        # Chercher dans Player (nom mappé) ET NOM (brut)
         mask = pd.Series(False, index=df.index)
         if "Player" in df.columns:
             mask |= df["Player"].astype(str).apply(_matches)
         if "NOM" in df.columns:
             mask |= df["NOM"].astype(str).apply(_matches)
 
-        df_player = df[mask]
-        if df_player.empty:
+        df_p = df[mask]
+        if df_p.empty:
             return "—"
 
-        # Choisir la colonne durée disponible
-        dur_col = None
-        for c in ("Durée_min", "Durée"):
-            if c in df_player.columns:
-                dur_col = c
-                break
-        if dur_col is None:
-            return "—"
-
-        # Si plusieurs lignes (plusieurs matchs), prendre celle avec la plus grande distance
-        # = le fichier complet plutôt qu'une mi-temps exportée séparément
-        if len(df_player) > 1 and "Distance (m)" in df_player.columns:
-            dist = pd.to_numeric(df_player["Distance (m)"], errors="coerce")
+        # Si plusieurs lignes, prendre celle avec la plus grande distance (= session complète)
+        if len(df_p) > 1 and "Distance (m)" in df_p.columns:
+            dist = pd.to_numeric(df_p["Distance (m)"], errors="coerce")
             if dist.notna().any():
-                df_player = df_player.loc[[dist.idxmax()]]
+                df_p = df_p.loc[[dist.idxmax()]]
 
-        val = pd.to_numeric(df_player[dur_col].iloc[0], errors="coerce")
+        val = pd.to_numeric(df_p["Durée_min"].iloc[0], errors="coerce")
         if pd.isna(val) or val <= 0:
             return "—"
         return str(int(round(float(val))))
@@ -5333,12 +5336,8 @@ def build_tactical_report_html(
         return float(v) if not pd.isna(v) else fb
 
     import math as _m
-    _tps_raw = pd.to_numeric(_gps.get("duration_min", None), errors="coerce") if _gps else float("nan")
-    temps_gps = str(int(_tps_raw)) if _gps and not _m.isnan(float(_tps_raw)) else "—"
-
-    # Fallback : lecture directe de Durée_min dans gps_match_df par matching de nom souple
-    if temps_gps == "—":
-        temps_gps = get_playing_time_from_gps(gps_match_df, player_canon)
+    # Temps de jeu : uniquement depuis le fichier GPS (colonne Durée_min, issue de "Temps joué" H:MM:SS)
+    temps_gps = get_playing_time_from_gps(gps_match_df, player_canon)
 
     # ── Stats tactiques ────────────────────────────────────────────────────────
     s = compute_tactical_stats(df_tactic, player_canon) if df_tactic is not None else {}
