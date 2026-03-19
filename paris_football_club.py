@@ -3993,13 +3993,29 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
 
     p = nettoyer_nom_joueuse(player_name)
     p_tokens = nom_tokens(player_name)
+    p_tokens_raw = set(normalize_name_raw(player_name).split())  # tokens sans tri
+
     # Filtrer d'abord les lignes agrégats (totaux équipe = NOM vide ou NaN)
     if "NOM" in df.columns:
         df = df[df["NOM"].notna() & (df["NOM"].astype(str).str.strip().str.lower() != "nan") & (df["NOM"].astype(str).str.strip() != "")].copy()
-    # Matching par tokens triés : "Sharlie YERRO" == "YERRO Sharlie"
+
     def _match_player(val):
         v = str(val)
-        return nom_tokens(v) == p_tokens or nettoyer_nom_joueuse(v) == p
+        # 1. Matching exact normalisé
+        if nom_tokens(v) == p_tokens or nettoyer_nom_joueuse(v) == p:
+            return True
+        # 2. Matching via concordance manuelle GPS → canon
+        v_mapped = apply_gps_name_map(v)
+        if nettoyer_nom_joueuse(v_mapped) == p or nom_tokens(v_mapped) == p_tokens:
+            return True
+        # 3. Matching partiel : au moins 2 tokens communs ou un seul token si nom simple
+        v_toks = set(normalize_name_raw(v).split())
+        common = p_tokens_raw & v_toks
+        if len(common) >= 2:
+            return True
+        if len(common) == 1 and (len(p_tokens_raw) == 1 or len(v_toks) == 1):
+            return True
+        return False
 
     # Essai 1 : colonne Player (issue de map_player_name)
     df_by_player = df[df["Player"].astype(str).apply(_match_player)].copy()
@@ -5242,18 +5258,41 @@ def build_tactical_report_html(
     # Fallback temps de jeu depuis les données tactiques (segments Duration)
     if temps_gps == "—" and df_tactic is not None and not df_tactic.empty:
         try:
-            _ctx_teams = _get_match_context(df_tactic)
-            _pfc_team  = "PFC"
-            _adv_team  = _ctx_teams.get("adversaire", "ADV")
-            _dur_df    = players_duration(df_tactic, home_team=_pfc_team, away_team=_adv_team)
-            if not _dur_df.empty and "Player" in _dur_df.columns:
-                _pnorm = nettoyer_nom_joueuse(player_canon)
-                _dur_df["_pnorm"] = _dur_df["Player"].apply(nettoyer_nom_joueuse)
-                _row = _dur_df[_dur_df["_pnorm"] == _pnorm]
-                if not _row.empty:
-                    _min_val = pd.to_numeric(_row["Temps de jeu (en minutes)"].iloc[0], errors="coerce")
-                    if not pd.isna(_min_val) and _min_val > 0:
-                        temps_gps = str(int(round(_min_val)))
+            # Identifier les équipes réelles présentes dans la colonne Row
+            # (évite le hardcode "PFC" qui ne matche pas "PARIS FC", "Paris FC U19", etc.)
+            _all_row_teams = []
+            if "Row" in df_tactic.columns and "Duration" in df_tactic.columns:
+                _post_cols_present = [c for c in POST_COLS if c in df_tactic.columns]
+                if _post_cols_present:
+                    # Une ligne est une ligne d'équipe si elle a des joueuses dans les colonnes de poste
+                    _mask_lineup = (
+                        df_tactic["Duration"].notna() &
+                        df_tactic[_post_cols_present].notna().any(axis=1)
+                    )
+                    _all_row_teams = (
+                        df_tactic.loc[_mask_lineup, "Row"]
+                        .dropna()
+                        .astype(str)
+                        .apply(nettoyer_nom_equipe)
+                        .unique()
+                        .tolist()
+                    )
+
+            if len(_all_row_teams) >= 1:
+                # home = première équipe rencontrée, away = deuxième (ou même si une seule)
+                _home_real = _all_row_teams[0]
+                _away_real = _all_row_teams[1] if len(_all_row_teams) >= 2 else _all_row_teams[0]
+                _dur_df = players_duration(df_tactic, home_team=_home_real, away_team=_away_real)
+                if not _dur_df.empty and "Player" in _dur_df.columns:
+                    _pnorm = nettoyer_nom_joueuse(player_canon)
+                    _dur_df["_pnorm"] = _dur_df["Player"].apply(nettoyer_nom_joueuse)
+                    _row_dur = _dur_df[_dur_df["_pnorm"] == _pnorm]
+                    if not _row_dur.empty:
+                        _min_val = pd.to_numeric(
+                            _row_dur["Temps de jeu (en minutes)"].iloc[0], errors="coerce"
+                        )
+                        if not pd.isna(_min_val) and _min_val > 0:
+                            temps_gps = str(int(round(_min_val)))
         except Exception:
             pass
 
