@@ -4998,6 +4998,7 @@ def create_individual_radar(df: pd.DataFrame):
 
     values = [float(pd.to_numeric(player[p], errors="coerce")) if p in player else 0.0 for p in available]
     values = [0.0 if pd.isna(v) else max(0.0, min(100.0, v)) for v in values]
+    values = [round(v) for v in values]  # entiers → pas de décimales dans le radar
 
     pizza = PyPizza(
         params=available,
@@ -5016,14 +5017,14 @@ def create_individual_radar(df: pd.DataFrame):
         slice_colors=slice_colors,
         value_colors=["#FFFFFF"] * len(available),
         kwargs_slices=dict(edgecolor="#08090D", linewidth=1.8),
-        kwargs_params=dict(color="#C8D8E8", fontsize=11, fontproperties="monospace"),
+        kwargs_params=dict(color="#C8D8E8", fontsize=8.5, fontproperties="monospace"),
         kwargs_values=dict(
             color="#FFFFFF",
-            fontsize=11,
+            fontsize=9,
             bbox=dict(
                 edgecolor="#00A3E0",
                 facecolor="#0C1220",
-                boxstyle="round,pad=0.25",
+                boxstyle="round,pad=0.2",
                 lw=1.0
             ),
         ),
@@ -5237,6 +5238,24 @@ def build_tactical_report_html(
     import math as _m
     _tps_raw = pd.to_numeric(_gps.get("duration_min", None), errors="coerce") if _gps else float("nan")
     temps_gps = str(int(_tps_raw)) if _gps and not _m.isnan(float(_tps_raw)) else "—"
+
+    # Fallback temps de jeu depuis les données tactiques (segments Duration)
+    if temps_gps == "—" and df_tactic is not None and not df_tactic.empty:
+        try:
+            _ctx_teams = _get_match_context(df_tactic)
+            _pfc_team  = "PFC"
+            _adv_team  = _ctx_teams.get("adversaire", "ADV")
+            _dur_df    = players_duration(df_tactic, home_team=_pfc_team, away_team=_adv_team)
+            if not _dur_df.empty and "Player" in _dur_df.columns:
+                _pnorm = nettoyer_nom_joueuse(player_canon)
+                _dur_df["_pnorm"] = _dur_df["Player"].apply(nettoyer_nom_joueuse)
+                _row = _dur_df[_dur_df["_pnorm"] == _pnorm]
+                if not _row.empty:
+                    _min_val = pd.to_numeric(_row["Temps de jeu (en minutes)"].iloc[0], errors="coerce")
+                    if not pd.isna(_min_val) and _min_val > 0:
+                        temps_gps = str(int(round(_min_val)))
+        except Exception:
+            pass
 
     # ── Stats tactiques ────────────────────────────────────────────────────────
     s = compute_tactical_stats(df_tactic, player_canon) if df_tactic is not None else {}
