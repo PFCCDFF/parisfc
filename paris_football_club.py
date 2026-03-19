@@ -5219,6 +5219,86 @@ def _make_match_bar_chart(labels, datasets, title, ylabel, figsize=(9,3.5), stac
     return fig
 
 
+def get_playing_time_from_gps(gps_match_df, player_canon: str) -> str:
+    """Cherche le temps de jeu (Durée_min) d'une joueuse directement dans le DataFrame
+    GPS match, en utilisant un matching de nom souple (exact → tokens → partiel → concordance manuelle).
+    Retourne le temps en minutes sous forme de string entier, ou "—" si non trouvé.
+    """
+    if gps_match_df is None or getattr(gps_match_df, "empty", True):
+        return "—"
+    if not player_canon:
+        return "—"
+
+    _p      = nettoyer_nom_joueuse(player_canon)
+    _p_toks = set(normalize_name_raw(player_canon).split())
+    _p_nom_tokens = nom_tokens(player_canon)
+
+    def _matches(val: str) -> bool:
+        v = str(val).strip()
+        if not v or v.lower() in ("nan", "none", ""):
+            return False
+        # 1. Exact normalisé
+        if nettoyer_nom_joueuse(v) == _p:
+            return True
+        # 2. Token-set exact (ordre-indépendant)
+        if nom_tokens(v) == _p_nom_tokens:
+            return True
+        # 3. Concordance manuelle GPS → canon
+        v_mapped = apply_gps_name_map(v)
+        if nettoyer_nom_joueuse(v_mapped) == _p or nom_tokens(v_mapped) == _p_nom_tokens:
+            return True
+        # 4. Overlap partiel : ≥ 2 tokens communs, ou 1 si nom simple
+        v_toks  = set(normalize_name_raw(v).split())
+        common  = _p_toks & v_toks
+        if len(common) >= 2:
+            return True
+        if len(common) == 1 and (len(_p_toks) == 1 or len(v_toks) == 1):
+            return True
+        return False
+
+    try:
+        df = gps_match_df.copy()
+        # Filtrer les lignes agrégat (NOM vide)
+        if "NOM" in df.columns:
+            df = df[df["NOM"].notna() & (df["NOM"].astype(str).str.strip() != "")
+                    & (df["NOM"].astype(str).str.strip().str.lower() != "nan")]
+
+        # Chercher dans Player (nom mappé) ET NOM (brut)
+        mask = pd.Series(False, index=df.index)
+        if "Player" in df.columns:
+            mask |= df["Player"].astype(str).apply(_matches)
+        if "NOM" in df.columns:
+            mask |= df["NOM"].astype(str).apply(_matches)
+
+        df_player = df[mask]
+        if df_player.empty:
+            return "—"
+
+        # Choisir la colonne durée disponible
+        dur_col = None
+        for c in ("Durée_min", "Durée"):
+            if c in df_player.columns:
+                dur_col = c
+                break
+        if dur_col is None:
+            return "—"
+
+        # Si plusieurs lignes (plusieurs matchs), prendre celle avec la plus grande distance
+        # = le fichier complet plutôt qu'une mi-temps exportée séparément
+        if len(df_player) > 1 and "Distance (m)" in df_player.columns:
+            dist = pd.to_numeric(df_player["Distance (m)"], errors="coerce")
+            if dist.notna().any():
+                df_player = df_player.loc[[dist.idxmax()]]
+
+        val = pd.to_numeric(df_player[dur_col].iloc[0], errors="coerce")
+        if pd.isna(val) or val <= 0:
+            return "—"
+        return str(int(round(float(val))))
+
+    except Exception:
+        return "—"
+
+
 def build_tactical_report_html(
     df_tactic,
     player_canon: str,
@@ -5227,6 +5307,7 @@ def build_tactical_report_html(
     match_info: dict = None,
     pfc_kpi_row=None,
     radar_b64: str = "",
+    gps_match_df=None,
 ) -> str:
     """Rapport match A4 HTML v4 — photo à côté du nom, polices grandes, layout lisible."""
     import json as _json, math as _math
@@ -5255,46 +5336,9 @@ def build_tactical_report_html(
     _tps_raw = pd.to_numeric(_gps.get("duration_min", None), errors="coerce") if _gps else float("nan")
     temps_gps = str(int(_tps_raw)) if _gps and not _m.isnan(float(_tps_raw)) else "—"
 
-    # Fallback temps de jeu depuis les données tactiques (segments Duration)
-    if temps_gps == "—" and df_tactic is not None and not df_tactic.empty:
-        try:
-            # Identifier les équipes réelles présentes dans la colonne Row
-            # (évite le hardcode "PFC" qui ne matche pas "PARIS FC", "Paris FC U19", etc.)
-            _all_row_teams = []
-            if "Row" in df_tactic.columns and "Duration" in df_tactic.columns:
-                _post_cols_present = [c for c in POST_COLS if c in df_tactic.columns]
-                if _post_cols_present:
-                    # Une ligne est une ligne d'équipe si elle a des joueuses dans les colonnes de poste
-                    _mask_lineup = (
-                        df_tactic["Duration"].notna() &
-                        df_tactic[_post_cols_present].notna().any(axis=1)
-                    )
-                    _all_row_teams = (
-                        df_tactic.loc[_mask_lineup, "Row"]
-                        .dropna()
-                        .astype(str)
-                        .apply(nettoyer_nom_equipe)
-                        .unique()
-                        .tolist()
-                    )
-
-            if len(_all_row_teams) >= 1:
-                # home = première équipe rencontrée, away = deuxième (ou même si une seule)
-                _home_real = _all_row_teams[0]
-                _away_real = _all_row_teams[1] if len(_all_row_teams) >= 2 else _all_row_teams[0]
-                _dur_df = players_duration(df_tactic, home_team=_home_real, away_team=_away_real)
-                if not _dur_df.empty and "Player" in _dur_df.columns:
-                    _pnorm = nettoyer_nom_joueuse(player_canon)
-                    _dur_df["_pnorm"] = _dur_df["Player"].apply(nettoyer_nom_joueuse)
-                    _row_dur = _dur_df[_dur_df["_pnorm"] == _pnorm]
-                    if not _row_dur.empty:
-                        _min_val = pd.to_numeric(
-                            _row_dur["Temps de jeu (en minutes)"].iloc[0], errors="coerce"
-                        )
-                        if not pd.isna(_min_val) and _min_val > 0:
-                            temps_gps = str(int(round(_min_val)))
-        except Exception:
-            pass
+    # Fallback : lecture directe de Durée_min dans gps_match_df par matching de nom souple
+    if temps_gps == "—":
+        temps_gps = get_playing_time_from_gps(gps_match_df, player_canon)
 
     # ── Stats tactiques ────────────────────────────────────────────────────────
     s = compute_tactical_stats(df_tactic, player_canon) if df_tactic is not None else {}
@@ -6325,6 +6369,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                         match_info=_tac_match_info,
                         pfc_kpi_row=_tac_kpi_row,
                         radar_b64=_tac_radar_b64,
+                        gps_match_df=gps_match_df,
                     )
                     _components.html(html_report, height=1120, scrolling=False)
 
@@ -6842,6 +6887,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         match_info=_minfo_stat,
                         pfc_kpi_row=_kpi_row_stat,
                         radar_b64=_radar_b64_stat,
+                        gps_match_df=st.session_state.get("gps_match_df", pd.DataFrame()),
                     )
 
                     # ── Bouton Imprimer A4 ──────────────────────────────
