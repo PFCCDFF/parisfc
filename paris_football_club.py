@@ -4950,6 +4950,16 @@ def collect_data(selected_season=None):
 # =========================
 # RADARS
 # =========================
+def fig_to_b64(fig) -> str:
+    """Convertit une figure matplotlib en data URI base64 PNG."""
+    import base64 as _b64
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight",
+                facecolor=fig.get_facecolor())
+    buf.seek(0)
+    return "data:image/png;base64," + _b64.b64encode(buf.read()).decode()
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def create_individual_radar(df: pd.DataFrame):
     if df is None or df.empty or "Player" not in df.columns:
@@ -5199,6 +5209,7 @@ def build_tactical_report_html(
     photo_b64: str = "",
     match_info: dict = None,
     pfc_kpi_row=None,
+    radar_b64: str = "",
 ) -> str:
     """Rapport match A4 HTML v4 — photo à côté du nom, polices grandes, layout lisible."""
     import json as _json, math as _math
@@ -5619,6 +5630,17 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
 
   <!-- COLONNE DROITE -->
   <div style="display:flex;flex-direction:column;overflow:hidden;">
+
+    <!-- RADAR DU MATCH -->
+    {f'''
+    <div style="padding:9px 10px;border-bottom:1px solid #0F1E2E;flex-shrink:0;">
+      <div style="font-family:Barlow Condensed,sans-serif;font-size:10px;font-weight:700;
+        letter-spacing:1.4px;text-transform:uppercase;color:#00A3E0;margin-bottom:5px;">
+        ◈ Radar du match
+      </div>
+      <img src="{radar_b64}" style="width:100%;display:block;border-radius:5px;background:#08090D;" alt="Radar"/>
+    </div>
+    ''' if radar_b64 else ''}
 
     <!-- HEATMAP -->
     <div style="padding:9px 10px;border-bottom:1px solid #0F1E2E;flex-shrink:0;">
@@ -6222,12 +6244,29 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                     except Exception:
                         pass
 
+                    # Radar du match — même logique que l'onglet Radar
+                    _tac_radar_b64 = ""
+                    try:
+                        _kpi_all_r = st.session_state.get('pfc_kpi_all', pd.DataFrame())
+                        if not _kpi_all_r.empty and 'Player' in _kpi_all_r.columns:
+                            _nm_r = nettoyer_nom_joueuse(sel_tac_player)
+                            _kdf_r = _kpi_all_r[_kpi_all_r['Player'].astype(str).apply(nettoyer_nom_joueuse) == _nm_r]
+                            if not _kdf_r.empty:
+                                _fig_r = create_individual_radar(_kdf_r.iloc[[0]])
+                                if _fig_r is not None:
+                                    _tac_radar_b64 = fig_to_b64(_fig_r)
+                                    import matplotlib.pyplot as _plt_r
+                                    _plt_r.close(_fig_r)
+                    except Exception:
+                        pass
+
                     html_report = build_tactical_report_html(
                         df_tactic, sel_tac_player,
                         gps_summary=gps_summary,
                         photo_b64=_tac_photo_b64,
                         match_info=_tac_match_info,
                         pfc_kpi_row=_tac_kpi_row,
+                        radar_b64=_tac_radar_b64,
                     )
                     _components.html(html_report, height=1120, scrolling=False)
 
@@ -6722,12 +6761,29 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                     except Exception:
                         pass
 
+                    # Radar du match — même logique que l'onglet Radar
+                    _radar_b64_stat = ""
+                    try:
+                        _kpi_all_s = st.session_state.get("pfc_kpi_all", pd.DataFrame())
+                        if not _kpi_all_s.empty and "Player" in _kpi_all_s.columns:
+                            _nm_s = nettoyer_nom_joueuse(_sel_player_stat)
+                            _kdf_s = _kpi_all_s[_kpi_all_s["Player"].astype(str).apply(nettoyer_nom_joueuse) == _nm_s]
+                            if not _kdf_s.empty:
+                                _fig_s = create_individual_radar(_kdf_s.iloc[[0]])
+                                if _fig_s is not None:
+                                    _radar_b64_stat = fig_to_b64(_fig_s)
+                                    import matplotlib.pyplot as _plt_s
+                                    _plt_s.close(_fig_s)
+                    except Exception:
+                        pass
+
                     _html_stat = build_tactical_report_html(
                         _df_tac_stat, _sel_player_stat,
                         gps_summary=_gps_sum_stat,
                         photo_b64=_photo_b64_stat,
                         match_info=_minfo_stat,
                         pfc_kpi_row=_kpi_row_stat,
+                        radar_b64=_radar_b64_stat,
                     )
 
                     # ── Bouton Imprimer A4 ──────────────────────────────
