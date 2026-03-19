@@ -5336,8 +5336,10 @@ def build_tactical_report_html(
         return float(v) if not pd.isna(v) else fb
 
     import math as _m
-    # Temps de jeu : uniquement depuis le fichier GPS (colonne Durée_min, issue de "Temps joué" H:MM:SS)
-    temps_gps = get_playing_time_from_gps(gps_match_df, player_canon)
+    # Temps de jeu : uniquement depuis gps_summary (colonne "Temps joué" du fichier GPS,
+    # convertie en minutes lors de la standardisation via _parse_hmmss H:MM:SS → minutes)
+    _tps_raw  = pd.to_numeric(_gps.get("duration_min", None), errors="coerce") if _gps else float("nan")
+    temps_gps = str(int(round(float(_tps_raw)))) if _gps and not _m.isnan(float(_tps_raw)) else "—"
 
     # ── Stats tactiques ────────────────────────────────────────────────────────
     s = compute_tactical_stats(df_tactic, player_canon) if df_tactic is not None else {}
