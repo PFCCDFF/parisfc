@@ -7433,32 +7433,49 @@ function printA4Report() {{
                 )
                 weekly_display = weekly_acwr.tail(n_semaines_sel).copy()
 
-                # ── Métriques clés (dernière semaine) ──────────────────────────
+                # ── Métriques clés (dernière semaine) — 2 lignes ──────────────
                 last = weekly_display.iloc[-1]
-                st.markdown("##### Dernière semaine enregistrée")
-                kc1, kc2, kc3, kc4, kc5 = st.columns(5)
 
                 def _zone_color(acwr):
                     if pd.isna(acwr): return "⚪"
-                    if acwr < 0.8:    return "🔵"   # sous-charge
-                    if acwr <= 1.5:   return "🟢"   # zone optimale
-                    return "🔴"                      # sur-charge / risque blessure
+                    if acwr < 0.8:    return "🔵"
+                    if acwr <= 1.5:   return "🟢"
+                    return "🔴"
 
-                kc1.metric("Semaine", last["Label_semaine"])
-                kc2.metric("Charge semaine", f"{last['CHARGE_semaine']:.0f}")
-                kc3.metric(
-                    f"ACWR RA {_zone_color(last['ACWR_RA'])}",
-                    f"{last['ACWR_RA']:.2f}" if not pd.isna(last['ACWR_RA']) else "—"
+                def _zone_label(acwr):
+                    if pd.isna(acwr): return "—"
+                    if acwr < 0.8:    return "🔵 Sous-charge"
+                    if acwr <= 1.5:   return "🟢 Zone optimale"
+                    return "🔴 Sur-charge"
+
+                # Ligne 1 : infos semaine + charge
+                st.markdown("##### Dernière semaine enregistrée")
+                r1c1, r1c2, r1c3 = st.columns(3)
+                r1c1.metric("📅 Semaine", last["Label_semaine"])
+                r1c2.metric("📦 Charge totale (UA)", f"{last['CHARGE_semaine']:.0f}")
+                r1c3.metric("📊 Zone globale", _zone_label(last['ACWR_EWMA']))
+
+                # Ligne 2 : les deux modèles côte à côte avec aigu/chronique
+                r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+                r2c1.metric(
+                    f"ACWR Rolling Avg {_zone_color(last['ACWR_RA'])}",
+                    f"{last['ACWR_RA']:.2f}" if not pd.isna(last['ACWR_RA']) else "—",
+                    help="Modèle Gabbett (2016) — moyenne glissante 7j / 28j"
                 )
-                kc4.metric(
+                r2c2.metric(
                     f"ACWR EWMA {_zone_color(last['ACWR_EWMA'])}",
-                    f"{last['ACWR_EWMA']:.2f}" if not pd.isna(last['ACWR_EWMA']) else "—"
+                    f"{last['ACWR_EWMA']:.2f}" if not pd.isna(last['ACWR_EWMA']) else "—",
+                    help="Modèle Murray et al. (2016) — moyenne exponentielle pondérée"
                 )
-                kc5.metric(
-                    "Zone",
-                    "🟢 Optimale" if not pd.isna(last['ACWR_EWMA']) and 0.8 <= last['ACWR_EWMA'] <= 1.5
-                    else ("🔴 Sur-charge" if not pd.isna(last['ACWR_EWMA']) and last['ACWR_EWMA'] > 1.5
-                    else "🔵 Sous-charge")
+                r2c3.metric(
+                    "Charge aiguë (RA)",
+                    f"{last['Aigu_RA']:.0f}" if not pd.isna(last['Aigu_RA']) else "—",
+                    help="Moyenne quotidienne sur 7 jours"
+                )
+                r2c4.metric(
+                    "Charge chronique (RA)",
+                    f"{last['Chronique_RA']:.0f}" if not pd.isna(last['Chronique_RA']) else "—",
+                    help="Moyenne quotidienne sur 28 jours"
                 )
 
                 st.divider()
@@ -7473,24 +7490,26 @@ function printA4Report() {{
                 charges  = weekly_display["CHARGE_semaine"].tolist()
                 x        = list(range(len(labels)))
 
-                fig, ax1 = _plt.subplots(figsize=(max(8, len(x) * 0.9), 5))
+                # Largeur adaptative, hauteur réduite et fixe
+                fig_w = max(9, len(x) * 1.1)
+                fig, ax1 = _plt.subplots(figsize=(fig_w, 3.8))
                 fig.patch.set_facecolor("#0C1220")
                 ax1.set_facecolor("#0C1220")
 
                 # Barres de charge (axe gauche)
-                ax1.bar(x, charges, color="#1A3A5C", alpha=0.6, label="Charge hebdo", zorder=2)
-                ax1.set_ylabel("Charge (UA)", color="#6A8090", fontsize=10)
-                ax1.tick_params(axis="y", colors="#6A8090")
-                ax1.tick_params(axis="x", colors="#C8D8E8")
+                ax1.bar(x, charges, color="#1A3A5C", alpha=0.6, label="Charge hebdo", zorder=2, width=0.6)
+                ax1.set_ylabel("Charge (UA)", color="#6A8090", fontsize=9)
+                ax1.tick_params(axis="y", colors="#6A8090", labelsize=8)
+                ax1.tick_params(axis="x", colors="#C8D8E8", labelsize=8)
                 ax1.set_xticks(x)
-                ax1.set_xticklabels(labels, rotation=35, ha="right", fontsize=9, color="#C8D8E8")
+                ax1.set_xticklabels(labels, rotation=30, ha="right", fontsize=8.5, color="#C8D8E8")
                 ax1.spines[:].set_color("#1A2A3A")
 
                 # ACWR (axe droit)
                 ax2 = ax1.twinx()
                 ax2.set_facecolor("#0C1220")
-                ax2.set_ylabel("ACWR", color="#C8D8E8", fontsize=10)
-                ax2.tick_params(axis="y", colors="#C8D8E8")
+                ax2.set_ylabel("ACWR", color="#C8D8E8", fontsize=9)
+                ax2.tick_params(axis="y", colors="#C8D8E8", labelsize=8)
                 ax2.spines[:].set_color("#1A2A3A")
 
                 # Zone optimale
@@ -7499,37 +7518,39 @@ function printA4Report() {{
                 ax2.axhline(1.5, color="#EF4444", lw=0.8, ls="--", alpha=0.5)
 
                 # Courbes ACWR
-                ax2.plot(x, acwr_ra, color="#F4830A", lw=2, marker="o", ms=6,
-                         label="ACWR Rolling Avg (Gabbett)", zorder=5)
-                ax2.plot(x, acwr_ew, color="#00A3E0", lw=2, marker="s", ms=6,
-                         label="ACWR EWMA (Murray et al.)", zorder=5)
+                ax2.plot(x, acwr_ra, color="#F4830A", lw=2, marker="o", ms=5,
+                         label="ACWR RA (Gabbett)", zorder=5)
+                ax2.plot(x, acwr_ew, color="#00A3E0", lw=2, marker="s", ms=5,
+                         label="ACWR EWMA (Murray)", zorder=5)
 
                 # Colorier les points selon la zone
                 for xi, (ra, ew) in enumerate(zip(acwr_ra, acwr_ew)):
                     for val, col in [(ra, "#F4830A"), (ew, "#00A3E0")]:
                         if not pd.isna(val):
                             fc = "#22C55E" if 0.8 <= val <= 1.5 else ("#EF4444" if val > 1.5 else "#3B82F6")
-                            ax2.scatter(xi, val, color=fc, edgecolors=col, s=60, zorder=6, linewidths=1.5)
+                            ax2.scatter(xi, val, color=fc, edgecolors=col, s=45, zorder=6, linewidths=1.5)
 
                 # Limites axe ACWR
                 all_vals = [v for v in acwr_ra + acwr_ew if not pd.isna(v)]
                 if all_vals:
-                    ymin = max(0, min(all_vals) - 0.3)
-                    ymax = max(all_vals) + 0.3
+                    ymin = max(0, min(all_vals) - 0.2)
+                    ymax = max(all_vals) + 0.2
                     ax2.set_ylim(ymin, max(ymax, 1.8))
 
-                # Légende
+                # Légende horizontale en haut
                 handles = [
                     _mpatches.Patch(color="#1A3A5C", alpha=0.8, label="Charge hebdo"),
-                    _plt.Line2D([0], [0], color="#F4830A", lw=2, marker="o", ms=6, label="ACWR RA (Gabbett)"),
-                    _plt.Line2D([0], [0], color="#00A3E0", lw=2, marker="s", ms=6, label="ACWR EWMA (Murray)"),
+                    _plt.Line2D([0], [0], color="#F4830A", lw=2, marker="o", ms=5, label="ACWR RA (Gabbett)"),
+                    _plt.Line2D([0], [0], color="#00A3E0", lw=2, marker="s", ms=5, label="ACWR EWMA (Murray)"),
                     _mpatches.Patch(color="#22C55E", alpha=0.15, label="Zone optimale (0.8–1.5)"),
                 ]
-                ax2.legend(handles=handles, loc="upper left", fontsize=8,
-                           facecolor="#0C1220", edgecolor="#1A2A3A", labelcolor="#C8D8E8")
+                ax2.legend(handles=handles, loc="upper center",
+                           bbox_to_anchor=(0.5, 1.14), ncol=4,
+                           fontsize=7.5, facecolor="#0C1220",
+                           edgecolor="#1A2A3A", labelcolor="#C8D8E8")
 
-                fig.tight_layout()
-                st.pyplot(fig)
+                fig.tight_layout(rect=[0, 0, 1, 0.96])
+                st.pyplot(fig, use_container_width=True)
                 _plt.close(fig)
 
                 st.caption(
