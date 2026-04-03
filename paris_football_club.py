@@ -104,16 +104,23 @@ def safe_float(x, default=np.nan) -> float:
 
 
 def safe_int_numeric_only(df: pd.DataFrame, round_first: bool = True) -> pd.DataFrame:
-    """Evite les ValueError sur astype(int) si colonnes non-numériques."""
+    """Evite les ValueError sur astype(int) si colonnes non-numériques ou floats non-entiers."""
     if df is None or df.empty:
         return df
     out = df.copy()
     num_cols = out.select_dtypes(include=[np.number]).columns
-    if len(num_cols) > 0:
-        if round_first:
-            out[num_cols] = out[num_cols].round()
-        out[num_cols] = out[num_cols].fillna(0)
-        out[num_cols] = out[num_cols].astype(int)
+    for col in num_cols:
+        try:
+            s = out[col]
+            if round_first:
+                s = s.round()
+            s = s.fillna(0)
+            out[col] = s.astype(int)
+        except (ValueError, OverflowError):
+            try:
+                out[col] = out[col].round().fillna(0).astype("Int64")
+            except Exception:
+                pass  # On laisse la colonne en float si tout échoue
     return out
 
 
@@ -4168,14 +4175,18 @@ def read_csv_auto(path: str) -> pd.DataFrame:
     last_err = None
     for enc in encodings:
         for sep in seps:
-            try:
-                df = pd.read_csv(path, encoding=enc, sep=sep)
-                if df.shape[1] == 1 and sep != "\t":
-                    continue
-                return df
-            except Exception as e:
-                last_err = e
-                continue
+            # Essai 1 : lecture stricte ; Essai 2 : on ignore les lignes malformées
+            for bad_lines in ("error", "skip"):
+                try:
+                    df = pd.read_csv(path, encoding=enc, sep=sep, on_bad_lines=bad_lines)
+                    if df.shape[1] == 1 and sep != "\t":
+                        break  # mauvais séparateur, tenter le suivant
+                    return df
+                except Exception as e:
+                    last_err = e
+                    if bad_lines == "error":
+                        continue  # réessayer avec on_bad_lines='skip'
+                    break  # passer à l'encodage/sep suivant
     raise last_err if last_err else ValueError(f"Impossible de lire le CSV: {path}")
 
 
