@@ -5085,6 +5085,8 @@ def collect_data(selected_season=None):
 
             if "Temps de jeu (en minutes)" in df.columns:
                 num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != "Temps de jeu (en minutes)"]
+                # Cast int64 -> float64 avant scaling pour éviter "Invalid value X for dtype int64"
+                df[num_cols] = df[num_cols].astype(float)
                 for idx, r in df.iterrows():
                     tp = safe_float(r.get("Temps de jeu (en minutes)", np.nan), default=np.nan)
                     if np.isnan(tp) or tp <= 0:
