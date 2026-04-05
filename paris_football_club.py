@@ -7242,6 +7242,144 @@ function printA4Report() {{
                 else:
                     st.warning("Radar indisponible (données insuffisantes).")
 
+    # =====================
+    # GESTION (admin)
+    # =====================
+    elif page == "Gestion":
+        st.header("⚙️ Gestion")
+
+        if not check_permission(user_profile, "all", permissions):
+            st.warning("⛔ Accès réservé aux administrateurs.")
+        else:
+            tab_ref, tab_perms, tab_admin = st.tabs(["📋 Référentiel joueuses", "🔐 Profils & permissions", "🛠️ Administration"])
+
+            # ── Référentiel joueuses ──────────────────────────────────────
+            with tab_ref:
+                st.subheader("Référentiel joueuses")
+                ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
+                if not os.path.exists(ref_path):
+                    ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME) or ""
+
+                if ref_path and os.path.exists(ref_path):
+                    try:
+                        ref_df = read_excel_auto(ref_path)
+                        if isinstance(ref_df, dict):
+                            ref_df = list(ref_df.values())[0] if ref_df else pd.DataFrame()
+                        if isinstance(ref_df, pd.DataFrame) and not ref_df.empty:
+                            st.caption(f"📁 Fichier : `{REFERENTIEL_FILENAME}` — {len(ref_df)} joueuses")
+                            st.dataframe(ref_df, use_container_width=True)
+                        else:
+                            st.warning("Référentiel vide ou illisible.")
+                    except Exception as e:
+                        st.error(f"Erreur lecture référentiel : {e}")
+                else:
+                    st.info(f"Fichier référentiel introuvable localement (`{REFERENTIEL_FILENAME}`). Synchronisez la base depuis Drive.")
+
+                # Rapport de concordance noms
+                name_report_df = st.session_state.get("name_report_df", pd.DataFrame())
+                if name_report_df is not None and not name_report_df.empty:
+                    with st.expander(f"⚠️ Rapport de concordance noms ({len(name_report_df)} entrées)", expanded=False):
+                        st.dataframe(name_report_df, use_container_width=True)
+
+            # ── Profils & permissions ─────────────────────────────────────
+            with tab_perms:
+                st.subheader("Profils & permissions")
+                if permissions:
+                    rows = []
+                    for profile, data in permissions.items():
+                        rows.append({
+                            "Profil": profile,
+                            "Permissions": ", ".join(data.get("permissions", [])),
+                            "Joueuse associée": data.get("player") or "—",
+                        })
+                    perms_df = pd.DataFrame(rows)
+                    st.caption(f"{len(perms_df)} profil(s) chargé(s) depuis `{PERMISSIONS_FILENAME}`")
+                    st.dataframe(perms_df, use_container_width=True)
+                else:
+                    st.info("Aucune permission chargée.")
+
+            # ── Administration ────────────────────────────────────────────
+            with tab_admin:
+                st.subheader("Outils d'administration")
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.markdown("**Base de données**")
+                    if st.button("🔄 Mettre à jour la base", key="gestion_update_db"):
+                        st.session_state["_sync_done"] = False
+                        st.cache_data.clear()
+                        st.rerun()
+
+                    if st.button("🔄 Synchroniser GPS Match", key="gestion_sync_gps_match"):
+                        with st.spinner("Synchronisation GPS Match…"):
+                            try:
+                                ok, fail = sync_gps_match_from_drive()
+                                st.cache_data.clear()
+                                if ok:
+                                    st.success(f"✅ {ok} fichier(s) synchronisé(s)" + (f", {fail} échec(s)" if fail else ""))
+                                else:
+                                    st.warning("Aucun fichier synchronisé.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erreur sync GPS Match : {e}")
+
+                    if st.button("🔄 Synchroniser objectifs", key="gestion_sync_objectifs"):
+                        with st.spinner("Synchronisation objectifs…"):
+                            try:
+                                ok, err = sync_objectifs_from_drive()
+                                if ok:
+                                    st.success(f"✅ {ok} fichier(s) synchronisé(s).")
+                                    st.rerun()
+                                elif not DRIVE_OBJECTIFS_FOLDER_ID:
+                                    st.info("Renseignez **DRIVE_OBJECTIFS_FOLDER_ID** dans le code pour activer la sync.")
+                                else:
+                                    st.error("Aucun fichier récupéré. Vérifiez l'ID du dossier Drive.")
+                            except Exception as e:
+                                st.error(f"Erreur sync objectifs : {e}")
+
+                with col2:
+                    st.markdown("**Photos**")
+                    if st.button("🖼️ Reconvertir les photos", key="gestion_reconvert_photos"):
+                        with st.spinner("Reconversion en JPEG…"):
+                            try:
+                                ok, fail, errs = reconvert_photos_to_jpeg()
+                                new_idx = build_photos_index_local()
+                                st.session_state["photos_index"] = new_idx
+                                ref_path_ph = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
+                                if not os.path.exists(ref_path_ph):
+                                    ref_path_ph = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME) or ""
+                                st.session_state["photo_concordance"] = build_photo_concordance(ref_path_ph, new_idx)
+                                if fail == 0:
+                                    st.success(f"✅ {ok} photo(s) converties en JPEG")
+                                else:
+                                    st.warning(f"✅ {ok} OK — ⚠️ {fail} échec(s) : {', '.join(errs[:3])}")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Erreur reconversion photos : {e}")
+
+                st.markdown("---")
+                st.markdown("**État du cache & session**")
+                col3, col4 = st.columns(2)
+                with col3:
+                    gps_raw_info = st.session_state.get("gps_raw_df", pd.DataFrame())
+                    gps_match_info = st.session_state.get("gps_match_df", pd.DataFrame())
+                    n_raw = len(gps_raw_info) if gps_raw_info is not None and not gps_raw_info.empty else 0
+                    n_match = len(gps_match_info) if gps_match_info is not None and not gps_match_info.empty else 0
+                    st.caption(f"GPS brut en session : **{n_raw}** lignes")
+                    st.caption(f"GPS match en session : **{n_match}** lignes")
+                with col4:
+                    n_pfc = len(pfc_kpi) if pfc_kpi is not None and not pfc_kpi.empty else 0
+                    n_edf = len(edf_kpi) if edf_kpi is not None and not edf_kpi.empty else 0
+                    st.caption(f"Stats PFC en mémoire : **{n_pfc}** lignes")
+                    st.caption(f"Stats EDF en mémoire : **{n_edf}** lignes")
+
+                warns = st.session_state.get("_system_warnings", [])
+                if warns:
+                    with st.expander(f"⚠️ {len(warns)} avertissement(s) système", expanded=True):
+                        for w in warns:
+                            st.caption(f"• {w}")
+
     elif page == "Données Physiques":
         st.header("📊 Données Physiques (GPS)")
 
