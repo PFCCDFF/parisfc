@@ -3088,9 +3088,200 @@ def create_poste(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# =========================
-# CREATE DATA (PFC/EDF)
-# =========================
+# ─── APL (Arkema Première Ligue) — Parsing CSV format Sportscode ─────────────
+
+# Mapping profil Row → code poste EDF
+_APL_PROFIL_TO_POSTE = {
+    "Gardienne":           "GB",
+    "Défenseure centrale": "DC",
+    "Défenseure latérale": "DL",
+    "Milieux axiale":      "MD",
+    "Milieux offensive":   "MO",
+    "Attaquante":          "ATT",
+}
+
+def parse_apl_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Parse un CSV Sportscode APL (format identique aux fichiers U19/EDF)
+    et retourne un DataFrame avec les mêmes colonnes que create_metrics attend,
+    agrégé par profil de poste (moyenne sur les n joueuses du profil).
+    
+    Colonnes produites :
+      Player, Poste, Passes, Passes courtes, Passes longues,
+      Passes réussies, Passes réussies (courtes), Passes réussies (longues),
+      Duels défensifs, Duels défensifs gagnés, Fautes,
+      Dribbles, Dribbles réussis, Interceptions,
+      Tirs, Tirs cadrés, Buts,
+      __total_passes, __last_third, __assists, __deseq, __team_deseq_total
+    """
+    import re as _re
+
+    def _parse_multi(val):
+        if pd.isna(val): return []
+        return [v.strip() for v in str(val).split(',') if v.strip()]
+
+    # Profil de base = Row sans suffixe numérique
+    df_raw = df_raw.copy()
+    df_raw['_profil'] = df_raw['Row'].apply(
+        lambda r: _re.sub(r'\s*\d+$', '', str(r)).strip()
+    )
+
+    # Calculer stats par Row individuel (= une joueuse)
+    player_stats = {}
+    team_deseq_total = 0
+
+    for row_name, grp in df_raw.groupby('Row'):
+        profil = _re.sub(r'\s*\d+$', '', row_name).strip()
+        poste  = _APL_PROFIL_TO_POSTE.get(profil, profil)
+
+        s = dict(
+            profil=profil, poste=poste,
+            passes=0, passes_courtes=0, passes_longues=0,
+            passes_ok=0, passes_ok_courtes=0, passes_ok_longues=0,
+            passes_last_third=0, passes_decisives=0,
+            duels=0, duels_ok=0, fautes=0,
+            dribbles=0, dribbles_ok=0,
+            interceptions=0,
+            tirs=0, tirs_cadres=0, buts=0,
+            deseq=0,
+        )
+
+        for _, row in grp.iterrows():
+            actions  = _parse_multi(row.get('Action'))
+            passes   = _parse_multi(row.get('Passe'))
+            duels    = _parse_multi(row.get('Duel défensifs'))
+            dribbles = _parse_multi(row.get('Dribble'))
+            tirs     = _parse_multi(row.get('Tir'))
+
+            if 'Passe' in actions:
+                s['passes'] += 1
+                est_ok = 'Réussie' in passes
+                if est_ok: s['passes_ok'] += 1
+                if 'Courte' in passes:
+                    s['passes_courtes'] += 1
+                    if est_ok: s['passes_ok_courtes'] += 1
+                if 'Longue' in passes:
+                    s['passes_longues'] += 1
+                    if est_ok: s['passes_ok_longues'] += 1
+                if 'Passe dans dernier 1/3' in passes:
+                    s['passes_last_third'] += 1
+                if 'Passe Décisive' in passes:
+                    s['passes_decisives'] += 1
+
+            if 'Duel défensif' in actions:
+                s['duels'] += 1
+                if 'Gagné' in duels: s['duels_ok'] += 1
+                if 'Faute' in duels: s['fautes'] += 1
+
+            if dribbles or 'Dribble' in actions:
+                s['dribbles'] += 1
+                if 'Réussi' in dribbles: s['dribbles_ok'] += 1
+
+            if 'Interception' in actions:
+                s['interceptions'] += 1
+
+            if tirs or 'Tir' in actions:
+                s['tirs'] += 1
+                if 'Tir Cadré' in tirs: s['tirs_cadres'] += 1
+                if 'But' in tirs: s['buts'] += 1
+
+            if pd.notna(row.get('Création de Deséquilibre')):
+                s['deseq'] += 1
+                team_deseq_total += 1
+
+        player_stats[row_name] = s
+
+    if team_deseq_total == 0:
+        team_deseq_total = 1  # éviter division par zéro
+
+    # Agréger par profil_base → moyenne
+    from collections import defaultdict
+    profil_groups = defaultdict(list)
+    for row_name, s in player_stats.items():
+        profil_groups[s['profil']].append(s)
+
+    rows_out = []
+    for profil, players in profil_groups.items():
+        n = len(players)
+        def _avg(k): return sum(p[k] for p in players) / n
+        def _sum(k): return sum(p[k] for p in players)
+
+        poste = _APL_PROFIL_TO_POSTE.get(profil, profil)
+        rows_out.append({
+            'Player':                       f"{profil} (APL)",
+            'Poste':                        poste,
+            # Colonnes attendues par create_metrics
+            'Passes':                       _avg('passes'),
+            'Passes courtes':               _avg('passes_courtes'),
+            'Passes longues':               _avg('passes_longues'),
+            'Passes réussies':              _avg('passes_ok'),
+            'Passes réussies (courtes)':    _avg('passes_ok_courtes'),
+            'Passes réussies (longues)':    _avg('passes_ok_longues'),
+            'Duels défensifs':              _avg('duels'),
+            'Duels défensifs gagnés':       _avg('duels_ok'),
+            'Fautes':                       _avg('fautes'),
+            'Dribbles':                     _avg('dribbles'),
+            'Dribbles réussis':             _avg('dribbles_ok'),
+            'Interceptions':                _avg('interceptions'),
+            'Tirs':                         _avg('tirs'),
+            'Tirs cadrés':                  _avg('tirs_cadres'),
+            'Buts':                         _avg('buts'),
+            # Colonnes créativité
+            '__total_passes':               _avg('passes'),
+            '__last_third':                 _avg('passes_last_third'),
+            '__assists':                    _avg('passes_decisives'),
+            '__deseq':                      _avg('deseq'),
+            '__team_deseq_total':           team_deseq_total / n,  # normalisé par joueuse
+        })
+
+    return pd.DataFrame(rows_out)
+
+
+def load_apl_files() -> pd.DataFrame:
+    """Charge tous les CSV APL depuis data/ et retourne un DataFrame
+    agrégé par profil de poste (moyenne toutes joueuses, tous matchs).
+    Compatible avec create_metrics / create_kpis / create_poste.
+    """
+    import glob as _glob
+
+    candidates = _glob.glob(os.path.join(DATA_FOLDER, "Indiv_*.csv")) + \
+                 _glob.glob(os.path.join(DATA_FOLDER, "APL_*.csv")) + \
+                 _glob.glob(os.path.join(DATA_FOLDER, "apl_*.csv"))
+
+    if not candidates:
+        return pd.DataFrame()
+
+    all_dfs = []
+    for path in candidates:
+        try:
+            raw = read_csv_auto(path)
+            if 'Row' not in raw.columns or 'Action' not in raw.columns:
+                continue
+            # Vérifier que c'est un fichier APL/Pro (pas U19)
+            # Heuristique : Row contient "Défenseure" ou "Gardienne" ou "Milieux" ou "Attaquante"
+            apl_rows = {'Gardienne','Défenseure centrale','Défenseure latérale',
+                        'Milieux axiale','Milieux offensive','Attaquante'}
+            rows_found = set(raw['Row'].dropna().apply(
+                lambda r: re.sub(r'\s*\d+$', '', str(r)).strip()
+            ).unique())
+            if not rows_found & apl_rows:
+                continue
+            all_dfs.append(parse_apl_csv(raw))
+        except Exception as e:
+            _warn(f"APL: impossible de lire {os.path.basename(path)} → {e}")
+
+    if not all_dfs:
+        return pd.DataFrame()
+
+    # Agréger tous les matchs : moyenne par Poste sur tous les fichiers
+    combined = pd.concat(all_dfs, ignore_index=True)
+    num_cols = combined.select_dtypes(include='number').columns.tolist()
+    agg = combined.groupby('Poste')[num_cols].mean().reset_index()
+    # Reconstruire Player label
+    poste_to_profil = {v: k for k, v in _APL_PROFIL_TO_POSTE.items()}
+    agg['Player'] = agg['Poste'].map(poste_to_profil).fillna(agg['Poste']).apply(
+        lambda x: f"{x} (APL)"
+    )
+    return agg
 def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
     if is_edf:
         if "Player" not in joueurs.columns or "Temps de jeu" not in joueurs.columns or "Poste" not in joueurs.columns:
@@ -5812,6 +6003,24 @@ def collect_data(selected_season=None):
 
         except Exception as e:
             _warn(f"EDF: erreur chargement/calcul référentiel → {e}")
+
+    # ── APL (Arkema Première Ligue) ──────────────────────────────────────
+    try:
+        df_apl_raw = load_apl_files()
+        if not df_apl_raw.empty:
+            df_apl = create_metrics(df_apl_raw)
+            df_apl = create_kpis(df_apl)
+            df_apl = create_poste(df_apl)
+            # Renommer Poste pour l'affichage
+            if "Poste" in df_apl.columns:
+                df_apl["Poste"] = df_apl["Poste"].astype(str) + " moyenne (APL)"
+            # Fusionner avec edf_kpi
+            if edf_kpi is None or (isinstance(edf_kpi, pd.DataFrame) and edf_kpi.empty):
+                edf_kpi = df_apl
+            else:
+                edf_kpi = pd.concat([edf_kpi, df_apl], ignore_index=True)
+    except Exception as e:
+        _warn(f"APL: erreur chargement → {e}")
 
     # ======================================================
     # PFC Matchs
