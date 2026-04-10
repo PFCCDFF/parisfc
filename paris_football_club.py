@@ -70,6 +70,8 @@ DRIVE_TACTICAL_FOLDER_ID = ""   # À renseigner si dossier Drive dédié
 DRIVE_GPS_MATCH_FOLDER_ID = "1jzLW_jR5sMtsP4lOb4mN9mJlthw3pvbu"  # Dossier Drive GPS Match
 DRIVE_LOGOS_FOLDER_ID = "1TCKyVOHzKynm6Z1fhKnNUKYDcN7NhMCj"  # Logos clubs adversaires
 LOGOS_FOLDER = "data/logos"  # Cache local
+EVAL_FILENAME = "Auto-évaluation de votre match (post-match).xlsx"  # Fichier Microsoft Forms export
+EVAL_LOCAL_PATH = "data/evaluations.xlsx"  # Cache local
 
 # =========================
 # UTILS
@@ -3725,6 +3727,245 @@ def _adv_similarity(a: str, b: str) -> float:
     return len(inter) / max(len(ta), len(tb))
 
 
+# ─── ÉVALUATIONS AUTO-MATCH ─────────────────────────────────────────────────
+
+_ADV_NORM_MAP = {
+    "le havre": "Le Havre", "havre": "Le Havre", "hac": "Le Havre",
+    "havres": "Le Havre", "la havre": "Le Havre",
+    "psg": "PSG", "paris sg": "PSG", "paris saint germain": "PSG",
+    "paris so coeur": "Paris SO Cœur", "paris co": "Paris SO Cœur",
+    "ol": "OL", "olympique lyonnais": "OL", "lyon": "OL",
+    "losc": "LOSC", "lille": "LOSC", "lille(losc)": "LOSC",
+    "qrm": "QRM", "quevilly rouen": "QRM", "quevilly rouen metrople": "QRM",
+    "quevilly rouen metropole": "QRM",
+    "le mans": "Le Mans", "le mans fc": "Le Mans", "man": "Le Mans",
+    "fc nantes": "Nantes", "nantes": "Nantes",
+    "fleury": "FC Fleury", "fc fleury": "FC Fleury",
+    "fc 93": "FC 93", "fc93": "FC 93", "f93": "FC 93",
+    "montpellier": "Montpellier", "monpellier": "Montpellier",
+    "montfermeil": "Montfermeil", "monfermeil": "Montfermeil",
+    "valenciennes": "Valenciennes", "valencienne": "Valenciennes",
+    "dunkerque": "Dunkerque", "dunkirk": "Dunkerque", "usl dunkerque": "Dunkerque",
+    "vga saint-maur": "VGA Saint-Maur", "vga saint maur": "VGA Saint-Maur",
+    "st maur": "VGA Saint-Maur", "saint maur": "VGA Saint-Maur",
+    "as sarcelles": "Sarcelles", "sarcelles": "Sarcelles",
+    "villejuif": "Villejuif", "us villejuif": "Villejuif",
+    "rueil malmaison": "Rueil-Malmaison", "reuil malmaison": "Rueil-Malmaison",
+    "rueil-malmaison": "Rueil-Malmaison",
+    "saint etienne": "Saint-Étienne", "saint-etienne": "Saint-Étienne",
+    "as saint etienne": "Saint-Étienne",
+    "torcy": "Torcy", "us torcy": "Torcy",
+    "athis mons": "Athis-Mons", "bobigny": "Bobigny", "issy": "Issy",
+    "pfc": "PFC (interne)", "paris fc": "PFC (interne)",
+    "interne": "Opposition interne", "opposition interne": "Opposition interne",
+}
+
+_EVAL_DIMS = [
+    ("tech_balle",  "Ma performance au niveau technique avec ballon",                "Tech. avec ballon"),
+    ("tech_sballe", "Ma performance au niveau technique sans ballon",                "Tech. sans ballon"),
+    ("tact_att",    "Ma performance au niveau tactique quand mon équipe a le ballon","Tactique attaque"),
+    ("tact_def",    "Ma performance au niveau tactique quand mon équipe défend",     "Tactique défense"),
+    ("physique",    "Ma performance physique",                                       "Physique"),
+    ("mentale",     "Ma performance mentale",                                        "Mental"),
+]
+
+def _norm_name_eval(s):
+    import unicodedata as _ud
+    s = str(s).strip()
+    s = _ud.normalize("NFKD", s)
+    s = "".join(c for c in s if not _ud.combining(c))
+    return " ".join(s.lower().split())
+
+def _norm_adv_eval(s):
+    import unicodedata as _ud
+    raw = str(s).strip()
+    n = _ud.normalize("NFKD", raw)
+    n = "".join(c for c in n if not _ud.combining(c))
+    n = " ".join(n.lower().split())
+    if n in _ADV_NORM_MAP:
+        return _ADV_NORM_MAP[n]
+    for k, v in _ADV_NORM_MAP.items():
+        if len(k) >= 3 and (k in n or n in k):
+            return v
+    return raw.strip().title()
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_evaluations() -> pd.DataFrame:
+    paths = [
+        EVAL_LOCAL_PATH,
+        os.path.join(DATA_FOLDER, EVAL_FILENAME),
+        os.path.join(DATA_FOLDER, "evaluations.xlsx"),
+        "/mnt/user-data/uploads/Auto-e_valuation_de_votre_match__post-match__1-231_.xlsx",
+    ]
+    df = None
+    for p in paths:
+        if os.path.exists(p):
+            try:
+                df = pd.read_excel(p)
+                break
+            except Exception:
+                continue
+    if df is None or df.empty:
+        return pd.DataFrame()
+    col_nom, col_date, col_adv = "Ton Nom et Prénom", "Date du jour", "Adversaire du jour"
+    keep = [col_nom, col_date, col_adv] + [c for _, c, _ in _EVAL_DIMS if c in df.columns]
+    df = df[[c for c in keep if c in df.columns]].copy()
+    df["joueur_norm"] = df[col_nom].astype(str).apply(_norm_name_eval)
+    df["joueur_label"] = df[col_nom].astype(str).str.strip().str.title()
+    df["date"] = pd.to_datetime(df[col_date], errors="coerce")
+    df = df[df["date"].notna() & (df["date"].dt.year >= 2020)].copy()
+    df["adversaire"] = df[col_adv].astype(str).apply(_norm_adv_eval)
+    for key, col, _ in _EVAL_DIMS:
+        if col in df.columns:
+            df[key] = pd.to_numeric(df[col], errors="coerce").clip(1, 5)
+    dim_keys = [k for k, c, _ in _EVAL_DIMS if k in df.columns]
+    df["score_global"] = df[dim_keys].mean(axis=1).round(2)
+    df = df.sort_values("date", ascending=False).reset_index(drop=True)
+    return df
+
+
+def render_evaluation_page(user_profile, permissions):
+    import math, numpy as np
+    st.header("⭐ Évaluations post-match")
+    df = load_evaluations()
+    if df.empty:
+        st.warning("Aucune donnée d'évaluation trouvée. Dépose le fichier Excel dans `data/`.")
+        if check_permission(user_profile, "all", permissions):
+            if st.button("🔄 Recharger", key="eval_reload_btn"):
+                st.cache_data.clear(); st.rerun()
+        return
+
+    st.markdown(f"**{len(df)} réponses** · {df['joueur_norm'].nunique()} joueuses · {df['adversaire'].nunique()} adversaires")
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1:
+        all_players = sorted(df["joueur_label"].dropna().unique())
+        sel_player = st.selectbox("Joueuse", ["Toutes"] + all_players, key="eval_player_sel")
+    with col_f2:
+        all_adv = sorted(df["adversaire"].dropna().unique())
+        sel_adv = st.selectbox("Adversaire", ["Tous"] + all_adv, key="eval_adv_sel")
+    with col_f3:
+        all_years = sorted(df["date"].dt.year.dropna().unique(), reverse=True)
+        sel_year = st.selectbox("Saison", ["Toutes"] + [str(y) for y in all_years], key="eval_year_sel")
+
+    fdf = df.copy()
+    if sel_player != "Toutes":
+        fdf = fdf[fdf["joueur_norm"] == _norm_name_eval(sel_player)]
+    if sel_adv != "Tous":
+        fdf = fdf[fdf["adversaire"] == sel_adv]
+    if sel_year != "Toutes":
+        fdf = fdf[fdf["date"].dt.year == int(sel_year)]
+    if fdf.empty:
+        st.info("Aucune réponse pour cette sélection."); return
+
+    st.divider()
+    dim_keys   = [k for k, c, _ in _EVAL_DIMS if k in fdf.columns]
+    dim_labels = [lbl for k, c, lbl in _EVAL_DIMS if k in fdf.columns]
+
+    # ── Profil individuel ─────────────────────────────────────────────────
+    if sel_player != "Toutes":
+        st.markdown(f"#### 🎯 Profil moyen — {sel_player}")
+        moyennes = fdf[dim_keys].mean()
+        col_radar, col_metrics = st.columns([1, 1])
+        with col_radar:
+            fig_r, ax_r = plt.subplots(figsize=(4.5, 4.5), subplot_kw=dict(polar=True), dpi=90)
+            fig_r.patch.set_facecolor("#08090D"); ax_r.set_facecolor("#0C1220")
+            N = len(dim_keys)
+            angles = [n / float(N) * 2 * math.pi for n in range(N)] 
+            angles += angles[:1]
+            vals = moyennes.tolist() + [moyennes.iloc[0]]
+            ax_r.plot(angles, vals, "o-", linewidth=2, color="#00A3E0")
+            ax_r.fill(angles, vals, alpha=0.25, color="#00A3E0")
+            ax_r.set_xticks(angles[:-1])
+            ax_r.set_xticklabels(dim_labels, size=8, color="#C8D8E8")
+            ax_r.set_ylim(0, 5); ax_r.set_yticks([1,2,3,4,5])
+            ax_r.set_yticklabels(["1","2","3","4","5"], size=7, color="#6A8090")
+            ax_r.spines["polar"].set_color("#1A2A3A"); ax_r.grid(color="#1A2A3A", linewidth=0.8)
+            fig_r.tight_layout(); st.pyplot(fig_r, use_container_width=True); plt.close(fig_r)
+        with col_metrics:
+            st.markdown(f"**Score global moyen : {fdf['score_global'].mean():.2f} / 5**  ·  *{len(fdf)} éval.*")
+            st.markdown("")
+            for k, c, lbl in _EVAL_DIMS:
+                if k in fdf.columns:
+                    v = fdf[k].mean()
+                    color = "#00A3E0" if v >= 4 else ("#FFD700" if v >= 3 else "#EF4444")
+                    bar_w = int(v / 5 * 100)
+                    st.markdown(
+                        f"<div style='margin-bottom:8px;'><div style='display:flex;justify-content:space-between;"
+                        f"font-size:12px;color:#C8D8E8;margin-bottom:3px;'><span>{lbl}</span>"
+                        f"<span style='color:{color};font-weight:700;'>{v:.2f}</span></div>"
+                        f"<div style='background:#1A2A3A;border-radius:3px;height:6px;'>"
+                        f"<div style='background:{color};width:{bar_w}%;height:6px;border-radius:3px;'>"
+                        f"</div></div></div>", unsafe_allow_html=True)
+        # Évolution temporelle
+        if len(fdf) > 1:
+            st.markdown("#### 📈 Évolution dans le temps")
+            fig_ev, ax_ev = plt.subplots(figsize=(10, 3.5), dpi=90)
+            fig_ev.patch.set_facecolor("#08090D"); ax_ev.set_facecolor("#08090D")
+            colors_ev = ["#00A3E0","#4db8e8","#FFD700","#38BDF8","#10B981","#F59E0B"]
+            fdf_s = fdf.sort_values("date")
+            xd = fdf_s["date"].tolist()
+            for i,(k,c,lbl) in enumerate(_EVAL_DIMS):
+                if k in fdf_s.columns:
+                    ax_ev.plot(xd, fdf_s[k], "o-", label=lbl, color=colors_ev[i%6], linewidth=1.5, markersize=5)
+            ax_ev.plot(xd, fdf_s["score_global"], "--", label="Moy. globale", color="#FFFFFF", linewidth=2, alpha=0.6)
+            ax_ev.set_ylim(0.5, 5.5); ax_ev.set_yticks([1,2,3,4,5])
+            ax_ev.set_yticklabels(["1","2","3","4","5"], color="#6A8090")
+            ax_ev.tick_params(colors="#6A8090", labelsize=8)
+            for sp in ["top","right"]: ax_ev.spines[sp].set_visible(False)
+            for sp in ["bottom","left"]: ax_ev.spines[sp].set_color("#1A2A3A")
+            ax_ev.yaxis.grid(True, color="#1A2A3A", linewidth=0.5, alpha=0.7); ax_ev.set_axisbelow(True)
+            ax_ev.set_xticks(xd)
+            ax_ev.set_xticklabels(fdf_s["adversaire"].tolist(), rotation=30, ha="right", fontsize=8, color="#C8D8E8")
+            ax_ev.legend(fontsize=7, facecolor="#0C1220", edgecolor="#1A2A3A", labelcolor="#C8D8E8", loc="lower right", ncol=3)
+            fig_ev.subplots_adjust(bottom=0.30, top=0.95, left=0.05, right=0.98)
+            st.pyplot(fig_ev, use_container_width=True); plt.close(fig_ev)
+
+    # ── Comparaison équipe ────────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### 👥 Comparaison de l'équipe" + (f" — {sel_adv}" if sel_adv != "Tous" else ""))
+    grp = fdf.groupby("joueur_label")[dim_keys + ["score_global"]].mean().round(2).reset_index()
+    grp = grp.sort_values("score_global", ascending=False)
+    col_t, col_h = st.columns([1, 1])
+    with col_t:
+        rmap = {k: lbl for k,c,lbl in _EVAL_DIMS if k in grp.columns}
+        rmap.update({"joueur_label":"Joueuse","score_global":"Moy. glob."})
+        disp = grp.rename(columns=rmap)
+        st.dataframe(disp.style.background_gradient(subset=["Moy. glob."], cmap="Blues", vmin=1, vmax=5),
+                     use_container_width=True, hide_index=True)
+    with col_h:
+        if len(grp) > 1:
+            fig_h, ax_h = plt.subplots(figsize=(5, max(3, len(grp)*0.4+1)), dpi=90)
+            fig_h.patch.set_facecolor("#08090D"); ax_h.set_facecolor("#08090D")
+            mat = grp[dim_keys].values
+            jnames = grp["joueur_label"].tolist()
+            im = ax_h.imshow(mat, aspect="auto", cmap="Blues", vmin=1, vmax=5)
+            ax_h.set_xticks(range(len(dim_labels))); ax_h.set_xticklabels(dim_labels, rotation=30, ha="right", fontsize=7, color="#C8D8E8")
+            ax_h.set_yticks(range(len(jnames))); ax_h.set_yticklabels(jnames, fontsize=8, color="#C8D8E8")
+            for i in range(mat.shape[0]):
+                for j in range(mat.shape[1]):
+                    v = mat[i,j]
+                    if not np.isnan(v):
+                        ax_h.text(j, i, f"{v:.1f}", ha="center", va="center", fontsize=7,
+                                  color="#08090D" if v >= 3.5 else "#C8D8E8", fontweight="bold")
+            plt.colorbar(im, ax=ax_h, fraction=0.03, pad=0.04).ax.tick_params(colors="#6A8090")
+            fig_h.tight_layout(); st.pyplot(fig_h, use_container_width=True); plt.close(fig_h)
+
+    # ── Détail ────────────────────────────────────────────────────────────
+    st.divider()
+    with st.expander("📋 Détail de toutes les réponses"):
+        dcols = ["date","joueur_label","adversaire","score_global"] + dim_keys
+        det = fdf[[c for c in dcols if c in fdf.columns]].copy()
+        det["date"] = det["date"].dt.strftime("%d/%m/%Y")
+        rmd = {"date":"Date","joueur_label":"Joueuse","adversaire":"Adversaire","score_global":"Moy."}
+        rmd.update({k:lbl for k,c,lbl in _EVAL_DIMS if k in det.columns})
+        st.dataframe(det.rename(columns=rmd), use_container_width=True, hide_index=True)
+    if check_permission(user_profile, "all", permissions):
+        if st.button("🔄 Recharger les évaluations", key="eval_reload_admin"):
+            st.cache_data.clear(); st.rerun()
+
+
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def load_tactical_files() -> list:
     """Charge tous les fichiers tactiques CSV depuis TACTICAL_FOLDER.
@@ -6659,7 +6900,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 key="download_export_xlsx",
             )
 
-    options = ["Rapports de matchs", "Comparaison", "Données Physiques", "Joueuses Passerelles", "Médical", "Recrutement"]
+    options = ["Rapports de matchs", "Évaluation", "Comparaison", "Données Physiques", "Joueuses Passerelles", "Médical", "Recrutement"]
     if check_permission(user_profile, "all", permissions):
         options.insert(2, "Gestion")
 
@@ -6667,7 +6908,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         page = option_menu(
             menu_title="",
             options=options,
-            icons=["graph-up-arrow", "people", "gear", "activity", "people-fill", "heart-pulse", "search"][: len(options)],
+            icons=["graph-up-arrow", "star", "people", "gear", "activity", "people-fill", "heart-pulse", "search"][: len(options)],
             menu_icon="cast",
             default_index=0,
             orientation="vertical",
@@ -7055,6 +7296,12 @@ function printA4Report() {{
 """
                     _components_stat.html(_print_js, height=55)
                     _components_stat.html(_html_stat, height=1120, scrolling=False)
+
+    elif page == "Évaluation":
+        if not (check_permission(user_profile, "all", permissions) or check_permission(user_profile, "update_data", permissions)):
+            st.warning("Accès réservé aux administrateurs.")
+            return
+        render_evaluation_page(user_profile, permissions)
 
     # =====================
     # COMPARAISON
