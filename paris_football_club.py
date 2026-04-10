@@ -4216,7 +4216,40 @@ def render_evaluation_page(user_profile, permissions):
     fc = _filter(df_c, is_coach=True)
     fj = _filter(df_j, is_coach=False)
 
-    st.divider()
+    # ── Ne garder que les lignes avec les DEUX évaluations ────────────────
+    # Clé de jointure : joueur_norm + date normalisée
+    # Feuille 1 (coach) contient aussi les notes joueuse quand remplies → source prioritaire
+    # Sheet1 (Forms) → source auto-évaluation joueuse
+
+    def _make_pair_key(df, date_tol_days=3):
+        """Ajoute une clé de jointure joueur_norm + date arrondie."""
+        d = df.copy()
+        d["_join_key"] = d["joueur_norm"] + "__" + d["date"].dt.strftime("%Y-%m-%d")
+        return d
+
+    if not fc.empty and not fj.empty:
+        fc_k = _make_pair_key(fc)
+        fj_k = _make_pair_key(fj)
+        common_keys = set(fc_k["_join_key"]) & set(fj_k["_join_key"])
+        if not common_keys:
+            # Tolérance ±3 jours : match par joueur_norm + adversaire
+            paired_norms = set(fc["joueur_norm"]) & set(fj["joueur_norm"])
+            fc = fc[fc["joueur_norm"].isin(paired_norms)]
+            fj = fj[fj["joueur_norm"].isin(paired_norms)]
+        else:
+            fc = fc_k[fc_k["_join_key"].isin(common_keys)].drop(columns=["_join_key"])
+            fj = fj_k[fj_k["_join_key"].isin(common_keys)].drop(columns=["_join_key"])
+    elif not fc.empty and fj.empty:
+        # Utiliser les notes joueuse de la Feuille 1 si disponibles
+        joueur_cols_f1 = [k for k in [k for k,c,_ in _EVAL_DIMS] if k in fc.columns]
+        fc_with_j = fc.dropna(subset=joueur_cols_f1, how="all") if joueur_cols_f1 else pd.DataFrame()
+        if fc_with_j.empty:
+            st.info("Aucune paire Coach + Joueuse trouvée sur cette sélection.")
+            return
+        fc = fc_with_j
+
+    n_pairs = min(len(fc), len(fj)) if not fj.empty else len(fc)
+    st.caption(f"📊 {n_pairs} évaluations appariées (coach + joueuse)")
 
     # ══════════════════════════════════════════════════════════════════
     # VUE PAR JOUEUSE — radar + écarts + évolution
@@ -4353,68 +4386,92 @@ def render_evaluation_page(user_profile, permissions):
                 (f" · {sel_adv}" if sel_adv != "Tous" else "") +
                 (f" · {sel_cat}" if sel_cat != "Toutes" else ""))
 
-    # Agréger par joueuse
     if not fc.empty:
         grp_c = fc.groupby("joueur_label")[dim_keys_c + ["score_global_c"]].mean().round(2)
-        # Joueuse Feuille 1
-        joueur_in_c = [k for k in dim_keys if k in fc.columns]
-        if joueur_in_c:
-            grp_j_f1 = fc.groupby("joueur_label")[joueur_in_c].mean().round(2)
+
+        # Notes joueuse : depuis fj (Sheet1) en priorité, sinon depuis Feuille 1
+        joueur_in_c = [k for k in dim_keys if k in fc.columns and fc[k].notna().any()]
+        if not fj.empty:
+            grp_j = fj.groupby("joueur_label")[dim_keys].mean().round(2)
+            # Ajouter score_global
+            grp_j["score_global"] = grp_j[dim_keys].mean(axis=1).round(2)
+        elif joueur_in_c:
+            grp_j = fc.groupby("joueur_label")[joueur_in_c].mean().round(2)
+            grp_j["score_global"] = grp_j[joueur_in_c].mean(axis=1).round(2)
         else:
-            grp_j_f1 = pd.DataFrame()
+            grp_j = pd.DataFrame()
 
-        all_players_grp = grp_c.index.tolist()
+        # Ne garder que les joueuses présentes dans les deux sources
+        if not grp_j.empty:
+            common_players = grp_c.index.intersection(grp_j.index)
+            grp_c = grp_c.loc[common_players]
+            grp_j = grp_j.loc[common_players]
+        else:
+            common_players = grp_c.index
 
-        # Matrice écarts
-        ecart_mat = pd.DataFrame(index=all_players_grp)
-        for k, c, lbl in _EVAL_DIMS:
-            kc = k+"_c"
-            if kc in grp_c.columns and k in grp_j_f1.columns:
-                ecart_mat[lbl] = (grp_c[kc] - grp_j_f1[k]).round(2)
-            elif kc in grp_c.columns:
-                ecart_mat[lbl] = float("nan")
-        ecart_mat["Score coach"] = grp_c["score_global_c"].round(2)
-        ecart_mat = ecart_mat.sort_values("Score coach", ascending=False)
+        if len(common_players) == 0:
+            st.info("Aucune joueuse avec les deux évaluations sur cette sélection.")
+        else:
+            # Matrice écarts
+            ecart_mat = pd.DataFrame(index=common_players)
+            for k, c, lbl in _EVAL_DIMS:
+                kc = k + "_c"
+                if kc in grp_c.columns and k in grp_j.columns:
+                    ecart_mat[lbl] = (grp_c[kc] - grp_j[k]).round(2)
+                else:
+                    ecart_mat[lbl] = float("nan")
+            ecart_mat["Score coach"]   = grp_c["score_global_c"].round(2)
+            ecart_mat["Score joueuse"] = grp_j["score_global"].round(2) if "score_global" in grp_j.columns else float("nan")
+            ecart_mat["Écart global"]  = (ecart_mat["Score coach"] - ecart_mat["Score joueuse"]).round(2)
+            ecart_mat = ecart_mat.sort_values("Score coach", ascending=False)
 
-        col_tab, col_hm = st.columns([1, 1])
-        with col_tab:
-            st.markdown("**Notes moyennes coach**")
-            disp = grp_c.copy()
-            disp.columns = [lbl for k,c,lbl in _EVAL_DIMS] + ["Moy. coach"]
-            disp.index.name = "Joueuse"
-            st.dataframe(
-                disp.style.background_gradient(subset=["Moy. coach"], cmap="Blues", vmin=1, vmax=5),
-                use_container_width=True
-            )
+            col_tab, col_hm = st.columns([1, 1])
+            with col_tab:
+                st.markdown("**Comparaison Coach / Joueuse**")
+                disp_cols = {k+"_c": lbl+" C" for k,c,lbl in _EVAL_DIMS if k+"_c" in grp_c.columns}
+                disp = grp_c.rename(columns=disp_cols).copy()
+                if not grp_j.empty:
+                    for k, c, lbl in _EVAL_DIMS:
+                        if k in grp_j.columns:
+                            disp[lbl+" J"] = grp_j[k]
+                disp["Moy. coach"]   = grp_c["score_global_c"]
+                disp["Moy. joueuse"] = grp_j["score_global"] if "score_global" in grp_j.columns else float("nan")
+                disp["Écart"]        = ecart_mat["Écart global"]
+                disp.index.name = "Joueuse"
+                st.dataframe(
+                    disp[["Moy. coach","Moy. joueuse","Écart"]].style
+                    .background_gradient(subset=["Moy. coach"], cmap="Blues", vmin=1, vmax=5)
+                    .background_gradient(subset=["Écart"], cmap="RdYlGn_r", vmin=-2, vmax=2),
+                    use_container_width=True
+                )
 
-        with col_hm:
-            ec_cols = [c for c in ecart_mat.columns if c != "Score coach"]
-            if ec_cols and not ecart_mat[ec_cols].isna().all().all():
-                st.markdown("**Heatmap des écarts (Coach − Joueuse)**")
-                fig_h, ax_h = plt.subplots(figsize=(5, max(3, len(ecart_mat)*0.45+1)), dpi=90)
-                fig_h.patch.set_facecolor("#08090D"); ax_h.set_facecolor("#08090D")
-                mat = ecart_mat[ec_cols].values.astype(float)
-                # Diverging colormap centré sur 0
-                import matplotlib.colors as mcolors
-                cmap = plt.cm.RdYlGn  # rouge=négatif (joueuse se surestime), vert=positif
-                norm = mcolors.TwoSlopeNorm(vmin=-2, vcenter=0, vmax=2)
-                im = ax_h.imshow(mat, aspect="auto", cmap=cmap, norm=norm)
-                ax_h.set_xticks(range(len(ec_cols)))
-                ax_h.set_xticklabels(ec_cols, rotation=30, ha="right", fontsize=7, color="#C8D8E8")
-                ax_h.set_yticks(range(len(ecart_mat)))
-                ax_h.set_yticklabels(ecart_mat.index.tolist(), fontsize=8, color="#C8D8E8")
-                for i in range(mat.shape[0]):
-                    for j in range(mat.shape[1]):
-                        v = mat[i,j]
-                        if not math.isnan(v):
-                            ax_h.text(j, i, f"{v:+.1f}", ha="center", va="center",
-                                      fontsize=7, color="#08090D", fontweight="bold")
-                cb = plt.colorbar(im, ax=ax_h, fraction=0.03, pad=0.04)
-                cb.ax.tick_params(colors="#6A8090", labelsize=7)
-                cb.set_label("Coach − Joueuse", color="#6A8090", fontsize=7)
-                fig_h.tight_layout(); st.pyplot(fig_h, use_container_width=True); plt.close(fig_h)
-            else:
-                st.info("Pas assez de données joueuse dans la Feuille 1 pour calculer les écarts.")
+            with col_hm:
+                ec_cols = [lbl for k,c,lbl in _EVAL_DIMS if lbl in ecart_mat.columns and not ecart_mat[lbl].isna().all()]
+                if ec_cols:
+                    st.markdown("**Heatmap des écarts (Coach − Joueuse)**")
+                    fig_h, ax_h = plt.subplots(figsize=(5, max(3, len(ecart_mat)*0.45+1)), dpi=90)
+                    fig_h.patch.set_facecolor("#08090D"); ax_h.set_facecolor("#08090D")
+                    mat = ecart_mat[ec_cols].values.astype(float)
+                    import matplotlib.colors as mcolors
+                    cmap = plt.cm.RdYlGn
+                    norm = mcolors.TwoSlopeNorm(vmin=-2, vcenter=0, vmax=2)
+                    im = ax_h.imshow(mat, aspect="auto", cmap=cmap, norm=norm)
+                    ax_h.set_xticks(range(len(ec_cols)))
+                    ax_h.set_xticklabels(ec_cols, rotation=30, ha="right", fontsize=7, color="#C8D8E8")
+                    ax_h.set_yticks(range(len(ecart_mat)))
+                    ax_h.set_yticklabels(ecart_mat.index.tolist(), fontsize=8, color="#C8D8E8")
+                    for i in range(mat.shape[0]):
+                        for j in range(mat.shape[1]):
+                            v = mat[i,j]
+                            if not math.isnan(v):
+                                ax_h.text(j, i, f"{v:+.1f}", ha="center", va="center",
+                                          fontsize=7, color="#08090D", fontweight="bold")
+                    cb = plt.colorbar(im, ax=ax_h, fraction=0.03, pad=0.04)
+                    cb.ax.tick_params(colors="#6A8090", labelsize=7)
+                    cb.set_label("Coach − Joueuse", color="#6A8090", fontsize=7)
+                    fig_h.tight_layout(); st.pyplot(fig_h, use_container_width=True); plt.close(fig_h)
+                else:
+                    st.info("Pas assez de paires Coach/Joueuse pour calculer les écarts.")
 
     # ── Détail ─────────────────────────────────────────────────────────────
     st.divider()
