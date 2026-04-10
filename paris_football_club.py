@@ -3791,20 +3791,36 @@ def _norm_adv_eval(s):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_evaluations() -> pd.DataFrame:
-    paths = [
+    """Charge le fichier d'auto-évaluation (export Microsoft Forms).
+    Cherche dans data/ tout fichier xlsx dont le nom contient 'eval' ou 'auto'.
+    """
+    import glob
+
+    # Chemins candidats explicites
+    candidates = [
         EVAL_LOCAL_PATH,
         os.path.join(DATA_FOLDER, EVAL_FILENAME),
         os.path.join(DATA_FOLDER, "evaluations.xlsx"),
         "/mnt/user-data/uploads/Auto-e_valuation_de_votre_match__post-match__1-231_.xlsx",
     ]
+    # Recherche dynamique : tout xlsx dans data/ dont le nom contient eval/auto/match
+    _kws = ["eval", "auto", "post-match", "post_match", "evaluation"]
+    for _p in glob.glob(os.path.join(DATA_FOLDER, "*.xlsx")) + glob.glob(os.path.join(DATA_FOLDER, "*.xls")):
+        _n = os.path.basename(_p).lower()
+        if any(k in _n for k in _kws) and _p not in candidates:
+            candidates.append(_p)
+
     df = None
-    for p in paths:
+    for p in candidates:
         if os.path.exists(p):
             try:
                 df = pd.read_excel(p)
-                break
+                if "Ton Nom et Prénom" in df.columns:  # vérification colonnes Forms
+                    break
+                df = None  # mauvais fichier
             except Exception:
                 continue
+
     if df is None or df.empty:
         return pd.DataFrame()
     col_nom, col_date, col_adv = "Ton Nom et Prénom", "Date du jour", "Adversaire du jour"
@@ -3829,9 +3845,26 @@ def render_evaluation_page(user_profile, permissions):
     st.header("⭐ Évaluations post-match")
     df = load_evaluations()
     if df.empty:
-        st.warning("Aucune donnée d'évaluation trouvée. Dépose le fichier Excel dans `data/`.")
+        st.warning("Aucune donnée d'évaluation trouvée.")
+        st.markdown(
+            "**Pour charger les données**, deux options :\n\n"
+            "**1.** Dépose le fichier Excel dans le dossier Drive principal → synchronisation automatique au prochain chargement\n\n"
+            "**2.** Upload direct ci-dessous :"
+        )
+        uploaded = st.file_uploader(
+            "Fichier Excel Microsoft Forms (.xlsx)",
+            type=["xlsx", "xls"], key="eval_uploader"
+        )
+        if uploaded:
+            os.makedirs(DATA_FOLDER, exist_ok=True)
+            dest = os.path.join(DATA_FOLDER, "evaluations.xlsx")
+            with open(dest, "wb") as _fo:
+                _fo.write(uploaded.read())
+            st.cache_data.clear()
+            st.success(f"✅ Fichier enregistré — rechargement...")
+            st.rerun()
         if check_permission(user_profile, "all", permissions):
-            if st.button("🔄 Recharger", key="eval_reload_btn"):
+            if st.button("🔄 Recharger depuis Drive", key="eval_reload_btn"):
                 st.cache_data.clear(); st.rerun()
         return
 
