@@ -8134,6 +8134,7 @@ function printA4Report() {{
                 "Joueuse vs elle-même (matchs)",
                 "Joueuse vs une autre joueuse",
                 "Joueuse vs Référentiel EDF U19 (poste)",
+                "Joueuse vs Référentiel APL (poste)",
             ],
             key="compare_mode_select",
         )
@@ -8262,21 +8263,24 @@ function printA4Report() {{
                 else:
                     st.warning("Radar indisponible (données insuffisantes sur les métriques).")
 
-        else:
+        elif mode == "Joueuse vs Référentiel EDF U19 (poste)":
             if player_name:
                 p = player_name
                 st.info(f"Joueuse : {p}")
             else:
                 p = st.selectbox("Joueuse", sorted(pfc_kpi["Player"].dropna().unique().tolist()), key="edf_player")
 
-            if edf_kpi is None or edf_kpi.empty or "Poste" not in edf_kpi.columns:
+            # Filtrer uniquement les lignes EDF
+            edf_only = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("EDF", na=False)] if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
+
+            if edf_only.empty or "Poste" not in edf_only.columns:
                 st.warning("Aucune donnée EDF disponible pour la comparaison.")
                 return
 
-            postes_display = sorted(edf_kpi["Poste"].dropna().astype(str).unique().tolist())
+            postes_display = sorted(edf_only["Poste"].dropna().astype(str).unique().tolist())
             poste = st.selectbox("Poste (référentiel EDF)", postes_display, key="edf_poste_ref")
 
-            edf_line = edf_kpi[edf_kpi["Poste"] == poste].copy()
+            edf_line = edf_only[edf_only["Poste"] == poste].copy()
             edf_line = edf_line.rename(columns={"Poste": "Player"})
             edf_label = f"EDF {poste}"
 
@@ -8291,7 +8295,43 @@ function printA4Report() {{
                 fig = create_comparison_radar(players_data, player1_name=p, player2_name=edf_label, exclude_creativity=True)
                 if fig:
                     st.pyplot(fig, use_container_width=True)
-                    plt.close(fig)  # libère la mémoire
+                    plt.close(fig)
+                else:
+                    st.warning("Radar indisponible (données insuffisantes).")
+
+        elif mode == "Joueuse vs Référentiel APL (poste)":
+            if player_name:
+                p = player_name
+                st.info(f"Joueuse : {p}")
+            else:
+                p = st.selectbox("Joueuse", sorted(pfc_kpi["Player"].dropna().unique().tolist()), key="apl_player")
+
+            # Filtrer uniquement les lignes APL
+            apl_only = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("APL", na=False)] if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
+
+            if apl_only.empty:
+                st.warning("Aucune donnée APL disponible. Dépose les fichiers `Indiv_*.csv` dans le dossier Drive principal puis clique **Mettre à jour la base**.")
+                return
+
+            postes_display = sorted(apl_only["Poste"].dropna().astype(str).unique().tolist())
+            poste = st.selectbox("Poste (référentiel APL)", postes_display, key="apl_poste_ref")
+
+            apl_line = apl_only[apl_only["Poste"] == poste].copy()
+            apl_line = apl_line.rename(columns={"Poste": "Player"})
+            apl_label = f"APL {poste}"
+
+            player_df = prepare_comparison_data(pfc_kpi, p)
+
+            if player_df.empty:
+                st.info("Pas assez de données match pour cette joueuse.")
+            elif apl_line.empty:
+                st.info("Référentiel APL indisponible pour ce poste.")
+            else:
+                players_data = pd.concat([player_df, apl_line], ignore_index=True, sort=False)
+                fig = create_comparison_radar(players_data, player1_name=p, player2_name=apl_label, exclude_creativity=True)
+                if fig:
+                    st.pyplot(fig, use_container_width=True)
+                    plt.close(fig)
                 else:
                     st.warning("Radar indisponible (données insuffisantes).")
 
