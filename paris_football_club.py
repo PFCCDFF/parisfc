@@ -72,6 +72,7 @@ DRIVE_LOGOS_FOLDER_ID = "1TCKyVOHzKynm6Z1fhKnNUKYDcN7NhMCj"  # Logos clubs adver
 LOGOS_FOLDER = "data/logos"  # Cache local
 EVAL_FILENAME = "Auto-évaluation de votre match (post-match).xlsx"  # Fichier Microsoft Forms export
 EVAL_LOCAL_PATH = "data/evaluations.xlsx"  # Cache local
+EVAL_COACH_SHEET = "Feuille 1"  # Feuille évaluations entraîneurs dans le même fichier
 
 # =========================
 # UTILS
@@ -3790,214 +3791,391 @@ def _norm_adv_eval(s):
     return raw.strip().title()
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def load_evaluations() -> pd.DataFrame:
-    """Charge le fichier d'auto-évaluation (export Microsoft Forms).
-    Cherche dans data/ tout fichier xlsx dont le nom contient 'eval' ou 'auto'.
+def load_evaluations():
+    """Charge les deux feuilles du fichier évaluation.
+    Retourne (df_joueur, df_coach) — deux DataFrames nettoyés.
     """
     import glob
-
-    # Chemins candidats explicites
     candidates = [
         EVAL_LOCAL_PATH,
         os.path.join(DATA_FOLDER, EVAL_FILENAME),
         os.path.join(DATA_FOLDER, "evaluations.xlsx"),
+        "/mnt/user-data/uploads/Auto-e_valuation_de_votre_match__post-match__1-231___1_.xlsx",
         "/mnt/user-data/uploads/Auto-e_valuation_de_votre_match__post-match__1-231_.xlsx",
     ]
-    # Recherche dynamique : tout xlsx dans data/ dont le nom contient eval/auto/match
-    _kws = ["eval", "auto", "post-match", "post_match", "evaluation"]
     for _p in glob.glob(os.path.join(DATA_FOLDER, "*.xlsx")) + glob.glob(os.path.join(DATA_FOLDER, "*.xls")):
         _n = os.path.basename(_p).lower()
-        if any(k in _n for k in _kws) and _p not in candidates:
+        if any(k in _n for k in ["eval","auto","post-match","post_match","evaluation"]) and _p not in candidates:
             candidates.append(_p)
 
-    df = None
+    xl = None
     for p in candidates:
         if os.path.exists(p):
             try:
-                df = pd.read_excel(p)
-                if "Ton Nom et Prénom" in df.columns:  # vérification colonnes Forms
-                    break
-                df = None  # mauvais fichier
+                xl = pd.ExcelFile(p)
+                break
             except Exception:
                 continue
+    if xl is None:
+        return pd.DataFrame(), pd.DataFrame()
 
-    if df is None or df.empty:
-        return pd.DataFrame()
-    col_nom, col_date, col_adv = "Ton Nom et Prénom", "Date du jour", "Adversaire du jour"
-    keep = [col_nom, col_date, col_adv] + [c for _, c, _ in _EVAL_DIMS if c in df.columns]
-    df = df[[c for c in keep if c in df.columns]].copy()
-    df["joueur_norm"] = df[col_nom].astype(str).apply(_norm_name_eval)
-    df["joueur_label"] = df[col_nom].astype(str).str.strip().str.title()
-    df["date"] = pd.to_datetime(df[col_date], errors="coerce")
-    df = df[df["date"].notna() & (df["date"].dt.year >= 2020)].copy()
-    df["adversaire"] = df[col_adv].astype(str).apply(_norm_adv_eval)
-    for key, col, _ in _EVAL_DIMS:
-        if col in df.columns:
-            df[key] = pd.to_numeric(df[col], errors="coerce").clip(1, 5)
-    dim_keys = [k for k, c, _ in _EVAL_DIMS if k in df.columns]
-    df["score_global"] = df[dim_keys].mean(axis=1).round(2)
-    df = df.sort_values("date", ascending=False).reset_index(drop=True)
-    return df
+    # ── Feuille joueuses (Sheet1 — export Microsoft Forms) ──────────────
+    df_j = pd.DataFrame()
+    if "Sheet1" in xl.sheet_names:
+        raw = xl.parse("Sheet1")
+        col_nom = "Ton Nom et Prénom"; col_date = "Date du jour"; col_adv = "Adversaire du jour"
+        if col_nom in raw.columns:
+            raw["joueur_norm"] = raw[col_nom].astype(str).apply(_norm_name_eval)
+            raw["joueur_label"] = raw[col_nom].astype(str).str.strip().str.title()
+            raw["date"] = pd.to_datetime(raw[col_date], errors="coerce")
+            raw = raw[raw["date"].notna() & (raw["date"].dt.year >= 2020)].copy()
+            raw["adversaire"] = raw[col_adv].astype(str).apply(_norm_adv_eval)
+            for key, col, _ in _EVAL_DIMS:
+                if col in raw.columns:
+                    raw[key] = pd.to_numeric(raw[col], errors="coerce").clip(1, 5)
+            dim_keys = [k for k, c, _ in _EVAL_DIMS if k in raw.columns]
+            raw["score_global"] = raw[dim_keys].mean(axis=1).round(2)
+            df_j = raw.sort_values("date", ascending=False).reset_index(drop=True)
+
+    # ── Feuille coach (Feuille 1) ────────────────────────────────────────
+    df_c = pd.DataFrame()
+    coach_sheet = EVAL_COACH_SHEET if EVAL_COACH_SHEET in xl.sheet_names else None
+    if coach_sheet:
+        raw_c = xl.parse(coach_sheet)
+        # Construire nom normalisé
+        raw_c["joueur_norm"] = (
+            raw_c["NOM"].astype(str).str.strip() + " " + raw_c["Prénom"].astype(str).str.strip()
+        ).apply(_norm_name_eval)
+        raw_c["joueur_label"] = (
+            raw_c["Prénom"].astype(str).str.strip().str.title() + " " +
+            raw_c["NOM"].astype(str).str.strip().str.title()
+        )
+        raw_c["date"] = pd.to_datetime(raw_c["Date"], errors="coerce")
+        raw_c = raw_c[raw_c["date"].notna() & (raw_c["date"].dt.year >= 2020)].copy()
+        raw_c["adversaire"] = raw_c["Adversaire"].astype(str).apply(_norm_adv_eval)
+
+        # Mapping colonnes coach → clés standard
+        _COACH_MAP = [
+            ("tech_balle_c",  "Evaluation Technique avec Ballon Coach"),
+            ("tech_sballe_c", "Evaluation Technique Défensive Coach"),
+            ("tact_att_c",    "Evaluation Tactique Off Coach"),
+            ("tact_def_c",    "Evaluation Tactique Def Coach"),
+            ("physique_c",    "Evaluation Physique Coach"),
+            ("mentale_c",     "Evaluation Mental Coach"),
+        ]
+        for key, col in _COACH_MAP:
+            if col in raw_c.columns:
+                raw_c[key] = pd.to_numeric(raw_c[col], errors="coerce").clip(1, 5)
+
+        coach_keys = [k for k, c in _COACH_MAP if k in raw_c.columns]
+        raw_c["score_global_c"] = raw_c[coach_keys].mean(axis=1).round(2)
+
+        # Colonnes joueuse dans Feuille 1 (si remplies)
+        _JOUEUR_MAP = [
+            ("tech_balle",  "Evaluation Technique avec Ballon Joueuse"),
+            ("tech_sballe", "Evaluation Technique Défensive Joueuse"),
+            ("tact_att",    "Evaluation Tactique Off Joueuse"),
+            ("tact_def",    "Evaluation Tactique Def Joueuse"),
+            ("physique",    "Evaluation Physique Joueuse"),
+            ("mentale",     "Evaluation Mental Joueuse"),
+        ]
+        for key, col in _JOUEUR_MAP:
+            if col in raw_c.columns:
+                raw_c[key] = pd.to_numeric(raw_c[col], errors="coerce").clip(1, 5)
+
+        df_c = raw_c.sort_values("date", ascending=False).reset_index(drop=True)
+
+    return df_j, df_c
 
 
 def render_evaluation_page(user_profile, permissions):
     import math, numpy as np
     st.header("⭐ Évaluations post-match")
-    df = load_evaluations()
-    if df.empty:
+
+    df_j, df_c = load_evaluations()
+    both_empty = (df_j is None or df_j.empty) and (df_c is None or df_c.empty)
+
+    if both_empty:
         st.warning("Aucune donnée d'évaluation trouvée.")
-        st.markdown(
-            "**Pour charger les données**, deux options :\n\n"
-            "**1.** Dépose le fichier Excel dans le dossier Drive principal → synchronisation automatique au prochain chargement\n\n"
-            "**2.** Upload direct ci-dessous :"
-        )
-        uploaded = st.file_uploader(
-            "Fichier Excel Microsoft Forms (.xlsx)",
-            type=["xlsx", "xls"], key="eval_uploader"
-        )
+        st.markdown("**Pour charger les données :** dépose le fichier Excel dans Drive ou uploade ci-dessous :")
+        uploaded = st.file_uploader("Fichier Excel (.xlsx)", type=["xlsx","xls"], key="eval_uploader")
         if uploaded:
             os.makedirs(DATA_FOLDER, exist_ok=True)
             dest = os.path.join(DATA_FOLDER, "evaluations.xlsx")
             with open(dest, "wb") as _fo:
                 _fo.write(uploaded.read())
             st.cache_data.clear()
-            st.success(f"✅ Fichier enregistré — rechargement...")
+            st.success("✅ Fichier enregistré — rechargement...")
             st.rerun()
         if check_permission(user_profile, "all", permissions):
-            if st.button("🔄 Recharger depuis Drive", key="eval_reload_btn"):
+            if st.button("🔄 Recharger", key="eval_reload_btn"):
                 st.cache_data.clear(); st.rerun()
         return
 
-    st.markdown(f"**{len(df)} réponses** · {df['joueur_norm'].nunique()} joueuses · {df['adversaire'].nunique()} adversaires")
-    col_f1, col_f2, col_f3 = st.columns(3)
+    # ── Clés dimensions ────────────────────────────────────────────────────
+    dim_keys   = [k for k, c, _ in _EVAL_DIMS]
+    dim_keys_c = [k+"_c" for k in dim_keys]
+    dim_labels = [lbl for k, c, lbl in _EVAL_DIMS]
+
+    # ── Filtres ────────────────────────────────────────────────────────────
+    # Construire listes depuis Feuille 1 (source principale pour filtres)
+    all_players = sorted(set(
+        (df_c["joueur_label"].dropna().tolist() if not df_c.empty else []) +
+        (df_j["joueur_label"].dropna().tolist() if not df_j.empty else [])
+    ))
+    all_adv = sorted(set(
+        (df_c["adversaire"].dropna().tolist() if not df_c.empty else []) +
+        (df_j["adversaire"].dropna().tolist() if not df_j.empty else [])
+    ))
+    all_cats = ["Toutes"] + sorted(df_c["Catégorie"].dropna().unique().tolist()) if not df_c.empty and "Catégorie" in df_c.columns else ["Toutes"]
+
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
     with col_f1:
-        all_players = sorted(df["joueur_label"].dropna().unique())
         sel_player = st.selectbox("Joueuse", ["Toutes"] + all_players, key="eval_player_sel")
     with col_f2:
-        all_adv = sorted(df["adversaire"].dropna().unique())
         sel_adv = st.selectbox("Adversaire", ["Tous"] + all_adv, key="eval_adv_sel")
     with col_f3:
-        all_years = sorted(df["date"].dt.year.dropna().unique(), reverse=True)
-        sel_year = st.selectbox("Saison", ["Toutes"] + [str(y) for y in all_years], key="eval_year_sel")
+        sel_cat = st.selectbox("Catégorie", all_cats, key="eval_cat_sel")
+    with col_f4:
+        all_years = sorted(set(
+            (df_c["date"].dt.year.dropna().tolist() if not df_c.empty else []) +
+            (df_j["date"].dt.year.dropna().tolist() if not df_j.empty else [])
+        ), reverse=True)
+        sel_year = st.selectbox("Année", ["Toutes"] + [str(y) for y in all_years], key="eval_year_sel")
 
-    fdf = df.copy()
-    if sel_player != "Toutes":
-        fdf = fdf[fdf["joueur_norm"] == _norm_name_eval(sel_player)]
-    if sel_adv != "Tous":
-        fdf = fdf[fdf["adversaire"] == sel_adv]
-    if sel_year != "Toutes":
-        fdf = fdf[fdf["date"].dt.year == int(sel_year)]
-    if fdf.empty:
-        st.info("Aucune réponse pour cette sélection."); return
+    def _filter(df, is_coach=False):
+        if df is None or df.empty: return df
+        fdf = df.copy()
+        if sel_player != "Toutes":
+            pn = _norm_name_eval(sel_player)
+            # match par tokens (ordre inversé possible)
+            ptok = frozenset(pn.split())
+            fdf = fdf[fdf["joueur_norm"].apply(lambda n: frozenset(n.split()) == ptok or n == pn)]
+        if sel_adv != "Tous":
+            fdf = fdf[fdf["adversaire"] == sel_adv]
+        if sel_year != "Toutes":
+            fdf = fdf[fdf["date"].dt.year == int(sel_year)]
+        if is_coach and sel_cat != "Toutes" and "Catégorie" in fdf.columns:
+            fdf = fdf[fdf["Catégorie"] == sel_cat]
+        return fdf
+
+    fc = _filter(df_c, is_coach=True)
+    fj = _filter(df_j, is_coach=False)
 
     st.divider()
-    dim_keys   = [k for k, c, _ in _EVAL_DIMS if k in fdf.columns]
-    dim_labels = [lbl for k, c, lbl in _EVAL_DIMS if k in fdf.columns]
 
-    # ── Profil individuel ─────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # VUE PAR JOUEUSE — radar + écarts + évolution
+    # ══════════════════════════════════════════════════════════════════
     if sel_player != "Toutes":
-        st.markdown(f"#### 🎯 Profil moyen — {sel_player}")
-        moyennes = fdf[dim_keys].mean()
-        col_radar, col_metrics = st.columns([1, 1])
-        with col_radar:
+        st.markdown(f"#### 🎯 Profil — {sel_player}")
+
+        # Moyennes
+        moy_c = fc[dim_keys_c].mean() if not fc.empty else pd.Series({k: float("nan") for k in dim_keys_c})
+        moy_j = fj[dim_keys].mean()   if not fj.empty else pd.Series({k: float("nan") for k in dim_keys})
+
+        n_c = len(fc.dropna(subset=dim_keys_c, how="all")) if not fc.empty else 0
+        n_j = len(fj.dropna(subset=dim_keys, how="all"))  if not fj.empty else 0
+
+        # Radar comparatif
+        col_rad, col_ec = st.columns([1, 1])
+        with col_rad:
             fig_r, ax_r = plt.subplots(figsize=(4.5, 4.5), subplot_kw=dict(polar=True), dpi=90)
             fig_r.patch.set_facecolor("#08090D"); ax_r.set_facecolor("#0C1220")
             N = len(dim_keys)
-            angles = [n / float(N) * 2 * math.pi for n in range(N)] 
-            angles += angles[:1]
-            vals = moyennes.tolist() + [moyennes.iloc[0]]
-            ax_r.plot(angles, vals, "o-", linewidth=2, color="#00A3E0")
-            ax_r.fill(angles, vals, alpha=0.25, color="#00A3E0")
+            angles = [n / float(N) * 2 * math.pi for n in range(N)] + [0]
+
+            def _plot_radar(ax, vals, color, label, alpha_fill=0.2):
+                v = [v if not (isinstance(v, float) and math.isnan(v)) else 0 for v in vals] + [vals[0] if vals else 0]
+                ax.plot(angles, v, "o-", linewidth=2, color=color, label=label)
+                ax.fill(angles, v, alpha=alpha_fill, color=color)
+
+            if n_c > 0:
+                _plot_radar(ax_r, moy_c.tolist(), "#00A3E0", f"Coach (n={n_c})", 0.15)
+            if n_j > 0:
+                _plot_radar(ax_r, moy_j.tolist(), "#FFD700", f"Joueuse (n={n_j})", 0.15)
+
             ax_r.set_xticks(angles[:-1])
             ax_r.set_xticklabels(dim_labels, size=8, color="#C8D8E8")
             ax_r.set_ylim(0, 5); ax_r.set_yticks([1,2,3,4,5])
             ax_r.set_yticklabels(["1","2","3","4","5"], size=7, color="#6A8090")
             ax_r.spines["polar"].set_color("#1A2A3A"); ax_r.grid(color="#1A2A3A", linewidth=0.8)
+            ax_r.legend(loc="upper right", bbox_to_anchor=(1.35, 1.15), fontsize=8,
+                        facecolor="#0C1220", edgecolor="#1A2A3A", labelcolor="#C8D8E8")
             fig_r.tight_layout(); st.pyplot(fig_r, use_container_width=True); plt.close(fig_r)
-        with col_metrics:
-            st.markdown(f"**Score global moyen : {fdf['score_global'].mean():.2f} / 5**  ·  *{len(fdf)} éval.*")
-            st.markdown("")
-            for k, c, lbl in _EVAL_DIMS:
-                if k in fdf.columns:
-                    v = fdf[k].mean()
-                    color = "#00A3E0" if v >= 4 else ("#FFD700" if v >= 3 else "#EF4444")
-                    bar_w = int(v / 5 * 100)
-                    st.markdown(
-                        f"<div style='margin-bottom:8px;'><div style='display:flex;justify-content:space-between;"
-                        f"font-size:12px;color:#C8D8E8;margin-bottom:3px;'><span>{lbl}</span>"
-                        f"<span style='color:{color};font-weight:700;'>{v:.2f}</span></div>"
-                        f"<div style='background:#1A2A3A;border-radius:3px;height:6px;'>"
-                        f"<div style='background:{color};width:{bar_w}%;height:6px;border-radius:3px;'>"
-                        f"</div></div></div>", unsafe_allow_html=True)
-        # Évolution temporelle
-        if len(fdf) > 1:
-            st.markdown("#### 📈 Évolution dans le temps")
-            fig_ev, ax_ev = plt.subplots(figsize=(10, 3.5), dpi=90)
-            fig_ev.patch.set_facecolor("#08090D"); ax_ev.set_facecolor("#08090D")
-            colors_ev = ["#00A3E0","#4db8e8","#FFD700","#38BDF8","#10B981","#F59E0B"]
-            fdf_s = fdf.sort_values("date")
-            xd = fdf_s["date"].tolist()
+
+        with col_ec:
+            st.markdown("**Écarts Coach − Joueuse par dimension**")
+            for i, (k, c, lbl) in enumerate(_EVAL_DIMS):
+                vc = moy_c.get(k+"_c", float("nan"))
+                vj = moy_j.get(k, float("nan"))
+                if math.isnan(vc) and math.isnan(vj):
+                    continue
+                ecart = (vc - vj) if not (math.isnan(vc) or math.isnan(vj)) else float("nan")
+                c_coach  = f"{vc:.2f}" if not math.isnan(vc) else "—"
+                c_joueur = f"{vj:.2f}" if not math.isnan(vj) else "—"
+                if math.isnan(ecart):
+                    c_ecart, c_color = "—", "#6A8090"
+                elif ecart > 0.3:
+                    c_ecart, c_color = f"−{abs(ecart):.1f}", "#EF4444"  # coach < joueuse → surestimation
+                elif ecart < -0.3:
+                    c_ecart, c_color = f"+{abs(ecart):.1f}", "#10B981"   # coach > joueuse → sous-estimation
+                else:
+                    c_ecart, c_color = f"≈{ecart:+.1f}", "#6A8090"
+                st.markdown(
+                    f"<div style='display:flex;align-items:center;justify-content:space-between;"
+                    f"padding:6px 0;border-bottom:1px solid #1A2A3A;font-size:12px;'>"
+                    f"<span style='color:#C8D8E8;width:110px;'>{lbl}</span>"
+                    f"<span style='color:#00A3E0;width:50px;text-align:center;'>C: {c_coach}</span>"
+                    f"<span style='color:#FFD700;width:50px;text-align:center;'>J: {c_joueur}</span>"
+                    f"<span style='color:{c_color};font-weight:700;width:50px;text-align:right;'>{c_ecart}</span>"
+                    f"</div>", unsafe_allow_html=True)
+            st.markdown("<div style='font-size:10px;color:#6A8090;margin-top:8px;'>"
+                        "🔵 Coach · 🟡 Joueuse · Écart = Coach − Joueuse<br>"
+                        "<span style='color:#10B981'>+</span> joueuse se sous-estime · "
+                        "<span style='color:#EF4444'>−</span> joueuse se surestime</div>",
+                        unsafe_allow_html=True)
+
+        # Évolution temporelle avec écarts
+        matches_c = fc.dropna(subset=dim_keys_c, how="all").sort_values("date") if not fc.empty else pd.DataFrame()
+        if len(matches_c) > 0:
+            st.markdown("#### 📈 Évolution des écarts par match")
+            fig_ev, axes = plt.subplots(2, 1, figsize=(11, 6), dpi=90,
+                                        gridspec_kw={"height_ratios": [2, 1]})
+            fig_ev.patch.set_facecolor("#08090D")
+
+            ax1, ax2 = axes
+            for ax in axes: ax.set_facecolor("#08090D")
+
+            colors_dim = ["#00A3E0","#4db8e8","#FFD700","#38BDF8","#10B981","#F59E0B"]
+            x = list(range(len(matches_c)))
+            xlabels = (matches_c["date"].dt.strftime("%d/%m") + "\n" + matches_c["adversaire"]).tolist()
+
+            # Plot coach + joueuse par dimension
             for i,(k,c,lbl) in enumerate(_EVAL_DIMS):
-                if k in fdf_s.columns:
-                    ax_ev.plot(xd, fdf_s[k], "o-", label=lbl, color=colors_ev[i%6], linewidth=1.5, markersize=5)
-            ax_ev.plot(xd, fdf_s["score_global"], "--", label="Moy. globale", color="#FFFFFF", linewidth=2, alpha=0.6)
-            ax_ev.set_ylim(0.5, 5.5); ax_ev.set_yticks([1,2,3,4,5])
-            ax_ev.set_yticklabels(["1","2","3","4","5"], color="#6A8090")
-            ax_ev.tick_params(colors="#6A8090", labelsize=8)
-            for sp in ["top","right"]: ax_ev.spines[sp].set_visible(False)
-            for sp in ["bottom","left"]: ax_ev.spines[sp].set_color("#1A2A3A")
-            ax_ev.yaxis.grid(True, color="#1A2A3A", linewidth=0.5, alpha=0.7); ax_ev.set_axisbelow(True)
-            ax_ev.set_xticks(xd)
-            ax_ev.set_xticklabels(fdf_s["adversaire"].tolist(), rotation=30, ha="right", fontsize=8, color="#C8D8E8")
-            ax_ev.legend(fontsize=7, facecolor="#0C1220", edgecolor="#1A2A3A", labelcolor="#C8D8E8", loc="lower right", ncol=3)
-            fig_ev.subplots_adjust(bottom=0.30, top=0.95, left=0.05, right=0.98)
+                kc = k+"_c"
+                if kc in matches_c.columns:
+                    ax1.plot(x, matches_c[kc].tolist(), "o-", color=colors_dim[i],
+                             linewidth=1.5, markersize=5, label=lbl, alpha=0.85)
+                    # Joueuse en pointillé (depuis Feuille 1 si dispo)
+                    if k in matches_c.columns and matches_c[k].notna().any():
+                        ax1.plot(x, matches_c[k].tolist(), "--", color=colors_dim[i],
+                                 linewidth=1, markersize=3, alpha=0.5)
+
+            ax1.set_ylim(0.5, 5.5); ax1.set_yticks([1,2,3,4,5])
+            ax1.set_ylabel("Note /5", color="#6A8090", fontsize=9)
+            ax1.yaxis.grid(True, color="#1A2A3A", linewidth=0.5, alpha=0.7)
+            ax1.tick_params(colors="#6A8090", labelsize=8)
+            ax1.set_xticks([]); ax1.set_axisbelow(True)
+            for sp in ["top","right"]: ax1.spines[sp].set_visible(False)
+            for sp in ["bottom","left"]: ax1.spines[sp].set_color("#1A2A3A")
+            ax1.legend(fontsize=7, facecolor="#0C1220", edgecolor="#1A2A3A",
+                       labelcolor="#C8D8E8", loc="upper right", ncol=3)
+            ax1.set_title("— Coach  ·  -- Joueuse (Feuille 1)", color="#6A8090", fontsize=8, loc="left")
+
+            # Écart global par match (score_global_c - score_global_j de Feuille 1)
+            if "score_global_c" in matches_c.columns and "score_global" in matches_c.columns:
+                ecarts = (matches_c["score_global_c"] - matches_c["score_global"]).tolist()
+                bar_colors = ["#10B981" if e > 0.2 else "#EF4444" if e < -0.2 else "#6A8090" for e in ecarts]
+                ax2.bar(x, ecarts, color=bar_colors, edgecolor="#08090D", linewidth=0.5)
+                ax2.axhline(0, color="#C8D8E8", linewidth=0.8, alpha=0.5)
+                ax2.set_ylabel("Écart moy.", color="#6A8090", fontsize=8)
+                ax2.set_ylim(-2.5, 2.5)
+            ax2.set_xticks(x); ax2.set_xticklabels(xlabels, rotation=0, ha="center", fontsize=7, color="#C8D8E8")
+            ax2.tick_params(colors="#6A8090", labelsize=7)
+            ax2.yaxis.grid(True, color="#1A2A3A", linewidth=0.5, alpha=0.7)
+            ax2.set_axisbelow(True)
+            for sp in ["top","right"]: ax2.spines[sp].set_visible(False)
+            for sp in ["bottom","left"]: ax2.spines[sp].set_color("#1A2A3A")
+
+            fig_ev.subplots_adjust(bottom=0.18, top=0.95, left=0.06, right=0.98, hspace=0.08)
             st.pyplot(fig_ev, use_container_width=True); plt.close(fig_ev)
 
-    # ── Comparaison équipe ────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # VUE ÉQUIPE — heatmap écarts
+    # ══════════════════════════════════════════════════════════════════
     st.divider()
-    st.markdown("#### 👥 Comparaison de l'équipe" + (f" — {sel_adv}" if sel_adv != "Tous" else ""))
-    grp = fdf.groupby("joueur_label")[dim_keys + ["score_global"]].mean().round(2).reset_index()
-    grp = grp.sort_values("score_global", ascending=False)
-    col_t, col_h = st.columns([1, 1])
-    with col_t:
-        rmap = {k: lbl for k,c,lbl in _EVAL_DIMS if k in grp.columns}
-        rmap.update({"joueur_label":"Joueuse","score_global":"Moy. glob."})
-        disp = grp.rename(columns=rmap)
-        st.dataframe(disp.style.background_gradient(subset=["Moy. glob."], cmap="Blues", vmin=1, vmax=5),
-                     use_container_width=True, hide_index=True)
-    with col_h:
-        if len(grp) > 1:
-            fig_h, ax_h = plt.subplots(figsize=(5, max(3, len(grp)*0.4+1)), dpi=90)
-            fig_h.patch.set_facecolor("#08090D"); ax_h.set_facecolor("#08090D")
-            mat = grp[dim_keys].values
-            jnames = grp["joueur_label"].tolist()
-            im = ax_h.imshow(mat, aspect="auto", cmap="Blues", vmin=1, vmax=5)
-            ax_h.set_xticks(range(len(dim_labels))); ax_h.set_xticklabels(dim_labels, rotation=30, ha="right", fontsize=7, color="#C8D8E8")
-            ax_h.set_yticks(range(len(jnames))); ax_h.set_yticklabels(jnames, fontsize=8, color="#C8D8E8")
-            for i in range(mat.shape[0]):
-                for j in range(mat.shape[1]):
-                    v = mat[i,j]
-                    if not np.isnan(v):
-                        ax_h.text(j, i, f"{v:.1f}", ha="center", va="center", fontsize=7,
-                                  color="#08090D" if v >= 3.5 else "#C8D8E8", fontweight="bold")
-            plt.colorbar(im, ax=ax_h, fraction=0.03, pad=0.04).ax.tick_params(colors="#6A8090")
-            fig_h.tight_layout(); st.pyplot(fig_h, use_container_width=True); plt.close(fig_h)
+    st.markdown("#### 👥 Vue équipe — Écarts Coach / Joueuse" +
+                (f" · {sel_adv}" if sel_adv != "Tous" else "") +
+                (f" · {sel_cat}" if sel_cat != "Toutes" else ""))
 
-    # ── Détail ────────────────────────────────────────────────────────────
+    # Agréger par joueuse
+    if not fc.empty:
+        grp_c = fc.groupby("joueur_label")[dim_keys_c + ["score_global_c"]].mean().round(2)
+        # Joueuse Feuille 1
+        joueur_in_c = [k for k in dim_keys if k in fc.columns]
+        if joueur_in_c:
+            grp_j_f1 = fc.groupby("joueur_label")[joueur_in_c].mean().round(2)
+        else:
+            grp_j_f1 = pd.DataFrame()
+
+        all_players_grp = grp_c.index.tolist()
+
+        # Matrice écarts
+        ecart_mat = pd.DataFrame(index=all_players_grp)
+        for k, c, lbl in _EVAL_DIMS:
+            kc = k+"_c"
+            if kc in grp_c.columns and k in grp_j_f1.columns:
+                ecart_mat[lbl] = (grp_c[kc] - grp_j_f1[k]).round(2)
+            elif kc in grp_c.columns:
+                ecart_mat[lbl] = float("nan")
+        ecart_mat["Score coach"] = grp_c["score_global_c"].round(2)
+        ecart_mat = ecart_mat.sort_values("Score coach", ascending=False)
+
+        col_tab, col_hm = st.columns([1, 1])
+        with col_tab:
+            st.markdown("**Notes moyennes coach**")
+            disp = grp_c.copy()
+            disp.columns = [lbl for k,c,lbl in _EVAL_DIMS] + ["Moy. coach"]
+            disp.index.name = "Joueuse"
+            st.dataframe(
+                disp.style.background_gradient(subset=["Moy. coach"], cmap="Blues", vmin=1, vmax=5),
+                use_container_width=True
+            )
+
+        with col_hm:
+            ec_cols = [c for c in ecart_mat.columns if c != "Score coach"]
+            if ec_cols and not ecart_mat[ec_cols].isna().all().all():
+                st.markdown("**Heatmap des écarts (Coach − Joueuse)**")
+                fig_h, ax_h = plt.subplots(figsize=(5, max(3, len(ecart_mat)*0.45+1)), dpi=90)
+                fig_h.patch.set_facecolor("#08090D"); ax_h.set_facecolor("#08090D")
+                mat = ecart_mat[ec_cols].values.astype(float)
+                # Diverging colormap centré sur 0
+                import matplotlib.colors as mcolors
+                cmap = plt.cm.RdYlGn  # rouge=négatif (joueuse se surestime), vert=positif
+                norm = mcolors.TwoSlopeNorm(vmin=-2, vcenter=0, vmax=2)
+                im = ax_h.imshow(mat, aspect="auto", cmap=cmap, norm=norm)
+                ax_h.set_xticks(range(len(ec_cols)))
+                ax_h.set_xticklabels(ec_cols, rotation=30, ha="right", fontsize=7, color="#C8D8E8")
+                ax_h.set_yticks(range(len(ecart_mat)))
+                ax_h.set_yticklabels(ecart_mat.index.tolist(), fontsize=8, color="#C8D8E8")
+                for i in range(mat.shape[0]):
+                    for j in range(mat.shape[1]):
+                        v = mat[i,j]
+                        if not math.isnan(v):
+                            ax_h.text(j, i, f"{v:+.1f}", ha="center", va="center",
+                                      fontsize=7, color="#08090D", fontweight="bold")
+                cb = plt.colorbar(im, ax=ax_h, fraction=0.03, pad=0.04)
+                cb.ax.tick_params(colors="#6A8090", labelsize=7)
+                cb.set_label("Coach − Joueuse", color="#6A8090", fontsize=7)
+                fig_h.tight_layout(); st.pyplot(fig_h, use_container_width=True); plt.close(fig_h)
+            else:
+                st.info("Pas assez de données joueuse dans la Feuille 1 pour calculer les écarts.")
+
+    # ── Détail ─────────────────────────────────────────────────────────────
     st.divider()
-    with st.expander("📋 Détail de toutes les réponses"):
-        dcols = ["date","joueur_label","adversaire","score_global"] + dim_keys
-        det = fdf[[c for c in dcols if c in fdf.columns]].copy()
-        det["date"] = det["date"].dt.strftime("%d/%m/%Y")
-        rmd = {"date":"Date","joueur_label":"Joueuse","adversaire":"Adversaire","score_global":"Moy."}
-        rmd.update({k:lbl for k,c,lbl in _EVAL_DIMS if k in det.columns})
-        st.dataframe(det.rename(columns=rmd), use_container_width=True, hide_index=True)
+    with st.expander("📋 Détail toutes les lignes (Feuille entraîneurs)"):
+        if not fc.empty:
+            show_cols = ["date","joueur_label","adversaire"] + (["Catégorie"] if "Catégorie" in fc.columns else []) + dim_keys_c + ["score_global_c"]
+            det = fc[[c for c in show_cols if c in fc.columns]].copy()
+            det["date"] = det["date"].dt.strftime("%d/%m/%Y")
+            rn = {"date":"Date","joueur_label":"Joueuse","adversaire":"Adversaire","score_global_c":"Moy. coach"}
+            rn.update({k+"_c": lbl+" (C)" for k,c,lbl in _EVAL_DIMS})
+            st.dataframe(det.rename(columns=rn), use_container_width=True, hide_index=True)
+
     if check_permission(user_profile, "all", permissions):
         if st.button("🔄 Recharger les évaluations", key="eval_reload_admin"):
             st.cache_data.clear(); st.rerun()
-
-
-
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_tactical_files() -> list:
