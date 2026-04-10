@@ -3777,6 +3777,214 @@ def _norm_name_eval(s):
     s = "".join(c for c in s if not _ud.combining(c))
     return " ".join(s.lower().split())
 
+# ── Index de concordance basé sur N°Personne (Noms Prénoms Paris FC) ──────
+# Format : nom_normalisé_variante → nom_canonique ("Prénom NOM.title()")
+_PLAYER_CANON_MAP = {
+    # AMMAR PARMENTIER Thania
+    "thania ammar parmentier": "Thania Ammar Parmentier",
+    "ammar parmentier thania": "Thania Ammar Parmentier",
+    "ammar thania":            "Thania Ammar Parmentier",
+    "thania ammar":            "Thania Ammar Parmentier",
+    # BARADJI Aicha
+    "aicha baradji":  "Aicha Baradji",
+    "baradji aicha":  "Aicha Baradji",
+    # BELKOUCHE Inès
+    "ines belkouche":     "Inès Belkouche",
+    "inès belkouche":     "Inès Belkouche",
+    "belkouche ines":     "Inès Belkouche",
+    "belkouche inès":     "Inès Belkouche",
+    # BENYOUB Yousra (orthographe correcte = Yousra)
+    "yousra benyoub":  "Yousra Benyoub",
+    "youssra benyoub": "Yousra Benyoub",
+    "benyoub yousra":  "Yousra Benyoub",
+    "benyoub youssra": "Yousra Benyoub",
+    # BOUDINE FAERBER Lana
+    "lana boudine faerber": "Lana Boudine Faerber",
+    "boudine faerber lana": "Lana Boudine Faerber",
+    "lana boudine":         "Lana Boudine Faerber",
+    "boudine lana":         "Lana Boudine Faerber",
+    "faerber lana":         "Lana Boudine Faerber",
+    # BUISSON Maelly
+    "maelly buisson":  "Maelly Buisson",
+    "buisson maelly":  "Maelly Buisson",
+    "maelly buisson":  "Maelly Buisson",
+    # CHERIF Asmaou
+    "asmaou cherif": "Asmaou Cherif",
+    "cherif asmaou": "Asmaou Cherif",
+    # DESMAREST POUPLET Léonie
+    "leonie desmarest pouplet": "Léonie Desmarest Pouplet",
+    "desmarest pouplet leonie": "Léonie Desmarest Pouplet",
+    "demarest leonie":          "Léonie Desmarest Pouplet",
+    "louise demarest":          "Léonie Desmarest Pouplet",
+    "demarest pouplet leonie":  "Léonie Desmarest Pouplet",
+    "leonie demarest":          "Léonie Desmarest Pouplet",
+    # DIARRA Kadiatou
+    "kadiatou diarra": "Kadiatou Diarra",
+    "diarra kadiatou": "Kadiatou Diarra",
+    "diarra":          "Kadiatou Diarra",
+    # DIAWARA Lahna
+    "lahna diawara": "Lahna Diawara",
+    "diawara lahna": "Lahna Diawara",
+    # DUMANS Nina
+    "nina dumans": "Nina Dumans",
+    "dumans nina": "Nina Dumans",
+    # EDOBOR Jannifer (prénom exact = Jannifer)
+    "jannifer edobor":  "Jannifer Edobor",
+    "jennifer edobor":  "Jannifer Edobor",
+    "edobor jannifer":  "Jannifer Edobor",
+    "edobor jennifer":  "Jannifer Edobor",
+    # EXILIE LASCARIES Louane
+    "louane exilie lascaries": "Louane Exilie Lascaries",
+    "exilie lascaries louane": "Louane Exilie Lascaries",
+    "louane exilie":           "Louane Exilie Lascaries",
+    "louane lascaries":        "Louane Exilie Lascaries",
+    "louane":                  "Louane Exilie Lascaries",
+    # GANE BERNARDINO NaIssya
+    "naissya gane bernardino":  "Naïssya Gane Bernardino",
+    "gane bernardino naissya":  "Naïssya Gane Bernardino",
+    "neissya gane bernardino":  "Naïssya Gane Bernardino",
+    # GARBAA Dhalia
+    "dhalia garbaa": "Dhalia Garbaa",
+    "garbaa dhalia": "Dhalia Garbaa",
+    # KANDEM Sasha (orthographe correcte = Kandem)
+    "sasha kandem":  "Sasha Kandem",
+    "kandem sasha":  "Sasha Kandem",
+    "sasha kamdem":  "Sasha Kandem",
+    "kamdem sasha":  "Sasha Kandem",
+    # KAPINGA MUYA Shanice
+    "shanice kapinga muya": "Shanice Kapinga Muya",
+    "kapinga muya shanice": "Shanice Kapinga Muya",
+    "shanice kapinga":      "Shanice Kapinga Muya",
+    "kapinga shanice":      "Shanice Kapinga Muya",
+    "shanice":              "Shanice Kapinga Muya",
+    # LE FLOCH DOUHI Maissane
+    "maissane le floch douhi": "Maissane Le Floch Douhi",
+    "le floch douhi maissane": "Maissane Le Floch Douhi",
+    "maissane le floch":       "Maissane Le Floch Douhi",
+    # MANE Mélita
+    "melita mane": "Mélita Mane",
+    "mane melita": "Mélita Mane",
+    # MEGEVAND Maelline
+    "maelline megevand": "Maelline Megevand",
+    "megevand maelline": "Maelline Megevand",
+    # MINYEMECK Dissya
+    "dissya minyemeck":        "Dissya Minyemeck",
+    "minyemeck dissya":        "Dissya Minyemeck",
+    "minyemeck sitbon dissya": "Dissya Minyemeck",
+    # MUPFASONI Maëlline
+    "maelline mupfasoni": "Maëlline Mupfasoni",
+    "mupfasoni maelline": "Maëlline Mupfasoni",
+    "maeline mupfasoni":  "Maëlline Mupfasoni",
+    "mupfasoni maeline":  "Maëlline Mupfasoni",
+    # MUSTIERE Ysoé
+    "ysoe mustiere":    "Ysoé Mustiere",
+    "mustiere ysoe":    "Ysoé Mustiere",
+    "ysoé mustiere":    "Ysoé Mustiere",
+    "ysoe":             "Ysoé Mustiere",
+    # NIAKHATE Lina
+    "lina niakhate": "Lina Niakhate",
+    "niakhate lina": "Lina Niakhate",
+    # PLANCHEZ Camille
+    "camille planchez": "Camille Planchez",
+    "planchez camille": "Camille Planchez",
+    # RENAI Sylia
+    "sylia renai": "Sylia Renai",
+    "renai sylia": "Sylia Renai",
+    # RUFFIEN Lou
+    "lou ruffien":  "Lou Ruffien",
+    "ruffien lou":  "Lou Ruffien",
+    # SAMOUN Lisa
+    "lisa samoun":  "Lisa Samoun",
+    "samoun lisa":  "Lisa Samoun",
+    # SEGUIN Romy
+    "romy seguin":  "Romy Seguin",
+    "seguin romy":  "Romy Seguin",
+    # SIDIBÉ Oumou
+    "oumou sidibe":  "Oumou Sidibé",
+    "sidibe oumou":  "Oumou Sidibé",
+    "sidibe":        "Oumou Sidibé",
+    # SINANI Adela
+    "adela sinani": "Adela Sinani",
+    "sinani adela": "Adela Sinani",
+    "sinan adela":  "Adela Sinani",
+    "sinan adela":  "Adela Sinani",
+    # TAE Odélia
+    "odelia tae": "Odélia Tae",
+    "tae odelia": "Odélia Tae",
+    "odelia":     "Odélia Tae",
+    # WAPELABWEBE Sharon
+    "sharon wapelabwebe": "Sharon Wapelabwebe",
+    "wapelabwebe sharon": "Sharon Wapelabwebe",
+    "wapelabwbe sharon":  "Sharon Wapelabwebe",
+    # YERRO Sharlie
+    "sharlie yerro": "Sharlie Yerro",
+    "yerro sharlie": "Sharlie Yerro",
+    "sharlie":       "Sharlie Yerro",
+}
+
+# Index N°Personne → nom canonique (pour Feuille 1)
+_PLAYER_NUM_MAP = {
+    "2547741685": "Thania Ammar Parmentier",
+    "9603284989": "Aicha Baradji",
+    "9603122832": "Inès Belkouche",
+    "2548318072": "Yousra Benyoub",
+    "2548396657": "Lana Boudine Faerber",
+    "9602369553": "Maelly Buisson",
+    "2548230067": "Asmaou Cherif",
+    "9602291868": "Léonie Desmarest Pouplet",
+    "9602876832": "Kadiatou Diarra",
+    "2546647096": "Lahna Diawara",
+    "2548358507": "Nina Dumans",
+    "9603683655": "Jannifer Edobor",
+    "9602431834": "Louane Exilie Lascaries",
+    "2548537463": "Naïssya Gane Bernardino",
+    "2547043008": "Dhalia Garbaa",
+    "2548316423": "Sasha Kandem",
+    "9603080392": "Shanice Kapinga Muya",
+    "2547591136": "Maissane Le Floch Douhi",
+    "2548489402": "Mélita Mane",
+    "2547423476": "Maelline Megevand",
+    "2548521088": "Dissya Minyemeck",
+    "2548165337": "Maëlline Mupfasoni",
+    "9602524300": "Ysoé Mustiere",
+    "9602268228": "Lina Niakhate",
+    "2547337461": "Camille Planchez",
+    "9602935882": "Sylia Renai",
+    "9605261759": "Lou Ruffien",
+    "2548432689": "Lisa Samoun",
+    "2548485429": "Romy Seguin",
+    "2548128828": "Oumou Sidibé",
+    "9602445774": "Adela Sinani",
+    "9602368102": "Odélia Tae",
+    "9603698059": "Sharon Wapelabwebe",
+    "2548583574": "Sharlie Yerro",
+}
+
+def _resolve_player_name(s: str) -> str:
+    """Retourne le nom canonique à partir de n'importe quelle variante."""
+    import unicodedata as _ud
+    raw = str(s).strip()
+    n = _ud.normalize("NFKD", raw)
+    n = "".join(c for c in n if not _ud.combining(c))
+    n = " ".join(n.lower().split())
+    # Lookup exact
+    if n in _PLAYER_CANON_MAP:
+        return _PLAYER_CANON_MAP[n]
+    # Lookup par tokens (tous les tokens du référentiel doivent être présents)
+    n_toks = frozenset(n.split())
+    for key, canon in _PLAYER_CANON_MAP.items():
+        k_toks = frozenset(key.split())
+        if k_toks and k_toks == n_toks:
+            return canon
+    # Fallback : inclure au moins nom+prénom si 2 tokens communs
+    best, best_score = None, 0
+    for key, canon in _PLAYER_CANON_MAP.items():
+        k_toks = frozenset(key.split())
+        inter = len(n_toks & k_toks)
+        if inter >= 2 and inter > best_score:
+            best, best_score = canon, inter
+    return best or raw.title()
+
 def _norm_adv_eval(s):
     import unicodedata as _ud
     raw = str(s).strip()
@@ -3825,8 +4033,9 @@ def load_evaluations():
         raw = xl.parse("Sheet1")
         col_nom = "Ton Nom et Prénom"; col_date = "Date du jour"; col_adv = "Adversaire du jour"
         if col_nom in raw.columns:
-            raw["joueur_norm"] = raw[col_nom].astype(str).apply(_norm_name_eval)
-            raw["joueur_label"] = raw[col_nom].astype(str).str.strip().str.title()
+            # Résoudre vers le nom canonique du référentiel
+            raw["joueur_label"] = raw[col_nom].astype(str).apply(_resolve_player_name)
+            raw["joueur_norm"]  = raw["joueur_label"].apply(_norm_name_eval)
             raw["date"] = pd.to_datetime(raw[col_date], errors="coerce")
             raw = raw[raw["date"].notna() & (raw["date"].dt.year >= 2020)].copy()
             raw["adversaire"] = raw[col_adv].astype(str).apply(_norm_adv_eval)
@@ -3842,14 +4051,16 @@ def load_evaluations():
     coach_sheet = EVAL_COACH_SHEET if EVAL_COACH_SHEET in xl.sheet_names else None
     if coach_sheet:
         raw_c = xl.parse(coach_sheet)
-        # Construire nom normalisé
-        raw_c["joueur_norm"] = (
-            raw_c["NOM"].astype(str).str.strip() + " " + raw_c["Prénom"].astype(str).str.strip()
-        ).apply(_norm_name_eval)
-        raw_c["joueur_label"] = (
-            raw_c["Prénom"].astype(str).str.strip().str.title() + " " +
-            raw_c["NOM"].astype(str).str.strip().str.title()
-        )
+        # Résolution par N°Personne (fiable à 100%) puis fallback par nom
+        def _resolve_coach_row(row):
+            num = str(int(row["N°Personne"])) if pd.notna(row.get("N°Personne")) else ""
+            if num in _PLAYER_NUM_MAP:
+                return _PLAYER_NUM_MAP[num]
+            # Fallback : NOM + Prénom
+            full = str(row.get("NOM","")).strip() + " " + str(row.get("Prénom","")).strip()
+            return _resolve_player_name(full)
+        raw_c["joueur_label"] = raw_c.apply(_resolve_coach_row, axis=1)
+        raw_c["joueur_norm"]  = raw_c["joueur_label"].apply(_norm_name_eval)
         raw_c["date"] = pd.to_datetime(raw_c["Date"], errors="coerce")
         raw_c = raw_c[raw_c["date"].notna() & (raw_c["date"].dt.year >= 2020)].copy()
         raw_c["adversaire"] = raw_c["Adversaire"].astype(str).apply(_norm_adv_eval)
@@ -3964,10 +4175,9 @@ def render_evaluation_page(user_profile, permissions):
         if df is None or df.empty: return df
         fdf = df.copy()
         if sel_player != "Toutes":
-            pn = _norm_name_eval(sel_player)
-            # match par tokens (ordre inversé possible)
-            ptok = frozenset(pn.split())
-            fdf = fdf[fdf["joueur_norm"].apply(lambda n: frozenset(n.split()) == ptok or n == pn)]
+            canon = _resolve_player_name(sel_player)
+            canon_norm = _norm_name_eval(canon)
+            fdf = fdf[fdf["joueur_norm"] == canon_norm]
         if sel_adv != "Tous":
             fdf = fdf[fdf["adversaire"] == sel_adv]
         if sel_year != "Toutes":
