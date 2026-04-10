@@ -4518,33 +4518,51 @@ def load_tactical_files() -> list:
                 info = parse_tactical_filename(f)
 
                 # ── Enrichissement depuis la colonne Timeline ──────────────────
-                # Timeline contient ex: "U19N J10 Paris FC - HAC"
                 _tl = str(df["Timeline"].dropna().iloc[0]) if not df["Timeline"].dropna().empty else ""
                 if _tl:
-                    # Adversaire depuis Timeline (prioritaire sur nom de fichier)
                     _adv_m = re.search(r"paris\s*fc\s*[-–]\s*(.+)|(.+)\s*[-–]\s*paris\s*fc", _tl, re.IGNORECASE)
                     if _adv_m:
                         _adv = (_adv_m.group(1) or _adv_m.group(2) or "").strip()
                         if _adv:
                             info["adversaire"] = _adv
                             info["adv_norm"]   = normalize_str(_adv)
-
-                    # Journée depuis Timeline si absente
                     if not info["journee"]:
                         _pj = re.search(r'P\d+J(\d{1,2})', _tl, re.IGNORECASE)
                         _jm = re.search(r'\bJ(\d{1,2})\b', _tl, re.IGNORECASE)
-                        if _pj:
-                            info["journee"] = _pj.group(1).zfill(2)
-                        elif _jm:
-                            info["journee"] = _jm.group(1).zfill(2)
-
-                    # Saison depuis Timeline si absente : ex "U19N" → compétition, pas saison
-                    # La saison vient du nom de fichier uniquement (AABB pattern)
-
-                    # Compétition depuis Timeline : token avant Jxx ou Paris FC
+                        if _pj:   info["journee"] = _pj.group(1).zfill(2)
+                        elif _jm: info["journee"] = _jm.group(1).zfill(2)
                     _comp_m = re.search(r'^([A-Za-z0-9]+(?:\s[A-Za-z0-9]+)?)\s+(?:P\d+)?J\d+', _tl, re.IGNORECASE)
                     if _comp_m:
                         info["competition"] = _comp_m.group(1).strip()
+
+                # ── Enrichissement prioritaire depuis colonnes CSV ─────────────
+                # Les colonnes Compétition, Journée, Teamersaire sont dans les
+                # lignes de l'adversaire (Row == nom_adversaire) — source fiable.
+                _adv_rows = df[df["Row"].notna() & ~df["Row"].isin({"START","PFC",""})] if "Row" in df.columns else pd.DataFrame()
+
+                # Compétition depuis colonne CSV (ex: "U19 Nat")
+                if "Compétition" in df.columns:
+                    _comp_vals = df["Compétition"].dropna().apply(lambda x: str(x).split(",")[0].strip())
+                    if not _comp_vals.empty:
+                        info["competition"] = _comp_vals.iloc[0]
+
+                # Journée depuis colonne CSV (prioritaire sur Timeline/filename)
+                if "Journée" in df.columns:
+                    _jour_vals = df["Journée"].dropna().apply(lambda x: str(x).split(",")[0].strip())
+                    if not _jour_vals.empty:
+                        try:
+                            info["journee"] = str(int(float(_jour_vals.iloc[0]))).zfill(2)
+                        except Exception:
+                            info["journee"] = _jour_vals.iloc[0].zfill(2)
+
+                # Adversaire depuis Teamersaire (valeur exacte du nom de l'équipe adverse)
+                if "Teamersaire" in df.columns:
+                    _team_vals = df["Teamersaire"].dropna().apply(lambda x: str(x).split(",")[0].strip())
+                    if not _team_vals.empty:
+                        _adv_csv = _team_vals.iloc[0]
+                        if _adv_csv:
+                            info["adversaire"] = _adv_csv
+                            info["adv_norm"]   = normalize_str(_adv_csv)
 
                 results.append({**info, "path": full, "filename": f, "df": df})
             except Exception as e:
@@ -7139,8 +7157,16 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                 "tac_obj":       tac,
             })
 
-        # Trier par date décroissante
-        match_rows.sort(key=lambda m: m["date"] if m["date"] is not None and pd.notna(m["date"]) else pd.Timestamp("1970-01-01"), reverse=True)
+        # Trier : Compétition → Journée (numérique) → Adversaire
+        def _sort_key(m):
+            comp = (m.get("tac_obj") or {}).get("competition", "") or ""
+            jrnee = m.get("journee", "") or ""
+            try:    j_num = int(jrnee)
+            except: j_num = 999
+            adv = m.get("adversaire", "") or ""
+            return (comp.lower(), j_num, adv.lower())
+
+        match_rows.sort(key=_sort_key)
 
         if not match_rows:
             st.info("Aucun fichier tactique trouvé.")
@@ -7656,8 +7682,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 })
 
             _match_rows_stat.sort(
-                key=lambda m: m["date"] if m["date"] is not None and pd.notna(m["date"]) else pd.Timestamp("1970-01-01"),
-                reverse=True
+                key=lambda m: (
+                    (m.get("tac_obj") or {}).get("competition", "").lower(),
+                    int(m["journee"]) if m.get("journee") and str(m["journee"]).isdigit() else 999,
+                    (m.get("adversaire") or "").lower()
+                )
             )
 
             _col_match, _col_player = st.columns([3, 2])
