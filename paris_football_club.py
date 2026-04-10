@@ -4157,19 +4157,43 @@ def render_evaluation_page(user_profile, permissions):
     ))
     all_cats = ["Toutes"] + sorted(df_c["Catégorie"].dropna().unique().tolist()) if not df_c.empty and "Catégorie" in df_c.columns else ["Toutes"]
 
-    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    # Plage de dates disponible
+    all_dates = pd.concat([
+        df_c["date"].dropna() if not df_c.empty else pd.Series(dtype="datetime64[ns]"),
+        df_j["date"].dropna() if not df_j.empty else pd.Series(dtype="datetime64[ns]"),
+    ])
+    _min_date = all_dates.min().date() if not all_dates.empty else pd.Timestamp("2024-01-01").date()
+    _max_date = all_dates.max().date() if not all_dates.empty else pd.Timestamp.today().date()
+
+    # Ligne 1 : filtres texte
+    col_f1, col_f2, col_f3 = st.columns(3)
     with col_f1:
         sel_player = st.selectbox("Joueuse", ["Toutes"] + all_players, key="eval_player_sel")
     with col_f2:
         sel_adv = st.selectbox("Adversaire", ["Tous"] + all_adv, key="eval_adv_sel")
     with col_f3:
         sel_cat = st.selectbox("Catégorie", all_cats, key="eval_cat_sel")
-    with col_f4:
-        all_years = sorted(set(
-            (df_c["date"].dt.year.dropna().tolist() if not df_c.empty else []) +
-            (df_j["date"].dt.year.dropna().tolist() if not df_j.empty else [])
-        ), reverse=True)
-        sel_year = st.selectbox("Année", ["Toutes"] + [str(y) for y in all_years], key="eval_year_sel")
+
+    # Ligne 2 : bornes de dates
+    col_d1, col_d2, col_d3 = st.columns([1, 1, 1])
+    with col_d1:
+        date_debut = st.date_input(
+            "Date début", value=_min_date,
+            min_value=_min_date, max_value=_max_date,
+            key="eval_date_debut"
+        )
+    with col_d2:
+        date_fin = st.date_input(
+            "Date fin", value=_max_date,
+            min_value=_min_date, max_value=_max_date,
+            key="eval_date_fin"
+        )
+    with col_d3:
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        if st.button("↺ Réinitialiser les dates", key="eval_reset_dates"):
+            st.session_state["eval_date_debut"] = _min_date
+            st.session_state["eval_date_fin"]   = _max_date
+            st.rerun()
 
     def _filter(df, is_coach=False):
         if df is None or df.empty: return df
@@ -4180,10 +4204,13 @@ def render_evaluation_page(user_profile, permissions):
             fdf = fdf[fdf["joueur_norm"] == canon_norm]
         if sel_adv != "Tous":
             fdf = fdf[fdf["adversaire"] == sel_adv]
-        if sel_year != "Toutes":
-            fdf = fdf[fdf["date"].dt.year == int(sel_year)]
         if is_coach and sel_cat != "Toutes" and "Catégorie" in fdf.columns:
             fdf = fdf[fdf["Catégorie"] == sel_cat]
+        # Filtre dates
+        fdf = fdf[
+            (fdf["date"].dt.date >= date_debut) &
+            (fdf["date"].dt.date <= date_fin)
+        ]
         return fdf
 
     fc = _filter(df_c, is_coach=True)
