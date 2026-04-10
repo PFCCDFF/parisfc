@@ -3892,25 +3892,42 @@ def render_evaluation_page(user_profile, permissions):
     import math, numpy as np
     st.header("⭐ Évaluations post-match")
 
-    df_j, df_c = load_evaluations()
-    both_empty = (df_j is None or df_j.empty) and (df_c is None or df_c.empty)
+    # ── Chargement et sync ────────────────────────────────────────────────
+    # Toujours proposer le rechargement et l'upload en haut de page (admin)
+    if check_permission(user_profile, "all", permissions):
+        with st.expander("⚙️ Gestion du fichier d'évaluation", expanded=False):
+            st.markdown("Le fichier doit se trouver dans `data/` sur le serveur. Options :")
+            _up_col, _btn_col = st.columns([3, 1])
+            with _up_col:
+                uploaded = st.file_uploader(
+                    "Upload direct du fichier Excel (Microsoft Forms + Feuille 1)",
+                    type=["xlsx","xls"], key="eval_uploader"
+                )
+                if uploaded:
+                    os.makedirs(DATA_FOLDER, exist_ok=True)
+                    dest = os.path.join(DATA_FOLDER, "evaluations.xlsx")
+                    with open(dest, "wb") as _fo:
+                        _fo.write(uploaded.read())
+                    st.cache_data.clear()
+                    st.success("✅ Fichier enregistré — rechargement...")
+                    st.rerun()
+            with _btn_col:
+                st.markdown("&nbsp;", unsafe_allow_html=True)
+                if st.button("🔄 Recharger", key="eval_reload_btn"):
+                    st.cache_data.clear(); st.rerun()
 
-    if both_empty:
-        st.warning("Aucune donnée d'évaluation trouvée.")
-        st.markdown("**Pour charger les données :** dépose le fichier Excel dans Drive ou uploade ci-dessous :")
-        uploaded = st.file_uploader("Fichier Excel (.xlsx)", type=["xlsx","xls"], key="eval_uploader")
-        if uploaded:
-            os.makedirs(DATA_FOLDER, exist_ok=True)
-            dest = os.path.join(DATA_FOLDER, "evaluations.xlsx")
-            with open(dest, "wb") as _fo:
-                _fo.write(uploaded.read())
-            st.cache_data.clear()
-            st.success("✅ Fichier enregistré — rechargement...")
-            st.rerun()
-        if check_permission(user_profile, "all", permissions):
-            if st.button("🔄 Recharger", key="eval_reload_btn"):
-                st.cache_data.clear(); st.rerun()
+    df_j, df_c = load_evaluations()
+    _j_ok = df_j is not None and not df_j.empty
+    _c_ok = df_c is not None and not df_c.empty
+
+    if not _j_ok and not _c_ok:
+        st.warning("Aucune donnée trouvée. Utilise l'encart ci-dessus pour uploader le fichier Excel.")
         return
+
+    # Diagnostic
+    n_coach  = len(df_c[df_c[["tech_balle_c","tech_sballe_c","tact_att_c","tact_def_c","physique_c","mentale_c"]].notna().any(axis=1)]) if _c_ok and "tech_balle_c" in df_c.columns else 0
+    n_joueur = len(df_j) if _j_ok else 0
+    st.caption(f"📊 {n_coach} évaluations entraîneur · {n_joueur} auto-évaluations joueuses")
 
     # ── Clés dimensions ────────────────────────────────────────────────────
     dim_keys   = [k for k, c, _ in _EVAL_DIMS]
