@@ -8281,6 +8281,8 @@ function printA4Report() {{
             poste = st.selectbox("Poste (référentiel EDF)", postes_display, key="edf_poste_ref")
 
             edf_line = edf_only[edf_only["Poste"] == poste].copy()
+            if "Player" in edf_line.columns:
+                edf_line = edf_line.drop(columns=["Player"])
             edf_line = edf_line.rename(columns={"Poste": "Player"})
             edf_label = f"EDF {poste}"
 
@@ -8317,6 +8319,9 @@ function printA4Report() {{
             poste = st.selectbox("Poste (référentiel APL)", postes_display, key="apl_poste_ref")
 
             apl_line = apl_only[apl_only["Poste"] == poste].copy()
+            # Player existe déjà dans le DataFrame APL → le supprimer avant rename Poste→Player
+            if "Player" in apl_line.columns:
+                apl_line = apl_line.drop(columns=["Player"])
             apl_line = apl_line.rename(columns={"Poste": "Player"})
             apl_label = f"APL {poste}"
 
