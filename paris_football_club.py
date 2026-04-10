@@ -4099,7 +4099,7 @@ def load_evaluations():
     return df_j, df_c
 
 
-def render_evaluation_page(user_profile, permissions):
+def render_evaluation_page(user_profile, permissions, selected_saison="Toutes les saisons"):
     import math, numpy as np
     st.header("⭐ Évaluations post-match")
 
@@ -4135,10 +4135,23 @@ def render_evaluation_page(user_profile, permissions):
         st.warning("Aucune donnée trouvée. Utilise l'encart ci-dessus pour uploader le fichier Excel.")
         return
 
+    # ── Filtre saison ──────────────────────────────────────────────────────
+    _d_debut, _d_fin = _saison_date_range(selected_saison)
+    if _d_debut is not None:
+        if _j_ok:
+            df_j = df_j[(df_j["date"] >= _d_debut) & (df_j["date"] <= _d_fin)].copy()
+        if _c_ok:
+            df_c = df_c[(df_c["date"] >= _d_debut) & (df_c["date"] <= _d_fin)].copy()
+        _j_ok = not df_j.empty if _j_ok else False
+        _c_ok = not df_c.empty if _c_ok else False
+        saison_label = f" — Saison {selected_saison[:2]}/{selected_saison[2:]}"
+    else:
+        saison_label = ""
+
     # Diagnostic
     n_coach  = len(df_c[df_c[["tech_balle_c","tech_sballe_c","tact_att_c","tact_def_c","physique_c","mentale_c"]].notna().any(axis=1)]) if _c_ok and "tech_balle_c" in df_c.columns else 0
     n_joueur = len(df_j) if _j_ok else 0
-    st.caption(f"📊 {n_coach} évaluations entraîneur · {n_joueur} auto-évaluations joueuses")
+    st.caption(f"📊 {n_coach} évaluations entraîneur · {n_joueur} auto-évaluations joueuses{saison_label}")
 
     # ── Clés dimensions ────────────────────────────────────────────────────
     dim_keys   = [k for k, c, _ in _EVAL_DIMS]
@@ -4572,7 +4585,31 @@ def load_tactical_files() -> list:
     return results
 
 
-def match_tactical_to_gps(gps_row: dict, tactical_files: list) -> "pd.DataFrame | None":
+def filter_tactical_by_saison(tactical_files: list, selected_saison: str) -> list:
+    """Filtre la liste des fichiers tactiques par saison sélectionnée."""
+    if not selected_saison or selected_saison == "Toutes les saisons":
+        return tactical_files
+    filtered = []
+    for tac in tactical_files:
+        saison = tac.get("saison", "") or ""
+        # Normaliser : "2526" matche "25/26" ou "2526" ou "2025/2026"
+        saison_norm = saison.replace("/","").replace("20","")[:4]
+        sel_norm = selected_saison.replace("/","").replace("20","")[:4]
+        if saison_norm == sel_norm or selected_saison in saison or saison in selected_saison:
+            filtered.append(tac)
+    return filtered
+
+
+def _saison_date_range(selected_saison: str):
+    """Retourne (date_debut, date_fin) pour une saison donnée.
+    2425 → sept 2024 – juin 2025
+    2526 → sept 2025 – juin 2026
+    """
+    if selected_saison == "2425":
+        return pd.Timestamp("2024-07-01"), pd.Timestamp("2025-06-30")
+    elif selected_saison == "2526":
+        return pd.Timestamp("2025-07-01"), pd.Timestamp("2026-06-30")
+    return None, None
     """Associe un match GPS à son fichier tactique.
     Priorité : date exacte → (date + adversaire) → (journee + adversaire).
     Retourne le DataFrame tactique ou None.
@@ -7103,8 +7140,10 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
         # enrichie par les infos GPS quand disponibles
         match_rows = []
         gps_match_df_ref = st.session_state.get("gps_match_df", pd.DataFrame())
+        _saison_sel = st.session_state.get("selected_saison", "Toutes les saisons")
+        tactical_files_filtered = filter_tactical_by_saison(tactical_files, _saison_sel)
 
-        for tac in tactical_files:
+        for tac in tactical_files_filtered:
             tac_date        = tac.get("date")
             tac_adv         = tac.get("adversaire", "")
             tac_jrnee       = tac.get("journee", "")
@@ -7341,6 +7380,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
     saison_options = ["Toutes les saisons", "2425", "2526"]
     selected_saison = st.sidebar.selectbox("Saison", saison_options)
+    # Rendre la saison accessible globalement dans tous les onglets
+    st.session_state["selected_saison"] = selected_saison
 
     if st.sidebar.button("🔒 Déconnexion"):
         st.session_state.authenticated = False
@@ -7650,6 +7691,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         st.markdown("## 🎯 Rapport Technico-Tactique de match")
 
         _tac_files_stat = load_tactical_files()
+        _tac_files_stat = filter_tactical_by_saison(
+            _tac_files_stat, st.session_state.get("selected_saison", "Toutes les saisons")
+        )
         if not _tac_files_stat:
             st.info("Aucun fichier tactique trouvé dans le dossier `data/`.")
         else:
@@ -7852,7 +7896,7 @@ function printA4Report() {{
         if not (check_permission(user_profile, "all", permissions) or check_permission(user_profile, "update_data", permissions)):
             st.warning("Accès réservé aux administrateurs.")
             return
-        render_evaluation_page(user_profile, permissions)
+        render_evaluation_page(user_profile, permissions, st.session_state.get("selected_saison", "Toutes les saisons"))
 
     # =====================
     # COMPARAISON
@@ -8357,7 +8401,6 @@ function printA4Report() {{
 
         with tab_match:
             _render_gps_match_tab(gps_match, player_name, permissions, user_profile, tactical_files=None)
-
         # ── SUIVI DE CHARGE ACWR ───────────────────────────────────────────────
         with tab_charge:
             st.subheader("⚖️ Suivi de charge — Ratio Aigu:Chronique (ACWR)")
@@ -8561,6 +8604,11 @@ function printA4Report() {{
 
         pfc_source = pfc_kpi_all if isinstance(pfc_kpi_all, pd.DataFrame) and not pfc_kpi_all.empty else pfc_kpi
         edf_source = edf_kpi_all if isinstance(edf_kpi_all, pd.DataFrame) and not edf_kpi_all.empty else edf_kpi
+
+        # Filtre saison sur pfc_source
+        _saison_sel_p = st.session_state.get("selected_saison", "Toutes les saisons")
+        if _saison_sel_p != "Toutes les saisons" and "Saison" in pfc_source.columns:
+            pfc_source = pfc_source[pfc_source["Saison"].astype(str) == _saison_sel_p].copy()
 
         selected = st.selectbox("Sélectionnez une joueuse", list(passerelle_data.keys()), key="passerelle_player_sel")
 
