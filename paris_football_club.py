@@ -2422,7 +2422,7 @@ def _find_col(df: pd.DataFrame, *candidates: str):
     return None
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def load_passerelle_data():
     passerelle_data = {}
     passerelle_file = os.path.join(PASSERELLE_FOLDER, PASSERELLE_FILENAME)
@@ -3677,7 +3677,7 @@ def parse_match_info_from_filename(filename: str) -> dict:
     return info
 
 
-@st.cache_data(ttl=1200, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def load_gps_match(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon,
                    first_to_canons, last_to_canons) -> pd.DataFrame:
     """Charge et normalise tous les fichiers GPS match détectés localement."""
@@ -4189,7 +4189,7 @@ def _norm_adv_eval(s):
             return v
     return raw.strip().title()
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_evaluations():
     """Charge les deux feuilles du fichier évaluation.
     Retourne (df_joueur, df_coach) — deux DataFrames nettoyés.
@@ -4692,7 +4692,7 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
         if st.button("🔄 Recharger les évaluations", key="eval_reload_admin"):
             st.cache_data.clear(); st.rerun()
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def load_tactical_files() -> list:
     """Charge tous les fichiers tactiques CSV depuis TACTICAL_FOLDER.
     Retourne une liste de dicts : {path, date, journee, adversaire, adv_norm, df}
@@ -4776,19 +4776,6 @@ def load_tactical_files() -> list:
     return results
 
 
-def get_tactical_files(force_reload: bool = False) -> list:
-    """Charge les fichiers tactiques avec cache session_state.
-    Évite les doubles chargements entre GPS Match tab et Rapports de matchs.
-    Invalidé par 'Mettre à jour la base' (force_reload=True).
-    """
-    _key = "_tactical_files_cache"
-    if force_reload:
-        st.session_state.pop(_key, None)
-    if _key not in st.session_state or not st.session_state[_key]:
-        st.session_state[_key] = load_tactical_files()
-    return st.session_state[_key]
-
-
 def filter_tactical_by_saison(tactical_files: list, selected_saison: str) -> list:
     """Filtre la liste des fichiers tactiques par saison sélectionnée."""
     if not selected_saison or selected_saison == "Toutes les saisons":
@@ -4870,152 +4857,115 @@ def _filter_player_rows(df_tactic, player_name):
 
 
 def compute_tactical_stats(df_tactic, player_name):
-    """Calcule les stats technico-tactiques complètes pour une joueuse.
-    Version vectorisée — remplace les 8 iterrows par des opérations pandas.
-    """
+    """Calcule les stats technico-tactiques complètes pour une joueuse."""
+    from collections import Counter
     d = _filter_player_rows(df_tactic, player_name)
     if d.empty:
         return {}
     stats = {"nom_row": d["Row"].iloc[0] if "Row" in d.columns else player_name}
 
-    # ── Helper : extraire le premier token d'une cellule multi-valeurs ────
-    def _first(series):
-        return series.dropna().apply(lambda x: str(x).split(",")[0].strip())
-
-    # ── Helper : aplatir toutes les valeurs multi-token d'une colonne ─────
-    def _explode_col(df, col):
-        if col not in df.columns: return pd.Series([], dtype=str)
-        return df[col].dropna().apply(lambda x: [v.strip() for v in str(x).split(",")]).explode()
-
-    # ── PASSES ────────────────────────────────────────────────────────────
+    # PASSES
     pass_rows = d[d["Passe"].notna()].copy() if "Passe" in d.columns else d.iloc[0:0]
-    if not pass_rows.empty:
-        passe_col = pass_rows["Passe"].astype(str)
-        p_ok = passe_col.str.contains("Réussie", na=False).sum()
-        p_ko = passe_col.str.contains("Ratée",   na=False).sum()
-        c_ok = (passe_col.str.contains("Courte", na=False) & passe_col.str.contains("Réussie", na=False)).sum()
-        c_ko = (passe_col.str.contains("Courte", na=False) & passe_col.str.contains("Ratée",   na=False)).sum()
-        l_ok = (passe_col.str.contains("Longue", na=False) & passe_col.str.contains("Réussie", na=False)).sum()
-        l_ko = (passe_col.str.contains("Longue", na=False) & passe_col.str.contains("Ratée",   na=False)).sum()
-    else:
-        p_ok = p_ko = c_ok = c_ko = l_ok = l_ko = 0
-    stats.update({"passes_ok":int(p_ok),"passes_ko":int(p_ko),
-                  "courtes_ok":int(c_ok),"courtes_ko":int(c_ko),
-                  "longues_ok":int(l_ok),"longues_ko":int(l_ko)})
+    all_pass = [a.strip() for cell in pass_rows["Passe"].dropna() for a in str(cell).split(",")]
+    p_ok = all_pass.count("Réussie")
+    p_ko = all_pass.count("Ratée")
+    c_ok = sum(1 for _, r in pass_rows.iterrows() if "Courte" in str(r.get("Passe","")) and "Réussie" in str(r.get("Passe","")))
+    c_ko = sum(1 for _, r in pass_rows.iterrows() if "Courte" in str(r.get("Passe","")) and "Ratée"   in str(r.get("Passe","")))
+    l_ok = sum(1 for _, r in pass_rows.iterrows() if "Longue" in str(r.get("Passe","")) and "Réussie" in str(r.get("Passe","")))
+    l_ko = sum(1 for _, r in pass_rows.iterrows() if "Longue" in str(r.get("Passe","")) and "Ratée"   in str(r.get("Passe","")))
+    stats.update({"passes_ok":p_ok,"passes_ko":p_ko,"courtes_ok":c_ok,"courtes_ko":c_ko,"longues_ok":l_ok,"longues_ko":l_ko})
 
-    # ── Coordonnées & MT2 ─────────────────────────────────────────────────
-    _FIELD_MAX = 80.0; _SVG_W, _SVG_H = 100.0, 68.0
+    # Coordonnées Sportscode : 1-80 sur les deux axes
+    # SVG viewBox : 0-100 (longueur) x 0-68 (largeur)
+    _FIELD_MAX = 80.0
+    _SVG_W, _SVG_H = 100.0, 68.0
 
+    # Détecter les instances MT2 pour inverser X (changement de côté)
     _mt2_inst: set = set()
     if "Row" in df_tactic.columns and "Instance number" in df_tactic.columns and "Mi-temps" in df_tactic.columns:
         _pfc_mt = df_tactic[df_tactic["Row"] == "PFC"][["Instance number", "Mi-temps"]].copy()
         _mt2_inst = set(_pfc_mt[_pfc_mt["Mi-temps"].apply(lambda x: "MT2" in str(x))]["Instance number"].tolist())
 
-    def _parse_coord_series(series):
-        return pd.to_numeric(series.astype(str).str.split(",").str[0].str.strip(), errors="coerce")
+    def _inst(r):
+        try: return int(str(r.get("Instance number","")).split(",")[0].strip())
+        except: return None
 
-    def _apply_norm_x(x_raw, inst_series):
-        x_svg = x_raw * _SVG_W / _FIELD_MAX
-        # Inverser pour MT2 (vectorisé)
-        if _mt2_inst:
-            try:
-                inst_num = pd.to_numeric(inst_series.astype(str).str.split(",").str[0].str.strip(), errors="coerce")
-                mask_mt2 = inst_num.isin(_mt2_inst)
-                x_svg = x_svg.where(~mask_mt2, _SVG_W - x_svg)
-            except Exception:
-                pass
-        return x_svg.clip(1.5, 98.5).round(1)
+    def _norm_x(v, inst=None):
+        raw = float(v) * _SVG_W / _FIELD_MAX
+        if inst is not None and inst in _mt2_inst:
+            raw = _SVG_W - raw  # inversion côté MT2
+        # PFC attaque vers la droite : x grand Sportscode = BUT PFC (droite SVG)
+        return round(max(1.5, min(98.5, raw)), 1)
 
-    def _apply_norm_y(y_raw):
-        return (_SVG_H - y_raw * _SVG_H / _FIELD_MAX).clip(1.5, 66.5).round(1)
+    def _norm_y(v): return round(max(1.5, min(66.5, _SVG_H - float(v) * _SVG_H / _FIELD_MAX)), 1)
 
-    # ── passes_map (vectorisé) ────────────────────────────────────────────
     pass_map = []
-    if not pass_rows.empty and "X_localisation" in pass_rows.columns:
-        _x_raw = _parse_coord_series(pass_rows["X_localisation"])
-        _y_raw = _parse_coord_series(pass_rows["Y_localisation"] if "Y_localisation" in pass_rows.columns else pd.Series(dtype=float))
-        _inst_s = pass_rows.get("Instance number", pd.Series([""] * len(pass_rows), index=pass_rows.index))
-        _x_svg = _apply_norm_x(_x_raw, _inst_s)
-        _y_svg = _apply_norm_y(_y_raw)
-        _ok    = pass_rows["Passe"].astype(str).str.contains("Réussie", na=False)
-        _long  = pass_rows["Passe"].astype(str).str.contains("Longue",  na=False)
-        valid  = _x_raw.notna() & _y_raw.notna()
-        pass_map = [
-            {"x": float(x), "y": float(y), "ok": bool(ok), "longue": bool(lg)}
-            for x, y, ok, lg, v in zip(_x_svg, _y_svg, _ok, _long, valid) if v
-        ]
+    for _, r in pass_rows.iterrows():
+        try:
+            _i = _inst(r)
+            x = _norm_x(str(r.get("X_localisation","")).split(",")[0].strip(), _i)
+            y = _norm_y(str(r.get("Y_localisation","")).split(",")[0].strip())
+            ok = "Réussie" in str(r.get("Passe",""))
+            longue = "Longue" in str(r.get("Passe",""))
+            pass_map.append({"x": x, "y": y, "ok": ok, "longue": longue})
+        except Exception:
+            pass
     stats["passes_map"] = pass_map
 
-    # ── DRIBBLES ──────────────────────────────────────────────────────────
-    if "Dribble" in d.columns:
-        drib_col = d["Dribble"].astype(str)
-        stats["drib_ok"] = int(drib_col.str.contains("Réussi", na=False).sum())
-        stats["drib_ko"] = int(drib_col.str.contains("Raté",   na=False).sum())
-    else:
-        stats["drib_ok"] = stats["drib_ko"] = 0
+    # DRIBBLES
+    drib_rows = d[d["Dribble"].notna()] if "Dribble" in d.columns else d.iloc[0:0]
+    all_drib = [a.strip() for cell in drib_rows["Dribble"].dropna() for a in str(cell).split(",")]
+    stats["drib_ok"] = all_drib.count("Réussi")
+    stats["drib_ko"] = all_drib.count("Raté")
 
-    # ── TIRS ──────────────────────────────────────────────────────────────
-    if "Tir" in d.columns:
-        tir_col = d["Tir"].dropna().astype(str)
-        tir_rows = d[d["Tir"].notna()]
-        stats["tirs_tot"]    = len(tir_rows)
-        stats["tirs_cadres"] = int(tir_col.str.contains("Tir Cadré|But", na=False, regex=True).sum())
-        stats["tirs_buts"]   = int(tir_col.str.contains("But", na=False).sum())
-    else:
-        stats["tirs_tot"] = stats["tirs_cadres"] = stats["tirs_buts"] = 0
+    # TIRS
+    tir_rows = d[d["Tir"].notna()] if "Tir" in d.columns else d.iloc[0:0]
+    all_tir = [a.strip() for cell in tir_rows["Tir"].dropna() for a in str(cell).split(",")]
+    stats["tirs_tot"]    = len(tir_rows)
+    stats["tirs_cadres"] = all_tir.count("Tir Cadré") + all_tir.count("But")
+    stats["tirs_buts"]   = all_tir.count("But")
 
-    # ── PERTES / BALLONS / INTERCEPTIONS ─────────────────────────────────
-    if "Action" in d.columns:
-        action_col = d["Action"].astype(str)
-        stats["pertes"]        = int(action_col.str.contains("Perte",        na=False).sum())
-        stats["recuperations"] = int(action_col.str.contains("Interception", na=False).sum())
-    else:
-        stats["pertes"] = stats["recuperations"] = 0
-    stats["ballons"] = len(d)
+    # PERTES / BALLONS
+    all_actions_flat = [a.strip() for cell in d["Action"].dropna() for a in str(cell).split(",")] if "Action" in d.columns else []
+    stats["pertes"]        = sum(1 for a in all_actions_flat if "Perte" in a)
+    stats["recuperations"] = sum(1 for a in all_actions_flat if "Interception" in a)
+    stats["ballons"]       = len(d)
 
-    # ── DUELS (vectorisé) ─────────────────────────────────────────────────
-    if "Duel défensifs" in d.columns:
-        duel_col = d["Duel défensifs"].astype(str)
-        has_duel = d["Duel défensifs"].notna()
-        duel_col_valid = duel_col[has_duel]
-        stats["duels_gagnes"] = int(duel_col_valid.str.contains("Gagné", na=False).sum())
-        stats["duels_perdus"] = int(duel_col_valid.str.contains("Perdu", na=False).sum())
-        sol_mask = duel_col_valid.str.contains("Sol",    na=False)
-        aer_mask = duel_col_valid.str.contains("Aérien", na=False)
-        gag_mask = duel_col_valid.str.contains("Gagné",  na=False)
-        per_mask = duel_col_valid.str.contains("Perdu",  na=False)
-        stats["sol_ok"] = int((sol_mask & gag_mask).sum())
-        stats["sol_ko"] = int((sol_mask & per_mask).sum())
-        stats["aer_ok"] = int((aer_mask & gag_mask).sum())
-        stats["aer_ko"] = int((aer_mask & per_mask).sum())
-    else:
-        stats.update({"duels_gagnes":0,"duels_perdus":0,"sol_ok":0,"sol_ko":0,"aer_ok":0,"aer_ko":0})
-    stats["interceptions"] = stats["recuperations"]
+    # DUELS
+    duel_rows = d[d["Duel défensifs"].notna()] if "Duel défensifs" in d.columns else d.iloc[0:0]
+    all_duels = [a.strip() for cell in duel_rows["Duel défensifs"].dropna() for a in str(cell).split(",")]
+    sol_list  = [r for _, r in duel_rows.iterrows() if "Sol"    in str(r.get("Duel défensifs",""))]
+    aer_list  = [r for _, r in duel_rows.iterrows() if "Aérien" in str(r.get("Duel défensifs",""))]
+    stats.update({
+        "duels_gagnes": all_duels.count("Gagné"),
+        "duels_perdus": all_duels.count("Perdu"),
+        "sol_ok":  sum(1 for r in sol_list if "Gagné" in str(r.get("Duel défensifs",""))),
+        "sol_ko":  sum(1 for r in sol_list if "Perdu" in str(r.get("Duel défensifs",""))),
+        "aer_ok":  sum(1 for r in aer_list if "Gagné" in str(r.get("Duel défensifs",""))),
+        "aer_ko":  sum(1 for r in aer_list if "Perdu" in str(r.get("Duel défensifs",""))),
+        "interceptions": stats["recuperations"],
+    })
 
-    # ── LOCALISATION — points de la heatmap (vectorisé) ──────────────────
+    # LOCALISATION — normalisation coordonnées Sportscode (1-80) → SVG (0-100 × 0-68)
     locs = []
-    if "X_localisation" in d.columns and "Y_localisation" in d.columns:
-        _x_raw = _parse_coord_series(d["X_localisation"])
-        _y_raw = _parse_coord_series(d["Y_localisation"])
-        _inst_s = d.get("Instance number", pd.Series([""] * len(d), index=d.index))
-        _x_svg = _apply_norm_x(_x_raw, _inst_s)
-        _y_svg = _apply_norm_y(_y_raw)
-        valid = _x_raw.notna() & _y_raw.notna()
-        locs = [{"x": float(x), "y": float(y)} for x, y, v in zip(_x_svg, _y_svg, valid) if v]
+    for _, r in d.iterrows():
+        try:
+            _i = _inst(r)
+            x = _norm_x(str(r.get("X_localisation","")).split(",")[0].strip(), _i)
+            y = _norm_y(str(r.get("Y_localisation","")).split(",")[0].strip())
+            locs.append({"x": x, "y": y})
+        except Exception:
+            pass
     stats["locs"] = locs
 
-    # ── META ──────────────────────────────────────────────────────────────
-    stats["postes"]  = ", ".join(p for p in _first(d["Poste"]).unique() if p and p.lower() not in ("nan","")) if "Poste" in d.columns else ""
-    stats["systeme"] = _first(d["Système de Jeu PFC"]).mode().iloc[0] if "Système de Jeu PFC" in d.columns and not d["Système de Jeu PFC"].dropna().empty else ""
+    # META
+    stats["postes"]  = ", ".join(p for p in d["Poste"].dropna().apply(lambda x: str(x).split(",")[0].strip()).unique() if p and p.lower() not in ("nan","")) if "Poste" in d.columns else ""
+    stats["systeme"] = d["Système de Jeu PFC"].dropna().apply(lambda x: str(x).split(",")[0].strip()).mode().iloc[0] if "Système de Jeu PFC" in d.columns and not d["Système de Jeu PFC"].dropna().empty else ""
 
-    # Legacy aliases
-    stats["nb_actions"]     = len(d)
-    stats["nb_passes"]      = p_ok + p_ko
-    stats["nb_tirs"]        = stats["tirs_tot"]
-    stats["nb_pertes"]      = stats["pertes"]
-    stats["nb_dribbles"]    = stats["drib_ok"] + stats["drib_ko"]
-    stats["nb_duels_def"]   = stats["duels_gagnes"] + stats["duels_perdus"]
-    stats["nb_interceptions"] = stats["interceptions"]
+    # Legacy
+    stats["nb_actions"] = len(d); stats["nb_passes"] = p_ok+p_ko; stats["nb_tirs"] = stats["tirs_tot"]
+    stats["nb_pertes"] = stats["pertes"]; stats["nb_dribbles"] = stats["drib_ok"]+stats["drib_ko"]
+    stats["nb_duels_def"] = stats["duels_gagnes"]+stats["duels_perdus"]; stats["nb_interceptions"] = stats["interceptions"]
     return stats
 
 
@@ -6210,7 +6160,7 @@ def fig_to_b64(fig) -> str:
     return "data:image/png;base64," + _b64.b64encode(buf.read()).decode()
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def create_individual_radar(df: pd.DataFrame):
     if df is None or df.empty or "Player" not in df.columns:
         return None
@@ -6328,7 +6278,7 @@ def create_individual_radar(df: pd.DataFrame):
     return fig
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_creativity: bool = False):
     if df is None or df.empty or len(df) < 2:
         return None
@@ -7650,7 +7600,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     if check_permission(user_profile, "update_data", permissions) or check_permission(user_profile, "all", permissions):
         if st.sidebar.button("Mettre à jour la base"):
             st.session_state["_sync_done"] = False  # forcer re-sync
-            st.session_state.pop("_tactical_files_cache", None)  # invalider cache tactique
             st.cache_data.clear()
             st.rerun()
 
@@ -7950,7 +7899,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         st.divider()
         st.markdown("## 🎯 Rapport Technico-Tactique de match")
 
-        _tac_files_stat = get_tactical_files()
+        _tac_files_stat = load_tactical_files()
         _tac_files_stat = filter_tactical_by_saison(
             _tac_files_stat, st.session_state.get("selected_saison", "Toutes les saisons")
         )
@@ -8705,8 +8654,7 @@ function printA4Report() {{
                 plt.close(fig)  # libère la mémoire
 
         with tab_match:
-            _render_gps_match_tab(gps_match, player_name, permissions, user_profile,
-                                  tactical_files=get_tactical_files())
+            _render_gps_match_tab(gps_match, player_name, permissions, user_profile, tactical_files=None)
         # ── SUIVI DE CHARGE ACWR ───────────────────────────────────────────────
         with tab_charge:
             st.subheader("⚖️ Suivi de charge — Ratio Aigu:Chronique (ACWR)")
@@ -9743,36 +9691,10 @@ def main():
                     st.error("Nom d'utilisateur ou mot de passe incorrect")
         st.stop()
 
-    # ── Sync Drive ────────────────────────────────────────────────────────────
-    # Si première session ET données déjà en cache local → afficher l'app
-    # immédiatement, lancer la sync en arrière-plan (indicateur sidebar discret)
-    _has_local_data = os.path.exists(DATA_FOLDER) and any(
-        f.endswith(".csv") or f.endswith(".xlsx")
-        for f in os.listdir(DATA_FOLDER)
-        if not f.startswith(".")
-    )
-
+    # Sync Drive uniquement au premier chargement de la session
     if not st.session_state.get("_sync_done"):
-        if _has_local_data:
-            # Données locales disponibles → sync en arrière-plan, app visible
-            st.session_state["_sync_pending"] = True
-        else:
-            # Première installation, aucune donnée locale → sync bloquante nécessaire
-            with st.spinner("⏳ Première synchronisation Drive…"):
-                _run_initial_sync()
-                st.cache_data.clear()
-
-    # Afficher un indicateur non-bloquant si sync en cours
-    if st.session_state.get("_sync_pending"):
-        st.sidebar.info("🔄 Sync Drive en cours…")
-        try:
-            _run_initial_sync()
-            st.cache_data.clear()
-            st.session_state["_sync_pending"] = False
-        except Exception as _se:
-            st.sidebar.warning(f"Sync Drive: {_se}")
-            st.session_state["_sync_done"] = True  # ne pas boucler
-            st.session_state["_sync_pending"] = False
+        _run_initial_sync()
+        st.cache_data.clear()  # invalider le cache après sync
 
     with st.spinner("Chargement des données…"):
         pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, gps_match_df, name_report_df = collect_data()
