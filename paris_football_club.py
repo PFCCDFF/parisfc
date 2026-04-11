@@ -7689,25 +7689,19 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
         if _df_player.empty:
             st.info("Aucune donnée technico-tactique pour cette sélection.")
         else:
-            # Agrégation
-            _num_cols_t = [c for c in _df_player.select_dtypes(include="number").columns
-                           if c not in {"Temps de jeu (en minutes)", "Buts"}]
-            _score_cols_t = [c for c in _num_cols_t if "Pourcentage" in c]
-            def _wavg_t(s):
-                w = _df_player.get("Temps de jeu (en minutes)", pd.Series([1]*len(s), index=s.index))
-                return (s * w).sum() / w.sum() if w.sum() > 0 else s.mean()
-            _agg_d = {c: (_wavg_t if c in _score_cols_t else "sum") for c in _num_cols_t}
+            # Agrégation : moyenne pour les percentiles (Timing, Force physique, etc.)
+            # somme uniquement pour Temps de jeu et Buts — comme en v63
             try:
-                aggregated = (_df_player.groupby("Player")
-                    .agg({**_agg_d,
-                          "Temps de jeu (en minutes)": "sum",
-                          "Buts": "sum"})
-                    .drop(columns=["Temps de jeu (en minutes)","Buts"], errors="ignore"))
-                aggregated.insert(0, "Temps de jeu (en minutes)",
-                    _df_player.groupby("Player")["Temps de jeu (en minutes)"].sum())
-                aggregated.insert(1, "Buts",
-                    _df_player.groupby("Player")["Buts"].sum())
-                aggregated = aggregated.reset_index()
+                aggregated = (
+                    _df_player.groupby("Player")
+                    .agg({"Temps de jeu (en minutes)": "sum", "Buts": "sum"})
+                    .join(
+                        _df_player.groupby("Player")
+                        .mean(numeric_only=True)
+                        .drop(columns=["Temps de jeu (en minutes)", "Buts"], errors="ignore")
+                    )
+                    .reset_index()
+                )
             except Exception:
                 aggregated = _df_player.head(1).copy()
 
