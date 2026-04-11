@@ -218,9 +218,24 @@ def nettoyer_nom_joueuse(nom):
         .replace("Ç", "C")
     )
     s = " ".join(s.split())
-    parts = [p.strip().upper() for p in s.split(",") if p.strip()]
-    if len(parts) > 1 and parts[0] == parts[1]:
-        return parts[0]
+
+    # Déduplication : "NOM PRENOM NOM PRENOM" → "NOM PRENOM"
+    # Pattern virgule : "NOM, NOM"
+    if "," in s:
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        if len(parts) > 1 and parts[0] == parts[1]:
+            s = parts[0]
+    else:
+        # Pattern espace : tester toutes les coupures possibles
+        words = s.split()
+        n = len(words)
+        for split_at in range(1, n):
+            left  = " ".join(words[:split_at])
+            right = " ".join(words[split_at:])
+            if left == right:
+                s = left
+                break
+
     return s
 
 
@@ -3787,6 +3802,7 @@ def load_gps_match(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon,
             mapped.append(m)
             statuses.append(status)
         result["Player"] = mapped
+        result["Player"] = result["Player"].apply(nettoyer_nom_joueuse)
         result["__name_status"] = statuses
 
     # Convertir colonnes numériques
@@ -5308,6 +5324,8 @@ def load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, f
         mapped.append(m)
         statuses.append(status)
     df["Player"] = mapped
+    # Nettoyer les noms dupliqués type "NOM NOM" issus de concaténations GPS
+    df["Player"] = df["Player"].apply(nettoyer_nom_joueuse)
     df["__name_status"] = statuses
 
     for c in [
@@ -7586,8 +7604,12 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
             _perf_player = player_name
             st.markdown(f"**Joueuse :** {player_name}")
         else:
-            _all_p = sorted(pfc_kpi["Player"].dropna().unique().tolist()) if pfc_kpi is not None and not pfc_kpi.empty else []
+            _all_p = sorted(pfc_kpi["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
+                     if pfc_kpi is not None and not pfc_kpi.empty else []
             _perf_player = st.selectbox("Joueuse", _all_p, key="perf_player_sel") if _all_p else None
+        # Stocker en session_state pour propagation
+        if _perf_player:
+            st.session_state["_perf_player_selected"] = _perf_player
     with _col_p:
         _perf_period = st.selectbox("Période / Match",
             ["Toute la saison", "Sélectionner des matchs", "Plage de dates"],
@@ -7618,6 +7640,24 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     _gps_raw_df   = st.session_state.get("gps_raw_df",   pd.DataFrame())
     _gps_weekly   = st.session_state.get("gps_weekly_df", pd.DataFrame())
     _tac_files    = filter_tactical_by_saison(load_tactical_files(), _saison_sel)
+
+    # ── Résoudre le nom GPS correspondant à _perf_player ──────────────────
+    # Le nom dans pfc_kpi peut différer du nom dans les données GPS.
+    # On cherche la meilleure correspondance par tokens.
+    _pgps_name = _perf_player
+    if _perf_player and _gps_raw_df is not None and not _gps_raw_df.empty and "Player" in _gps_raw_df.columns:
+        _gps_players = _gps_raw_df["Player"].dropna().astype(str).unique()
+        _p_tokens = nom_tokens(_perf_player)
+        _best_gps = None
+        _best_score = 0
+        for _gp in _gps_players:
+            _gp_tokens = nom_tokens(_gp)
+            _common = len(_p_tokens & _gp_tokens)
+            if _common > _best_score:
+                _best_score = _common
+                _best_gps = _gp
+        if _best_gps and _best_score >= 1:
+            _pgps_name = _best_gps
 
     # Données joueuse filtrées
     _df_player = pd.DataFrame()
@@ -7837,7 +7877,11 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
         else:
             _gr = ensure_date_column(_gps_raw_df)
             _all_gps_p = sorted(_gr["Player"].dropna().astype(str).unique())
-            _pgps = _perf_player or (st.selectbox("Joueuse GPS", _all_gps_p, key="perf_gps_p") if _all_gps_p else None)
+            # Utiliser le nom résolu par token-matching (_pgps_name) — pas de second sélecteur
+            _pgps = _pgps_name if _pgps_name in _all_gps_p else (
+                next((p for p in _all_gps_p if nom_tokens(p) & nom_tokens(_perf_player or "")), None)
+                if _perf_player else None
+            ) or (_all_gps_p[0] if _all_gps_p else None)
 
             if _pgps:
                 _st1, _st2, _st3, _st4, _st5, _st6 = st.tabs([
