@@ -2062,6 +2062,7 @@ def download_permissions_file():
 
 
 @st.cache_resource(show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_permissions():
     try:
         permissions_path = download_permissions_file()
@@ -2129,27 +2130,53 @@ def _is_downloadable(f: dict) -> bool:
 
 
 def download_google_drive():
+    """Sync incrémentale : ne télécharge que les fichiers modifiés depuis la copie locale."""
     service = authenticate_google_drive()
     os.makedirs(DATA_FOLDER, exist_ok=True)
     os.makedirs(PASSERELLE_FOLDER, exist_ok=True)
     os.makedirs(GPS_FOLDER, exist_ok=True)
 
+    def _should_download(drive_file: dict, local_folder: str) -> bool:
+        """True si le fichier Drive est absent ou plus récent que la copie locale."""
+        local_path = os.path.join(local_folder, drive_file["name"])
+        if not os.path.exists(local_path):
+            return True
+        mtime_drive = drive_file.get("modifiedTime")
+        if not mtime_drive:
+            return True
+        try:
+            from datetime import timezone
+            import datetime as _dt
+            drive_dt = _dt.datetime.fromisoformat(mtime_drive.replace("Z", "+00:00"))
+            local_ts  = os.path.getmtime(local_path)
+            local_dt  = _dt.datetime.fromtimestamp(local_ts, tz=timezone.utc)
+            return drive_dt > local_dt
+        except Exception:
+            return True
+
     files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
+    n_skip = 0
     for f in files:
         if not _is_downloadable(f):
+            continue
+        if not _should_download(f, DATA_FOLDER):
+            n_skip += 1
             continue
         try:
             download_file(service, f["id"], f["name"], DATA_FOLDER, mime_type=f.get("mimeType"))
         except Exception as e:
             _warn(f"Drive: impossible de télécharger '{f['name']}' → {e}")
+    if n_skip:
+        _warn(f"Drive: {n_skip} fichier(s) déjà à jour (ignorés)")
 
     files_pass = list_files_in_folder(service, DRIVE_PASSERELLE_FOLDER_ID)
     for f in files_pass:
         if normalize_str(f["name"]) == normalize_str(PASSERELLE_FILENAME):
-            try:
-                download_file(service, f["id"], f["name"], PASSERELLE_FOLDER, mime_type=f.get("mimeType"))
-            except Exception as e:
-                _warn(f"Drive: impossible de télécharger le fichier passerelle → {e}")
+            if _should_download(f, PASSERELLE_FOLDER):
+                try:
+                    download_file(service, f["id"], f["name"], PASSERELLE_FOLDER, mime_type=f.get("mimeType"))
+                except Exception as e:
+                    _warn(f"Drive: impossible de télécharger le fichier passerelle → {e}")
             break
 
 st.session_state["gps_drive_found"] = 0
@@ -2159,7 +2186,7 @@ st.session_state["gps_drive_downloaded"] = 0
 # =========================
 # REFERENTIEL NOMS
 # =========================
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], Dict[str, str], Dict[str, str], Dict[str, Set[str]], Dict[str, Set[str]]]:
     ref = read_excel_auto(ref_path)
 
@@ -2500,7 +2527,7 @@ def load_passerelle_data():
 # =========================
 # ÉVALUATIONS OBJECTIFS (Google Forms → Google Sheet → CSV)
 # =========================
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_objectifs_evaluations() -> pd.DataFrame:
     """
     Charge le CSV exporté du Google Sheet lié au Google Forms d'évaluation des objectifs.
@@ -3251,6 +3278,7 @@ def parse_apl_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows_out)
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_apl_files() -> pd.DataFrame:
     """Charge tous les CSV APL depuis data/ et retourne un DataFrame
     agrégé par profil de poste (moyenne toutes joueuses, tous matchs).
@@ -3692,7 +3720,7 @@ def parse_match_info_from_filename(filename: str) -> dict:
     return info
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_gps_match(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon,
                    first_to_canons, last_to_canons) -> pd.DataFrame:
     """Charge et normalise tous les fichiers GPS match détectés localement."""
@@ -4708,7 +4736,7 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
         if st.button("🔄 Recharger les évaluations", key="eval_reload_admin"):
             st.cache_data.clear(); st.rerun()
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_tactical_files() -> list:
     """Charge tous les fichiers tactiques CSV depuis TACTICAL_FOLDER.
     Retourne une liste de dicts : {path, date, journee, adversaire, adv_norm, df}
@@ -5284,7 +5312,7 @@ def standardize_gps_columns(df: pd.DataFrame, filename: str) -> pd.DataFrame:
     return out
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_gps_raw(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons) -> pd.DataFrame:
     files = list_gps_files_local()
     if not files:
@@ -5842,49 +5870,48 @@ def _run_initial_sync():
     Télécharge depuis Drive et synchronise GPS + Photos.
     Exécutée UNE SEULE FOIS par session (guard _sync_done).
     Re-déclenchée par le bouton "Mettre à jour la base".
+    Le spinner est géré par l'appelant (main()).
     """
     st.session_state["_system_warnings"] = []
 
-    with st.spinner("🔄 Chargement des données depuis Drive..."):
-        try:
-            download_google_drive()
-        except Exception as e:
-            _warn(f"Drive: téléchargement principal échoué → {e}")
+    try:
+        download_google_drive()
+    except Exception as e:
+        _warn(f"Drive: téléchargement principal échoué → {e}")
 
-        try:
-            sync_gps_from_drive_autonomous()
-        except Exception as e:
-            _warn(f"GPS: sync autonome échouée → {e}")
+    try:
+        sync_gps_from_drive_autonomous()
+    except Exception as e:
+        _warn(f"GPS: sync autonome échouée → {e}")
 
-        try:
-            sync_gps_match_from_drive()
-        except Exception as e:
-            _warn(f"GPS Match: sync échouée → {e}")
+    try:
+        sync_gps_match_from_drive()
+    except Exception as e:
+        _warn(f"GPS Match: sync échouée → {e}")
 
-        try:
-            sync_photos_from_drive()
-        except Exception as e:
-            _warn(f"Photos: sync échouée → {e}")
+    try:
+        sync_photos_from_drive()
+    except Exception as e:
+        _warn(f"Photos: sync échouée → {e}")
 
-        # Index photos + concordance
-        photos_index_local = build_photos_index_local()
-        st.session_state["photos_index"] = photos_index_local
-        ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
-        if not os.path.exists(ref_path):
-            ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME) or ""
-        try:
-            concordance = build_photo_concordance(ref_path, photos_index_local)
-            st.session_state["photo_concordance"] = concordance
-        except Exception as e:
-            _warn(f"Photos: concordance échouée → {e}")
-            st.session_state["photo_concordance"] = {}
+    # Index photos + concordance
+    photos_index_local = build_photos_index_local()
+    st.session_state["photos_index"] = photos_index_local
+    ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
+    if not os.path.exists(ref_path):
+        ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME) or ""
+    try:
+        concordance = build_photo_concordance(ref_path, photos_index_local)
+        st.session_state["photo_concordance"] = concordance
+    except Exception as e:
+        _warn(f"Photos: concordance échouée → {e}")
+        st.session_state["photo_concordance"] = {}
 
     st.session_state["_sync_done"] = True
-    # Vider TOUS les caches après sync pour forcer le rechargement des nouveaux fichiers
     st.cache_data.clear()
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def collect_data(selected_season=None):
     """
     Chargement principal des données PFC + EDF + GPS.
@@ -6178,7 +6205,7 @@ def fig_to_b64(fig) -> str:
     return "data:image/png;base64," + _b64.b64encode(buf.read()).decode()
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def create_individual_radar(df: pd.DataFrame):
     if df is None or df.empty or "Player" not in df.columns:
         return None
@@ -6296,7 +6323,7 @@ def create_individual_radar(df: pd.DataFrame):
     return fig
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_creativity: bool = False):
     if df is None or df.empty or len(df) < 2:
         return None
@@ -7639,7 +7666,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     _gps_match_df = st.session_state.get("gps_match_df", pd.DataFrame())
     _gps_raw_df   = st.session_state.get("gps_raw_df",   pd.DataFrame())
     _gps_weekly   = st.session_state.get("gps_weekly_df", pd.DataFrame())
-    _tac_files    = filter_tactical_by_saison(load_tactical_files(), _saison_sel)
+    _tac_files    = filter_tactical_by_saison(get_tactical_files(), _saison_sel)
 
     # ── Résoudre le nom GPS correspondant à _perf_player ──────────────────
     # Le nom dans pfc_kpi peut différer du nom dans les données GPS.
@@ -7930,7 +7957,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                 with _st4:
                     _render_gps_match_tab(_gps_match_df, _pgps, permissions,
-                                          user_profile, tactical_files=load_tactical_files())
+                                          user_profile, tactical_files=get_tactical_files())
 
                 with _st5:
                     _dc = _gr[_gr["Player"].astype(str)==nettoyer_nom_joueuse(_pgps)].copy()
@@ -9102,10 +9129,40 @@ def main():
                     st.error("Nom d'utilisateur ou mot de passe incorrect")
         st.stop()
 
-    # Sync Drive uniquement au premier chargement de la session
+    # ── Sync Drive ────────────────────────────────────────────────────────
+    # Si données locales disponibles → afficher l'app immédiatement.
+    # La sync se fait en arrière-plan avec un indicateur discret dans la sidebar.
+    # Seule la toute première installation (dossier vide) reste bloquante.
+    _has_local_data = (
+        os.path.exists(DATA_FOLDER)
+        and any(
+            f.endswith(".csv") or f.endswith(".xlsx")
+            for f in os.listdir(DATA_FOLDER)
+            if not f.startswith(".")
+        )
+    )
+
     if not st.session_state.get("_sync_done"):
-        _run_initial_sync()
-        st.cache_data.clear()  # invalider le cache après sync
+        if _has_local_data:
+            # Données locales présentes → sync différée après affichage
+            st.session_state["_sync_pending"] = True
+        else:
+            # Première installation : sync bloquante nécessaire
+            with st.spinner("⏳ Première synchronisation Drive…"):
+                _run_initial_sync()
+                st.cache_data.clear()
+
+    # Indicateur non-bloquant si sync en attente
+    if st.session_state.get("_sync_pending"):
+        st.sidebar.info("🔄 Mise à jour Drive en cours…")
+        try:
+            _run_initial_sync()
+            st.cache_data.clear()
+            st.session_state["_sync_pending"] = False
+        except Exception as _se:
+            st.sidebar.warning(f"Sync Drive partielle : {_se}")
+            st.session_state["_sync_pending"] = False
+            st.session_state["_sync_done"] = True
 
     with st.spinner("Chargement des données…"):
         pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, gps_match_df, name_report_df = collect_data()
