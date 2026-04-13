@@ -7911,11 +7911,20 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
         else:
             _gr = ensure_date_column(_gps_raw_df)
             _all_gps_p = sorted(_gr["Player"].dropna().astype(str).unique())
-            # Utiliser le nom résolu par token-matching (_pgps_name) — pas de second sélecteur
-            _pgps = _pgps_name if _pgps_name in _all_gps_p else (
+
+            # Résoudre le nom par défaut depuis le contrôle global
+            _pgps_default = _pgps_name if _pgps_name in _all_gps_p else (
                 next((p for p in _all_gps_p if nom_tokens(p) & nom_tokens(_perf_player or "")), None)
                 if _perf_player else None
             ) or (_all_gps_p[0] if _all_gps_p else None)
+
+            # Sélecteur joueuse — modifiable indépendamment du contrôle global
+            _def_idx = _all_gps_p.index(_pgps_default) if _pgps_default in _all_gps_p else 0
+            _pgps = st.selectbox(
+                "Joueuse", _all_gps_p,
+                index=_def_idx,
+                key="perf_gps_player_sel"
+            )
 
             if _pgps:
                 _st1, _st2, _st3, _st4, _st5, _st6 = st.tabs([
