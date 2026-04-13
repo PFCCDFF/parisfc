@@ -7957,19 +7957,40 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         st.info("Données hebdomadaires non disponibles.")
 
                 with _st3:
-                    try:
-                        _smd = compute_gps_summary_for_player(_gr, _pgps)
-                        if _smd is not None and not _smd.empty:
-                            _mc = [c for c in _smd.columns if c not in {"DATE","Player","SEMAINE","__source_file"}
-                                   and pd.api.types.is_numeric_dtype(_smd[c])]
-                            _dl = [c for c in ["Moyenne de Distance (m)","Moyenne de Distance HID (>13 km/h)"] if c in _mc]
-                            _sl = st.multiselect("Indicateurs", _mc, default=_dl, key="perf_md_lines")
-                            fig_md = plot_gps_md_graph(_smd, selected_lines=_sl)
-                            if fig_md: st.pyplot(fig_md, use_container_width=True); plt.close(fig_md)
+                    _dg = _gr[_gr["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)].copy()
+                    _dg = ensure_date_column(_dg)
+                    _dg = _dg[_dg["DATE"].notna()].copy()
+                    if _dg.empty:
+                        st.info("Pas de dates exploitables pour cette joueuse.")
+                    else:
+                        _max_date = _dg["DATE"].max().normalize()
+                        _min_date = _dg["DATE"].min().normalize()
+                        _end_date = st.date_input(
+                            "Date de référence (MD)",
+                            value=_max_date.date(),
+                            min_value=_min_date.date(),
+                            max_value=_max_date.date(),
+                            key="perf_md_ref_date",
+                        )
+                        _smd = build_md_window_summary(_dg, pd.Timestamp(_end_date), days=7)
+                        if _smd is None or _smd.empty:
+                            st.info("Aucune donnée sur cette fenêtre de 7 jours.")
                         else:
-                            st.info("Données microcycle non disponibles.")
-                    except Exception as _e:
-                        st.info(f"Graphique microcycle indisponible : {_e}")
+                            st.dataframe(_smd, use_container_width=True)
+                            _mc = [c for c in _smd.columns if c != "MD"]
+                            _dl = [c for c in [
+                                "Moyenne de Distance HID (>13 km/h)",
+                                "Moyenne de Distance 13-19 (m)",
+                                "Moyenne de Distance 19-23 (m)",
+                                "Moyenne de Distance >23 (m)",
+                                "Moyenne de # Acc/Dec",
+                                "Moyenne de Distance relative (m/min)",
+                            ] if c in _mc]
+                            _sl = st.multiselect("Indicateurs (axe droit)", _mc, default=_dl, key="perf_md_lines")
+                            fig_md = plot_gps_md_graph(_smd, selected_lines=_sl)
+                            if fig_md:
+                                st.pyplot(fig_md, use_container_width=True)
+                                plt.close(fig_md)
 
                 with _st4:
                     _render_gps_match_tab(_gps_match_df, _pgps, permissions,
