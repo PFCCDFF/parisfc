@@ -7693,9 +7693,13 @@ def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
     matplotlib.use("Agg")
     import matplotlib.pyplot as _plt_g
 
-    _sp = [(v07,"0–7","#5F5E5A"),(v713,"7–13","#5F5E5A"),
-           (v1315,"13–15","#378ADD"),(v1519,"15–19","#378ADD"),
-           (v1923,"19–23","#EF9F27"),(v2325,"23–25","#E24B4A"),(vsup,">25","#E24B4A")]
+    _sp = [(v07,  "0–7",   "#2D6A8F"),   # bleu-gris : récupération
+           (v713, "7–13",  "#1D9E75"),   # vert : aérobie modéré
+           (v1315,"13–15", "#5DCAA5"),   # vert clair : seuil aérobie
+           (v1519,"15–19", "#EF9F27"),   # orange : haute intensité
+           (v1923,"19–23", "#E07030"),   # orange-rouge : très haute intensité
+           (v2325,"23–25", "#E24B4A"),   # rouge : sprint
+           (vsup, ">25",   "#A32D2D")]   # rouge foncé : sprint max
     _sp_v = [v if v else 0 for v,_,_ in _sp]
     _sp_l = [l for _,l,_ in _sp]
     _sp_c = [c for _,_,c in _sp]
@@ -7782,18 +7786,23 @@ def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
-@page {{ size: A4 portrait; margin: 0; }}
+@page {{ size: A4 portrait; margin: 0; background: #060F1A; }}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{
-  background: #060F1A;
+html, body {{
+  background: #060F1A !important;
   color: #C8D8E8;
   font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
   font-size: 10px;
-  -webkit-print-color-adjust: exact;
-  print-color-adjust: exact;
-  padding: 0;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  color-adjust: exact !important;
 }}
-.page {{ padding: 14mm 14mm 10mm 14mm; min-height: 297mm; }}
+.page {{
+  background: #060F1A !important;
+  padding: 14mm 14mm 10mm 14mm;
+  min-height: 297mm;
+  width: 210mm;
+}}
 .kpi-grid {{ display: grid; grid-template-columns: repeat(5,1fr); gap: 8px; margin-bottom: 12px; }}
 .section {{
   font-size: 8.5px; font-weight: 700; color: #00A3E0;
@@ -7801,8 +7810,7 @@ body {{
   border-left: 3px solid #00A3E0; padding-left: 7px;
   margin: 12px 0 7px;
 }}
-.panel {{ background: #0C1A28; border: 1px solid #1E2D40; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }}
-.panel-title {{ font-size: 8.5px; font-weight: 700; color: #00A3E0; text-transform: uppercase; letter-spacing:.1em; margin-bottom:9px; }}
+.panel {{ background: #0C1A28 !important; border: 1px solid #1E2D40; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }}
 table {{ width: 100%; border-collapse: collapse; }}
 .footer {{ border-top: 1px solid #1E2D40; margin-top: 12px; padding-top: 7px; font-size: 8px; color: #3A4A5A; display: flex; justify-content: space-between; }}
 </style></head>
@@ -7860,6 +7868,20 @@ table {{ width: 100%; border-collapse: collapse; }}
 <!-- GRAPHIQUE -->
 <div class="section">Distance par plage de vitesse</div>
 <img src="{_chart}" style="width:100%;border-radius:8px;display:block;border:1px solid #1E2D40">
+<div style="display:flex;gap:12px;margin-top:5px;margin-bottom:2px;flex-wrap:wrap">
+  <span style="font-size:8px;color:#6A8090;display:flex;align-items:center;gap:4px">
+    <span style="width:10px;height:8px;background:#2D6A8F;border-radius:2px;display:inline-block"></span>Récupération (0–7)
+  </span>
+  <span style="font-size:8px;color:#6A8090;display:flex;align-items:center;gap:4px">
+    <span style="width:10px;height:8px;background:#1D9E75;border-radius:2px;display:inline-block"></span>Aérobie (7–15)
+  </span>
+  <span style="font-size:8px;color:#6A8090;display:flex;align-items:center;gap:4px">
+    <span style="width:10px;height:8px;background:#EF9F27;border-radius:2px;display:inline-block"></span>Haute intensité (15–19)
+  </span>
+  <span style="font-size:8px;color:#6A8090;display:flex;align-items:center;gap:4px">
+    <span style="width:10px;height:8px;background:#E24B4A;border-radius:2px;display:inline-block"></span>Sprint (>23)
+  </span>
+</div>
 
 <!-- ACCÉLÉRATIONS -->
 <div class="section">Accélérations / décélérations</div>
