@@ -8214,14 +8214,165 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     if _gr is None or _gr.empty:
                         st.info("Aucune donnée GPS brute disponible.")
                     else:
-                        try:
-                            _wc = compute_acwr(_gr, _pgps)
-                            if _wc is not None and not _wc.empty:
-                                st.dataframe(_wc, use_container_width=True)
-                            else:
-                                st.info("Données de charge insuffisantes pour calculer l'ACWR (minimum 4 semaines requises).")
-                        except Exception as _e:
-                            st.info(f"ACWR indisponible : {_e}")
+                        _weekly_acwr = compute_acwr(_gr, _pgps)
+                        if _weekly_acwr.empty:
+                            st.info(
+                                "Pas de données de charge disponibles pour cette joueuse. "
+                                "Vérifiez que les colonnes RPE et Durée_min (ou CHARGE ou Distance) "
+                                "sont présentes dans les fichiers GPS."
+                            )
+                        else:
+                            import matplotlib.pyplot as _plt_acwr
+                            import matplotlib.patches as _mpatches_acwr
+
+                            # ── Sélecteur nombre de semaines ──────────────
+                            _n_sem_tot = len(_weekly_acwr)
+                            _n_sem_sel = st.slider(
+                                "Nombre de semaines affichées",
+                                4, max(4, _n_sem_tot),
+                                min(8, _n_sem_tot),
+                                key="perf_charge_n_semaines"
+                            )
+                            _weekly_disp = _weekly_acwr.tail(_n_sem_sel).copy()
+                            _last = _weekly_disp.iloc[-1]
+
+                            def _zone_color(v):
+                                if pd.isna(v): return "⚪"
+                                if v < 0.8:    return "🔵"
+                                if v <= 1.5:   return "🟢"
+                                return "🔴"
+
+                            def _zone_label(v):
+                                if pd.isna(v): return "—"
+                                if v < 0.8:    return "🔵 Sous-charge"
+                                if v <= 1.5:   return "🟢 Zone optimale"
+                                return "🔴 Sur-charge"
+
+                            # ── Métriques dernière semaine ─────────────────
+                            st.markdown("##### Dernière semaine enregistrée")
+                            _rc1, _rc2, _rc3 = st.columns(3)
+                            _rc1.metric("📅 Semaine", _last["Label_semaine"])
+                            _rc2.metric("📦 Charge totale (UA)", f"{_last['CHARGE_semaine']:.0f}")
+                            _rc3.metric("📊 Zone globale", _zone_label(_last["ACWR_EWMA"]))
+
+                            _rc4, _rc5, _rc6, _rc7 = st.columns(4)
+                            _rc4.metric(
+                                f"ACWR Rolling Avg {_zone_color(_last['ACWR_RA'])}",
+                                f"{_last['ACWR_RA']:.2f}" if not pd.isna(_last["ACWR_RA"]) else "—",
+                                help="Modèle Gabbett (2016) — moyenne glissante 7j / 28j"
+                            )
+                            _rc5.metric(
+                                f"ACWR EWMA {_zone_color(_last['ACWR_EWMA'])}",
+                                f"{_last['ACWR_EWMA']:.2f}" if not pd.isna(_last["ACWR_EWMA"]) else "—",
+                                help="Modèle Murray et al. (2016) — moyenne exponentielle pondérée"
+                            )
+                            _rc6.metric(
+                                "Charge aiguë (RA)",
+                                f"{_last['Aigu_RA']:.0f}" if not pd.isna(_last["Aigu_RA"]) else "—",
+                                help="Moyenne quotidienne sur 7 jours"
+                            )
+                            _rc7.metric(
+                                "Charge chronique (RA)",
+                                f"{_last['Chronique_RA']:.0f}" if not pd.isna(_last["Chronique_RA"]) else "—",
+                                help="Moyenne quotidienne sur 28 jours"
+                            )
+
+                            st.divider()
+
+                            # ── Graphique ACWR ─────────────────────────────
+                            _labels_ch  = _weekly_disp["Label_semaine"].tolist()
+                            _acwr_ra    = _weekly_disp["ACWR_RA"].tolist()
+                            _acwr_ew    = _weekly_disp["ACWR_EWMA"].tolist()
+                            _charges_ch = _weekly_disp["CHARGE_semaine"].tolist()
+                            _x_ch       = list(range(len(_labels_ch)))
+
+                            _fig_w = max(9, len(_x_ch) * 1.1)
+                            _fig_ch, _ax1_ch = _plt_acwr.subplots(figsize=(_fig_w, 3.8))
+                            _fig_ch.patch.set_facecolor("#0C1220")
+                            _ax1_ch.set_facecolor("#0C1220")
+
+                            _ax1_ch.bar(_x_ch, _charges_ch, color="#1A3A5C", alpha=0.6,
+                                        label="Charge hebdo", zorder=2, width=0.6)
+                            _ax1_ch.set_ylabel("Charge (UA)", color="#6A8090", fontsize=9)
+                            _ax1_ch.tick_params(axis="y", colors="#6A8090", labelsize=8)
+                            _ax1_ch.tick_params(axis="x", colors="#C8D8E8", labelsize=8)
+                            _ax1_ch.set_xticks(_x_ch)
+                            _ax1_ch.set_xticklabels(_labels_ch, rotation=30, ha="right",
+                                                     fontsize=8.5, color="#C8D8E8")
+                            _ax1_ch.spines[:].set_color("#1A2A3A")
+
+                            _ax2_ch = _ax1_ch.twinx()
+                            _ax2_ch.set_facecolor("#0C1220")
+                            _ax2_ch.set_ylabel("ACWR", color="#C8D8E8", fontsize=9)
+                            _ax2_ch.tick_params(axis="y", colors="#C8D8E8", labelsize=8)
+                            _ax2_ch.spines[:].set_color("#1A2A3A")
+
+                            _ax2_ch.axhspan(0.8, 1.5, color="#22C55E", alpha=0.08, zorder=1)
+                            _ax2_ch.axhline(0.8, color="#22C55E", lw=0.8, ls="--", alpha=0.5)
+                            _ax2_ch.axhline(1.5, color="#EF4444", lw=0.8, ls="--", alpha=0.5)
+
+                            _ax2_ch.plot(_x_ch, _acwr_ra, color="#F4830A", lw=2,
+                                         marker="o", ms=5, label="ACWR RA (Gabbett)", zorder=5)
+                            _ax2_ch.plot(_x_ch, _acwr_ew, color="#00A3E0", lw=2,
+                                         marker="s", ms=5, label="ACWR EWMA (Murray)", zorder=5)
+
+                            for _xi, (_ra, _ew) in enumerate(zip(_acwr_ra, _acwr_ew)):
+                                for _val, _col in [(_ra, "#F4830A"), (_ew, "#00A3E0")]:
+                                    if not pd.isna(_val):
+                                        _fc = "#22C55E" if 0.8 <= _val <= 1.5 else ("#EF4444" if _val > 1.5 else "#3B82F6")
+                                        _ax2_ch.scatter(_xi, _val, color=_fc, edgecolors=_col,
+                                                        s=45, zorder=6, linewidths=1.5)
+
+                            _all_v = [v for v in _acwr_ra + _acwr_ew if not pd.isna(v)]
+                            if _all_v:
+                                _ax2_ch.set_ylim(max(0, min(_all_v) - 0.2),
+                                                 max(max(_all_v) + 0.2, 1.8))
+
+                            _handles_ch = [
+                                _mpatches_acwr.Patch(color="#1A3A5C", alpha=0.8, label="Charge hebdo"),
+                                _plt_acwr.Line2D([0],[0], color="#F4830A", lw=2, marker="o", ms=5, label="ACWR RA (Gabbett)"),
+                                _plt_acwr.Line2D([0],[0], color="#00A3E0", lw=2, marker="s", ms=5, label="ACWR EWMA (Murray)"),
+                                _mpatches_acwr.Patch(color="#22C55E", alpha=0.15, label="Zone optimale (0.8–1.5)"),
+                            ]
+                            _ax2_ch.legend(handles=_handles_ch, loc="upper center",
+                                           bbox_to_anchor=(0.5, 1.14), ncol=4,
+                                           fontsize=7.5, facecolor="#0C1220",
+                                           edgecolor="#1A2A3A", labelcolor="#C8D8E8")
+
+                            _fig_ch.tight_layout(rect=[0, 0, 1, 0.96])
+                            st.pyplot(_fig_ch, use_container_width=True)
+                            _plt_acwr.close(_fig_ch)
+
+                            st.caption(
+                                "🔵 Sous-charge (<0.8) · 🟢 Zone optimale (0.8–1.5) · 🔴 Sur-charge / risque blessure (>1.5)  |  "
+                                "**RA** = Rolling Average (Gabbett, 2016) · **EWMA** = Exponentially Weighted Moving Average (Murray et al., 2016)"
+                            )
+
+                            st.divider()
+
+                            # ── Tableau détaillé ───────────────────────────
+                            st.markdown("##### Tableau détaillé")
+                            _tbl_ch = _weekly_disp[[
+                                "Label_semaine", "CHARGE_semaine",
+                                "Aigu_RA", "Chronique_RA", "ACWR_RA",
+                                "Aigu_EWMA", "Chronique_EWMA", "ACWR_EWMA"
+                            ]].copy()
+                            _tbl_ch.columns = [
+                                "Semaine", "Charge (UA)",
+                                "Aigu RA", "Chronique RA", "ACWR RA",
+                                "Aigu EWMA", "Chronique EWMA", "ACWR EWMA"
+                            ]
+                            for _c in ["Charge (UA)", "Aigu RA", "Chronique RA", "Aigu EWMA", "Chronique EWMA"]:
+                                _tbl_ch[_c] = _tbl_ch[_c].apply(lambda v: f"{v:.1f}" if not pd.isna(v) else "—")
+                            for _c in ["ACWR RA", "ACWR EWMA"]:
+                                _tbl_ch[_c] = _tbl_ch[_c].apply(lambda v: f"{v:.2f}" if not pd.isna(v) else "—")
+                            st.dataframe(_tbl_ch.reset_index(drop=True), use_container_width=True, hide_index=True)
+
+                            st.info(
+                                "**Interprétation** : La charge utilisée est basée sur la Distance (proxy) ou le produit RPE × Durée (UA). "
+                                "L'ACWR EWMA pondère les charges récentes plus fortement, le rendant plus sensible aux pics de charge "
+                                "et donc plus adapté aux calendriers irréguliers."
+                            )
 
                 with _st6:
                     _tpc = []
