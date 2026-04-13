@@ -7948,8 +7948,11 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                 with _st2:
                     if _gps_weekly is not None and not _gps_weekly.empty and "Player" in _gps_weekly.columns:
-                        _dw2 = _gps_weekly[_gps_weekly["Player"].astype(str)==nettoyer_nom_joueuse(_pgps)]
-                        st.dataframe(_dw2, use_container_width=True) if not _dw2.empty else st.info("Aucune donnée.")
+                        _dw2 = _gps_weekly[_gps_weekly["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)]
+                        if not _dw2.empty:
+                            st.dataframe(_dw2, use_container_width=True)
+                        else:
+                            st.info("Aucune donnée hebdomadaire pour cette joueuse.")
                     else:
                         st.info("Données hebdomadaires non disponibles.")
 
