@@ -7753,84 +7753,168 @@ def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
     max_acc = max(filter(None, [acc2, dec2, tot_ad, 1])) or 1
     max_spr = max(filter(None, [spr23, spr25, 1])) or 1
 
+    # Nom proprement formaté (pas tout en majuscules)
+    def _title_case(s):
+        return " ".join(w.capitalize() for w in s.lower().split())
+    player_display = _title_case(player_name)
+
+    # Barres horizontales en HTML pur (pas de JS, compatible impression)
+    def _bar_html(val, max_val, color):
+        import math
+        if val is None or (isinstance(val, float) and math.isnan(val)):
+            pct = 0
+        else:
+            pct = min(int((val / max_val) * 100), 100) if max_val else 0
+        return (
+            f"<div style='flex:1;height:6px;background:#1E2D40;border-radius:3px;overflow:hidden'>"
+            f"<div style='width:{pct}%;height:6px;background:{color};border-radius:3px'></div>"
+            f"</div>"
+        )
+
+    def _row_html(label, val, max_val, color, fmt="{:.0f}", unit=""):
+        import math
+        is_bad = val is None or (isinstance(val, float) and math.isnan(val))
+        vstr = (fmt.format(val) + (" " + unit if unit else "")) if not is_bad else "—"
+        return (
+            f"<tr>"
+            f"<td style='font-size:9px;color:#8A9BB0;padding:4px 8px 4px 0;white-space:nowrap'>{label}</td>"
+            f"<td style='width:100%;padding:4px 8px 4px 0'>"
+            f"<div style='display:flex;align-items:center;gap:6px'>"
+            f"{_bar_html(val, max_val, color)}"
+            f"</div></td>"
+            f"<td style='font-size:10px;font-weight:600;color:#C8D8E8;white-space:nowrap;"
+            f"text-align:right;padding:4px 0'>{vstr}</td>"
+            f"</tr>"
+        )
+
+    def _kpi_card_html(label, val_str, unit, sub="", delta="", delta_up=None):
+        arrow_color = "#22C55E" if delta_up else ("#EF4444" if delta_up is False else "#6A8090")
+        return (
+            f"<div style='background:#0C1A28;border:1px solid #1E2D40;border-radius:8px;"
+            f"padding:10px 12px;display:flex;flex-direction:column;gap:2px'>"
+            f"<div style='font-size:8px;color:#6A8090;text-transform:uppercase;"
+            f"letter-spacing:.08em;margin-bottom:4px'>{label}</div>"
+            f"<div style='font-size:22px;font-weight:700;color:#E8F4FF;line-height:1.1'>{val_str}</div>"
+            f"<div style='font-size:9px;color:#8A9BB0'>{unit}</div>"
+            + (f"<div style='font-size:8px;color:#4A5A6A'>{sub}</div>" if sub else "")
+            + (f"<div style='font-size:9px;font-weight:500;color:{arrow_color};margin-top:2px'>{delta}</div>" if delta else "")
+            + "</div>"
+        )
+
+    # Calcul deltas avec signe
+    def _d(val, avg_val, unit="", dec=0, higher_good=True):
+        if val is None or not avg_val: return "", None
+        d = val - avg_val
+        sign = "+" if d >= 0 else ""
+        arrow = "▲" if d >= 0 else "▼"
+        good = (d >= 0) == higher_good
+        return f"{arrow} {sign}{d:,.{dec}f}{' '+unit if unit else ''} vs moy.", good
+
+    def _dp(val, avg_val):
+        if val is None or not avg_val: return "", None
+        d = val - avg_val
+        sign = "+" if d >= 0 else ""
+        arrow = "▲" if d >= 0 else "▼"
+        return f"{arrow} {sign}{d:.1f} pts vs moy.", d >= 0
+
+    d_dist, ok_dist       = _d(dist, avg.get("Distance (m)"), "m")
+    d_hid13, ok_hid13     = _dp(hid13_pct, avg_hid13_pct)
+    d_hid19, ok_hid19     = _dp(hid19_pct, avg_hid19_pct)
+    d_vmax, ok_vmax       = _d(vmax, avg.get("Vitesse max (km/h)"), "km/h", dec=1)
+    d_spr, ok_spr         = _d(spr23, avg.get("Sprints_23"), "nb")
+
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
-  @page {{ size: A4 portrait; margin: 12mm 12mm 10mm 12mm; }}
-  * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', 'Segoe UI', sans-serif; }}
-  body {{ background: #060F1A; color: #C8D8E8; font-size: 10px; }}
-  .header {{ display: flex; align-items: center; justify-content: space-between;
-             border-bottom: 1px solid #1A2A3A; padding-bottom: 8px; margin-bottom: 10px; }}
-  .header-left h1 {{ font-size: 16px; font-weight: 700; color: #E8F4FF; letter-spacing: .02em; }}
-  .header-left p {{ font-size: 9px; color: #6A8090; margin-top: 2px; }}
-  .badge {{ background: #0F3A20; color: #22C55E; font-size: 9px; font-weight: 600;
-            padding: 3px 10px; border-radius: 20px; }}
-  .kpi-grid {{ display: grid; grid-template-columns: repeat(5,1fr); gap: 7px; margin-bottom: 10px; }}
-  .section-title {{ font-size: 8px; font-weight: 600; color: #6A8090; text-transform: uppercase;
-                    letter-spacing: .1em; margin-bottom: 6px; }}
-  .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }}
-  .panel {{ background: #0C1220; border: 1px solid #1A2A3A; border-radius: 6px; padding: 10px; }}
-  .footer {{ border-top: 1px solid #1A2A3A; margin-top: 10px; padding-top: 6px;
-             font-size: 8px; color: #3A4A5A; display: flex; justify-content: space-between; }}
+  @page {{ size: A4 portrait; margin: 10mm 12mm 10mm 12mm; }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ background: #060F1A; color: #C8D8E8;
+          font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+          font-size: 10px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+  h1 {{ font-size: 17px; font-weight: 700; color: #E8F4FF; letter-spacing: -.01em; }}
+  .sub {{ font-size: 9px; color: #6A8090; margin-top: 2px; }}
+  .section {{ font-size: 8px; font-weight: 700; color: #00A3E0;
+              text-transform: uppercase; letter-spacing: .12em;
+              margin: 10px 0 6px; border-left: 3px solid #00A3E0;
+              padding-left: 6px; }}
+  .kpi-grid {{ display: grid; grid-template-columns: repeat(5,1fr); gap: 8px; }}
+  .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }}
+  .panel {{ background: #0C1A28; border: 1px solid #1E2D40; border-radius: 8px; padding: 10px 12px; }}
+  .panel-title {{ font-size: 8px; font-weight: 700; color: #6A8090;
+                  text-transform: uppercase; letter-spacing: .1em; margin-bottom: 8px; }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  .divider {{ border: none; border-top: 1px solid #1E2D40; margin: 8px 0; }}
+  .footer {{ display: flex; justify-content: space-between; align-items: center;
+             border-top: 1px solid #1E2D40; margin-top: 10px; padding-top: 6px;
+             font-size: 8px; color: #3A4A5A; }}
 </style></head>
 <body>
-  <div class="header">
-    <div class="header-left">
-      <h1>Rapport physique — {player_name}</h1>
-      <p>{match_label}</p>
+
+<!-- EN-TÊTE -->
+<div style='display:flex;align-items:flex-start;justify-content:space-between;
+            border-bottom:1px solid #1E2D40;padding-bottom:8px;margin-bottom:4px'>
+  <div>
+    <div style='display:flex;align-items:center;gap:8px;margin-bottom:3px'>
+      <div style='width:3px;height:20px;background:#00A3E0;border-radius:2px'></div>
+      <h1>Rapport physique — {player_display}</h1>
     </div>
-    <span class="badge">{_fmt(tps, 0)} min jouées</span>
+    <p class='sub'>{match_label}</p>
   </div>
-
-  <div class="section-title">Métriques clés</div>
-  <div class="kpi-grid">
-    {_kpi_card("Distance totale",
-               _fmt(dist, 0), "mètres",
-               delta=_delta(dist, avg.get("Distance (m)"), "m", higher_good=True))}
-    {_kpi_card("HID &gt;13 km/h",
-               _fmt(hid13_pct, 1), "% dist. totale",
-               sub=f"{_fmt(hid13,0)} m",
-               delta=_delta_pct(hid13_pct, avg_hid13_pct))}
-    {_kpi_card("HID &gt;19 km/h",
-               _fmt(hid19_pct, 1), "% dist. totale",
-               sub=f"{_fmt(hid19,0)} m",
-               delta=_delta_pct(hid19_pct, avg_hid19_pct))}
-    {_kpi_card("Vitesse max",
-               _fmt(vmax, 1), "km/h",
-               delta=_delta(vmax, avg.get("Vitesse max (km/h)"), "km/h", dec=1))}
-    {_kpi_card("Sprints &gt;23",
-               _fmt(spr23, 0), "sprints",
-               delta=_delta(spr23, avg.get("Sprints_23"), "nb", higher_good=True))}
+  <div style='background:#0A2E18;color:#22C55E;font-size:10px;font-weight:700;
+              padding:5px 14px;border-radius:20px;border:1px solid #1D9E75;
+              white-space:nowrap;margin-top:4px'>
+    {_fmt(tps, 0)} min jouées
   </div>
+</div>
 
-  <div class="section-title">Distance par plage de vitesse</div>
-  <img src="{_chart_b64}" style="width:100%;border-radius:6px;display:block;margin-bottom:10px">
+<!-- KPIs -->
+<div class='section'>Métriques clés</div>
+<div class='kpi-grid'>
+  {_kpi_card_html("Distance totale", _fmt(dist,0), "mètres", delta=d_dist, delta_up=ok_dist)}
+  {_kpi_card_html("HID &gt;13 km/h", _fmt(hid13_pct,1), "% dist. totale",
+                  sub=f"{_fmt(hid13,0)} m", delta=d_hid13, delta_up=ok_hid13)}
+  {_kpi_card_html("HID &gt;19 km/h", _fmt(hid19_pct,1), "% dist. totale",
+                  sub=f"{_fmt(hid19,0)} m", delta=d_hid19, delta_up=ok_hid19)}
+  {_kpi_card_html("Vitesse max", _fmt(vmax,1), "km/h", delta=d_vmax, delta_up=ok_vmax)}
+  {_kpi_card_html("Sprints &gt;23", _fmt(spr23,0), "sprints", delta=d_spr, delta_up=ok_spr)}
+</div>
 
-  <div class="two-col">
-    <div class="panel">
-      <div class="section-title">Accélérations / décélérations</div>
-      {_effort_row("Acc &gt;2 m/s²",  acc2,  max_acc, "#378ADD")}
-      {_effort_row("Acc &gt;3 m/s²",  acc3,  max_acc, "#378ADD")}
-      {_effort_row("Déc &gt;2 m/s²",  dec2,  max_acc, "#7F77DD")}
-      {_effort_row("Déc &gt;3 m/s²",  dec3,  max_acc, "#7F77DD")}
-      {_effort_row("Total Acc/Déc",    tot_ad, tot_ad, "#B4B2A9")}
-      {_effort_row("Acc. max",         acc_max, 6,     "#B4B2A9", "{:.1f}", "m/s²")}
-    </div>
-    <div class="panel">
-      <div class="section-title">Intensité haute (HID)</div>
-      {_effort_row("HID &gt;13 km/h", hid13_pct, 40,  "#1D9E75", "{:.1f}", "%")}
-      {_effort_row("HID &gt;19 km/h", hid19_pct, 15,  "#1D9E75", "{:.1f}", "%")}
-      {_effort_row("Sprints &gt;23",  spr23, max(max_spr,1), "#EF9F27", "{:.0f}", "nb")}
-      {_effort_row("Sprints &gt;25",  spr25, max(max_spr,1), "#E24B4A", "{:.0f}", "nb")}
-      {_effort_row("Dist. HID abs. &gt;13", hid13, max((hid13 or 0)*1.3, 1), "#5DCAA5", "{:.0f}", "m")}
-      {_effort_row("Dist. HID abs. &gt;19", hid19, max((hid13 or 1), 1), "#5DCAA5", "{:.0f}", "m")}
-    </div>
+<!-- GRAPHIQUE VITESSE -->
+<div class='section'>Distance par plage de vitesse</div>
+<img src="{_chart_b64}" style="width:100%;border-radius:6px;display:block">
+
+<!-- PANNEAUX BAS -->
+<div class='two-col'>
+  <div class='panel'>
+    <div class='panel-title'>Accélérations / décélérations</div>
+    <table>
+      {_row_html("Acc &gt;2 m/s²", acc2, max_acc, "#378ADD")}
+      {_row_html("Acc &gt;3 m/s²", acc3, max_acc, "#378ADD")}
+      {_row_html("Déc &gt;2 m/s²", dec2, max_acc, "#7F77DD")}
+      {_row_html("Déc &gt;3 m/s²", dec3, max_acc, "#7F77DD")}
+      {_row_html("Total Acc/Déc",  tot_ad, max_acc, "#888780")}
+      {_row_html("Acc. max",       acc_max, 7, "#B4B2A9", "{{:.1f}}", "m/s²")}
+    </table>
   </div>
-
-  <div class="footer">
-    <span>Paris FC — Centre de Formation Féminin</span>
-    <span>Données GPS GF1 · Moyennes vs matchs saison</span>
+  <div class='panel'>
+    <div class='panel-title'>Intensité haute (HID)</div>
+    <table>
+      {_row_html("HID &gt;13 km/h", hid13_pct, 40, "#1D9E75", "{{:.1f}}", "%")}
+      {_row_html("HID &gt;19 km/h", hid19_pct, 15, "#1D9E75", "{{:.1f}}", "%")}
+      {_row_html("Sprints &gt;23",  spr23, max(max_spr,1), "#EF9F27", "{{:.0f}}", "nb")}
+      {_row_html("Sprints &gt;25",  spr25, max(max_spr,1), "#E24B4A", "{{:.0f}}", "nb")}
+      {_row_html("Dist. &gt;13 abs.", hid13, max((hid13 or 0)*1.3, 1), "#5DCAA5", "{{:.0f}}", "m")}
+      {_row_html("Dist. &gt;19 abs.", hid19, max((hid13 or 1), 1), "#5DCAA5", "{{:.0f}}", "m")}
+    </table>
   </div>
+</div>
+
+<!-- PIED DE PAGE -->
+<div class='footer'>
+  <span>Paris FC — Centre de Formation Féminin</span>
+  <span>Données GPS GF1 · Moyennes vs matchs saison individuelle</span>
+</div>
+
 </body></html>"""
     return html
 
