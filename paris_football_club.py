@@ -7627,296 +7627,272 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
 
 def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
                                 match_label: str) -> str:
-    """Génère un rapport HTML A4 de performance physique match (exportable PDF).
-    row  : dict des valeurs du match (colonnes gps_match_df)
-    avg  : dict des moyennes individuelles de la joueuse
-    """
-    import base64 as _b64g, io as _io
+    """Génère un rapport HTML A4 de performance physique match — fond sombre, 1 page."""
+    import base64 as _b64g, io as _io, math as _math
 
+    # ── Helpers ────────────────────────────────────────────────────────────
     def _n(col):
-        import math
         v = row.get(col)
         try:
             r = float(v) if v is not None else None
-            return None if (r is not None and math.isnan(r)) else r
+            return None if (r is not None and _math.isnan(r)) else r
         except: return None
 
     def _fmt(v, dec=0, unit=""):
-        if v is None or (isinstance(v, float) and (v != v)): return "—"
-        return f"{v:,.{dec}f}{' '+unit if unit else ''}".replace(",", " ")
+        if v is None: return "—"
+        return f"{v:,.{dec}f}{(' ' + unit) if unit else ''}".replace(",", " ")
 
-    dist   = _n("Distance (m)")
-    hid13  = _n("Distance HID (>13 km/h)")
-    hid19  = _n("Distance HID (>19 km/h)")
-    vmax   = _n("Vitesse max (km/h)")
-    spr23  = _n("Sprints_23")
-    spr25  = _n("Sprints_25")
-    acc2   = _n("Acc_2"); acc3 = _n("Acc_3")
-    dec2   = _n("Dec_2"); dec3 = _n("Dec_3")
-    acc_max= _n("Acc_max")
-    tot_ad = _n("#accel/decel")
-    tps    = _n("Durée_min")
-    v07    = _n("V_0_7");  v713  = _n("V_7_13")
-    v1315  = _n("V_13_15"); v1519 = _n("V_15_19")
-    v1923  = _n("V_19_23"); v2325 = _n("V_23_25"); vsup  = _n("V_sup25")
-
-    hid13_pct = round(hid13/dist*100, 1) if hid13 and dist else None
-    hid19_pct = round(hid19/dist*100, 1) if hid19 and dist else None
-    avg_hid13_pct = (avg.get("Distance HID (>13 km/h)", 0) or 0) / (avg.get("Distance (m)", 1) or 1) * 100
-    avg_hid19_pct = (avg.get("Distance HID (>19 km/h)", 0) or 0) / (avg.get("Distance (m)", 1) or 1) * 100
-
-    def _delta(val, avg_val, unit="", dec=0, higher_good=True):
-        if val is None or not avg_val: return ""
-        d = val - avg_val
-        sign = "+" if d >= 0 else ""
-        col = "#22C55E" if (d >= 0) == higher_good else "#EF4444"
-        arrow = "▲" if d >= 0 else "▼"
-        return (f"<span style='color:{col};font-size:9px'>"
-                f"{arrow} {sign}{d:,.{dec}f}{' '+unit if unit else ''} vs moy.</span>")
-
-    def _delta_pct(val, avg_val):
-        if val is None or not avg_val: return ""
-        d = val - avg_val
-        sign = "+" if d >= 0 else ""
-        col = "#22C55E" if d >= 0 else "#EF4444"
-        arrow = "▲" if d >= 0 else "▼"
-        return f"<span style='color:{col};font-size:9px'>{arrow} {sign}{d:.1f} pts vs moy.</span>"
-
-    # ── Graphique plages de vitesse (matplotlib → base64) ──────────────
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as _plt_g
-
-    _sp_data = [
-        (v07,  "0–7",   "#5F5E5A"),
-        (v713, "7–13",  "#5F5E5A"),
-        (v1315,"13–15", "#378ADD"),
-        (v1519,"15–19", "#378ADD"),
-        (v1923,"19–23", "#EF9F27"),
-        (v2325,"23–25", "#E24B4A"),
-        (vsup, ">25",   "#E24B4A"),
-    ]
-    _sp_vals   = [v if v is not None else 0 for v,_,_ in _sp_data]
-    _sp_labels = [l for _,l,_ in _sp_data]
-    _sp_colors = [c for _,_,c in _sp_data]
-    _sp_max    = max(_sp_vals) or 1
-
-    _fig_g, _ax_g = _plt_g.subplots(figsize=(7, 2.5))
-    _fig_g.patch.set_facecolor("#0C1220")
-    _ax_g.set_facecolor("#0C1220")
-    _bars_g = _ax_g.bar(_sp_labels, _sp_vals, color=_sp_colors, alpha=0.88, width=0.6)
-    for _b, _v in zip(_bars_g, _sp_vals):
-        if _v > 0:
-            _ax_g.text(_b.get_x()+_b.get_width()/2, _b.get_height()+_sp_max*0.02,
-                       f"{_v:.0f}", ha="center", va="bottom", color="#C8D8E8", fontsize=8)
-    _ax_g.set_ylabel("Distance (m)", color="#8A9BB0", fontsize=8)
-    _ax_g.set_xlabel("Plage de vitesse (km/h)", color="#8A9BB0", fontsize=8)
-    _ax_g.tick_params(colors="#C8D8E8", labelsize=8)
-    for spine in _ax_g.spines.values(): spine.set_edgecolor("#1A2A3A")
-    _fig_g.tight_layout()
-    _buf_g = _io.BytesIO()
-    _fig_g.savefig(_buf_g, format="png", dpi=150, bbox_inches="tight",
-                   facecolor="#0C1220")
-    _buf_g.seek(0)
-    _chart_b64 = "data:image/png;base64," + _b64g.b64encode(_buf_g.read()).decode()
-    _plt_g.close(_fig_g)
-
-    # ── Barre horizontale helper ────────────────────────────────────────
-    def _bar(val, max_val, color):
-        import math
-        safe_val = 0 if (val is None or (isinstance(val, float) and math.isnan(val))) else val
-        safe_max = max_val if (max_val and not (isinstance(max_val, float) and math.isnan(max_val))) else 1
-        pct = min(int(safe_val / safe_max * 100), 100) if safe_max else 0
-        return (f"<div style='flex:1;height:5px;background:#1A2A3A;border-radius:3px;overflow:hidden'>"
-                f"<div style='width:{pct}%;height:5px;background:{color};border-radius:3px'></div></div>")
-
-    def _effort_row(label, val, max_val, color, fmt="{:.0f}", unit=""):
-        import math
-        is_nan = val is None or (isinstance(val, float) and math.isnan(val))
-        vstr = (fmt.format(val) + (" " + unit if unit else "")) if not is_nan else "—"
-        return (f"<div style='display:flex;align-items:center;gap:6px;margin-bottom:7px'>"
-                f"<span style='font-size:9px;color:#8A9BB0;width:85px;flex-shrink:0'>{label}</span>"
-                f"{_bar(val, max_val, color)}"
-                f"<span style='font-size:10px;font-weight:500;color:#C8D8E8;min-width:44px;"
-                f"text-align:right'>{vstr}</span></div>")
-
-    def _kpi_card(label, val_str, unit, sub="", delta=""):
-        return (f"<div style='background:#0C1220;border-radius:6px;padding:10px 12px;"
-                f"border:1px solid #1A2A3A'>"
-                f"<div style='font-size:9px;color:#6A8090;margin-bottom:3px'>{label}</div>"
-                f"<div style='font-size:19px;font-weight:700;color:#E8F4FF;line-height:1'>{val_str}</div>"
-                f"<div style='font-size:9px;color:#8A9BB0;margin-top:2px'>{unit}</div>"
-                + (f"<div style='font-size:9px;color:#6A8090;margin-top:1px'>{sub}</div>" if sub else "")
-                + (f"<div style='margin-top:3px'>{delta}</div>" if delta else "")
-                + "</div>")
-
-    max_acc = max(filter(None, [acc2, dec2, tot_ad, 1])) or 1
-    max_spr = max(filter(None, [spr23, spr25, 1])) or 1
-
-    # Nom proprement formaté (pas tout en majuscules)
     def _title_case(s):
         return " ".join(w.capitalize() for w in s.lower().split())
-    player_display = _title_case(player_name)
 
-    # Barres horizontales en HTML pur (pas de JS, compatible impression)
-    def _bar_html(val, max_val, color):
-        import math
-        if val is None or (isinstance(val, float) and math.isnan(val)):
-            pct = 0
-        else:
-            pct = min(int((val / max_val) * 100), 100) if max_val else 0
-        return (
-            f"<div style='flex:1;height:6px;background:#1E2D40;border-radius:3px;overflow:hidden'>"
-            f"<div style='width:{pct}%;height:6px;background:{color};border-radius:3px'></div>"
-            f"</div>"
-        )
-
-    def _row_html(label, val, max_val, color, fmt="{:.0f}", unit=""):
-        import math
-        is_bad = val is None or (isinstance(val, float) and math.isnan(val))
-        vstr = (fmt.format(val) + (" " + unit if unit else "")) if not is_bad else "—"
-        return (
-            f"<tr>"
-            f"<td style='font-size:9px;color:#8A9BB0;padding:4px 8px 4px 0;white-space:nowrap'>{label}</td>"
-            f"<td style='width:100%;padding:4px 8px 4px 0'>"
-            f"<div style='display:flex;align-items:center;gap:6px'>"
-            f"{_bar_html(val, max_val, color)}"
-            f"</div></td>"
-            f"<td style='font-size:10px;font-weight:600;color:#C8D8E8;white-space:nowrap;"
-            f"text-align:right;padding:4px 0'>{vstr}</td>"
-            f"</tr>"
-        )
-
-    def _kpi_card_html(label, val_str, unit, sub="", delta="", delta_up=None):
-        arrow_color = "#22C55E" if delta_up else ("#EF4444" if delta_up is False else "#6A8090")
-        return (
-            f"<div style='background:#0C1A28;border:1px solid #1E2D40;border-radius:8px;"
-            f"padding:10px 12px;display:flex;flex-direction:column;gap:2px'>"
-            f"<div style='font-size:8px;color:#6A8090;text-transform:uppercase;"
-            f"letter-spacing:.08em;margin-bottom:4px'>{label}</div>"
-            f"<div style='font-size:22px;font-weight:700;color:#E8F4FF;line-height:1.1'>{val_str}</div>"
-            f"<div style='font-size:9px;color:#8A9BB0'>{unit}</div>"
-            + (f"<div style='font-size:8px;color:#4A5A6A'>{sub}</div>" if sub else "")
-            + (f"<div style='font-size:9px;font-weight:500;color:{arrow_color};margin-top:2px'>{delta}</div>" if delta else "")
-            + "</div>"
-        )
-
-    # Calcul deltas avec signe
     def _d(val, avg_val, unit="", dec=0, higher_good=True):
-        if val is None or not avg_val: return "", None
+        if val is None or not avg_val: return "", ""
         d = val - avg_val
         sign = "+" if d >= 0 else ""
         arrow = "▲" if d >= 0 else "▼"
         good = (d >= 0) == higher_good
-        return f"{arrow} {sign}{d:,.{dec}f}{' '+unit if unit else ''} vs moy.", good
+        color = "#22C55E" if good else "#EF4444"
+        return (f"<span style='color:{color}'>{arrow} {sign}{d:,.{dec}f}"
+                f"{(' ' + unit) if unit else ''} vs moy.</span>"), color
 
     def _dp(val, avg_val):
-        if val is None or not avg_val: return "", None
+        if val is None or not avg_val: return "", ""
         d = val - avg_val
         sign = "+" if d >= 0 else ""
         arrow = "▲" if d >= 0 else "▼"
-        return f"{arrow} {sign}{d:.1f} pts vs moy.", d >= 0
+        color = "#22C55E" if d >= 0 else "#EF4444"
+        return f"<span style='color:{color}'>{arrow} {sign}{d:.1f} pts vs moy.</span>", color
 
-    d_dist, ok_dist       = _d(dist, avg.get("Distance (m)"), "m")
-    d_hid13, ok_hid13     = _dp(hid13_pct, avg_hid13_pct)
-    d_hid19, ok_hid19     = _dp(hid19_pct, avg_hid19_pct)
-    d_vmax, ok_vmax       = _d(vmax, avg.get("Vitesse max (km/h)"), "km/h", dec=1)
-    d_spr, ok_spr         = _d(spr23, avg.get("Sprints_23"), "nb")
+    # ── Valeurs ─────────────────────────────────────────────────────────────
+    dist   = _n("Distance (m)")
+    hid13  = _n("Distance HID (>13 km/h)")
+    hid19  = _n("Distance HID (>19 km/h)")
+    vmax   = _n("Vitesse max (km/h)")
+    spr23  = _n("Sprints_23"); spr25 = _n("Sprints_25")
+    acc2   = _n("Acc_2");  acc3  = _n("Acc_3")
+    dec2   = _n("Dec_2");  dec3  = _n("Dec_3")
+    acc_max= _n("Acc_max"); tot_ad = _n("#accel/decel")
+    tps    = _n("Durée_min")
+    v07    = _n("V_0_7");  v713  = _n("V_7_13")
+    v1315  = _n("V_13_15"); v1519 = _n("V_15_19")
+    v1923  = _n("V_19_23"); v2325 = _n("V_23_25"); vsup = _n("V_sup25")
+
+    hid13_pct = round(hid13/dist*100, 1) if hid13 and dist else None
+    hid19_pct = round(hid19/dist*100, 1) if hid19 and dist else None
+    avg_hid13_pct = (avg.get("Distance HID (>13 km/h)") or 0) / (avg.get("Distance (m)") or 1) * 100
+    avg_hid19_pct = (avg.get("Distance HID (>19 km/h)") or 0) / (avg.get("Distance (m)") or 1) * 100
+
+    d_dist,  _ = _d(dist, avg.get("Distance (m)"), "m")
+    d_h13,   _ = _dp(hid13_pct, avg_hid13_pct)
+    d_h19,   _ = _dp(hid19_pct, avg_hid19_pct)
+    d_vmax,  _ = _d(vmax, avg.get("Vitesse max (km/h)"), "km/h", dec=1)
+    d_spr,   _ = _d(spr23, avg.get("Sprints_23"), "nb")
+
+    # ── Graphique plages de vitesse ─────────────────────────────────────────
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plt_g
+
+    _sp = [(v07,"0–7","#5F5E5A"),(v713,"7–13","#5F5E5A"),
+           (v1315,"13–15","#378ADD"),(v1519,"15–19","#378ADD"),
+           (v1923,"19–23","#EF9F27"),(v2325,"23–25","#E24B4A"),(vsup,">25","#E24B4A")]
+    _sp_v = [v if v else 0 for v,_,_ in _sp]
+    _sp_l = [l for _,l,_ in _sp]
+    _sp_c = [c for _,_,c in _sp]
+    _sp_max = max(_sp_v) or 1
+
+    _fig, _ax = _plt_g.subplots(figsize=(8.5, 2.8))
+    _fig.patch.set_facecolor("#0C1A28")
+    _ax.set_facecolor("#0C1A28")
+    _bars = _ax.bar(_sp_l, _sp_v, color=_sp_c, alpha=0.9, width=0.6)
+    for _b, _v in zip(_bars, _sp_v):
+        if _v > 0:
+            _ax.text(_b.get_x()+_b.get_width()/2, _b.get_height()+_sp_max*0.02,
+                     f"{_v:.0f}", ha="center", va="bottom", color="#C8D8E8", fontsize=9, fontweight="bold")
+    _ax.set_ylabel("Distance (m)", color="#8A9BB0", fontsize=9)
+    _ax.set_xlabel("Plage de vitesse (km/h)", color="#8A9BB0", fontsize=9)
+    _ax.tick_params(colors="#C8D8E8", labelsize=9)
+    for spine in _ax.spines.values(): spine.set_edgecolor("#1E2D40")
+    _fig.tight_layout(pad=0.4)
+    _buf = _io.BytesIO()
+    _fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight", facecolor="#0C1A28")
+    _buf.seek(0)
+    _chart = "data:image/png;base64," + _b64g.b64encode(_buf.read()).decode()
+    _plt_g.close(_fig)
+
+    # ── Barre horizontale 100% CSS (pas de JS) ──────────────────────────────
+    def _bar(val, max_val, color):
+        if val is None or _math.isnan(float(val)) if isinstance(val, float) else False:
+            pct = 0
+        else:
+            pct = min(int((float(val) / float(max_val)) * 100), 100) if max_val else 0
+        return (f"<div style='height:7px;background:#1E2D40;border-radius:4px;"
+                f"overflow:hidden;margin:0'>"
+                f"<div style='width:{pct}%;height:7px;background:{color};"
+                f"border-radius:4px'></div></div>")
+
+    def _erow(label, val, max_val, color, vfmt, unit=""):
+        vstr = (vfmt % val) + (" " + unit if unit else "") if val is not None else "—"
+        return (f"<tr style='vertical-align:middle'>"
+                f"<td style='font-size:9.5px;color:#8A9BB0;padding:5px 10px 5px 0;"
+                f"white-space:nowrap;width:110px'>{label}</td>"
+                f"<td style='padding:5px 10px 5px 0'>{_bar(val, max_val, color)}</td>"
+                f"<td style='font-size:10px;font-weight:700;color:#E8F4FF;"
+                f"white-space:nowrap;text-align:right;padding:5px 0'>{vstr}</td>"
+                f"</tr>")
+
+    # ── KPI card ────────────────────────────────────────────────────────────
+    def _kcard(label, val_str, unit, sub="", delta=""):
+        return (f"<div style='background:#0C1A28;border:1px solid #1E2D40;border-radius:8px;"
+                f"padding:11px 13px'>"
+                f"<div style='font-size:8px;color:#6A8090;text-transform:uppercase;"
+                f"letter-spacing:.1em;margin-bottom:5px'>{label}</div>"
+                f"<div style='font-size:24px;font-weight:700;color:#E8F4FF;"
+                f"line-height:1;margin-bottom:3px'>{val_str}</div>"
+                f"<div style='font-size:9px;color:#8A9BB0'>{unit}</div>"
+                + (f"<div style='font-size:8.5px;color:#4A6070;margin-top:1px'>{sub}</div>" if sub else "")
+                + (f"<div style='font-size:9px;margin-top:4px'>{delta}</div>" if delta else "")
+                + "</div>")
+
+    # ── Parsing label pour extraire adversaire + date ───────────────────────
+    player_display = _title_case(player_name)
+    # match_label ex: "25/26 · U19N · J10 · ASSE" ou "J02 · OL Lyonnes · 25/01"
+    parts_label = [p.strip() for p in match_label.split("·") if p.strip()]
+    # Adversaire = dernier token non-date non-journée
+    adv = parts_label[-1] if parts_label else match_label
+    # Journée
+    import re as _re
+    jour = next((p for p in parts_label if _re.match(r"J\d", p)), "")
+    # Date depuis row
+    match_date = ""
+    if "DATE" in row and row["DATE"] is not None:
+        try:
+            import pandas as _pd
+            match_date = _pd.Timestamp(row["DATE"]).strftime("%d/%m/%Y")
+        except: pass
+    elif "Activity Date" in row and row["Activity Date"] is not None:
+        match_date = str(row["Activity Date"])[:10]
+
+    max_acc = max(filter(None, [acc2, dec2, 1])) or 1
+    max_spr = max(filter(None, [spr23, 1])) or 1
 
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
-  @page {{ size: A4 portrait; margin: 10mm 12mm 10mm 12mm; }}
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ background: #060F1A; color: #C8D8E8;
-          font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
-          font-size: 10px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
-  h1 {{ font-size: 17px; font-weight: 700; color: #E8F4FF; letter-spacing: -.01em; }}
-  .sub {{ font-size: 9px; color: #6A8090; margin-top: 2px; }}
-  .section {{ font-size: 8px; font-weight: 700; color: #00A3E0;
-              text-transform: uppercase; letter-spacing: .12em;
-              margin: 10px 0 6px; border-left: 3px solid #00A3E0;
-              padding-left: 6px; }}
-  .kpi-grid {{ display: grid; grid-template-columns: repeat(5,1fr); gap: 8px; }}
-  .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }}
-  .panel {{ background: #0C1A28; border: 1px solid #1E2D40; border-radius: 8px; padding: 10px 12px; }}
-  .panel-title {{ font-size: 8px; font-weight: 700; color: #6A8090;
-                  text-transform: uppercase; letter-spacing: .1em; margin-bottom: 8px; }}
-  table {{ width: 100%; border-collapse: collapse; }}
-  .divider {{ border: none; border-top: 1px solid #1E2D40; margin: 8px 0; }}
-  .footer {{ display: flex; justify-content: space-between; align-items: center;
-             border-top: 1px solid #1E2D40; margin-top: 10px; padding-top: 6px;
-             font-size: 8px; color: #3A4A5A; }}
+@page {{ size: A4 portrait; margin: 0; }}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{
+  background: #060F1A;
+  color: #C8D8E8;
+  font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  font-size: 10px;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+  padding: 0;
+}}
+.page {{ padding: 14mm 14mm 10mm 14mm; min-height: 297mm; }}
+.kpi-grid {{ display: grid; grid-template-columns: repeat(5,1fr); gap: 8px; margin-bottom: 12px; }}
+.section {{
+  font-size: 8.5px; font-weight: 700; color: #00A3E0;
+  text-transform: uppercase; letter-spacing: .12em;
+  border-left: 3px solid #00A3E0; padding-left: 7px;
+  margin: 12px 0 7px;
+}}
+.panel {{ background: #0C1A28; border: 1px solid #1E2D40; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }}
+.panel-title {{ font-size: 8.5px; font-weight: 700; color: #00A3E0; text-transform: uppercase; letter-spacing:.1em; margin-bottom:9px; }}
+table {{ width: 100%; border-collapse: collapse; }}
+.footer {{ border-top: 1px solid #1E2D40; margin-top: 12px; padding-top: 7px; font-size: 8px; color: #3A4A5A; display: flex; justify-content: space-between; }}
 </style></head>
-<body>
+<body><div class="page">
 
 <!-- EN-TÊTE -->
-<div style='display:flex;align-items:flex-start;justify-content:space-between;
-            border-bottom:1px solid #1E2D40;padding-bottom:8px;margin-bottom:4px'>
+<div style="background:#0C1A28;border-radius:10px;padding:14px 18px;
+            margin-bottom:14px;border:1px solid #1E2D40;
+            display:flex;align-items:center;justify-content:space-between">
   <div>
-    <div style='display:flex;align-items:center;gap:8px;margin-bottom:3px'>
-      <div style='width:3px;height:20px;background:#00A3E0;border-radius:2px'></div>
-      <h1>Rapport physique — {player_display}</h1>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:5px">
+      <div style="width:4px;height:28px;background:#00A3E0;border-radius:2px;flex-shrink:0"></div>
+      <div>
+        <div style="font-size:19px;font-weight:700;color:#E8F4FF;letter-spacing:-.01em">
+          {player_display}
+        </div>
+        <div style="font-size:10px;color:#6A8090;margin-top:1px">
+          Rapport physique de match
+        </div>
+      </div>
     </div>
-    <p class='sub'>{match_label}</p>
+    <div style="display:flex;gap:16px;margin-left:14px">
+      <div>
+        <span style="font-size:8px;color:#4A6070;text-transform:uppercase;letter-spacing:.08em">Adversaire</span>
+        <div style="font-size:13px;font-weight:700;color:#C8D8E8;margin-top:1px">{adv}</div>
+      </div>
+      <div style="border-left:1px solid #1E2D40;padding-left:16px" {"" if not jour else ""}>
+        <span style="font-size:8px;color:#4A6070;text-transform:uppercase;letter-spacing:.08em">Journée</span>
+        <div style="font-size:13px;font-weight:700;color:#C8D8E8;margin-top:1px">{jour if jour else "—"}</div>
+      </div>
+      <div style="border-left:1px solid #1E2D40;padding-left:16px">
+        <span style="font-size:8px;color:#4A6070;text-transform:uppercase;letter-spacing:.08em">Date</span>
+        <div style="font-size:13px;font-weight:700;color:#C8D8E8;margin-top:1px">{match_date if match_date else "—"}</div>
+      </div>
+    </div>
   </div>
-  <div style='background:#0A2E18;color:#22C55E;font-size:10px;font-weight:700;
-              padding:5px 14px;border-radius:20px;border:1px solid #1D9E75;
-              white-space:nowrap;margin-top:4px'>
-    {_fmt(tps, 0)} min jouées
+  <div style="background:#0A2E18;color:#22C55E;font-size:13px;font-weight:700;
+              padding:8px 18px;border-radius:24px;border:1px solid #1D9E75;
+              white-space:nowrap;text-align:center">
+    {_fmt(tps, 0)} min<br>
+    <span style="font-size:9px;font-weight:400;color:#1D9E75">jouées</span>
   </div>
 </div>
 
 <!-- KPIs -->
-<div class='section'>Métriques clés</div>
-<div class='kpi-grid'>
-  {_kpi_card_html("Distance totale", _fmt(dist,0), "mètres", delta=d_dist, delta_up=ok_dist)}
-  {_kpi_card_html("HID &gt;13 km/h", _fmt(hid13_pct,1), "% dist. totale",
-                  sub=f"{_fmt(hid13,0)} m", delta=d_hid13, delta_up=ok_hid13)}
-  {_kpi_card_html("HID &gt;19 km/h", _fmt(hid19_pct,1), "% dist. totale",
-                  sub=f"{_fmt(hid19,0)} m", delta=d_hid19, delta_up=ok_hid19)}
-  {_kpi_card_html("Vitesse max", _fmt(vmax,1), "km/h", delta=d_vmax, delta_up=ok_vmax)}
-  {_kpi_card_html("Sprints &gt;23", _fmt(spr23,0), "sprints", delta=d_spr, delta_up=ok_spr)}
+<div class="section">Métriques clés</div>
+<div class="kpi-grid">
+  {_kcard("Distance totale", _fmt(dist,0), "mètres", delta=d_dist)}
+  {_kcard("HID &gt;13 km/h", _fmt(hid13_pct,1), "% dist. totale", sub=_fmt(hid13,0)+" m", delta=d_h13)}
+  {_kcard("HID &gt;19 km/h", _fmt(hid19_pct,1), "% dist. totale", sub=_fmt(hid19,0)+" m", delta=d_h19)}
+  {_kcard("Vitesse max", _fmt(vmax,1), "km/h", delta=d_vmax)}
+  {_kcard("Sprints &gt;23 km/h", _fmt(spr23,0), "sprints", delta=d_spr)}
 </div>
 
-<!-- GRAPHIQUE VITESSE -->
-<div class='section'>Distance par plage de vitesse</div>
-<img src="{_chart_b64}" style="width:100%;border-radius:6px;display:block">
+<!-- GRAPHIQUE -->
+<div class="section">Distance par plage de vitesse</div>
+<img src="{_chart}" style="width:100%;border-radius:8px;display:block;border:1px solid #1E2D40">
 
-<!-- PANNEAUX BAS -->
-<div class='two-col'>
-  <div class='panel'>
-    <div class='panel-title'>Accélérations / décélérations</div>
-    <table>
-      {_row_html("Acc &gt;2 m/s²", acc2, max_acc, "#378ADD")}
-      {_row_html("Acc &gt;3 m/s²", acc3, max_acc, "#378ADD")}
-      {_row_html("Déc &gt;2 m/s²", dec2, max_acc, "#7F77DD")}
-      {_row_html("Déc &gt;3 m/s²", dec3, max_acc, "#7F77DD")}
-      {_row_html("Total Acc/Déc",  tot_ad, max_acc, "#888780")}
-      {_row_html("Acc. max",       acc_max, 7, "#B4B2A9", "{{:.1f}}", "m/s²")}
-    </table>
-  </div>
-  <div class='panel'>
-    <div class='panel-title'>Intensité haute (HID)</div>
-    <table>
-      {_row_html("HID &gt;13 km/h", hid13_pct, 40, "#1D9E75", "{{:.1f}}", "%")}
-      {_row_html("HID &gt;19 km/h", hid19_pct, 15, "#1D9E75", "{{:.1f}}", "%")}
-      {_row_html("Sprints &gt;23",  spr23, max(max_spr,1), "#EF9F27", "{{:.0f}}", "nb")}
-      {_row_html("Sprints &gt;25",  spr25, max(max_spr,1), "#E24B4A", "{{:.0f}}", "nb")}
-      {_row_html("Dist. &gt;13 abs.", hid13, max((hid13 or 0)*1.3, 1), "#5DCAA5", "{{:.0f}}", "m")}
-      {_row_html("Dist. &gt;19 abs.", hid19, max((hid13 or 1), 1), "#5DCAA5", "{{:.0f}}", "m")}
-    </table>
-  </div>
+<!-- ACCÉLÉRATIONS -->
+<div class="section">Accélérations / décélérations</div>
+<div class="panel">
+  <table>
+    {_erow("Acc &gt;2 m/s²", acc2, max_acc, "#378ADD", "%.0f")}
+    {_erow("Acc &gt;3 m/s²", acc3, max_acc, "#378ADD", "%.0f")}
+    {_erow("Déc &gt;2 m/s²", dec2, max_acc, "#7F77DD", "%.0f")}
+    {_erow("Déc &gt;3 m/s²", dec3, max_acc, "#7F77DD", "%.0f")}
+    {_erow("Total Acc/Déc", tot_ad, tot_ad if tot_ad else 1, "#888780", "%.0f")}
+    {_erow("Acc. max", acc_max, 7, "#B4B2A9", "%.1f", "m/s²")}
+  </table>
+</div>
+
+<!-- HAUTE INTENSITÉ -->
+<div class="section">Intensité haute (HID)</div>
+<div class="panel">
+  <table>
+    {_erow("HID &gt;13 km/h", hid13_pct, 40,  "#1D9E75", "%.1f", "%")}
+    {_erow("HID &gt;19 km/h", hid19_pct, 15,  "#1D9E75", "%.1f", "%")}
+    {_erow("Sprints &gt;23",  spr23, max(max_spr,1), "#EF9F27", "%.0f", "nb")}
+    {_erow("Sprints &gt;25",  spr25, max(max_spr,1), "#E24B4A", "%.0f", "nb")}
+    {_erow("Dist. HID &gt;13", hid13, max((hid13 or 0)*1.3,1), "#5DCAA5", "%.0f", "m")}
+    {_erow("Dist. HID &gt;19", hid19, max((hid13 or 1),1), "#5DCAA5", "%.0f", "m")}
+  </table>
 </div>
 
 <!-- PIED DE PAGE -->
-<div class='footer'>
+<div class="footer">
   <span>Paris FC — Centre de Formation Féminin</span>
-  <span>Données GPS GF1 · Moyennes vs matchs saison individuelle</span>
+  <span>GPS GF1 · Moyennes vs saison individuelle · {match_label}</span>
 </div>
 
-</body></html>"""
+</div></body></html>"""
     return html
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════
