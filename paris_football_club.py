@@ -7722,17 +7722,20 @@ def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
 
     # ── Barre horizontale 100% CSS (pas de JS) ──────────────────────────────
     def _bar(val, max_val, color):
-        if val is None or _math.isnan(float(val)) if isinstance(val, float) else False:
+        try:
+            v = float(val)
+            m = float(max_val) if max_val else 1.0
+            pct = 0 if (_math.isnan(v) or _math.isnan(m) or m == 0) else min(int(v / m * 100), 100)
+        except (TypeError, ValueError):
             pct = 0
-        else:
-            pct = min(int((float(val) / float(max_val)) * 100), 100) if max_val else 0
-        return (f"<div style='height:7px;background:#1E2D40;border-radius:4px;"
-                f"overflow:hidden;margin:0'>"
-                f"<div style='width:{pct}%;height:7px;background:{color};"
-                f"border-radius:4px'></div></div>")
+        return (f"<div style='height:7px;background:#1E2D40;border-radius:4px;overflow:hidden;margin:0'>"
+                f"<div style='width:{pct}%;height:7px;background:{color};border-radius:4px'></div></div>")
 
     def _erow(label, val, max_val, color, vfmt, unit=""):
-        vstr = (vfmt % val) + (" " + unit if unit else "") if val is not None else "—"
+        try:
+            vstr = (vfmt % float(val)) + (" " + unit if unit else "") if val is not None else "—"
+        except (TypeError, ValueError):
+            vstr = "—"
         return (f"<tr style='vertical-align:middle'>"
                 f"<td style='font-size:9.5px;color:#8A9BB0;padding:5px 10px 5px 0;"
                 f"white-space:nowrap;width:110px'>{label}</td>"
