@@ -7993,8 +7993,220 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 plt.close(fig_md)
 
                 with _st4:
-                    _render_gps_match_tab(_gps_match_df, _pgps, permissions,
-                                          user_profile, tactical_files=get_tactical_files())
+                    # ── Données GPS match pour la joueuse ─────────────────
+                    _gm_df = _gps_match_df.copy() if _gps_match_df is not None and not _gps_match_df.empty else pd.DataFrame()
+
+                    if _gm_df.empty or "Player" not in _gm_df.columns:
+                        st.info("Aucune donnée GPS match disponible.")
+                    else:
+                        # Filtrer sur la joueuse sélectionnée
+                        _gm_player = _gm_df[
+                            _gm_df["Player"].astype(str).apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(_pgps)
+                        ].copy()
+
+                        if _gm_player.empty:
+                            st.info(f"Aucune donnée GPS match pour **{_pgps}**.")
+                        else:
+                            _gm_player = ensure_date_column(_gm_player)
+
+                            # ── Construire les labels de matchs ────────────
+                            def _match_label_short(row):
+                                parts = []
+                                if "__match_label" in row and pd.notna(row["__match_label"]):
+                                    return str(row["__match_label"])
+                                if "__journee" in row and pd.notna(row["__journee"]):
+                                    parts.append(f"J{row['__journee']}")
+                                if "__adversaire" in row and pd.notna(row["__adversaire"]):
+                                    parts.append(str(row["__adversaire"]))
+                                if "DATE" in row and pd.notna(row["DATE"]):
+                                    parts.append(pd.Timestamp(row["DATE"]).strftime("%d/%m"))
+                                return " · ".join(parts) if parts else "Match inconnu"
+
+                            _gm_player["_label"] = _gm_player.apply(_match_label_short, axis=1)
+
+                            # Dédoublonner par label (garder ligne avec distance max)
+                            if "Distance (m)" in _gm_player.columns:
+                                _gm_player = (
+                                    _gm_player
+                                    .sort_values("Distance (m)", ascending=False)
+                                    .drop_duplicates(subset=["_label"])
+                                    .sort_values("DATE", ascending=True)
+                                )
+                            else:
+                                _gm_player = _gm_player.drop_duplicates(subset=["_label"])
+
+                            _all_labels = _gm_player["_label"].tolist()
+
+                            # ── Sélection des matchs ───────────────────────
+                            _sel_labels = st.multiselect(
+                                "Sélectionner un ou plusieurs matchs",
+                                options=_all_labels,
+                                default=_all_labels[-3:] if len(_all_labels) >= 3 else _all_labels,
+                                key="perf_gps_match_sel"
+                            )
+
+                            if not _sel_labels:
+                                st.info("Sélectionne au moins un match.")
+                            else:
+                                _gm_sel = _gm_player[_gm_player["_label"].isin(_sel_labels)].copy()
+
+                                # ── KPI cols disponibles ───────────────────
+                                _KPI_DEFS = [
+                                    ("Distance (m)",              "Distance",      "m",    "sum"),
+                                    ("Distance HID (>13 km/h)",   "HID >13km/h",  "m",    "sum"),
+                                    ("Distance HID (>19 km/h)",   "HID >19km/h",  "m",    "sum"),
+                                    ("Vitesse max (km/h)",         "Vmax",          "km/h", "max"),
+                                    ("Sprints_23",                 "Sprints >23",   "nb",   "sum"),
+                                    ("Sprints_25",                 "Sprints >25",   "nb",   "sum"),
+                                    ("Acc_2",                      "Acc >2m/s²",   "nb",   "sum"),
+                                    ("Dec_2",                      "Déc >2m/s²",   "nb",   "sum"),
+                                    ("#accel/decel",               "Acc/Déc tot.", "nb",   "sum"),
+                                    ("Acc_max",                    "Acc. max",      "m/s²", "max"),
+                                    ("Durée_min",                  "Temps joué",   "min",  "sum"),
+                                    ("V_0_7",                      "0-7 km/h",     "m",    "sum"),
+                                    ("V_7_13",                     "7-13 km/h",    "m",    "sum"),
+                                    ("V_13_15",                    "13-15 km/h",   "m",    "sum"),
+                                    ("V_15_19",                    "15-19 km/h",   "m",    "sum"),
+                                    ("V_19_23",                    "19-23 km/h",   "m",    "sum"),
+                                    ("V_23_25",                    "23-25 km/h",   "m",    "sum"),
+                                    ("V_sup25",                    ">25 km/h",     "m",    "sum"),
+                                ]
+                                _avail_kpis = [(col, lbl, unit, agg)
+                                               for col, lbl, unit, agg in _KPI_DEFS
+                                               if col in _gm_sel.columns]
+
+                                # ── Si 1 match : cards + barres vitesse ───
+                                if len(_sel_labels) == 1:
+                                    _row = _gm_sel.iloc[0]
+                                    st.markdown(f"**{_sel_labels[0]}**")
+
+                                    # Cards métriques principales
+                                    _main_kpis = [("Distance (m)", "Distance", "m"),
+                                                  ("Distance HID (>13 km/h)", "HID >13", "m"),
+                                                  ("Vitesse max (km/h)", "Vmax", "km/h"),
+                                                  ("Sprints_23", "Sprints >23", "nb"),
+                                                  ("#accel/decel", "Acc/Déc", "nb"),
+                                                  ("Durée_min", "Temps joué", "min")]
+                                    _cols_m = st.columns(len([k for k,_,_ in _main_kpis if k in _gm_sel.columns]))
+                                    _ci = 0
+                                    for col, lbl, unit in _main_kpis:
+                                        if col in _gm_sel.columns:
+                                            val = pd.to_numeric(_row.get(col), errors="coerce")
+                                            _fmt = f"{val:.1f} {unit}" if pd.notna(val) else "—"
+                                            _cols_m[_ci].metric(lbl, _fmt)
+                                            _ci += 1
+
+                                    # Graphique plages de vitesse
+                                    _speed_cols = [("V_0_7","0-7"),("V_7_13","7-13"),
+                                                   ("V_13_15","13-15"),("V_15_19","15-19"),
+                                                   ("V_19_23","19-23"),("V_23_25","23-25"),("V_sup25",">25")]
+                                    _sp_avail = [(c,l) for c,l in _speed_cols if c in _gm_sel.columns]
+                                    if _sp_avail:
+                                        import matplotlib.pyplot as _plt_m
+                                        _sp_vals = [pd.to_numeric(_row.get(c), errors="coerce") for c,_ in _sp_avail]
+                                        _sp_labels = [l for _,l in _sp_avail]
+                                        _colors = ["#2FB8FF","#2FB8FF","#7B84FF","#7B84FF",
+                                                   "#FFA06E","#FF6B6B","#FF6B6B"][:len(_sp_avail)]
+                                        _fig_sp, _ax_sp = _plt_m.subplots(figsize=(8, 3))
+                                        _fig_sp.patch.set_facecolor("#08090D")
+                                        _ax_sp.set_facecolor("#0C1220")
+                                        _ax_sp.bar(_sp_labels, _sp_vals, color=_colors, alpha=0.85)
+                                        _ax_sp.set_ylabel("Distance (m)", color="#C8D8E8", fontsize=9)
+                                        _ax_sp.set_xlabel("Plage de vitesse (km/h)", color="#C8D8E8", fontsize=9)
+                                        _ax_sp.tick_params(colors="#C8D8E8", labelsize=8)
+                                        for spine in _ax_sp.spines.values():
+                                            spine.set_edgecolor("#1A2A3A")
+                                        _fig_sp.tight_layout()
+                                        st.markdown("##### Distance par plage de vitesse")
+                                        st.pyplot(_fig_sp, use_container_width=True)
+                                        _plt_m.close(_fig_sp)
+
+                                # ── Si plusieurs matchs : comparaison ──────
+                                else:
+                                    # Choisir les indicateurs à comparer
+                                    _kpi_opts = [lbl for _, lbl, _, _ in _avail_kpis]
+                                    _kpi_defaults = [lbl for col, lbl, _, _ in _avail_kpis
+                                                     if col in ("Distance (m)", "Distance HID (>13 km/h)",
+                                                                "Vitesse max (km/h)", "Sprints_23", "#accel/decel")]
+                                    _sel_kpis = st.multiselect(
+                                        "Indicateurs à comparer",
+                                        options=_kpi_opts,
+                                        default=_kpi_defaults,
+                                        key="perf_gps_match_kpis"
+                                    )
+
+                                    if _sel_kpis:
+                                        import matplotlib.pyplot as _plt_c
+                                        import numpy as _np_c
+
+                                        # Construire tableau comparatif
+                                        _comp_data = {"Match": _sel_labels}
+                                        for col, lbl, unit, agg in _avail_kpis:
+                                            if lbl in _sel_kpis:
+                                                _vals = []
+                                                for _lbl in _sel_labels:
+                                                    _r = _gm_sel[_gm_sel["_label"] == _lbl]
+                                                    if _r.empty:
+                                                        _vals.append(None)
+                                                    else:
+                                                        _v = pd.to_numeric(_r[col].iloc[0], errors="coerce")
+                                                        _vals.append(round(float(_v), 1) if pd.notna(_v) else None)
+                                                _comp_data[f"{lbl} ({unit})"] = _vals
+
+                                        _df_comp = pd.DataFrame(_comp_data).set_index("Match")
+                                        st.dataframe(_df_comp, use_container_width=True)
+
+                                        # Graphique barres groupées
+                                        _n_kpis = len(_sel_kpis)
+                                        _n_match = len(_sel_labels)
+                                        _fig_c, _axes = _plt_c.subplots(
+                                            1, _n_kpis,
+                                            figsize=(min(4 * _n_kpis, 16), 4),
+                                            squeeze=False
+                                        )
+                                        _fig_c.patch.set_facecolor("#08090D")
+                                        _bar_colors = ["#00A3E0","#7B84FF","#FF6B6B","#FFA06E",
+                                                       "#2FB8FF","#5DCAA5","#FAC775"]
+
+                                        for _ki, (col, lbl, unit, agg) in enumerate(
+                                            [(c,l,u,a) for c,l,u,a in _avail_kpis if l in _sel_kpis]
+                                        ):
+                                            _ax = _axes[0][_ki]
+                                            _ax.set_facecolor("#0C1220")
+                                            _vals = []
+                                            for _lbl in _sel_labels:
+                                                _r = _gm_sel[_gm_sel["_label"] == _lbl]
+                                                if _r.empty:
+                                                    _vals.append(0)
+                                                else:
+                                                    _v = pd.to_numeric(_r[col].iloc[0], errors="coerce")
+                                                    _vals.append(float(_v) if pd.notna(_v) else 0)
+
+                                            _xs = _np_c.arange(_n_match)
+                                            _bars = _ax.bar(_xs, _vals,
+                                                            color=[_bar_colors[i % len(_bar_colors)]
+                                                                   for i in range(_n_match)],
+                                                            alpha=0.85)
+                                            # Labels valeurs
+                                            for _bar, _v in zip(_bars, _vals):
+                                                _ax.text(_bar.get_x() + _bar.get_width()/2,
+                                                         _bar.get_height() + max(_vals)*0.02,
+                                                         f"{_v:.0f}", ha="center", va="bottom",
+                                                         color="#C8D8E8", fontsize=7)
+                                            _ax.set_title(f"{lbl}\n({unit})", color="#C8D8E8",
+                                                          fontsize=8, pad=4)
+                                            _ax.set_xticks(_xs)
+                                            _short_labels = [l.split(" · ")[-1] if " · " in l else l[:8]
+                                                             for l in _sel_labels]
+                                            _ax.set_xticklabels(_short_labels, rotation=30, ha="right",
+                                                                 color="#C8D8E8", fontsize=7)
+                                            _ax.tick_params(axis="y", colors="#C8D8E8", labelsize=7)
+                                            for spine in _ax.spines.values():
+                                                spine.set_edgecolor("#1A2A3A")
+
+                                        _fig_c.tight_layout()
+                                        st.pyplot(_fig_c, use_container_width=True)
+                                        _plt_c.close(_fig_c)
 
                 with _st5:
                     _dc = _gr[_gr["Player"].astype(str)==nettoyer_nom_joueuse(_pgps)].copy()
