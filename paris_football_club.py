@@ -2026,6 +2026,19 @@ def download_file(service, file_id, file_name, output_folder, mime_type=None):
 
 
 def download_permissions_file():
+    """Télécharge le fichier de permissions depuis Drive.
+    Si le fichier existe déjà en local et que Drive est inaccessible,
+    retourne le fichier local sans erreur.
+    """
+    local_path = os.path.join(DATA_FOLDER, PERMISSIONS_FILENAME)
+    # Variantes de nom possibles
+    _alt = None
+    if os.path.exists(DATA_FOLDER):
+        for _f in os.listdir(DATA_FOLDER):
+            if normalize_str(_f) == normalize_str(PERMISSIONS_FILENAME):
+                _alt = os.path.join(DATA_FOLDER, _f)
+                break
+
     try:
         service = authenticate_google_drive()
         files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
@@ -2037,31 +2050,26 @@ def download_permissions_file():
                 candidate = f
                 break
         if not candidate:
-            return None
+            # Pas trouvé sur Drive → utiliser le fichier local s'il existe
+            return _alt or local_path if (_alt and os.path.exists(_alt)) else None
 
         path = download_file(
-            service, candidate["id"], candidate["name"], DATA_FOLDER, mime_type=candidate.get("mimeType")
+            service, candidate["id"], candidate["name"], DATA_FOLDER,
+            mime_type=candidate.get("mimeType")
         )
-
-        try:
-            _ = read_excel_auto(path)
-        except Exception:
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except Exception:
-                pass
-            path = download_file(
-                service, candidate["id"], candidate["name"], DATA_FOLDER, mime_type=candidate.get("mimeType")
-            )
-
         return path
+
     except Exception as e:
-        st.error(f"Erreur téléchargement permissions: {e}")
+        # Broken pipe ou Drive inaccessible → utiliser le fichier local
+        _local = _alt or local_path
+        if _local and os.path.exists(_local):
+            return _local
+        # Seulement logguer si vraiment pas de fichier local
+        _warn(f"Permissions Drive inaccessible ({type(e).__name__}) — "
+              f"vérifier la connexion ou placer {PERMISSIONS_FILENAME} dans data/")
         return None
 
 
-@st.cache_resource(show_spinner=False)
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_permissions():
     try:
@@ -2100,7 +2108,7 @@ def load_permissions():
             }
         return permissions
     except Exception as e:
-        st.error(f"Erreur chargement permissions: {e}")
+        _warn(f"Permissions: impossible de charger ({type(e).__name__}: {e})")
         return {}
 
 
