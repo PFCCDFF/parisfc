@@ -7634,8 +7634,11 @@ def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
     import base64 as _b64g, io as _io
 
     def _n(col):
+        import math
         v = row.get(col)
-        try: return float(v) if v is not None else None
+        try:
+            r = float(v) if v is not None else None
+            return None if (r is not None and math.isnan(r)) else r
         except: return None
 
     def _fmt(v, dec=0, unit=""):
@@ -7720,12 +7723,17 @@ def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
 
     # ── Barre horizontale helper ────────────────────────────────────────
     def _bar(val, max_val, color):
-        pct = min(int((val or 0)/(max_val or 1)*100), 100)
+        import math
+        safe_val = 0 if (val is None or (isinstance(val, float) and math.isnan(val))) else val
+        safe_max = max_val if (max_val and not (isinstance(max_val, float) and math.isnan(max_val))) else 1
+        pct = min(int(safe_val / safe_max * 100), 100) if safe_max else 0
         return (f"<div style='flex:1;height:5px;background:#1A2A3A;border-radius:3px;overflow:hidden'>"
                 f"<div style='width:{pct}%;height:5px;background:{color};border-radius:3px'></div></div>")
 
     def _effort_row(label, val, max_val, color, fmt="{:.0f}", unit=""):
-        vstr = fmt.format(val)+(" "+unit if unit else "") if val is not None else "—"
+        import math
+        is_nan = val is None or (isinstance(val, float) and math.isnan(val))
+        vstr = (fmt.format(val) + (" " + unit if unit else "")) if not is_nan else "—"
         return (f"<div style='display:flex;align-items:center;gap:6px;margin-bottom:7px'>"
                 f"<span style='font-size:9px;color:#8A9BB0;width:85px;flex-shrink:0'>{label}</span>"
                 f"{_bar(val, max_val, color)}"
