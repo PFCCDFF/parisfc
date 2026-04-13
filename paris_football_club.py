@@ -8046,7 +8046,9 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             )
 
                             if not _sel_labels:
-                                st.info("Sélectionne au moins un match.")
+                                # Aucune sélection → visuel global habituel
+                                _render_gps_match_tab(_gps_match_df, _pgps, permissions,
+                                                      user_profile, tactical_files=get_tactical_files())
                             else:
                                 _gm_sel = _gm_player[_gm_player["_label"].isin(_sel_labels)].copy()
 
