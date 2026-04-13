@@ -3436,6 +3436,71 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     return safe_int_numeric_only(aggregated)
 
 
+def prepare_zscore_comparison(player_df: pd.DataFrame,
+                               ref_df: pd.DataFrame,
+                               player_label: str,
+                               ref_label: str) -> pd.DataFrame:
+    """Normalise les métriques radar via z-score par rapport au référentiel.
+
+    Pour chaque métrique M :
+      - Calcule moyenne(M) et std(M) sur l'ensemble des lignes du référentiel
+        (toutes les joueuses / profils de poste disponibles dans ref_df)
+      - z_joueuse = (valeur_joueuse - moyenne_ref) / std_ref
+      - z_ref     = 0 (par définition : le référentiel est la baseline)
+      - Score final = clamp(50 + z * 15, 0, 100)
+        → score 50 = dans la moyenne du référentiel
+        → score 65 = +1 écart-type au-dessus
+        → score 35 = -1 écart-type en-dessous
+
+    Retourne un DataFrame à 2 lignes (joueuse + référentiel) avec les colonnes
+    KPI normalisées, prêt pour create_comparison_radar.
+    """
+    _KPI_COLS = [
+        "Timing", "Force physique", "Intelligence tactique",
+        "Technique 1", "Technique 2", "Technique 3",
+        "Explosivité", "Prise de risque", "Précision", "Sang-froid",
+        "Créativité 1", "Créativité 2",
+        "Rigueur", "Récupération", "Distribution", "Percussion", "Finition", "Créativité",
+    ]
+
+    if player_df is None or player_df.empty or ref_df is None or ref_df.empty:
+        return pd.DataFrame()
+
+    # Colonnes disponibles dans les deux
+    avail = [c for c in _KPI_COLS
+             if c in player_df.columns and c in ref_df.columns]
+    if not avail:
+        return pd.DataFrame()
+
+    # Valeurs joueuse (1 ligne agrégée)
+    p_row = player_df.iloc[0].copy()
+
+    # Stats du référentiel (toutes les lignes)
+    ref_num = ref_df[avail].apply(pd.to_numeric, errors="coerce")
+    ref_mean = ref_num.mean()
+    ref_std  = ref_num.std().replace(0, np.nan)  # éviter division par zéro
+
+    out_rows = []
+    for label, source in [(player_label, p_row), (ref_label, None)]:
+        row_out = {"Player": label}
+        for c in avail:
+            if source is None:
+                # Le référentiel = score 50 (baseline)
+                row_out[c] = 50.0
+            else:
+                val = pd.to_numeric(source.get(c), errors="coerce")
+                mu  = ref_mean.get(c)
+                sig = ref_std.get(c)
+                if pd.isna(val) or pd.isna(mu) or pd.isna(sig):
+                    row_out[c] = 50.0
+                else:
+                    z = (val - mu) / sig
+                    row_out[c] = float(np.clip(50 + z * 15, 0, 100))
+        out_rows.append(row_out)
+
+    return pd.DataFrame(out_rows)
+
+
 def aggregate_player_stats(df: pd.DataFrame) -> pd.DataFrame:
     """Agrège les stats d'une joueuse (moyenne pondérée par temps de jeu)."""
     if df is None or df.empty:
@@ -7693,9 +7758,13 @@ def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
     matplotlib.use("Agg")
     import matplotlib.pyplot as _plt_g
 
-    _sp = [(v07,"0–7","#5F5E5A"),(v713,"7–13","#5F5E5A"),
-           (v1315,"13–15","#378ADD"),(v1519,"15–19","#378ADD"),
-           (v1923,"19–23","#EF9F27"),(v2325,"23–25","#E24B4A"),(vsup,">25","#E24B4A")]
+    _sp = [(v07,  "0–7",   "#2D6A8F"),   # bleu-gris : récupération
+           (v713, "7–13",  "#1D9E75"),   # vert : aérobie modéré
+           (v1315,"13–15", "#5DCAA5"),   # vert clair : seuil aérobie
+           (v1519,"15–19", "#EF9F27"),   # orange : haute intensité
+           (v1923,"19–23", "#E07030"),   # orange-rouge : très haute intensité
+           (v2325,"23–25", "#E24B4A"),   # rouge : sprint
+           (vsup, ">25",   "#A32D2D")]   # rouge foncé : sprint max
     _sp_v = [v if v else 0 for v,_,_ in _sp]
     _sp_l = [l for _,l,_ in _sp]
     _sp_c = [c for _,_,c in _sp]
@@ -7782,18 +7851,23 @@ def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
-@page {{ size: A4 portrait; margin: 0; }}
+@page {{ size: A4 portrait; margin: 0; background: #060F1A; }}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{
-  background: #060F1A;
+html, body {{
+  background: #060F1A !important;
   color: #C8D8E8;
   font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
   font-size: 10px;
-  -webkit-print-color-adjust: exact;
-  print-color-adjust: exact;
-  padding: 0;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  color-adjust: exact !important;
 }}
-.page {{ padding: 14mm 14mm 10mm 14mm; min-height: 297mm; }}
+.page {{
+  background: #060F1A !important;
+  padding: 14mm 14mm 10mm 14mm;
+  min-height: 297mm;
+  width: 210mm;
+}}
 .kpi-grid {{ display: grid; grid-template-columns: repeat(5,1fr); gap: 8px; margin-bottom: 12px; }}
 .section {{
   font-size: 8.5px; font-weight: 700; color: #00A3E0;
@@ -7801,8 +7875,7 @@ body {{
   border-left: 3px solid #00A3E0; padding-left: 7px;
   margin: 12px 0 7px;
 }}
-.panel {{ background: #0C1A28; border: 1px solid #1E2D40; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }}
-.panel-title {{ font-size: 8.5px; font-weight: 700; color: #00A3E0; text-transform: uppercase; letter-spacing:.1em; margin-bottom:9px; }}
+.panel {{ background: #0C1A28 !important; border: 1px solid #1E2D40; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }}
 table {{ width: 100%; border-collapse: collapse; }}
 .footer {{ border-top: 1px solid #1E2D40; margin-top: 12px; padding-top: 7px; font-size: 8px; color: #3A4A5A; display: flex; justify-content: space-between; }}
 </style></head>
@@ -7860,6 +7933,20 @@ table {{ width: 100%; border-collapse: collapse; }}
 <!-- GRAPHIQUE -->
 <div class="section">Distance par plage de vitesse</div>
 <img src="{_chart}" style="width:100%;border-radius:8px;display:block;border:1px solid #1E2D40">
+<div style="display:flex;gap:12px;margin-top:5px;margin-bottom:2px;flex-wrap:wrap">
+  <span style="font-size:8px;color:#6A8090;display:flex;align-items:center;gap:4px">
+    <span style="width:10px;height:8px;background:#2D6A8F;border-radius:2px;display:inline-block"></span>Récupération (0–7)
+  </span>
+  <span style="font-size:8px;color:#6A8090;display:flex;align-items:center;gap:4px">
+    <span style="width:10px;height:8px;background:#1D9E75;border-radius:2px;display:inline-block"></span>Aérobie (7–15)
+  </span>
+  <span style="font-size:8px;color:#6A8090;display:flex;align-items:center;gap:4px">
+    <span style="width:10px;height:8px;background:#EF9F27;border-radius:2px;display:inline-block"></span>Haute intensité (15–19)
+  </span>
+  <span style="font-size:8px;color:#6A8090;display:flex;align-items:center;gap:4px">
+    <span style="width:10px;height:8px;background:#E24B4A;border-radius:2px;display:inline-block"></span>Sprint (>23)
+  </span>
+</div>
 
 <!-- ACCÉLÉRATIONS -->
 <div class="section">Accélérations / décélérations</div>
@@ -8062,32 +8149,56 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         if fig_c: st.pyplot(fig_c, use_container_width=True); plt.close(fig_c)
 
                 elif "EDF" in _perf_compare:
-                    _edf_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("EDF",na=False)]                              if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
+                    _edf_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("EDF",na=False)] \
+                             if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
                     if not _edf_f.empty:
                         _ps = st.selectbox("Poste EDF", sorted(_edf_f["Poste"].unique()), key="perf_edf_p")
-                        _rl = _edf_f[_edf_f["Poste"]==_ps].copy()
-                        if "Player" in _rl.columns: _rl = _rl.drop(columns=["Player"])
-                        _rl = _rl.rename(columns={"Poste":"Player"})
-                        if not _player_df_c.empty and not _rl.empty:
-                            fig_e = create_comparison_radar(
-                                pd.concat([_player_df_c,_rl], ignore_index=True, sort=False),
-                                _perf_player, _ps, exclude_creativity=True)
-                            if fig_e: st.pyplot(fig_e, use_container_width=True); plt.close(fig_e)
+                        # Référentiel = toutes les lignes EDF (pas juste le poste sélectionné)
+                        # pour avoir une distribution significative pour le z-score
+                        _ref_pop = _edf_f.copy()
+                        st.caption(
+                            "📊 Comparaison normalisée — score 50 = moyenne EDF · "
+                            "+15 pts = +1 écart-type au-dessus · −15 pts = −1 écart-type en-dessous"
+                        )
+                        if not _player_df_c.empty and not _ref_pop.empty:
+                            _zscore_df = prepare_zscore_comparison(
+                                _player_df_c, _ref_pop,
+                                player_label=_perf_player,
+                                ref_label=f"Moyenne {_ps}"
+                            )
+                            if not _zscore_df.empty:
+                                fig_e = create_comparison_radar(
+                                    _zscore_df, _perf_player, f"Moyenne {_ps}",
+                                    exclude_creativity=True)
+                                if fig_e: st.pyplot(fig_e, use_container_width=True); plt.close(fig_e)
+                            else:
+                                st.info("Colonnes insuffisantes pour la comparaison normalisée.")
                     else:
                         st.info("Référentiel EDF non disponible.")
 
                 elif "APL" in _perf_compare:
-                    _apl_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("APL",na=False)]                              if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
+                    _apl_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("APL",na=False)] \
+                             if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
                     if not _apl_f.empty:
                         _ps = st.selectbox("Poste APL", sorted(_apl_f["Poste"].unique()), key="perf_apl_p")
-                        _rl = _apl_f[_apl_f["Poste"]==_ps].copy()
-                        if "Player" in _rl.columns: _rl = _rl.drop(columns=["Player"])
-                        _rl = _rl.rename(columns={"Poste":"Player"})
-                        if not _player_df_c.empty and not _rl.empty:
-                            fig_a = create_comparison_radar(
-                                pd.concat([_player_df_c,_rl], ignore_index=True, sort=False),
-                                _perf_player, _ps, exclude_creativity=True)
-                            if fig_a: st.pyplot(fig_a, use_container_width=True); plt.close(fig_a)
+                        _ref_pop = _apl_f.copy()
+                        st.caption(
+                            "📊 Comparaison normalisée — score 50 = moyenne APL · "
+                            "+15 pts = +1 écart-type au-dessus · −15 pts = −1 écart-type en-dessous"
+                        )
+                        if not _player_df_c.empty and not _ref_pop.empty:
+                            _zscore_df = prepare_zscore_comparison(
+                                _player_df_c, _ref_pop,
+                                player_label=_perf_player,
+                                ref_label=f"Moyenne {_ps}"
+                            )
+                            if not _zscore_df.empty:
+                                fig_a = create_comparison_radar(
+                                    _zscore_df, _perf_player, f"Moyenne {_ps}",
+                                    exclude_creativity=True)
+                                if fig_a: st.pyplot(fig_a, use_container_width=True); plt.close(fig_a)
+                            else:
+                                st.info("Colonnes insuffisantes pour la comparaison normalisée.")
                     else:
                         st.warning("Référentiel APL non disponible. Dépose les fichiers `Indiv_*.csv` dans Drive.")
 
