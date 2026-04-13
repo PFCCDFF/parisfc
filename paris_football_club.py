@@ -8211,19 +8211,17 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                         _plt_c.close(_fig_c)
 
                 with _st5:
-                    _dc = _gr[_gr["Player"].astype(str)==nettoyer_nom_joueuse(_pgps)].copy()
-                    _dc = ensure_date_column(_dc)
-                    if "CHARGE" in _dc.columns and not _dc.empty:
+                    if _gr is None or _gr.empty:
+                        st.info("Aucune donnée GPS brute disponible.")
+                    else:
                         try:
-                            _wc = compute_acwr(_dc)
+                            _wc = compute_acwr(_gr, _pgps)
                             if _wc is not None and not _wc.empty:
                                 st.dataframe(_wc, use_container_width=True)
                             else:
-                                st.info("Données de charge insuffisantes.")
+                                st.info("Données de charge insuffisantes pour calculer l'ACWR (minimum 4 semaines requises).")
                         except Exception as _e:
                             st.info(f"ACWR indisponible : {_e}")
-                    else:
-                        st.info("Colonne CHARGE absente des données GPS.")
 
                 with _st6:
                     _tpc = []
