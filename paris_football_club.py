@@ -7625,6 +7625,208 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
 
 
 
+def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
+                                match_label: str) -> str:
+    """Génère un rapport HTML A4 de performance physique match (exportable PDF).
+    row  : dict des valeurs du match (colonnes gps_match_df)
+    avg  : dict des moyennes individuelles de la joueuse
+    """
+    import base64 as _b64g, io as _io
+
+    def _n(col):
+        v = row.get(col)
+        try: return float(v) if v is not None else None
+        except: return None
+
+    def _fmt(v, dec=0, unit=""):
+        if v is None or (isinstance(v, float) and (v != v)): return "—"
+        return f"{v:,.{dec}f}{' '+unit if unit else ''}".replace(",", " ")
+
+    dist   = _n("Distance (m)")
+    hid13  = _n("Distance HID (>13 km/h)")
+    hid19  = _n("Distance HID (>19 km/h)")
+    vmax   = _n("Vitesse max (km/h)")
+    spr23  = _n("Sprints_23")
+    spr25  = _n("Sprints_25")
+    acc2   = _n("Acc_2"); acc3 = _n("Acc_3")
+    dec2   = _n("Dec_2"); dec3 = _n("Dec_3")
+    acc_max= _n("Acc_max")
+    tot_ad = _n("#accel/decel")
+    tps    = _n("Durée_min")
+    v07    = _n("V_0_7");  v713  = _n("V_7_13")
+    v1315  = _n("V_13_15"); v1519 = _n("V_15_19")
+    v1923  = _n("V_19_23"); v2325 = _n("V_23_25"); vsup  = _n("V_sup25")
+
+    hid13_pct = round(hid13/dist*100, 1) if hid13 and dist else None
+    hid19_pct = round(hid19/dist*100, 1) if hid19 and dist else None
+    avg_hid13_pct = (avg.get("Distance HID (>13 km/h)", 0) or 0) / (avg.get("Distance (m)", 1) or 1) * 100
+    avg_hid19_pct = (avg.get("Distance HID (>19 km/h)", 0) or 0) / (avg.get("Distance (m)", 1) or 1) * 100
+
+    def _delta(val, avg_val, unit="", dec=0, higher_good=True):
+        if val is None or not avg_val: return ""
+        d = val - avg_val
+        sign = "+" if d >= 0 else ""
+        col = "#22C55E" if (d >= 0) == higher_good else "#EF4444"
+        arrow = "▲" if d >= 0 else "▼"
+        return (f"<span style='color:{col};font-size:9px'>"
+                f"{arrow} {sign}{d:,.{dec}f}{' '+unit if unit else ''} vs moy.</span>")
+
+    def _delta_pct(val, avg_val):
+        if val is None or not avg_val: return ""
+        d = val - avg_val
+        sign = "+" if d >= 0 else ""
+        col = "#22C55E" if d >= 0 else "#EF4444"
+        arrow = "▲" if d >= 0 else "▼"
+        return f"<span style='color:{col};font-size:9px'>{arrow} {sign}{d:.1f} pts vs moy.</span>"
+
+    # ── Graphique plages de vitesse (matplotlib → base64) ──────────────
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plt_g
+
+    _sp_data = [
+        (v07,  "0–7",   "#5F5E5A"),
+        (v713, "7–13",  "#5F5E5A"),
+        (v1315,"13–15", "#378ADD"),
+        (v1519,"15–19", "#378ADD"),
+        (v1923,"19–23", "#EF9F27"),
+        (v2325,"23–25", "#E24B4A"),
+        (vsup, ">25",   "#E24B4A"),
+    ]
+    _sp_vals   = [v if v is not None else 0 for v,_,_ in _sp_data]
+    _sp_labels = [l for _,l,_ in _sp_data]
+    _sp_colors = [c for _,_,c in _sp_data]
+    _sp_max    = max(_sp_vals) or 1
+
+    _fig_g, _ax_g = _plt_g.subplots(figsize=(7, 2.5))
+    _fig_g.patch.set_facecolor("#0C1220")
+    _ax_g.set_facecolor("#0C1220")
+    _bars_g = _ax_g.bar(_sp_labels, _sp_vals, color=_sp_colors, alpha=0.88, width=0.6)
+    for _b, _v in zip(_bars_g, _sp_vals):
+        if _v > 0:
+            _ax_g.text(_b.get_x()+_b.get_width()/2, _b.get_height()+_sp_max*0.02,
+                       f"{_v:.0f}", ha="center", va="bottom", color="#C8D8E8", fontsize=8)
+    _ax_g.set_ylabel("Distance (m)", color="#8A9BB0", fontsize=8)
+    _ax_g.set_xlabel("Plage de vitesse (km/h)", color="#8A9BB0", fontsize=8)
+    _ax_g.tick_params(colors="#C8D8E8", labelsize=8)
+    for spine in _ax_g.spines.values(): spine.set_edgecolor("#1A2A3A")
+    _fig_g.tight_layout()
+    _buf_g = _io.BytesIO()
+    _fig_g.savefig(_buf_g, format="png", dpi=150, bbox_inches="tight",
+                   facecolor="#0C1220")
+    _buf_g.seek(0)
+    _chart_b64 = "data:image/png;base64," + _b64g.b64encode(_buf_g.read()).decode()
+    _plt_g.close(_fig_g)
+
+    # ── Barre horizontale helper ────────────────────────────────────────
+    def _bar(val, max_val, color):
+        pct = min(int((val or 0)/(max_val or 1)*100), 100)
+        return (f"<div style='flex:1;height:5px;background:#1A2A3A;border-radius:3px;overflow:hidden'>"
+                f"<div style='width:{pct}%;height:5px;background:{color};border-radius:3px'></div></div>")
+
+    def _effort_row(label, val, max_val, color, fmt="{:.0f}", unit=""):
+        vstr = fmt.format(val)+(" "+unit if unit else "") if val is not None else "—"
+        return (f"<div style='display:flex;align-items:center;gap:6px;margin-bottom:7px'>"
+                f"<span style='font-size:9px;color:#8A9BB0;width:85px;flex-shrink:0'>{label}</span>"
+                f"{_bar(val, max_val, color)}"
+                f"<span style='font-size:10px;font-weight:500;color:#C8D8E8;min-width:44px;"
+                f"text-align:right'>{vstr}</span></div>")
+
+    def _kpi_card(label, val_str, unit, sub="", delta=""):
+        return (f"<div style='background:#0C1220;border-radius:6px;padding:10px 12px;"
+                f"border:1px solid #1A2A3A'>"
+                f"<div style='font-size:9px;color:#6A8090;margin-bottom:3px'>{label}</div>"
+                f"<div style='font-size:19px;font-weight:700;color:#E8F4FF;line-height:1'>{val_str}</div>"
+                f"<div style='font-size:9px;color:#8A9BB0;margin-top:2px'>{unit}</div>"
+                + (f"<div style='font-size:9px;color:#6A8090;margin-top:1px'>{sub}</div>" if sub else "")
+                + (f"<div style='margin-top:3px'>{delta}</div>" if delta else "")
+                + "</div>")
+
+    max_acc = max(filter(None, [acc2, dec2, tot_ad, 1])) or 1
+    max_spr = max(filter(None, [spr23, spr25, 1])) or 1
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+  @page {{ size: A4 portrait; margin: 12mm 12mm 10mm 12mm; }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', 'Segoe UI', sans-serif; }}
+  body {{ background: #060F1A; color: #C8D8E8; font-size: 10px; }}
+  .header {{ display: flex; align-items: center; justify-content: space-between;
+             border-bottom: 1px solid #1A2A3A; padding-bottom: 8px; margin-bottom: 10px; }}
+  .header-left h1 {{ font-size: 16px; font-weight: 700; color: #E8F4FF; letter-spacing: .02em; }}
+  .header-left p {{ font-size: 9px; color: #6A8090; margin-top: 2px; }}
+  .badge {{ background: #0F3A20; color: #22C55E; font-size: 9px; font-weight: 600;
+            padding: 3px 10px; border-radius: 20px; }}
+  .kpi-grid {{ display: grid; grid-template-columns: repeat(5,1fr); gap: 7px; margin-bottom: 10px; }}
+  .section-title {{ font-size: 8px; font-weight: 600; color: #6A8090; text-transform: uppercase;
+                    letter-spacing: .1em; margin-bottom: 6px; }}
+  .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }}
+  .panel {{ background: #0C1220; border: 1px solid #1A2A3A; border-radius: 6px; padding: 10px; }}
+  .footer {{ border-top: 1px solid #1A2A3A; margin-top: 10px; padding-top: 6px;
+             font-size: 8px; color: #3A4A5A; display: flex; justify-content: space-between; }}
+</style></head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <h1>Rapport physique — {player_name}</h1>
+      <p>{match_label}</p>
+    </div>
+    <span class="badge">{_fmt(tps, 0)} min jouées</span>
+  </div>
+
+  <div class="section-title">Métriques clés</div>
+  <div class="kpi-grid">
+    {_kpi_card("Distance totale",
+               _fmt(dist, 0), "mètres",
+               delta=_delta(dist, avg.get("Distance (m)"), "m", higher_good=True))}
+    {_kpi_card("HID &gt;13 km/h",
+               _fmt(hid13_pct, 1), "% dist. totale",
+               sub=f"{_fmt(hid13,0)} m",
+               delta=_delta_pct(hid13_pct, avg_hid13_pct))}
+    {_kpi_card("HID &gt;19 km/h",
+               _fmt(hid19_pct, 1), "% dist. totale",
+               sub=f"{_fmt(hid19,0)} m",
+               delta=_delta_pct(hid19_pct, avg_hid19_pct))}
+    {_kpi_card("Vitesse max",
+               _fmt(vmax, 1), "km/h",
+               delta=_delta(vmax, avg.get("Vitesse max (km/h)"), "km/h", dec=1))}
+    {_kpi_card("Sprints &gt;23",
+               _fmt(spr23, 0), "sprints",
+               delta=_delta(spr23, avg.get("Sprints_23"), "nb", higher_good=True))}
+  </div>
+
+  <div class="section-title">Distance par plage de vitesse</div>
+  <img src="{_chart_b64}" style="width:100%;border-radius:6px;display:block;margin-bottom:10px">
+
+  <div class="two-col">
+    <div class="panel">
+      <div class="section-title">Accélérations / décélérations</div>
+      {_effort_row("Acc &gt;2 m/s²",  acc2,  max_acc, "#378ADD")}
+      {_effort_row("Acc &gt;3 m/s²",  acc3,  max_acc, "#378ADD")}
+      {_effort_row("Déc &gt;2 m/s²",  dec2,  max_acc, "#7F77DD")}
+      {_effort_row("Déc &gt;3 m/s²",  dec3,  max_acc, "#7F77DD")}
+      {_effort_row("Total Acc/Déc",    tot_ad, tot_ad, "#B4B2A9")}
+      {_effort_row("Acc. max",         acc_max, 6,     "#B4B2A9", "{:.1f}", "m/s²")}
+    </div>
+    <div class="panel">
+      <div class="section-title">Intensité haute (HID)</div>
+      {_effort_row("HID &gt;13 km/h", hid13_pct, 40,  "#1D9E75", "{:.1f}", "%")}
+      {_effort_row("HID &gt;19 km/h", hid19_pct, 15,  "#1D9E75", "{:.1f}", "%")}
+      {_effort_row("Sprints &gt;23",  spr23, max(max_spr,1), "#EF9F27", "{:.0f}", "nb")}
+      {_effort_row("Sprints &gt;25",  spr25, max(max_spr,1), "#E24B4A", "{:.0f}", "nb")}
+      {_effort_row("Dist. HID abs. &gt;13", hid13, max((hid13 or 0)*1.3, 1), "#5DCAA5", "{:.0f}", "m")}
+      {_effort_row("Dist. HID abs. &gt;19", hid19, max((hid13 or 1), 1), "#5DCAA5", "{:.0f}", "m")}
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>Paris FC — Centre de Formation Féminin</span>
+    <span>Données GPS GF1 · Moyennes vs matchs saison</span>
+  </div>
+</body></html>"""
+    return html
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # ONGLET PERFORMANCE — fusion Rapports + Comparaison + Évaluation + GPS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -8302,6 +8504,37 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                                             max(pd.to_numeric(_gm_player[_ec], errors="coerce").max(), 1),
                                                             _ecol, _fmt)
                                         st.markdown("</div>", unsafe_allow_html=True)
+
+                                    # ── Bouton export PDF ──────────────────────
+                                    st.divider()
+                                    try:
+                                        _row_dict = _row.to_dict() if hasattr(_row, "to_dict") else dict(_row)
+                                        _pdf_html = build_gps_match_report_html(
+                                            row=_row_dict,
+                                            avg=_avg,
+                                            player_name=_pgps,
+                                            match_label=_sel_labels[0]
+                                        )
+                                        import streamlit.components.v1 as _cmp_pdf
+                                        _print_js = (
+                                            '<script>'
+                                            'function printGpsReport(){'
+                                            'var w=window.open("","_blank","width=900,height=1200");'
+                                            'w.document.write(`' + _pdf_html.replace('`','\\`') + '`);'
+                                            'w.document.close();'
+                                            'setTimeout(function(){w.print();},800);}'
+                                            '</script>'
+                                            '<button onclick="printGpsReport()" '
+                                            'style="background:#00A3E0;color:#060F1A;border:none;'
+                                            'border-radius:4px;padding:8px 20px;'
+                                            'font-family:Oswald,sans-serif;font-size:13px;'
+                                            'font-weight:700;cursor:pointer;letter-spacing:.05em">'
+                                            '🖨️ Exporter en PDF (A4)'
+                                            '</button>'
+                                        )
+                                        _cmp_pdf.html(_print_js, height=50)
+                                    except Exception as _pe:
+                                        st.warning(f"Export PDF indisponible : {_pe}")
 
                                 # ── Si plusieurs matchs : comparaison ──────
                                 else:
