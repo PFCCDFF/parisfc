@@ -7919,7 +7919,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
             if _pgps:
                 _st1, _st2, _st3, _st4, _st5, _st6 = st.tabs([
-                    "🧾 Brutes", "📅 7 jours", "📈 Microcycle", "⚽ Match", "⚖️ Charge", "🔗 Concordance"])
+                    "🧾 Brutes", "📅 Global", "📈 Microcycle", "⚽ Match", "⚖️ Charge", "🔗 Concordance"])
 
                 with _st1:
                     _dr = _gr[_gr["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)].copy()
@@ -8724,7 +8724,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                     st.info("Aucune ligne GPS pour cette joueuse.")
                 else:
                     tab_raw_g, tab_week_g, tab_graph_g = st.tabs(
-                        ["🧾 Brutes", "📅 7 jours (glissant)", "📈 Microcycle MD-6 → MD"]
+                        ["🧾 Brutes", "📅 Global", "📈 Microcycle MD-6 → MD"]
                     )
 
                     with tab_raw_g:
