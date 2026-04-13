@@ -4820,6 +4820,19 @@ def load_tactical_files() -> list:
     return results
 
 
+def get_tactical_files(force_reload: bool = False) -> list:
+    """Charge les fichiers tactiques avec cache session_state.
+    Évite les doubles chargements entre onglets.
+    Invalidé par 'Mettre à jour la base' (force_reload=True).
+    """
+    _key = "_tactical_files_cache"
+    if force_reload:
+        st.session_state.pop(_key, None)
+    if _key not in st.session_state or not st.session_state[_key]:
+        st.session_state[_key] = load_tactical_files()
+    return st.session_state[_key]
+
+
 def filter_tactical_by_saison(tactical_files: list, selected_saison: str) -> list:
     """Filtre la liste des fichiers tactiques par saison sélectionnée."""
     if not selected_saison or selected_saison == "Toutes les saisons":
@@ -8017,7 +8030,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     if check_permission(user_profile, "update_data", permissions) or check_permission(user_profile, "all", permissions):
         if st.sidebar.button("Mettre à jour la base"):
             st.session_state["_sync_done"] = False  # forcer re-sync
+            st.session_state.pop("_tactical_files_cache", None)  # invalider cache tactique
             st.cache_data.clear()
+            st.rerun()
             st.rerun()
 
         if st.sidebar.button("🖼️ Reconvertir les photos"):
