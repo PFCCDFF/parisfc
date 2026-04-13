@@ -8086,51 +8086,222 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                                for col, lbl, unit, agg in _KPI_DEFS
                                                if col in _gm_sel.columns]
 
-                                # ── Si 1 match : cards + barres vitesse ───
+                                # ── Si 1 match : visuel complet ────────────
                                 if len(_sel_labels) == 1:
                                     _row = _gm_sel.iloc[0]
-                                    st.markdown(f"**{_sel_labels[0]}**")
 
-                                    # Cards métriques principales
-                                    _main_kpis = [("Distance (m)", "Distance", "m"),
-                                                  ("Distance HID (>13 km/h)", "HID >13", "m"),
-                                                  ("Vitesse max (km/h)", "Vmax", "km/h"),
-                                                  ("Sprints_23", "Sprints >23", "nb"),
-                                                  ("#accel/decel", "Acc/Déc", "nb"),
-                                                  ("Durée_min", "Temps joué", "min")]
-                                    _cols_m = st.columns(len([k for k,_,_ in _main_kpis if k in _gm_sel.columns]))
-                                    _ci = 0
-                                    for col, lbl, unit in _main_kpis:
-                                        if col in _gm_sel.columns:
-                                            val = pd.to_numeric(_row.get(col), errors="coerce")
-                                            _fmt = f"{val:.1f} {unit}" if pd.notna(val) else "—"
-                                            _cols_m[_ci].metric(lbl, _fmt)
-                                            _ci += 1
+                                    # ── Calcul des moyennes individuelles ──────
+                                    # (sur tous les matchs GPS de la joueuse, hors match sélectionné)
+                                    _avg = {}
+                                    for _ac in ["Distance (m)", "Distance HID (>13 km/h)",
+                                                "Distance HID (>19 km/h)", "Vitesse max (km/h)",
+                                                "Sprints_23", "#accel/decel", "Durée_min",
+                                                "Acc_2", "Acc_3", "Dec_2", "Dec_3", "Acc_max"]:
+                                        if _ac in _gm_player.columns:
+                                            _vals_all = pd.to_numeric(_gm_player[_ac], errors="coerce").dropna()
+                                            _avg[_ac] = _vals_all.mean() if len(_vals_all) > 0 else None
 
-                                    # Graphique plages de vitesse
-                                    _speed_cols = [("V_0_7","0-7"),("V_7_13","7-13"),
-                                                   ("V_13_15","13-15"),("V_15_19","15-19"),
-                                                   ("V_19_23","19-23"),("V_23_25","23-25"),("V_sup25",">25")]
-                                    _sp_avail = [(c,l) for c,l in _speed_cols if c in _gm_sel.columns]
+                                    def _num(col):
+                                        return pd.to_numeric(_row.get(col), errors="coerce")
+
+                                    def _delta(col, pct=False, higher_is_better=True):
+                                        """Retourne (delta_str, couleur) vs moyenne individuelle."""
+                                        v = _num(col); m = _avg.get(col)
+                                        if pd.isna(v) or m is None or m == 0:
+                                            return "", "off"
+                                        d = v - m
+                                        if pct:
+                                            d_str = f"{'+' if d>=0 else ''}{d:.1f} pts"
+                                        else:
+                                            d_str = f"{'+' if d>=0 else ''}{d:.0f}"
+                                        good = (d >= 0) == higher_is_better
+                                        return d_str, "up" if good else "dn"
+
+                                    # ── Valeurs relatives HID ──────────────────
+                                    _dist = _num("Distance (m)")
+                                    _hid13 = _num("Distance HID (>13 km/h)")
+                                    _hid19 = _num("Distance HID (>19 km/h)")
+                                    _hid13_pct = round(_hid13 / _dist * 100, 1) if pd.notna(_hid13) and pd.notna(_dist) and _dist > 0 else None
+                                    _hid19_pct = round(_hid19 / _dist * 100, 1) if pd.notna(_hid19) and pd.notna(_dist) and _dist > 0 else None
+
+                                    # Moyennes relatives HID
+                                    _avg_hid13_pct, _avg_hid19_pct = None, None
+                                    if _avg.get("Distance (m)") and _avg.get("Distance HID (>13 km/h)"):
+                                        _avg_hid13_pct = _avg["Distance HID (>13 km/h)"] / _avg["Distance (m)"] * 100
+                                    if _avg.get("Distance (m)") and _avg.get("Distance HID (>19 km/h)"):
+                                        _avg_hid19_pct = _avg["Distance HID (>19 km/h)"] / _avg["Distance (m)"] * 100
+
+                                    def _delta_pct_rel(val, avg):
+                                        if val is None or avg is None: return "", "off"
+                                        d = val - avg
+                                        s = f"{'+' if d>=0 else ''}{d:.1f} pts vs moy."
+                                        return s, "up" if d >= 0 else "dn"
+
+                                    # ── En-tête match ──────────────────────────
+                                    _tps = _num("Durée_min")
+                                    _h1, _h2 = st.columns([3,1])
+                                    with _h1:
+                                        st.markdown(f"**{_sel_labels[0]}**")
+                                    with _h2:
+                                        if pd.notna(_tps):
+                                            st.markdown(
+                                                f"<span style='background:var(--color-background-success);"
+                                                f"color:var(--color-text-success);font-size:12px;"
+                                                f"font-weight:500;padding:3px 10px;border-radius:20px'>"
+                                                f"{_tps:.0f} min jouées</span>",
+                                                unsafe_allow_html=True
+                                            )
+
+                                    # ── 5 KPIs principaux ──────────────────────
+                                    _kpi5_cols = st.columns(5)
+                                    _kpi_defs_main = [
+                                        ("Distance (m)",            "Distance",      "m",    False),
+                                        ("hid13_pct",               "HID >13 km/h", "% dist", False),
+                                        ("hid19_pct",               "HID >19 km/h", "% dist", False),
+                                        ("Vitesse max (km/h)",       "Vmax",          "km/h",  False),
+                                        ("Sprints_23",               "Sprints >23",  "nb",    False),
+                                    ]
+                                    for _ci2, (col, lbl, unit, _) in enumerate(_kpi_defs_main):
+                                        with _kpi5_cols[_ci2]:
+                                            if col == "hid13_pct":
+                                                _v = _hid13_pct
+                                                _vfmt = f"{_v:.1f}" if _v is not None else "—"
+                                                _dsub = f"{_hid13:.0f} m" if pd.notna(_hid13) else ""
+                                                _d, _dc = _delta_pct_rel(_hid13_pct, _avg_hid13_pct)
+                                            elif col == "hid19_pct":
+                                                _v = _hid19_pct
+                                                _vfmt = f"{_v:.1f}" if _v is not None else "—"
+                                                _dsub = f"{_hid19:.0f} m" if pd.notna(_hid19) else ""
+                                                _d, _dc = _delta_pct_rel(_hid19_pct, _avg_hid19_pct)
+                                            elif col == "Distance (m)":
+                                                _v = _num(col)
+                                                _vfmt = f"{_v:,.0f}".replace(",", " ") if pd.notna(_v) else "—"
+                                                _dsub = ""
+                                                _d, _dc = _delta(col)
+                                                _d = f"{_d} m" if _d else ""
+                                            else:
+                                                _v = _num(col)
+                                                _vfmt = f"{_v:.1f}" if pd.notna(_v) else "—"
+                                                _dsub = ""
+                                                _d, _dc = _delta(col)
+                                                _d = f"{_d} {unit}" if _d else ""
+
+                                            _arrow = "↑" if _dc == "up" else ("↓" if _dc == "dn" else "")
+                                            _color = ("var(--color-text-success)" if _dc == "up"
+                                                      else ("var(--color-text-danger)" if _dc == "dn"
+                                                            else "var(--color-text-tertiary)"))
+                                            st.markdown(
+                                                f"<div style='background:var(--color-background-secondary);"
+                                                f"border-radius:8px;padding:12px 14px'>"
+                                                f"<div style='font-size:11px;color:var(--color-text-tertiary);margin-bottom:4px'>{lbl}</div>"
+                                                f"<div style='font-size:22px;font-weight:500;line-height:1;color:var(--color-text-primary)'>{_vfmt}</div>"
+                                                f"<div style='font-size:11px;color:var(--color-text-secondary);margin-top:3px'>{unit}</div>"
+                                                + (f"<div style='font-size:10px;color:var(--color-text-tertiary);margin-top:2px'>{_dsub}</div>" if _dsub else "")
+                                                + (f"<div style='font-size:11px;margin-top:4px;color:{_color}'>{_arrow} {_d}</div>" if _d else "")
+                                                + "</div>",
+                                                unsafe_allow_html=True
+                                            )
+
+                                    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+                                    # ── Plages de vitesse ──────────────────────
+                                    _speed_cols = [("V_0_7","0–7","#5F5E5A"),
+                                                   ("V_7_13","7–13","#5F5E5A"),
+                                                   ("V_13_15","13–15","#378ADD"),
+                                                   ("V_15_19","15–19","#378ADD"),
+                                                   ("V_19_23","19–23","#EF9F27"),
+                                                   ("V_23_25","23–25","#E24B4A"),
+                                                   ("V_sup25",">25","#E24B4A")]
+                                    _sp_avail = [(c,l,col) for c,l,col in _speed_cols if c in _gm_sel.columns]
                                     if _sp_avail:
                                         import matplotlib.pyplot as _plt_m
-                                        _sp_vals = [pd.to_numeric(_row.get(c), errors="coerce") for c,_ in _sp_avail]
-                                        _sp_labels = [l for _,l in _sp_avail]
-                                        _colors = ["#2FB8FF","#2FB8FF","#7B84FF","#7B84FF",
-                                                   "#FFA06E","#FF6B6B","#FF6B6B"][:len(_sp_avail)]
-                                        _fig_sp, _ax_sp = _plt_m.subplots(figsize=(8, 3))
+                                        _sp_vals = [pd.to_numeric(_row.get(c), errors="coerce") for c,_,_ in _sp_avail]
+                                        _sp_max = max([v for v in _sp_vals if pd.notna(v)] or [1])
+                                        _sp_labels_c = [l for _,l,_ in _sp_avail]
+                                        _sp_colors = [col for _,_,col in _sp_avail]
+                                        _fig_sp, _ax_sp = _plt_m.subplots(figsize=(8, 2.8))
                                         _fig_sp.patch.set_facecolor("#08090D")
                                         _ax_sp.set_facecolor("#0C1220")
-                                        _ax_sp.bar(_sp_labels, _sp_vals, color=_colors, alpha=0.85)
-                                        _ax_sp.set_ylabel("Distance (m)", color="#C8D8E8", fontsize=9)
-                                        _ax_sp.set_xlabel("Plage de vitesse (km/h)", color="#C8D8E8", fontsize=9)
+                                        _bars = _ax_sp.bar(_sp_labels_c, _sp_vals,
+                                                           color=_sp_colors, alpha=0.85, width=0.6)
+                                        for _b, _v in zip(_bars, _sp_vals):
+                                            if pd.notna(_v) and _v > 0:
+                                                _ax_sp.text(_b.get_x()+_b.get_width()/2,
+                                                            _b.get_height()+_sp_max*0.02,
+                                                            f"{_v:.0f}", ha="center", va="bottom",
+                                                            color="#C8D8E8", fontsize=8)
+                                        _ax_sp.set_ylabel("Distance (m)", color="#6A8090", fontsize=9)
+                                        _ax_sp.set_xlabel("Plage de vitesse (km/h)", color="#6A8090", fontsize=9)
                                         _ax_sp.tick_params(colors="#C8D8E8", labelsize=8)
                                         for spine in _ax_sp.spines.values():
                                             spine.set_edgecolor("#1A2A3A")
                                         _fig_sp.tight_layout()
-                                        st.markdown("##### Distance par plage de vitesse")
+                                        st.markdown("##### Répartition par plage de vitesse")
                                         st.pyplot(_fig_sp, use_container_width=True)
                                         _plt_m.close(_fig_sp)
+
+                                    # ── 2 panneaux : acc/déc + HID ────────────
+                                    _pc1, _pc2 = st.columns(2)
+
+                                    def _effort_bar(label, val, max_val, color, fmt="{:.0f}"):
+                                        pct = min(int(val/max_val*100), 100) if max_val and pd.notna(val) and val > 0 else 0
+                                        vstr = fmt.format(val) if pd.notna(val) else "—"
+                                        st.markdown(
+                                            f"<div style='display:flex;align-items:center;gap:8px;margin-bottom:8px'>"
+                                            f"<span style='font-size:12px;color:var(--color-text-secondary);width:90px;flex-shrink:0'>{label}</span>"
+                                            f"<div style='flex:1;height:6px;background:var(--color-border-tertiary);border-radius:3px;overflow:hidden'>"
+                                            f"<div style='width:{pct}%;height:6px;background:{color};border-radius:3px'></div></div>"
+                                            f"<span style='font-size:12px;font-weight:500;color:var(--color-text-primary);min-width:46px;text-align:right'>{vstr}</span>"
+                                            f"</div>",
+                                            unsafe_allow_html=True
+                                        )
+
+                                    with _pc1:
+                                        st.markdown(
+                                            "<div style='background:var(--color-background-secondary);"
+                                            "border-radius:8px;padding:12px'>",
+                                            unsafe_allow_html=True)
+                                        st.markdown("<div style='font-size:11px;font-weight:500;color:var(--color-text-secondary);"
+                                                    "text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px'>"
+                                                    "Accélérations / décélérations</div>", unsafe_allow_html=True)
+                                        _max_acc = max([pd.to_numeric(_row.get(c), errors="coerce")
+                                                        for c in ["Acc_2","Dec_2","#accel/decel"]
+                                                        if c in _gm_sel.columns] or [1])
+                                        for _ec, _el, _ecol in [("Acc_2","Acc >2 m/s²","#378ADD"),
+                                                                  ("Acc_3","Acc >3 m/s²","#378ADD"),
+                                                                  ("Dec_2","Déc >2 m/s²","#7F77DD"),
+                                                                  ("Dec_3","Déc >3 m/s²","#7F77DD"),
+                                                                  ("#accel/decel","Total Acc/Déc","#B4B2A9")]:
+                                            if _ec in _gm_sel.columns:
+                                                _effort_bar(_el, _num(_ec),
+                                                            _max_acc if _ec != "#accel/decel" else _num("#accel/decel"),
+                                                            _ecol)
+                                        st.markdown("</div>", unsafe_allow_html=True)
+
+                                    with _pc2:
+                                        st.markdown(
+                                            "<div style='background:var(--color-background-secondary);"
+                                            "border-radius:8px;padding:12px'>",
+                                            unsafe_allow_html=True)
+                                        st.markdown("<div style='font-size:11px;font-weight:500;color:var(--color-text-secondary);"
+                                                    "text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px'>"
+                                                    "Intensité haute (HID)</div>", unsafe_allow_html=True)
+                                        for _ec, _el, _ecol, _fmt in [
+                                            ("hid13_pct", "HID >13 km/h", "#1D9E75", "{:.1f} %"),
+                                            ("hid19_pct", "HID >19 km/h", "#1D9E75", "{:.1f} %"),
+                                            ("Sprints_23","Sprints >23",  "#EF9F27", "{:.0f} nb"),
+                                            ("Sprints_25","Sprints >25",  "#E24B4A", "{:.0f} nb"),
+                                            ("Acc_max",   "Acc. max",      "#B4B2A9", "{:.1f} m/s²"),
+                                        ]:
+                                            if _ec == "hid13_pct":
+                                                _effort_bar(_el, _hid13_pct, 40, _ecol, "{:.1f} %")
+                                            elif _ec == "hid19_pct":
+                                                _effort_bar(_el, _hid19_pct, 15, _ecol, "{:.1f} %")
+                                            elif _ec in _gm_sel.columns:
+                                                _effort_bar(_el, _num(_ec),
+                                                            max(pd.to_numeric(_gm_player[_ec], errors="coerce").max(), 1),
+                                                            _ecol, _fmt)
+                                        st.markdown("</div>", unsafe_allow_html=True)
 
                                 # ── Si plusieurs matchs : comparaison ──────
                                 else:
