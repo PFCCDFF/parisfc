@@ -4537,31 +4537,27 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
     fc = _filter(df_c, is_coach=True)
     fj = _filter(df_j, is_coach=False)
 
-    # ── Ne garder que les lignes avec les DEUX évaluations ────────────────
-    # Clé de jointure : joueur_norm + date normalisée
-    # Feuille 1 (coach) contient aussi les notes joueuse quand remplies → source prioritaire
-    # Sheet1 (Forms) → source auto-évaluation joueuse
-
-    def _make_pair_key(df, date_tol_days=3):
-        """Ajoute une clé de jointure joueur_norm + date arrondie."""
-        d = df.copy()
-        d["_join_key"] = d["joueur_norm"] + "__" + d["date"].dt.strftime("%Y-%m-%d")
-        return d
+    # ── Appariement coach + joueuse ─────────────────────────────────────────
+    # Clé primaire : joueur_norm + adversaire (fiable car dates souvent décalées
+    # entre Sheet1/Forms et Feuille1/coach)
 
     if not fc.empty and not fj.empty:
-        fc_k = _make_pair_key(fc)
-        fj_k = _make_pair_key(fj)
-        common_keys = set(fc_k["_join_key"]) & set(fj_k["_join_key"])
-        if not common_keys:
-            # Tolérance ±3 jours : match par joueur_norm + adversaire
+        fc["_pair_key"] = fc["joueur_norm"] + "__" + fc["adversaire"].fillna("").astype(str)
+        fj["_pair_key"] = fj["joueur_norm"] + "__" + fj["adversaire"].fillna("").astype(str)
+        common_keys = set(fc["_pair_key"]) & set(fj["_pair_key"])
+
+        if common_keys:
+            fc = fc[fc["_pair_key"].isin(common_keys)].drop(columns=["_pair_key"])
+            fj = fj[fj["_pair_key"].isin(common_keys)].drop(columns=["_pair_key"])
+        else:
+            # Fallback : joueur_norm seul
+            if "_pair_key" in fc.columns: fc = fc.drop(columns=["_pair_key"])
+            if "_pair_key" in fj.columns: fj = fj.drop(columns=["_pair_key"])
             paired_norms = set(fc["joueur_norm"]) & set(fj["joueur_norm"])
             fc = fc[fc["joueur_norm"].isin(paired_norms)]
             fj = fj[fj["joueur_norm"].isin(paired_norms)]
-        else:
-            fc = fc_k[fc_k["_join_key"].isin(common_keys)].drop(columns=["_join_key"])
-            fj = fj_k[fj_k["_join_key"].isin(common_keys)].drop(columns=["_join_key"])
+
     elif not fc.empty and fj.empty:
-        # Utiliser les notes joueuse de la Feuille 1 si disponibles
         joueur_cols_f1 = [k for k in [k for k,c,_ in _EVAL_DIMS] if k in fc.columns]
         fc_with_j = fc.dropna(subset=joueur_cols_f1, how="all") if joueur_cols_f1 else pd.DataFrame()
         if fc_with_j.empty:
