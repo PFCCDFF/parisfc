@@ -8108,8 +8108,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
         if _df_player.empty:
             st.info("Aucune donnée technico-tactique pour cette sélection.")
         else:
-            # Agrégation : moyenne pour les percentiles (Timing, Force physique, etc.)
-            # somme uniquement pour Temps de jeu et Buts — comme en v63
+            # Agrégation : moyenne pour les percentiles, somme pour Buts
             try:
                 aggregated = (
                     _df_player.groupby("Player")
@@ -8124,8 +8123,37 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
             except Exception:
                 aggregated = _df_player.head(1).copy()
 
+            # ── Temps de jeu réel depuis GPS match ────────────────────────
+            # pfc_kpi normalise toujours à 90min — on utilise GPS Durée_min
+            _tps_reel = None
+            _gm_tps = st.session_state.get("gps_match_df", pd.DataFrame())
+            if _gm_tps is not None and not _gm_tps.empty and "Player" in _gm_tps.columns and "Durée_min" in _gm_tps.columns:
+                _gm_p = _gm_tps[
+                    _gm_tps["Player"].astype(str).apply(nettoyer_nom_joueuse)
+                    == nettoyer_nom_joueuse(_pgps_name or _perf_player or "")
+                ].copy()
+                # Filtrer par matchs sélectionnés si applicable
+                if _perf_matches_sel and "__adversaire" in _gm_p.columns:
+                    _gm_p = _gm_p[_gm_p["__adversaire"].isin(_perf_matches_sel)]
+                elif _perf_period == "Plage de dates" and "DATE" in _gm_p.columns:
+                    try:
+                        _gm_p = ensure_date_column(_gm_p)
+                        _gm_p = _gm_p[
+                            (_gm_p["DATE"] >= pd.Timestamp(_date_deb)) &
+                            (_gm_p["DATE"] <= pd.Timestamp(_date_fin))
+                        ]
+                    except Exception:
+                        pass
+                if not _gm_p.empty:
+                    _tps_reel = pd.to_numeric(_gm_p["Durée_min"], errors="coerce").sum()
+
             _m1, _m2 = st.columns(2)
-            _m1.metric("Temps de jeu", f"{int(aggregated['Temps de jeu (en minutes)'].iloc[0])} min")
+            if _tps_reel is not None and not pd.isna(_tps_reel) and _tps_reel > 0:
+                _m1.metric("Temps de jeu", f"{int(_tps_reel)} min")
+            else:
+                # Fallback : nombre de matchs × temps moyen estimé
+                _n_matchs = len(_df_player)
+                _m1.metric("Temps de jeu", f"{_n_matchs} match{'s' if _n_matchs > 1 else ''}")
             _m2.metric("Buts", f"{int(aggregated['Buts'].iloc[0])}")
 
             _t_rad, _t_kpi, _t_post = st.tabs(["Radar", "KPIs", "Postes"])
