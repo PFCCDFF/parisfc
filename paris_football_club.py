@@ -4543,13 +4543,20 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
 
     # Ligne 2 : bornes de dates
     col_d1, col_d2, col_d3 = st.columns([1, 1, 1])
-    # Initialiser les dates dans session_state si absentes
-    if "eval_date_debut" not in st.session_state:
-        st.session_state["eval_date_debut"] = _min_date
-    if "eval_date_fin" not in st.session_state:
-        st.session_state["eval_date_fin"] = _max_date
 
-    # Bouton reset AVANT les widgets pour modifier session_state avant leur création
+    # Initialiser ou recadrer les dates dans session_state
+    # (si la saison change, _min_date/_max_date changent → il faut recadrer)
+    _ss_debut = st.session_state.get("eval_date_debut", _min_date)
+    _ss_fin   = st.session_state.get("eval_date_fin",   _max_date)
+    # Recadrer si hors bornes
+    if _ss_debut < _min_date or _ss_debut > _max_date:
+        _ss_debut = _min_date
+    if _ss_fin < _min_date or _ss_fin > _max_date:
+        _ss_fin = _max_date
+    st.session_state["eval_date_debut"] = _ss_debut
+    st.session_state["eval_date_fin"]   = _ss_fin
+
+    # Bouton reset AVANT les widgets
     with col_d3:
         st.markdown("&nbsp;", unsafe_allow_html=True)
         if st.button("↺ Réinitialiser les dates", key="eval_reset_dates"):
