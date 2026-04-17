@@ -6435,6 +6435,11 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
 
     available = [m for m in metrics if m in df.columns]
     if len(available) < 3:
+        # Fallback : utiliser toutes les colonnes numériques hors Player/Poste
+        _skip = {"Player", "Poste", "Temps de jeu (en minutes)", "Buts"}
+        available = [c for c in df.columns
+                     if c not in _skip and pd.api.types.is_numeric_dtype(df[c])]
+    if len(available) < 3:
         return None
 
     d = df.copy()
