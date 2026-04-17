@@ -4497,24 +4497,34 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
 
     # Ligne 2 : bornes de dates
     col_d1, col_d2, col_d3 = st.columns([1, 1, 1])
-    with col_d1:
-        date_debut = st.date_input(
-            "Date début", value=_min_date,
-            min_value=_min_date, max_value=_max_date,
-            key="eval_date_debut"
-        )
-    with col_d2:
-        date_fin = st.date_input(
-            "Date fin", value=_max_date,
-            min_value=_min_date, max_value=_max_date,
-            key="eval_date_fin"
-        )
+    # Initialiser les dates dans session_state si absentes
+    if "eval_date_debut" not in st.session_state:
+        st.session_state["eval_date_debut"] = _min_date
+    if "eval_date_fin" not in st.session_state:
+        st.session_state["eval_date_fin"] = _max_date
+
+    # Bouton reset AVANT les widgets pour modifier session_state avant leur création
     with col_d3:
         st.markdown("&nbsp;", unsafe_allow_html=True)
         if st.button("↺ Réinitialiser les dates", key="eval_reset_dates"):
             st.session_state["eval_date_debut"] = _min_date
             st.session_state["eval_date_fin"]   = _max_date
             st.rerun()
+
+    with col_d1:
+        date_debut = st.date_input(
+            "Date début",
+            value=st.session_state["eval_date_debut"],
+            min_value=_min_date, max_value=_max_date,
+            key="eval_date_debut"
+        )
+    with col_d2:
+        date_fin = st.date_input(
+            "Date fin",
+            value=st.session_state["eval_date_fin"],
+            min_value=_min_date, max_value=_max_date,
+            key="eval_date_fin"
+        )
 
     def _filter(df, is_coach=False):
         if df is None or df.empty: return df
