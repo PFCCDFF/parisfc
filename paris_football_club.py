@@ -8516,6 +8516,38 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
             except Exception:
                 pass
 
+    # ── Fiche Bilan ─────────────────────────────────────────────────────────
+    with st.expander("📋 Générer la Fiche Bilan Périodique", expanded=False):
+        if _perf_player and _perf_player != "Toutes":
+            st.caption(f"Fiche pour **{_perf_player}** · données agrégées sur la sélection en cours")
+            if st.button("📄 Générer et ouvrir la fiche", key="btn_fiche_bilan"):
+                with st.spinner("Génération en cours..."):
+                    try:
+                        _gm_all = st.session_state.get("gps_match_df", pd.DataFrame())
+                        _fiche_html = build_fiche_bilan_html(
+                            player_name=_perf_player,
+                            pfc_kpi_all=pfc_kpi_all,
+                            gps_match_df=_gm_all,
+                        )
+                        import streamlit.components.v1 as _cmp_fiche
+                        _safe = _fiche_html.replace("\\", "\\\\").replace("`", "\\`")
+                        _fiche_js = (
+                            "<script>"
+                            "var w=window.open('','_blank','width=900,height=1200');"
+                            "w.document.write(`" + _safe + "`);"
+                            "w.document.close();"
+                            "setTimeout(function(){w.print();},1000);"
+                            "</script>"
+                            "<p style='color:#22C55E;font-size:12px'>"
+                            "✅ Fiche générée — fenêtre d'impression ouverte. "
+                            "Coche <b>Imprimer les arrière-plans</b> pour le fond sombre.</p>"
+                        )
+                        _cmp_fiche.html(_fiche_js, height=50)
+                    except Exception as _fe:
+                        st.error(f"Erreur : {_fe}")
+        else:
+            st.info("Sélectionne une joueuse dans les contrôles ci-dessus.")
+
     # ── 3 onglets internes ─────────────────────────────────────────────────
     _tab_tac, _tab_eval, _tab_gps = st.tabs([
         "🎯 Technique & Tactique",
@@ -9445,40 +9477,6 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     render_gps_concordance_ui(_gps_match_df, sorted(set(_tpc)))
 
 
-
-    # ── Fiche Bilan Périodique ────────────────────────────────────────────────
-    st.divider()
-    st.markdown("#### 📋 Fiche Bilan Périodique")
-    if _perf_player and _perf_player != "Toutes":
-        if st.button("📄 Générer la fiche bilan", key="btn_fiche_bilan"):
-            with st.spinner("Génération en cours..."):
-                try:
-                    _gm_all = st.session_state.get("gps_match_df", pd.DataFrame())
-                    _fiche_html = build_fiche_bilan_html(
-                        player_name=_perf_player,
-                        pfc_kpi_all=pfc_kpi_all,
-                        gps_match_df=_gm_all,
-                    )
-                    import streamlit.components.v1 as _cmp_fiche
-                    _safe_html = _fiche_html.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
-                    _fiche_js = (
-                        "<script>"
-                        "function printFiche(){"
-                        "var w=window.open('','_blank','width=900,height=1200');"
-                        "w.document.write(`" + _safe_html + "`);"
-                        "w.document.close();"
-                        "setTimeout(function(){w.print();},800);}"
-                        "printFiche();"
-                        "</script>"
-                        "<p style='color:#C8D8E8;font-size:12px'>"
-                        "✅ Fiche générée — une fenêtre d'impression va s'ouvrir. "
-                        "Coche <b>Imprimer les arrière-plans</b> pour le fond sombre.</p>"
-                    )
-                    _cmp_fiche.html(_fiche_js, height=60)
-                except Exception as _fe:
-                    st.error(f"Erreur génération fiche : {_fe}")
-    else:
-        st.info("Sélectionne une joueuse pour générer sa fiche bilan.")
 
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     st.sidebar.markdown(
