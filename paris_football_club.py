@@ -7755,6 +7755,375 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
 
 
 
+def build_fiche_bilan_html(player_name: str,
+                           pfc_kpi_all: pd.DataFrame,
+                           gps_match_df: pd.DataFrame,
+                           photo_b64: str = None,
+                           player_info: dict = None) -> str:
+    """Génère la fiche bilan périodique HTML d'une joueuse.
+    Reproduit la structure de la fiche papier :
+    - En-tête identité + photo
+    - Radar tactique (KPIs agrégés)
+    - Indicateurs techniques (passes, dribbles, tirs)
+    - Indicateurs défensifs (duels, interceptions, pertes)
+    - Indicateurs athlétiques GPS
+    """
+    import base64 as _b64f, io as _io, math as _mf
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plt_f
+    from mplsoccer import Radar
+
+    def _n(v):
+        try:
+            r = float(v)
+            return None if _mf.isnan(r) else r
+        except: return None
+
+    def _pct(num, den):
+        n, d = _n(num), _n(den)
+        return round(n/d*100, 1) if (n is not None and d and d > 0) else None
+
+    def _fmt(v, dec=0, unit=""):
+        if v is None: return "—"
+        return f"{v:,.{dec}f}{' '+unit if unit else ''}".replace(",", " ")
+
+    # ── Filtrer les données de la joueuse ──────────────────────────────────
+    _pn = nettoyer_nom_joueuse(player_name)
+
+    df_p = pd.DataFrame()
+    if pfc_kpi_all is not None and not pfc_kpi_all.empty and "Player" in pfc_kpi_all.columns:
+        df_p = pfc_kpi_all[
+            pfc_kpi_all["Player"].astype(str).apply(nettoyer_nom_joueuse) == _pn
+        ].copy()
+
+    gps_p = pd.DataFrame()
+    if gps_match_df is not None and not gps_match_df.empty and "Player" in gps_match_df.columns:
+        gps_p = gps_match_df[
+            gps_match_df["Player"].astype(str).apply(nettoyer_nom_joueuse) == _pn
+        ].copy()
+
+    # ── Agrégation tactique ────────────────────────────────────────────────
+    def _mean(col):
+        if col in df_p.columns:
+            return pd.to_numeric(df_p[col], errors="coerce").mean()
+        return None
+
+    def _sum(col):
+        if col in df_p.columns:
+            return pd.to_numeric(df_p[col], errors="coerce").sum()
+        return None
+
+    def _minmax(col):
+        if col in df_p.columns:
+            s = pd.to_numeric(df_p[col], errors="coerce").dropna()
+            return (s.min(), s.mean(), s.max()) if len(s) else (None, None, None)
+        return (None, None, None)
+
+    n_matchs = len(df_p)
+    tps_moy = _mean("Temps de jeu (en minutes)")
+
+    # KPIs radar
+    rigueur    = _n(_mean("Rigueur"))
+    recuper    = _n(_mean("Récupération"))
+    distribut  = _n(_mean("Distribution"))
+    percussion = _n(_mean("Percussion"))
+    finition   = _n(_mean("Finition"))
+    creativite = _n(_mean("Créativité"))
+
+    # Indicateurs techniques
+    passes_ok_pct  = _n(_mean("Passes réussies"))
+    dribbles_ok_pct= _n(_mean("Explosivité"))
+    tirs_cadres_pct= _n(_mean("Précision"))
+    buts_tot       = _n(_sum("Buts")) or 0
+    passes_dec     = _n(_sum("__assists")) or 0
+    passes_1t      = _n(_sum("__last_third")) or 0
+
+    # Indicateurs défensifs
+    d_min, d_moy, d_max = _minmax("Duels défensifs")
+    i_min, i_moy, i_max = _minmax("Interceptions")
+    duels_ok_pct   = _n(_mean("Force physique"))
+    timing_val     = _n(_mean("Timing"))
+    fautes_moy     = _n(_mean("Fautes")) if "Fautes" in df_p.columns else None
+
+    # GPS agrégé
+    def _gps_mean(col):
+        if col in gps_p.columns:
+            return pd.to_numeric(gps_p[col], errors="coerce").mean()
+        return None
+    def _gps_sum(col):
+        if col in gps_p.columns:
+            return pd.to_numeric(gps_p[col], errors="coerce").sum()
+        return None
+
+    dist_moy    = _n(_gps_mean("Distance (m)"))
+    hid_moy     = _n(_gps_mean("Distance HID (>13 km/h)"))
+    spr_moy     = _n(_gps_mean("Sprints_23"))
+    vmax_max    = _n(gps_p["Vitesse max (km/h)"].apply(pd.to_numeric, errors="coerce").max()) if "Vitesse max (km/h)" in gps_p.columns else None
+    tps_gps     = _n(_gps_mean("Durée_min"))
+    freq_moy    = round(dist_moy / tps_gps, 1) if (dist_moy and tps_gps and tps_gps > 0) else None
+
+    # ── Radar matplotlib → base64 ─────────────────────────────────────────
+    _radar_vals = [rigueur or 0, recuper or 0, distribut or 0,
+                   percussion or 0, finition or 0, creativite or 0]
+    _radar_labels = ["Rigueur", "Récupération", "Distribution",
+                     "Percussion", "Finition", "Créativité"]
+    radar_b64 = ""
+    try:
+        _rdr = Radar(_radar_labels, [0]*6, [100]*6, num_rings=4,
+                     ring_width=1, center_circle_radius=1)
+        _fig_r, _ax_r = _rdr.setup_axis(figsize=(4, 4))
+        _fig_r.patch.set_facecolor("#060F1A")
+        _ax_r.set_facecolor("#060F1A")
+        _rdr.draw_circles(_ax_r, facecolor="#0C1A28", edgecolor="#1E2D40")
+        _rdr.draw_radar(_radar_vals, _ax_r,
+                        kwargs_radar={"facecolor":"#00A3E0","alpha":0.4},
+                        kwargs_rings={"facecolor":"#00A3E0","alpha":0.2})
+        _rdr.draw_range_labels(_ax_r, fontsize=6, color="#6A8090")
+        _rdr.draw_param_labels(_ax_r, fontsize=8, color="#C8D8E8")
+        _buf_r = _io.BytesIO()
+        _fig_r.savefig(_buf_r, format="png", dpi=130, bbox_inches="tight",
+                       facecolor="#060F1A")
+        _buf_r.seek(0)
+        radar_b64 = "data:image/png;base64," + _b64f.b64encode(_buf_r.read()).decode()
+        _plt_f.close(_fig_r)
+    except Exception as _e:
+        pass
+
+    # ── Helpers HTML ──────────────────────────────────────────────────────
+    def _kpi_circle(val, label, color="#00A3E0", size=70):
+        v = _n(val)
+        pct_arc = int((v or 0))
+        return (
+            f"<div style='text-align:center'>"
+            f"<div style='position:relative;width:{size}px;height:{size}px;margin:0 auto'>"
+            f"<svg viewBox='0 0 36 36' style='width:{size}px;height:{size}px;transform:rotate(-90deg)'>"
+            f"<circle cx='18' cy='18' r='15.9' fill='none' stroke='#1E2D40' stroke-width='3'/>"
+            f"<circle cx='18' cy='18' r='15.9' fill='none' stroke='{color}' stroke-width='3'"
+            f" stroke-dasharray='{pct_arc} {100-pct_arc}' stroke-linecap='round'/>"
+            f"</svg>"
+            f"<div style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"
+            f"font-size:{int(size*0.22)}px;font-weight:700;color:#E8F4FF'>"
+            f"{_fmt(v,0)}%</div>"
+            f"</div>"
+            f"<div style='font-size:9px;color:#8A9BB0;margin-top:3px'>{label}</div>"
+            f"</div>"
+        )
+
+    def _bar_h(val, max_val, color, height=6):
+        pct = min(int((val or 0)/(max_val or 1)*100), 100)
+        return (f"<div style='height:{height}px;background:#1E2D40;border-radius:3px;overflow:hidden'>"
+                f"<div style='width:{pct}%;height:{height}px;background:{color};border-radius:3px'></div></div>")
+
+    def _stat_row(label, val, unit="", color="#00A3E0", max_val=100):
+        vstr = _fmt(_n(val), 1 if isinstance(val, float) else 0, unit)
+        return (f"<div style='margin-bottom:8px'>"
+                f"<div style='display:flex;justify-content:space-between;margin-bottom:2px'>"
+                f"<span style='font-size:9px;color:#8A9BB0'>{label}</span>"
+                f"<span style='font-size:10px;font-weight:700;color:#E8F4FF'>{vstr}</span></div>"
+                f"{_bar_h(_n(val), max_val, color)}"
+                f"</div>")
+
+    def _minmaxmoy(label, mn, my, mx, color="#00A3E0"):
+        _mn = _fmt(_n(mn), 0); _my = _fmt(_n(my), 1); _mx = _fmt(_n(mx), 0)
+        fill_w = int((_n(my) or 0)/(_n(mx) or 1)*100) if _n(mx) else 0
+        return (
+            f"<div style='margin-bottom:10px'>"
+            f"<div style='font-size:9px;color:#8A9BB0;margin-bottom:4px'>{label}</div>"
+            f"<div style='display:flex;align-items:center;gap:6px'>"
+            f"<span style='font-size:9px;color:#4A6070;width:16px'>{_mn}</span>"
+            f"<div style='flex:1;height:20px;background:#1E2D40;border-radius:4px;position:relative'>"
+            f"<div style='position:absolute;left:0;top:0;height:100%;width:{fill_w}%;background:{color};border-radius:4px;opacity:0.7'></div>"
+            f"<div style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"
+            f"font-size:11px;font-weight:700;color:#E8F4FF'>{_my}</div>"
+            f"</div>"
+            f"<span style='font-size:9px;color:#4A6070;width:16px;text-align:right'>{_mx}</span>"
+            f"</div></div>"
+        )
+
+    def _section(title, color="#00A3E0"):
+        return (f"<div style='font-size:8px;font-weight:700;color:{color};"
+                f"text-transform:uppercase;letter-spacing:.12em;"
+                f"border-left:3px solid {color};padding-left:6px;"
+                f"margin:0 0 8px'>{ title}</div>")
+
+    # ── GPS objectifs poste (seuils standards) ────────────────────────────
+    _gps_objectives = {
+        "Endurance (m)": (10000, dist_moy),
+        "Intensité (m)":  (800,  hid_moy),
+        "Sprint (#)":     (10,   spr_moy),
+        "Fréquence (m/min)": (110, freq_moy),
+    }
+
+    photo_html = ""
+    if photo_b64:
+        photo_html = f"<img src='{photo_b64}' style='width:70px;height:70px;border-radius:50%;object-fit:cover;border:2px solid #00A3E0'>"
+    else:
+        initials = "".join(w[0] for w in player_name.split()[:2]).upper()
+        photo_html = (f"<div style='width:70px;height:70px;border-radius:50%;background:#0C1A28;"
+                      f"border:2px solid #00A3E0;display:flex;align-items:center;justify-content:center;"
+                      f"font-size:22px;font-weight:700;color:#00A3E0'>{initials}</div>")
+
+    info = player_info or {}
+    name_parts = player_name.title().split()
+    nom = name_parts[0] if name_parts else ""
+    prenom = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+@page {{ size: A4 portrait; margin: 0; }}
+* {{ box-sizing:border-box; margin:0; padding:0; }}
+html,body {{
+  background:#060F1A !important;
+  color:#C8D8E8;
+  font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;
+  font-size:10px;
+  -webkit-print-color-adjust:exact !important;
+  print-color-adjust:exact !important;
+}}
+.page {{
+  background:#060F1A !important;
+  width:210mm; min-height:297mm;
+  padding:8mm 10mm 8mm 10mm;
+  display:grid;
+  grid-template-rows:auto 1fr;
+  gap:6px;
+}}
+.header {{
+  display:grid; grid-template-columns:auto 1fr auto;
+  gap:10px; align-items:center;
+  background:#0C1A28; border:1px solid #1E2D40;
+  border-radius:8px; padding:10px 14px;
+  margin-bottom:8px;
+}}
+.grid-3 {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }}
+.grid-2 {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }}
+.panel {{
+  background:#0C1A28; border:1px solid #1E2D40;
+  border-radius:8px; padding:10px 12px;
+}}
+.val-big {{
+  font-size:28px; font-weight:700; color:#E8F4FF; line-height:1;
+}}
+.label-sm {{ font-size:8px; color:#6A8090; text-transform:uppercase; letter-spacing:.08em; }}
+.badge {{
+  background:#0A2E18; color:#22C55E; font-size:9px; font-weight:700;
+  padding:3px 10px; border-radius:20px; border:1px solid #1D9E75;
+}}
+</style></head>
+<body><div class="page">
+
+<!-- EN-TÊTE -->
+<div class="header">
+  <div style="display:flex;align-items:center;gap:10px">
+    {photo_html}
+    <div>
+      <div style="font-size:8px;color:#00A3E0;font-weight:700;letter-spacing:.15em;text-transform:uppercase">Fiche Performance</div>
+      <div style="font-size:20px;font-weight:700;color:#E8F4FF;line-height:1.1">{nom}</div>
+      <div style="font-size:14px;color:#8A9BB0">{prenom}</div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:0 16px">
+    <div><div class="label-sm">Née le</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('ddn','—')}</div></div>
+    <div><div class="label-sm">Taille</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('taille','—')}</div></div>
+    <div><div class="label-sm">Poids</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('poids','—')}</div></div>
+    <div><div class="label-sm">Latéralité</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('lateralite','—')}</div></div>
+  </div>
+  <div style="text-align:right">
+    <div class="label-sm" style="margin-bottom:4px">Matchs analysés</div>
+    <div style="font-size:24px;font-weight:700;color:#00A3E0">{n_matchs}</div>
+    <div class="label-sm" style="margin-top:4px">Tps moy. <span style="color:#C8D8E8">{_fmt(tps_gps or tps_moy,0)} min</span></div>
+  </div>
+</div>
+
+<!-- CORPS : 3 colonnes -->
+<div class="grid-3">
+
+  <!-- COL 1 : Radar + poste -->
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <div class="panel">
+      {_section("Indicateurs Tactiques")}
+      {"<img src='"+radar_b64+"' style='width:100%;border-radius:4px'>" if radar_b64 else "<div style='height:160px;display:flex;align-items:center;justify-content:center;color:#4A6070'>Données insuffisantes</div>"}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:6px">
+        {"".join(f"<div style='display:flex;justify-content:space-between;font-size:9px'><span style='color:#8A9BB0'>{l}</span><span style='color:#00A3E0;font-weight:700'>{_fmt(v,0)}</span></div>" for l,v in [("Rigueur",rigueur),("Récupération",recuper),("Distribution",distribut),("Percussion",percussion),("Finition",finition),("Créativité",creativite)])}
+      </div>
+    </div>
+  </div>
+
+  <!-- COL 2 : Techniques + Défensifs -->
+  <div style="display:flex;flex-direction:column;gap:8px">
+
+    <div class="panel">
+      {_section("Indicateurs Techniques")}
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">
+        {_kpi_circle(passes_ok_pct, "Passes réussies", "#00A3E0")}
+        {_kpi_circle(dribbles_ok_pct, "Dribbles réussis", "#7F77DD")}
+        {_kpi_circle(tirs_cadres_pct, "Tirs cadrés", "#EF9F27")}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;text-align:center;margin-bottom:8px">
+        <div><div class="val-big" style="font-size:20px;color:#22C55E">{int(buts_tot)}</div><div class="label-sm">Buts</div></div>
+        <div><div class="val-big" style="font-size:20px;color:#5DCAA5">{int(passes_dec)}</div><div class="label-sm">Passes déc.</div></div>
+        <div><div class="val-big" style="font-size:20px;color:#378ADD">{int(passes_1t)}</div><div class="label-sm">Passe 1/3</div></div>
+      </div>
+      <div style="font-size:9px;color:#6A8090;margin-bottom:4px">% passes réussies par type</div>
+      {_stat_row("Passes courtes", _n(_mean("Technique 2")), "%", "#378ADD", 100)}
+      {_stat_row("Passes longues", _n(_mean("Technique 3")), "%", "#7F77DD", 100)}
+    </div>
+
+    <div class="panel">
+      {_section("Indicateurs Défensifs", "#EF9F27")}
+      {_minmaxmoy("Duels défensifs / match", d_min, d_moy, d_max, "#EF9F27")}
+      {_stat_row("Duels gagnés %", (duels_ok_pct or 0), "%", "#EF9F27", 100)}
+      {_stat_row("Timing (sans faute %)", (timing_val or 0), "%", "#E24B4A", 100)}
+      {_minmaxmoy("Interceptions / match", i_min, i_moy, i_max, "#5DCAA5")}
+      {""+_stat_row("Fautes / match", fautes_moy, "", "#FF6B6B", 5) if fautes_moy is not None else ""}
+    </div>
+
+  </div>
+
+  <!-- COL 3 : GPS athlétique -->
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <div class="panel" style="flex:1">
+      {_section("Indicateurs Athlétiques", "#1D9E75")}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+        <div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+          <div class="val-big" style="font-size:18px;color:#1D9E75">{_fmt(dist_moy,0)}</div>
+          <div class="label-sm">Endurance (m)</div>
+        </div>
+        <div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+          <div class="val-big" style="font-size:18px;color:#5DCAA5">{_fmt(hid_moy,0)}</div>
+          <div class="label-sm">Intensité (m)</div>
+        </div>
+        <div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+          <div class="val-big" style="font-size:18px;color:#EF9F27">{_fmt(spr_moy,0)}</div>
+          <div class="label-sm">Sprint (nb)</div>
+        </div>
+        <div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+          <div class="val-big" style="font-size:18px;color:#E24B4A">{_fmt(vmax_max,1)}</div>
+          <div class="label-sm">Vitesse max (km/h)</div>
+        </div>
+        <div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center;grid-column:span 2">
+          <div class="val-big" style="font-size:18px;color:#378ADD">{_fmt(freq_moy,1)}</div>
+          <div class="label-sm">Fréquence (m/min)</div>
+        </div>
+      </div>
+      {_section("Objectifs au poste", "#378ADD")}
+      {"".join(_stat_row(lbl, val, "", "#378ADD", obj) for lbl,(obj,val) in _gps_objectives.items())}
+    </div>
+  </div>
+</div>
+
+<!-- PIED DE PAGE -->
+<div style="border-top:1px solid #1E2D40;margin-top:6px;padding-top:5px;display:flex;justify-content:space-between;font-size:8px;color:#3A4A5A">
+  <span>Paris FC — Centre de Formation Féminin</span>
+  <span>Fiche générée automatiquement · Données tactiques + GPS</span>
+</div>
+
+</div></body></html>"""
+    return html
+
+
 def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
                                 match_label: str) -> str:
     """Génère un rapport HTML A4 de performance physique match — fond sombre, 1 page."""
@@ -8292,6 +8661,36 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 st.info("Colonnes insuffisantes pour la comparaison.")
                     else:
                         st.warning("Référentiel APL non disponible. Dépose les fichiers `Indiv_*.csv` dans Drive.")
+
+        # ── Fiche Bilan ───────────────────────────────────────────────────
+        st.divider()
+        st.markdown("#### 📋 Fiche Bilan Périodique")
+        if st.button("📄 Générer la fiche bilan", key="btn_fiche_bilan"):
+            with st.spinner("Génération en cours..."):
+                try:
+                    _gm_all = st.session_state.get("gps_match_df", pd.DataFrame())
+                    _fiche_html = build_fiche_bilan_html(
+                        player_name=_perf_player,
+                        pfc_kpi_all=pfc_kpi_all,
+                        gps_match_df=_gm_all,
+                    )
+                    import streamlit.components.v1 as _cmp_fiche
+                    _fiche_js = (
+                        '<script>'
+                        'function printFiche(){'
+                        'var w=window.open("","_blank","width=900,height=1200");'
+                        'w.document.write(`' + _fiche_html.replace('`', '\\`') + '`);'
+                        'w.document.close();'
+                        'setTimeout(function(){w.print();},800);}'
+                        'printFiche();'
+                        '</script>'
+                        '<p style="color:#C8D8E8;font-size:12px">'
+                        '✅ Fiche générée — une fenêtre d\'impression va s\'ouvrir. '
+                        'Coche "Imprimer les arrière-plans" pour le fond sombre.</p>'
+                    )
+                    _cmp_fiche.html(_fiche_js, height=60)
+                except Exception as _fe:
+                    st.error(f"Erreur génération fiche : {_fe}")
 
         # Rapport de match tactique
         st.divider()
