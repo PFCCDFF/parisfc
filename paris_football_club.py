@@ -3448,55 +3448,60 @@ def prepare_zscore_comparison(player_df: pd.DataFrame,
                                ref_df: pd.DataFrame,
                                player_label: str,
                                ref_label: str) -> pd.DataFrame:
-    """Normalise les métriques radar via z-score par rapport au référentiel.
+    """Comparaison normalisée par z-score sur les stats BRUTES du référentiel.
 
-    Pour chaque métrique M :
-      - Calcule moyenne(M) et std(M) sur l'ensemble des lignes du référentiel
-        (toutes les joueuses / profils de poste disponibles dans ref_df)
-      - z_joueuse = (valeur_joueuse - moyenne_ref) / std_ref
-      - z_ref     = 0 (par définition : le référentiel est la baseline)
-      - Score final = clamp(50 + z * 15, 0, 100)
-        → score 50 = dans la moyenne du référentiel
-        → score 65 = +1 écart-type au-dessus
-        → score 35 = -1 écart-type en-dessous
+    Le z-score est calculé sur les colonnes brutes (Passes, Duels défensifs, etc.)
+    qui survivent dans edf_kpi/apl_kpi après create_metrics.
+    Cela évite de faire un z-score sur des percentiles déjà calculés séparément
+    sur des populations différentes.
 
-    Retourne un DataFrame à 2 lignes (joueuse + référentiel) avec les colonnes
-    KPI normalisées, prêt pour create_comparison_radar.
+    Formule : score = clamp(50 + (val - µ_ref) / σ_ref × 15, 0, 100)
+      score 50 = dans la moyenne du référentiel
+      score 65 = +1 σ au-dessus (meilleure que ~84%)
+      score 35 = −1 σ en-dessous
     """
+    # Colonnes brutes communes aux deux datasets après create_metrics
+    _RAW_COLS = [
+        "Passes", "Passes réussies",
+        "Passes réussies (courtes)", "Passes réussies (longues)",
+        "Duels défensifs", "Duels défensifs gagnés",
+        "Dribbles", "Dribbles réussis",
+        "Interceptions", "Tirs", "Tirs cadrés",
+    ]
+    # Fallback sur KPI si aucune colonne brute commune
     _KPI_COLS = [
+        "Rigueur", "Récupération", "Distribution",
+        "Percussion", "Finition", "Créativité",
         "Timing", "Force physique", "Intelligence tactique",
-        "Technique 1", "Technique 2", "Technique 3",
-        "Explosivité", "Prise de risque", "Précision", "Sang-froid",
-        "Créativité 1", "Créativité 2",
-        "Rigueur", "Récupération", "Distribution", "Percussion", "Finition", "Créativité",
+        "Technique 1", "Technique 2", "Explosivité",
     ]
 
     if player_df is None or player_df.empty or ref_df is None or ref_df.empty:
         return pd.DataFrame()
 
-    # Colonnes disponibles dans les deux
-    avail = [c for c in _KPI_COLS
+    # Choisir les colonnes disponibles — brutes en priorité
+    avail = [c for c in _RAW_COLS
              if c in player_df.columns and c in ref_df.columns]
+    if not avail:
+        avail = [c for c in _KPI_COLS
+                 if c in player_df.columns and c in ref_df.columns]
     if not avail:
         return pd.DataFrame()
 
-    # Valeurs joueuse (1 ligne agrégée)
-    p_row = player_df.iloc[0].copy()
+    p_row = player_df.iloc[0]
 
-    # Stats du référentiel (toutes les lignes)
-    ref_num = ref_df[avail].apply(pd.to_numeric, errors="coerce")
+    ref_num  = ref_df[avail].apply(pd.to_numeric, errors="coerce")
     ref_mean = ref_num.mean()
-    ref_std  = ref_num.std().replace(0, np.nan)  # éviter division par zéro
+    ref_std  = ref_num.std().replace(0, np.nan)
 
     out_rows = []
-    for label, source in [(player_label, p_row), (ref_label, None)]:
+    for label, is_ref in [(player_label, False), (ref_label, True)]:
         row_out = {"Player": label}
         for c in avail:
-            if source is None:
-                # Le référentiel = score 50 (baseline)
+            if is_ref:
                 row_out[c] = 50.0
             else:
-                val = pd.to_numeric(source.get(c), errors="coerce")
+                val = pd.to_numeric(p_row.get(c), errors="coerce")
                 mu  = ref_mean.get(c)
                 sig = ref_std.get(c)
                 if pd.isna(val) or pd.isna(mu) or pd.isna(sig):
