@@ -3255,11 +3255,17 @@ def parse_apl_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
         def _avg(k): return sum(p[k] for p in players) / n
         def _sum(k): return sum(p[k] for p in players)
 
+        # Ratios calculés par joueuse individuelle (scale-invariant)
+        # → comparables avec pfc_kpi quelle que soit la durée du match
+        def _ratio(num_k, den_k):
+            vals = [p[num_k]/p[den_k]*100 for p in players if p[den_k] > 0]
+            return np.mean(vals) if vals else np.nan
+
         poste = _APL_PROFIL_TO_POSTE.get(profil, profil)
         rows_out.append({
             'Player':                       f"{profil} (APL)",
             'Poste':                        poste,
-            # Colonnes attendues par create_metrics
+            # Colonnes brutes — pour create_metrics
             'Passes':                       _avg('passes'),
             'Passes courtes':               _avg('passes_courtes'),
             'Passes longues':               _avg('passes_longues'),
@@ -3275,12 +3281,20 @@ def parse_apl_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
             'Tirs':                         _avg('tirs'),
             'Tirs cadrés':                  _avg('tirs_cadres'),
             'Buts':                         _avg('buts'),
+            # Ratios (scale-invariant — comparables entre APL et pfc_kpi)
+            'APL_pct_passes_ok':            _ratio('passes_ok', 'passes'),
+            'APL_pct_passes_courtes_ok':    _ratio('passes_ok_courtes', 'passes_courtes'),
+            'APL_pct_passes_longues_ok':    _ratio('passes_ok_longues', 'passes_longues'),
+            'APL_pct_duels_ok':             _ratio('duels_ok', 'duels'),
+            'APL_pct_dribbles_ok':          _ratio('dribbles_ok', 'dribbles'),
+            'APL_pct_tirs_cadres':          _ratio('tirs_cadres', 'tirs'),
+            'APL_interceptions_p90':        _avg('interceptions'),  # nb absolu gardé tel quel
             # Colonnes créativité
             '__total_passes':               _avg('passes'),
             '__last_third':                 _avg('passes_last_third'),
             '__assists':                    _avg('passes_decisives'),
             '__deseq':                      _avg('deseq'),
-            '__team_deseq_total':           team_deseq_total / n,  # normalisé par joueuse
+            '__team_deseq_total':           team_deseq_total / n,
         })
 
     return pd.DataFrame(rows_out)
@@ -3444,74 +3458,101 @@ def prepare_comparison_data(df, player_name, selected_matches=None):
     return safe_int_numeric_only(aggregated)
 
 
-def prepare_zscore_comparison(player_df: pd.DataFrame,
-                               ref_df: pd.DataFrame,
-                               player_label: str,
-                               ref_label: str) -> pd.DataFrame:
-    """Comparaison normalisée par z-score sur les stats BRUTES du référentiel.
+def prepare_combined_ranking(player_df: pd.DataFrame,
+                              ref_df: pd.DataFrame,
+                              player_label: str,
+                              ref_label: str) -> pd.DataFrame:
+    """Solution 2 — Percentile global sur dataset combiné PFC + référentiel.
 
-    Le z-score est calculé sur les colonnes brutes (Passes, Duels défensifs, etc.)
-    qui survivent dans edf_kpi/apl_kpi après create_metrics.
-    Cela évite de faire un z-score sur des percentiles déjà calculés séparément
-    sur des populations différentes.
+    Étapes :
+    1. Calculer les RATIOS bruts (avant tout ranking) sur les deux datasets
+       avec exactement les mêmes formules.
+    2. Concaténer joueuse(s) PFC + toutes les lignes du référentiel.
+    3. Appliquer rank(pct=True) sur le dataset combiné.
+    4. Extraire la ligne joueuse et une ligne « moyenne référentiel ».
 
-    Formule : score = clamp(50 + (val - µ_ref) / σ_ref × 15, 0, 100)
-      score 50 = dans la moyenne du référentiel
-      score 65 = +1 σ au-dessus (meilleure que ~84%)
-      score 35 = −1 σ en-dessous
+    Avantage : une joueuse avec score 75 est réellement meilleure que
+    75% des joueuses de la distribution combinée PFC+EDF/APL.
     """
-    # Colonnes brutes communes aux deux datasets après create_metrics
-    _RAW_COLS = [
-        "Passes", "Passes réussies",
-        "Passes réussies (courtes)", "Passes réussies (longues)",
-        "Duels défensifs", "Duels défensifs gagnés",
-        "Dribbles", "Dribbles réussis",
-        "Interceptions", "Tirs", "Tirs cadrés",
-    ]
-    # Fallback sur KPI si aucune colonne brute commune
-    _KPI_COLS = [
-        "Rigueur", "Récupération", "Distribution",
-        "Percussion", "Finition", "Créativité",
-        "Timing", "Force physique", "Intelligence tactique",
-        "Technique 1", "Technique 2", "Explosivité",
-    ]
+    # Ratios bruts comparables entre PFC et EDF/APL (formules identiques)
+    _RATIO_DEFS = {
+        "Timing":            lambda r: _ratio(r, "Duels défensifs", None, "Fautes",
+                                              formula="(d-f)/d"),
+        "Force physique":    lambda r: _ratio(r, "Duels défensifs gagnés",
+                                              "Duels défensifs"),
+        "Technique passe":   lambda r: _ratio(r, "Passes réussies", "Passes"),
+        "Passe courte":      lambda r: _ratio(r, "Passes réussies (courtes)",
+                                              "Passes courtes"),
+        "Passe longue":      lambda r: _ratio(r, "Passes réussies (longues)",
+                                              "Passes longues"),
+        "Explosivité":       lambda r: _ratio(r, "Dribbles réussis", "Dribbles"),
+        "Précision":         lambda r: _ratio(r, "Tirs cadrés", "Tirs"),
+        "Interceptions":     lambda r: _ratio_vol(r, "Interceptions"),
+        "Passes":            lambda r: _ratio_vol(r, "Passes"),
+        "Dribbles":          lambda r: _ratio_vol(r, "Dribbles"),
+    }
+
+    def _ratio(row, num_col, den_col, sub_col=None, formula=None):
+        num = _flt(row, num_col)
+        den = _flt(row, den_col) if den_col else None
+        sub = _flt(row, sub_col) if sub_col else 0
+        if formula == "(d-f)/d":
+            d = _flt(row, num_col)
+            f = _flt(row, sub_col) if sub_col else 0
+            return (d - f) / d if (d and d > 0) else np.nan
+        return (num / den) if (num is not None and den and den > 0) else np.nan
+
+    def _ratio_vol(row, col):
+        v = _flt(row, col)
+        return v if v is not None else np.nan
+
+    def _flt(row, col):
+        if col is None or col not in row.index: return None
+        v = pd.to_numeric(row.get(col), errors="coerce")
+        return float(v) if pd.notna(v) else None
 
     if player_df is None or player_df.empty or ref_df is None or ref_df.empty:
         return pd.DataFrame()
 
-    # Choisir les colonnes disponibles — brutes en priorité
-    avail = [c for c in _RAW_COLS
-             if c in player_df.columns and c in ref_df.columns]
-    if not avail:
-        avail = [c for c in _KPI_COLS
-                 if c in player_df.columns and c in ref_df.columns]
-    if not avail:
+    # ── Calculer les ratios sur chaque dataset ─────────────────────────────
+    def _compute_ratios(df, label_col="Player"):
+        rows = []
+        for _, row in df.iterrows():
+            d = {"Player": row.get(label_col, "?")}
+            for name, fn in _RATIO_DEFS.items():
+                try: d[name] = fn(row)
+                except: d[name] = np.nan
+            rows.append(d)
+        return pd.DataFrame(rows)
+
+    pfc_ratios = _compute_ratios(player_df)
+    ref_ratios = _compute_ratios(ref_df)
+
+    # Colonnes disponibles dans les deux
+    ratio_cols = [c for c in _RATIO_DEFS.keys()
+                  if c in pfc_ratios.columns and c in ref_ratios.columns
+                  and pfc_ratios[c].notna().any() and ref_ratios[c].notna().any()]
+    if len(ratio_cols) < 3:
         return pd.DataFrame()
 
-    p_row = player_df.iloc[0]
+    # ── Concaténer et appliquer rank(pct=True) sur l'ensemble ──────────────
+    combined = pd.concat([pfc_ratios, ref_ratios], ignore_index=True)
+    for c in ratio_cols:
+        combined[c] = (pd.to_numeric(combined[c], errors="coerce")
+                       .rank(pct=True, na_option="keep") * 100)
 
-    ref_num  = ref_df[avail].apply(pd.to_numeric, errors="coerce")
-    ref_mean = ref_num.mean()
-    ref_std  = ref_num.std().replace(0, np.nan)
+    # ── Extraire joueuse (1re ligne) + moyenne référentiel ─────────────────
+    n_pfc = len(pfc_ratios)
+    player_row = combined.iloc[0].copy()
+    player_row["Player"] = player_label
 
-    out_rows = []
-    for label, is_ref in [(player_label, False), (ref_label, True)]:
-        row_out = {"Player": label}
-        for c in avail:
-            if is_ref:
-                row_out[c] = 50.0
-            else:
-                val = pd.to_numeric(p_row.get(c), errors="coerce")
-                mu  = ref_mean.get(c)
-                sig = ref_std.get(c)
-                if pd.isna(val) or pd.isna(mu) or pd.isna(sig):
-                    row_out[c] = 50.0
-                else:
-                    z = (val - mu) / sig
-                    row_out[c] = float(np.clip(50 + z * 15, 0, 100))
-        out_rows.append(row_out)
+    ref_rows = combined.iloc[n_pfc:]
+    ref_mean_row = ref_rows[ratio_cols].mean()
+    ref_mean_row["Player"] = ref_label
 
-    return pd.DataFrame(out_rows)
+    result = pd.DataFrame([player_row[["Player"] + ratio_cols],
+                           ref_mean_row[["Player"] + ratio_cols]])
+    return result.reset_index(drop=True)
 
 
 def aggregate_player_stats(df: pd.DataFrame) -> pd.DataFrame:
@@ -8201,56 +8242,54 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         if fig_c: st.pyplot(fig_c, use_container_width=True); plt.close(fig_c)
 
                 elif "EDF" in _perf_compare:
-                    _edf_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("EDF",na=False)] \
+                    _edf_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("EDF", na=False)] \
                              if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
                     if not _edf_f.empty:
                         _ps = st.selectbox("Poste EDF", sorted(_edf_f["Poste"].unique()), key="perf_edf_p")
-                        # Référentiel = toutes les lignes EDF (pas juste le poste sélectionné)
-                        # pour avoir une distribution significative pour le z-score
                         _ref_pop = _edf_f.copy()
                         st.caption(
-                            "📊 Comparaison normalisée — score 50 = moyenne EDF · "
-                            "+15 pts = +1 écart-type au-dessus · −15 pts = −1 écart-type en-dessous"
+                            "📊 Percentile global — score 75 = meilleure que 75% "
+                            "des joueuses de la distribution combinée PFC + EDF"
                         )
                         if not _player_df_c.empty and not _ref_pop.empty:
-                            _zscore_df = prepare_zscore_comparison(
+                            _comb_df = prepare_combined_ranking(
                                 _player_df_c, _ref_pop,
                                 player_label=_perf_player,
                                 ref_label=f"Moyenne {_ps}"
                             )
-                            if not _zscore_df.empty:
+                            if not _comb_df.empty:
                                 fig_e = create_comparison_radar(
-                                    _zscore_df, _perf_player, f"Moyenne {_ps}",
+                                    _comb_df, _perf_player, f"Moyenne {_ps}",
                                     exclude_creativity=True)
                                 if fig_e: st.pyplot(fig_e, use_container_width=True); plt.close(fig_e)
                             else:
-                                st.info("Colonnes insuffisantes pour la comparaison normalisée.")
+                                st.info("Colonnes insuffisantes pour la comparaison.")
                     else:
                         st.info("Référentiel EDF non disponible.")
 
                 elif "APL" in _perf_compare:
-                    _apl_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("APL",na=False)] \
+                    _apl_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("APL", na=False)] \
                              if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
                     if not _apl_f.empty:
                         _ps = st.selectbox("Poste APL", sorted(_apl_f["Poste"].unique()), key="perf_apl_p")
                         _ref_pop = _apl_f.copy()
                         st.caption(
-                            "📊 Comparaison normalisée — score 50 = moyenne APL · "
-                            "+15 pts = +1 écart-type au-dessus · −15 pts = −1 écart-type en-dessous"
+                            "📊 Percentile global — score 75 = meilleure que 75% "
+                            "des joueuses de la distribution combinée PFC + APL"
                         )
                         if not _player_df_c.empty and not _ref_pop.empty:
-                            _zscore_df = prepare_zscore_comparison(
+                            _comb_df = prepare_combined_ranking(
                                 _player_df_c, _ref_pop,
                                 player_label=_perf_player,
                                 ref_label=f"Moyenne {_ps}"
                             )
-                            if not _zscore_df.empty:
+                            if not _comb_df.empty:
                                 fig_a = create_comparison_radar(
-                                    _zscore_df, _perf_player, f"Moyenne {_ps}",
+                                    _comb_df, _perf_player, f"Moyenne {_ps}",
                                     exclude_creativity=True)
                                 if fig_a: st.pyplot(fig_a, use_container_width=True); plt.close(fig_a)
                             else:
-                                st.info("Colonnes insuffisantes pour la comparaison normalisée.")
+                                st.info("Colonnes insuffisantes pour la comparaison.")
                     else:
                         st.warning("Référentiel APL non disponible. Dépose les fichiers `Indiv_*.csv` dans Drive.")
 
