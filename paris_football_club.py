@@ -9453,7 +9453,12 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
         else:
             st.markdown(f"**Fiche bilan — {_perf_player}**")
             st.caption("Données agrégées sur la période et les matchs sélectionnés.")
-            if st.button("📄 Générer et ouvrir la fiche PDF", key="btn_fiche_bilan", type="primary"):
+
+            _col_btn1, _col_btn2 = st.columns([1, 1])
+            with _col_btn1:
+                _gen_fiche = st.button("⚙️ Générer la fiche", key="btn_fiche_bilan", type="primary")
+            
+            if _gen_fiche or st.session_state.get("_fiche_html_cache_player") == _perf_player:
                 with st.spinner("Génération en cours..."):
                     try:
                         _gm_all = st.session_state.get("gps_match_df", pd.DataFrame())
@@ -9462,24 +9467,31 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             pfc_kpi_all=pfc_kpi_all,
                             gps_match_df=_gm_all,
                         )
-                        import streamlit.components.v1 as _cmp_fiche
-                        _safe = _fiche_html.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
-                        _fiche_js = (
-                            "<script>"
-                            "var _w=window.open('','_blank','width=900,height=1200');"
-                            "if(_w){"
-                            "_w.document.write(`" + _safe + "`);"
-                            "_w.document.close();"
-                            "setTimeout(function(){_w.print();},1000);"
-                            "} else { alert('Autorise les popups pour ouvrir la fiche.'); }"
-                            "</script>"
-                            "<p style='color:#22C55E;font-size:13px'>"
-                            "\u2705 Fiche g\u00e9n\u00e9r\u00e9e. Coche <b>Imprimer les arri\u00e8re-plans</b> pour le fond sombre.</p>"
-                        )
-                        _cmp_fiche.html(_fiche_js, height=60)
+                        st.session_state["_fiche_html_cache"] = _fiche_html
+                        st.session_state["_fiche_html_cache_player"] = _perf_player
                     except Exception as _fe:
-                        st.error(f"Erreur : {_fe}")
+                        st.error(f"Erreur génération : {_fe}")
                         import traceback; st.code(traceback.format_exc())
+                        _fiche_html = None
+
+            _fiche_cached = st.session_state.get("_fiche_html_cache")
+            _fiche_player = st.session_state.get("_fiche_html_cache_player")
+
+            if _fiche_cached and _fiche_player == _perf_player:
+                # Bouton téléchargement HTML (ouvrir dans navigateur → Ctrl+P)
+                with _col_btn2:
+                    st.download_button(
+                        label="⬇️ Télécharger (HTML → imprimer en PDF)",
+                        data=_fiche_cached.encode("utf-8"),
+                        file_name=f"fiche_{_perf_player.replace(' ','_')}.html",
+                        mime="text/html",
+                        key="dl_fiche_html"
+                    )
+                st.caption("💡 Ouvre le fichier dans ton navigateur puis fais **Fichier → Imprimer** (Ctrl+P) pour exporter en PDF.")
+                st.divider()
+                # Aperçu inline
+                import streamlit.components.v1 as _cmp_fiche
+                _cmp_fiche.html(_fiche_cached, height=900, scrolling=True)
 
 
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
