@@ -7971,7 +7971,59 @@ def build_fiche_bilan_html(player_name: str,
                       f"border:2px solid #00A3E0;display:flex;align-items:center;justify-content:center;"
                       f"font-size:22px;font-weight:700;color:#00A3E0'>{initials}</div>")
 
-    info = player_info or {}
+    # ── Registre des données personnelles (source Google Drive) ──────────
+    _PLAYER_REGISTRY = {
+        "AMMAR PARMENTIER": {"ddn": "15/01/2008", "lateralite": "Gauchère",  "poste1": "Défenseure Centrale Gauche", "poste2": "Latérale Gauche"},
+        "BARADJI":          {"ddn": "11/06/2010", "lateralite": "Droitière", "poste1": "Attaquante",                 "poste2": "Attaquante Excentrée Droit"},
+        "BELKOUCHE":        {"ddn": "31/07/2008", "lateralite": "Gauchère",  "poste1": "Latérale Gauche",            "poste2": "Milieu Offensive Gauche"},
+        "BENYOUB":          {"ddn": "20/02/2009", "lateralite": "Droitière", "poste1": "Attaquante Excentrée Gauche","poste2": "Attaquante"},
+        "BOUDINE FAERBER":  {"ddn": "07/11/2007", "lateralite": "Droitière", "poste1": "Défenseure Centrale Droit",  "poste2": "Milieu Défensif"},
+        "BUISSON":          {"ddn": "18/05/2008", "lateralite": "Droitière", "poste1": "Gardienne de But",           "poste2": ""},
+        "CHERIF":           {"ddn": "10/03/2010", "lateralite": "Droitière", "poste1": "Défenseure Centrale Droit",  "poste2": "Latérale Droit"},
+        "DESMAREST POUPLET":{"ddn": "09/09/2010", "lateralite": "Droitière", "poste1": "Gardienne de But",           "poste2": ""},
+        "DIARRA":           {"ddn": "13/11/2008", "lateralite": "Droitière", "poste1": "Attaquante Excentrée Droit", "poste2": "Attaquante Excentrée Gauche"},
+        "DIAWARA":          {"ddn": "12/09/2007", "lateralite": "Gauchère",  "poste1": "Défenseure Centrale Gauche", "poste2": "Latérale Gauche"},
+        "DUMANS":           {"ddn": "08/07/2008", "lateralite": "Droitière", "poste1": "Milieu Offensive Droit",     "poste2": "Milieu Offensive Gauche"},
+        "EDOBOR":           {"ddn": "13/12/2010", "lateralite": "Droitière", "poste1": "Attaquante Excentrée Droit", "poste2": "Attaquante Excentrée Gauche"},
+        "EXILIE LASCARIES": {"ddn": "16/07/2008", "lateralite": "Gauchère",  "poste1": "Attaquante Excentrée Gauche","poste2": "Milieu Offensive Gauche"},
+        "GANE BERNARDINO":  {"ddn": "15/09/2010", "lateralite": "Droitière", "poste1": "Milieu Offensive Droit",     "poste2": "Attaquante"},
+        "GARBAA":           {"ddn": "13/04/2008", "lateralite": "Droitière", "poste1": "Défenseure Centrale Droit",  "poste2": "Latérale Droit"},
+        "KANDEM":           {"ddn": "16/02/2010", "lateralite": "Droitière", "poste1": "Gardienne de But",           "poste2": ""},
+        "KAPINGA MUYA":     {"ddn": "31/07/2010", "lateralite": "Droitière", "poste1": "Attaquante Excentrée Droit", "poste2": "Attaquante Excentrée Gauche"},
+        "LE FLOCH DOUHI":   {"ddn": "16/02/2010", "lateralite": "Droitière", "poste1": "Milieu Offensive Droit",     "poste2": "Milieu Défensif"},
+        "MANE":             {"ddn": "22/04/2010", "lateralite": "Droitière", "poste1": "Défenseure Centrale Droit",  "poste2": "Défenseure Centrale Gauche"},
+        "MEGEVAND":         {"ddn": "19/05/2009", "lateralite": "Droitière", "poste1": "Milieu Défensif",            "poste2": "Milieu Offensive Droit"},
+        "MINYEMECK":        {"ddn": "21/07/2009", "lateralite": "Droitière", "poste1": "Milieu Défensif",            "poste2": "Milieu Offensive Droit"},
+        "MUPFASONI":        {"ddn": "12/06/2010", "lateralite": "Droitière", "poste1": "Attaquante",                 "poste2": "Attaquante Excentrée Droit"},
+        "MUSTIERE":         {"ddn": "29/02/2008", "lateralite": "Droitière", "poste1": "Attaquante",                 "poste2": "Attaquante Excentrée Droit"},
+        "NIAKHATE":         {"ddn": "07/07/2008", "lateralite": "Droitière", "poste1": "Attaquante",                 "poste2": "Attaquante Excentrée Droit"},
+        "PLANCHEZ":         {"ddn": "11/01/2009", "lateralite": "Droitière", "poste1": "Gardienne de But",           "poste2": ""},
+        "RENAI":            {"ddn": "26/05/2009", "lateralite": "Gauchère",  "poste1": "Latérale Gauche",            "poste2": "Attaquante Excentrée Gauche"},
+        "RUFFIEN":          {"ddn": "22/10/2008", "lateralite": "Droitière", "poste1": "Milieu Offensive Droit",     "poste2": "Attaquante"},
+        "SAMOUN":           {"ddn": "08/06/2008", "lateralite": "Gauchère",  "poste1": "Attaquante Excentrée Gauche","poste2": "Attaquante"},
+        "SEGUIN":           {"ddn": "30/03/2010", "lateralite": "Droitière", "poste1": "Milieu Défensif",            "poste2": "Défenseure Centrale Droit"},
+        "SIDIBE":           {"ddn": "04/01/2008", "lateralite": "Droitière", "poste1": "Latérale Droit",             "poste2": "Attaquante Excentrée Droit"},
+        "SINANI":           {"ddn": "08/02/2009", "lateralite": "Droitière", "poste1": "Milieu Offensive Droit",     "poste2": "Milieu Défensif"},
+        "TAE":              {"ddn": "23/12/2009", "lateralite": "Droitière", "poste1": "Milieu Défensif",            "poste2": ""},
+        "WAPELABWEBE":      {"ddn": "20/05/2009", "lateralite": "Gauchère",  "poste1": "Attaquante",                 "poste2": "Attaquante Excentrée Gauche"},
+        "YERRO":            {"ddn": "07/02/2009", "lateralite": "Droitière", "poste1": "Milieu Offensive Droit",     "poste2": "Attaquante Excentrée Droit"},
+    }
+
+    # Résoudre les données personnelles depuis le registre
+    def _lookup_player(name: str) -> dict:
+        """Cherche les infos par nom de famille (insensible à la casse)."""
+        name_up = name.upper().strip()
+        # Cherche d'abord correspondance exacte sur le nom de famille
+        for key, data in _PLAYER_REGISTRY.items():
+            if key.upper() in name_up or name_up.startswith(key.upper().split()[0]):
+                return data
+        # Cherche partielle
+        for key, data in _PLAYER_REGISTRY.items():
+            if any(part in name_up for part in key.upper().split()):
+                return data
+        return {}
+
+    info = player_info or _lookup_player(player_name)
     name_parts = player_name.title().split()
     nom = name_parts[0] if name_parts else ""
     prenom = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
@@ -8033,9 +8085,9 @@ html,body {{
   </div>
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:0 16px">
     <div><div class="label-sm">Née le</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('ddn','—')}</div></div>
-    <div><div class="label-sm">Taille</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('taille','—')}</div></div>
-    <div><div class="label-sm">Poids</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('poids','—')}</div></div>
-    <div><div class="label-sm">Latéralité</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('lateralite','—')}</div></div>
+    <div><div class="label-sm">Pied fort</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('lateralite','—')}</div></div>
+    <div><div class="label-sm">Poste 1</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('poste1','—')}</div></div>
+    <div><div class="label-sm">Poste 2</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('poste2') or '—'}</div></div>
   </div>
   <div style="text-align:right">
     <div class="label-sm" style="margin-bottom:4px">Matchs analysés</div>
@@ -9462,10 +9514,34 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 with st.spinner("Génération en cours..."):
                     try:
                         _gm_all = st.session_state.get("gps_match_df", pd.DataFrame())
+
+                        # Récupérer les données personnelles depuis le référentiel passerelles
+                        _info = {}
+                        try:
+                            _pas_data = load_passerelle_data()
+                            for _entry in _pas_data:
+                                _nom = nettoyer_nom_joueuse(
+                                    str(_entry.get("Nom","")) + " " + str(_entry.get("Prénom",""))
+                                )
+                                if _nom == nettoyer_nom_joueuse(_perf_player):
+                                    _info = {
+                                        "ddn":        _entry.get("Date de naissance", "—"),
+                                        "taille":     _entry.get("Taille", "—"),
+                                        "lateralite": _entry.get("Pied Fort", "—"),
+                                        "poste":      " / ".join(filter(None, [
+                                            _entry.get("Poste 1",""),
+                                            _entry.get("Poste 2","")
+                                        ])) or "—",
+                                    }
+                                    break
+                        except Exception:
+                            pass
+
                         _fiche_html = build_fiche_bilan_html(
                             player_name=_perf_player,
                             pfc_kpi_all=pfc_kpi_all,
                             gps_match_df=_gm_all,
+                            player_info=_info,
                         )
                         st.session_state["_fiche_html_cache"] = _fiche_html
                         st.session_state["_fiche_html_cache_player"] = _perf_player
