@@ -1238,30 +1238,13 @@ def show_photo_block(player_name: str, location: str = "stats") -> None:
         if safe_show_photo(photo_path, width=170):
             return
 
-    # --- Diagnostic ---
-    with st.expander("📷 Photo non trouvée — Diagnostic", expanded=True):
-        canon = normalize_name_raw(player_name)
-        st.write(f"**Nom cherché :** `{player_name}`")
-        st.write(f"**Canon référentiel :** `{canon}`")
-        st.write(f"**Photos locales :** {len(photos_index)} fichiers indexés")
-        st.write(f"**Concordance référentiel :** {len(concordance)} entrées")
-
-        if photos_index:
-            pn = _photo_key_spaced(player_name)
-            scored = sorted(
-                [(_quick_ratio(pn, k), k, os.path.basename(p))
-                 for k, p in photos_index.items()],
-                reverse=True
-            )[:6]
-            st.write("**Fichiers photos les plus proches (par nom) :**")
-            for sc, k, fn in scored:
-                st.write(f"  `{fn}` — score : `{sc:.2f}`")
-
-        st.info(
-            "💡 La concordance utilise le référentiel **Noms Prénoms Paris FC.xlsx** (colonnes NOM + Prénom). "
-            "Si la photo n'est pas trouvée, vérifiez que la joueuse est bien dans le référentiel "
-            "et que le nom du fichier photo contient NOM et/ou Prénom."
-        )
+    # Photo non trouvée → placeholder silencieux
+    st.markdown(
+        "<div style='width:170px;height:210px;background:#0C1220;border-radius:4px;"
+        "display:flex;align-items:center;justify-content:center;"
+        "font-size:56px;border:1px solid rgba(0,163,224,0.2);'>👤</div>",
+        unsafe_allow_html=True
+    )
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -8632,8 +8615,9 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
             _t_rad, _t_kpi, _t_post = st.tabs(["Radar", "KPIs", "Postes"])
             with _t_rad:
-                fig_r = create_individual_radar(aggregated)
-                if fig_r: st.pyplot(fig_r, use_container_width=True); plt.close(fig_r)
+                with st.spinner("Génération du radar…"):
+                    fig_r = create_individual_radar(aggregated)
+                    if fig_r: st.pyplot(fig_r, use_container_width=True); plt.close(fig_r)
             with _t_kpi:
                 _kpis = [("Rigueur","Rigueur"),("Récupération","Récupération"),
                          ("Distribution","Distribution"),("Percussion","Percussion"),
@@ -9602,25 +9586,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         st.rerun()
 
     if check_permission(user_profile, "update_data", permissions) or check_permission(user_profile, "all", permissions):
-        if st.sidebar.button("Mettre à jour la base"):
-            st.session_state["_sync_done"] = False  # forcer re-sync
-            st.session_state.pop("_tactical_files_cache", None)  # invalider cache tactique
-            st.cache_data.clear()
-            st.rerun()
-            st.rerun()
-
-        if st.sidebar.button("🖼️ Reconvertir les photos"):
-            with st.spinner("Reconversion en JPEG..."):
-                ok, fail, errs = reconvert_photos_to_jpeg()
-                new_idx = build_photos_index_local()
-                st.session_state["photos_index"] = new_idx
-                ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
-                st.session_state["photo_concordance"] = build_photo_concordance(ref_path, new_idx)
-            if fail == 0:
-                st.sidebar.success(f"✅ {ok} photo(s) converties en JPEG")
-            else:
-                st.sidebar.warning(f"✅ {ok} OK — ⚠️ {fail} échec(s) : {', '.join(errs[:3])}")
-            st.rerun()
+        pass  # Boutons admin déplacés dans l'onglet Gestion → Administration
 
     # Filtrer par saison si nécessaire (collect_data déjà appelé dans main())
     if selected_saison != "Toutes les saisons":
@@ -9631,9 +9597,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         st.session_state["gps_match_df"] = _gps_match
     # else : on garde pfc_kpi/edf_kpi passés en paramètre (déjà calculés)
 
-    # Badge d'avertissements — affiché dans sidebar APRÈS collect_data
+    # Badge d'avertissements — affiché dans sidebar UNIQUEMENT pour les admins
     _sys_warns = st.session_state.get("_system_warnings", [])
-    if _sys_warns:
+    if _sys_warns and check_permission(user_profile, "all", permissions):
         n = len(_sys_warns)
         with st.sidebar.expander(f"⚠️ {n} avertissement{'s' if n > 1 else ''}", expanded=False):
             for w in _sys_warns:
@@ -9654,7 +9620,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
 
     # =========================
-    # EXPORT EXCEL
+    # EXPORT EXCEL (données préparées — affiché dans l'onglet Gestion)
     # =========================
     export_is_admin = check_permission(user_profile, "all", permissions)
     export_pfc = pfc_kpi_all if export_is_admin else pfc_kpi
@@ -9662,47 +9628,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     export_gps_week = st.session_state.get("gps_weekly_df", pd.DataFrame())
     export_gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
     export_names_report = st.session_state.get("name_report_df", pd.DataFrame())
-
-    with st.sidebar.expander("📤 Export Excel", expanded=False):
-        scope_label = "Toute la base" if export_is_admin else "Données (selon profil/filtres)"
-        st.caption(f"Contenu : {scope_label}")
-
-        export_season = st.selectbox(
-            "Filtrer l'export par saison",
-            ["Toutes les saisons", "2425", "2526"],
-            index=0,
-            key="export_season_select",
-        )
-
-        base_pfc = export_pfc.copy()
-
-        if export_season != "Toutes les saisons" and "Saison" in base_pfc.columns:
-            base_pfc = base_pfc[base_pfc["Saison"].astype(str) == export_season].copy()
-
-        base_pfc_detail = denormalize_match_rows_from_per90(base_pfc)
-        global_players = aggregate_global_players(base_pfc)
-
-        if st.button("Générer le fichier Excel", key="btn_generate_export_xlsx"):
-            sheets = {
-                "PFC_Detail": base_pfc_detail,
-                "PFC_Global_Joueuses": global_players,
-                "EDF_Referentiel": export_edf,
-                "GPS_Hebdo": export_gps_week,
-                "GPS_Brut": export_gps_raw,
-                "Noms_Mapping_Report": export_names_report,
-            }
-            st.session_state["export_xlsx_bytes"] = build_excel_bytes(sheets)
-
-        if st.session_state.get("export_xlsx_bytes"):
-            season_tag = "all" if export_season == "Toutes les saisons" else export_season
-            fname = f"parisfc_export_{season_tag}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-            st.download_button(
-                "⬇️ Télécharger l'Excel",
-                data=st.session_state["export_xlsx_bytes"],
-                file_name=fname,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_export_xlsx",
-            )
+    # Stocker en session pour accès depuis l'onglet Gestion
+    st.session_state["_export_pfc"] = export_pfc
+    st.session_state["_export_edf"] = export_edf
+    st.session_state["_export_is_admin"] = export_is_admin
 
     options = ["Performance", "Joueuses Passerelles", "Médical", "Recrutement"]
     if check_permission(user_profile, "all", permissions):
@@ -9875,6 +9804,53 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         for w in warns:
                             st.caption(f"• {w}")
 
+                # ── Export Excel ──────────────────────────────────────────
+                st.markdown("---")
+                st.markdown("**Export Excel**")
+                _exp_pfc = st.session_state.get("_export_pfc", pd.DataFrame())
+                _exp_edf = st.session_state.get("_export_edf", pd.DataFrame())
+                _exp_is_admin = st.session_state.get("_export_is_admin", False)
+                _exp_gps_week = st.session_state.get("gps_weekly_df", pd.DataFrame())
+                _exp_gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
+                _exp_names = st.session_state.get("name_report_df", pd.DataFrame())
+
+                scope_label = "Toute la base" if _exp_is_admin else "Données selon profil"
+                st.caption(f"Contenu : {scope_label}")
+
+                _exp_season = st.selectbox(
+                    "Filtrer l'export par saison",
+                    ["Toutes les saisons", "2425", "2526"],
+                    index=0,
+                    key="export_season_select_gestion",
+                )
+                _base_pfc = _exp_pfc.copy() if isinstance(_exp_pfc, pd.DataFrame) else pd.DataFrame()
+                if _exp_season != "Toutes les saisons" and "Saison" in _base_pfc.columns:
+                    _base_pfc = _base_pfc[_base_pfc["Saison"].astype(str) == _exp_season].copy()
+
+                if st.button("Générer le fichier Excel", key="btn_generate_export_xlsx_gestion"):
+                    _base_detail = denormalize_match_rows_from_per90(_base_pfc)
+                    _global_players = aggregate_global_players(_base_pfc)
+                    sheets = {
+                        "PFC_Detail": _base_detail,
+                        "PFC_Global_Joueuses": _global_players,
+                        "EDF_Referentiel": _exp_edf,
+                        "GPS_Hebdo": _exp_gps_week,
+                        "GPS_Brut": _exp_gps_raw,
+                        "Noms_Mapping_Report": _exp_names,
+                    }
+                    st.session_state["export_xlsx_bytes"] = build_excel_bytes(sheets)
+
+                if st.session_state.get("export_xlsx_bytes"):
+                    season_tag = "all" if _exp_season == "Toutes les saisons" else _exp_season
+                    fname = f"parisfc_export_{season_tag}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                    st.download_button(
+                        "⬇️ Télécharger l'Excel",
+                        data=st.session_state["export_xlsx_bytes"],
+                        file_name=fname,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_export_xlsx_gestion",
+                    )
+
     elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
 
@@ -9963,14 +9939,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         pied_val    = info.get("Pied Fort", "") or ""
         taille_val  = info.get("Taille", "") or ""
         ddn_val = info.get("Date de naissance", "") or ""  # déjà nettoyé dans load_passerelle_data
-
-        # DEBUG TEMPORAIRE — à retirer après validation
-        with st.expander("🔍 Debug date de naissance", expanded=False):
-            st.write(f"**Clé sélectionnée :** `{selected}`")
-            st.write(f"**Contenu brut de info :** `{info}`")
-            st.write(f"**ddn_val final :** `{repr(ddn_val)}`")
-            all_keys = list(passerelle_data.keys())[:10]
-            st.write(f"**10 premières clés du dict :** {all_keys}")
 
         if str(taille_val).lower() in ("nan", "none", ""): taille_val = ""
         if str(poste1_val).lower() in ("nan", "none", ""): poste1_val = ""
