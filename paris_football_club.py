@@ -4515,52 +4515,51 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
     _min_date = all_dates.min().date() if not all_dates.empty else pd.Timestamp("2024-01-01").date()
     _max_date = all_dates.max().date() if not all_dates.empty else pd.Timestamp.today().date()
 
-    # Ligne 1 : filtres texte
-    col_f1, col_f2, col_f3 = st.columns(3)
-    with col_f1:
-        sel_player = st.selectbox("Joueuse", ["Toutes"] + all_players, key="eval_player_sel")
-    with col_f2:
-        sel_adv = st.selectbox("Adversaire", ["Tous"] + all_adv, key="eval_adv_sel")
-    with col_f3:
-        sel_cat = st.selectbox("Catégorie", all_cats, key="eval_cat_sel")
+    # ── Filtres (repliés par défaut) ───────────────────────────────────────
+    with st.expander("🔍 Filtres", expanded=False):
+        # Ligne 1 : filtres texte
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
+            sel_player = st.selectbox("Joueuse", ["Toutes"] + all_players, key="eval_player_sel")
+        with col_f2:
+            sel_adv = st.selectbox("Adversaire", ["Tous"] + all_adv, key="eval_adv_sel")
+        with col_f3:
+            sel_cat = st.selectbox("Catégorie", all_cats, key="eval_cat_sel")
 
-    # Ligne 2 : bornes de dates
-    col_d1, col_d2, col_d3 = st.columns([1, 1, 1])
+        # Ligne 2 : bornes de dates
+        col_d1, col_d2, col_d3 = st.columns([1, 1, 1])
 
-    # Initialiser ou recadrer les dates dans session_state
-    # (si la saison change, _min_date/_max_date changent → il faut recadrer)
-    _ss_debut = st.session_state.get("eval_date_debut", _min_date)
-    _ss_fin   = st.session_state.get("eval_date_fin",   _max_date)
-    # Recadrer si hors bornes
-    if _ss_debut < _min_date or _ss_debut > _max_date:
-        _ss_debut = _min_date
-    if _ss_fin < _min_date or _ss_fin > _max_date:
-        _ss_fin = _max_date
-    st.session_state["eval_date_debut"] = _ss_debut
-    st.session_state["eval_date_fin"]   = _ss_fin
+        # Initialiser ou recadrer les dates dans session_state
+        _ss_debut = st.session_state.get("eval_date_debut", _min_date)
+        _ss_fin   = st.session_state.get("eval_date_fin",   _max_date)
+        if _ss_debut < _min_date or _ss_debut > _max_date:
+            _ss_debut = _min_date
+        if _ss_fin < _min_date or _ss_fin > _max_date:
+            _ss_fin = _max_date
+        st.session_state["eval_date_debut"] = _ss_debut
+        st.session_state["eval_date_fin"]   = _ss_fin
 
-    # Bouton reset AVANT les widgets
-    with col_d3:
-        st.markdown("&nbsp;", unsafe_allow_html=True)
-        if st.button("↺ Réinitialiser les dates", key="eval_reset_dates"):
-            st.session_state["eval_date_debut"] = _min_date
-            st.session_state["eval_date_fin"]   = _max_date
-            st.rerun()
+        with col_d3:
+            st.markdown("&nbsp;", unsafe_allow_html=True)
+            if st.button("↺ Réinitialiser les dates", key="eval_reset_dates"):
+                st.session_state["eval_date_debut"] = _min_date
+                st.session_state["eval_date_fin"]   = _max_date
+                st.rerun()
 
-    with col_d1:
-        date_debut = st.date_input(
-            "Date début",
-            value=st.session_state["eval_date_debut"],
-            min_value=_min_date, max_value=_max_date,
-            key="eval_date_debut"
-        )
-    with col_d2:
-        date_fin = st.date_input(
-            "Date fin",
-            value=st.session_state["eval_date_fin"],
-            min_value=_min_date, max_value=_max_date,
-            key="eval_date_fin"
-        )
+        with col_d1:
+            date_debut = st.date_input(
+                "Date début",
+                value=st.session_state["eval_date_debut"],
+                min_value=_min_date, max_value=_max_date,
+                key="eval_date_debut"
+            )
+        with col_d2:
+            date_fin = st.date_input(
+                "Date fin",
+                value=st.session_state["eval_date_fin"],
+                min_value=_min_date, max_value=_max_date,
+                key="eval_date_fin"
+            )
 
     def _filter(df, is_coach=False):
         if df is None or df.empty: return df
@@ -6386,7 +6385,7 @@ def create_individual_radar(df: pd.DataFrame):
 
     fig, ax = pizza.make_pizza(
         values=values,
-        figsize=(7, 7),
+        figsize=(5, 5),
         slice_colors=slice_colors,
         value_colors=["#FFFFFF"] * len(available),
         kwargs_slices=dict(edgecolor="#08090D", linewidth=1.8),
@@ -6418,10 +6417,11 @@ def create_individual_radar(df: pd.DataFrame):
     center = patches.Circle((0, 0), 4.0, transform=ax.transData._b, color="#08090D", zorder=10)
     ax.add_artist(center)
 
-    fig.subplots_adjust(top=0.90, bottom=0.18)
+    fig.subplots_adjust(top=0.95, bottom=0.05)
 
-    player_name = str(player.get("Player", "")).strip()
+    fig.set_facecolor("#08090D")
 
+    # Calculer forces/axes pour affichage externe (hors figure)
     vals = []
     for p in available:
         try:
@@ -6433,22 +6433,12 @@ def create_individual_radar(df: pd.DataFrame):
 
     vals_desc = sorted(vals, key=lambda t: t[1], reverse=True)
     vals_asc = sorted(vals, key=lambda t: t[1])
-
     top_n = vals_desc[:2]
     low_n = vals_asc[:2]
-
     top_txt = " • ".join([f"{k} ({v:.0f})" for k, v in top_n]) if top_n else "—"
     low_txt = " • ".join([f"{k} ({v:.0f})" for k, v in low_n]) if low_n else "—"
 
-    forces_txt = f"✅ Forces : {top_txt}"
-    axes_txt = f"⚠️ Axes : {low_txt}"
-    forces_wrapped = "\n".join(textwrap.wrap(forces_txt, width=70))
-    axes_wrapped = "\n".join(textwrap.wrap(axes_txt, width=70))
-
-    fig.text(0.5, 0.10, forces_wrapped, ha="center", va="center", fontsize=12, color="#C8D8E8")
-    fig.text(0.5, 0.05, axes_wrapped, ha="center", va="center", fontsize=12, color="#6A8090")
-    fig.set_facecolor("#08090D")
-    return fig
+    return fig, top_txt, low_txt
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -7702,8 +7692,9 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                             _nm_r = nettoyer_nom_joueuse(sel_tac_player)
                             _kdf_r = _kpi_all_r[_kpi_all_r['Player'].astype(str).apply(nettoyer_nom_joueuse) == _nm_r]
                             if not _kdf_r.empty:
-                                _fig_r = create_individual_radar(_kdf_r.iloc[[0]])
-                                if _fig_r is not None:
+                                _radar_result = create_individual_radar(_kdf_r.iloc[[0]])
+                                if _radar_result is not None:
+                                    _fig_r = _radar_result[0] if isinstance(_radar_result, tuple) else _radar_result
                                     _tac_radar_b64 = fig_to_b64(_fig_r)
                                     import matplotlib.pyplot as _plt_r
                                     _plt_r.close(_fig_r)
@@ -8613,27 +8604,44 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 _m1.metric("Temps de jeu", f"{_n_matchs} match{'s' if _n_matchs > 1 else ''}")
             _m2.metric("Buts", f"{int(aggregated['Buts'].iloc[0])}")
 
-            _t_rad, _t_kpi, _t_post = st.tabs(["Radar", "KPIs", "Postes"])
-            with _t_rad:
+            # ── Radar + KPIs + Postes côte à côte (sans onglets) ──────────
+            _col_radar, _col_kpis = st.columns([1, 1])
+            with _col_radar:
                 with st.spinner("Génération du radar…"):
-                    fig_r = create_individual_radar(aggregated)
-                    if fig_r: st.pyplot(fig_r, use_container_width=True); plt.close(fig_r)
-            with _t_kpi:
+                    _radar_result = create_individual_radar(aggregated)
+                    if _radar_result is not None:
+                        fig_r, _top_txt, _low_txt = _radar_result
+                        st.pyplot(fig_r, use_container_width=True)
+                        plt.close(fig_r)
+                        st.markdown(
+                            f"<div style='font-size:12px;color:#C8D8E8;margin-top:4px;'>✅ <b>Forces :</b> {_top_txt}</div>"
+                            f"<div style='font-size:12px;color:#6A8090;margin-top:2px;'>⚠️ <b>Axes :</b> {_low_txt}</div>",
+                            unsafe_allow_html=True
+                        )
+
+            with _col_kpis:
+                # KPIs
                 _kpis = [("Rigueur","Rigueur"),("Récupération","Récupération"),
                          ("Distribution","Distribution"),("Percussion","Percussion"),
                          ("Finition","Finition"),("Créativité","Créativité")]
-                _avail = [(l,c) for l,c in _kpis if c in aggregated.columns]
-                if _avail:
-                    _kc = st.columns(len(_avail))
-                    for _col_ui,(lbl,col) in zip(_kc,_avail):
+                _avail_kpis = [(l,c) for l,c in _kpis if c in aggregated.columns]
+                if _avail_kpis:
+                    st.markdown("<div style='font-family:Oswald,sans-serif;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6A8090;margin-bottom:8px;'>KPIs</div>", unsafe_allow_html=True)
+                    _kc = st.columns(min(3, len(_avail_kpis)))
+                    for _i, (_col_ui, (lbl, col)) in enumerate(zip(_kc * 2, _avail_kpis)):
                         _col_ui.metric(lbl, f"{int(aggregated[col].iloc[0])}/100")
-            with _t_post:
+
+                st.divider()
+
+                # Postes
                 _postes_def = [("DC","Défenseur central"),("DL","Défenseur latéral"),
                                ("MD","Milieu défensif"),("MR","Milieu relayeur"),
                                ("MO","Milieu offensif"),("ATT","Attaquant")]
-                if all(c in aggregated.columns for _,c in _postes_def):
-                    _pc = st.columns(len(_postes_def))
-                    for _cu,(lbl,col) in zip(_pc,_postes_def):
+                _avail_postes = [(l,c) for l,c in _postes_def if c in aggregated.columns]
+                if _avail_postes:
+                    st.markdown("<div style='font-family:Oswald,sans-serif;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6A8090;margin-bottom:8px;'>Postes</div>", unsafe_allow_html=True)
+                    _pc = st.columns(min(3, len(_avail_postes)))
+                    for _i, (_cu, (lbl, col)) in enumerate(zip(_pc * 2, _avail_postes)):
                         _cu.metric(lbl, f"{int(aggregated[col].iloc[0])}/100")
 
             # Comparaison optionnelle
@@ -8814,10 +8822,21 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
             )
 
             if _pgps:
-                _st1, _st2, _st3, _st4, _st5, _st6 = st.tabs([
-                    "🧾 Brutes", "📅 Global", "📈 Microcycle", "⚽ Match", "⚖️ Charge", "🔗 Concordance"])
+                _st_entr, _st_match, _st_params = st.tabs([
+                    "🏃 Entraînement", "⚽ Match & Charge", "⚙️ Paramètres"])
 
-                with _st1:
+                # Remap anciens onglets vers les nouveaux
+                _st1 = _st_entr   # Brutes → Entraînement
+                _st2 = _st_entr   # Global → Entraînement
+                _st3 = _st_entr   # Microcycle → Entraînement
+                _st4 = _st_match  # Match → Match & Charge
+                _st5 = _st_match  # Charge → Match & Charge
+                _st6 = _st_params # Concordance → Paramètres
+
+                with _st_entr:
+                    _entr_sub1, _entr_sub2, _entr_sub3 = st.tabs(["🧾 Brutes", "📅 Global", "📈 Microcycle"])
+
+                with _entr_sub1:
                     _dr = _gr[_gr["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)].copy()
                     _dr = ensure_date_column(_dr)
                     if _dr.empty:
@@ -8842,7 +8861,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             "Sprints_23","Vitesse max (km/h)","CHARGE","RPE"] if c in _dr.columns]
                         st.dataframe(_dr[_sc_raw], use_container_width=True)
 
-                with _st2:
+                with _entr_sub2:
                     if _gps_weekly is not None and not _gps_weekly.empty and "Player" in _gps_weekly.columns:
                         _dw2 = _gps_weekly[_gps_weekly["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)]
                         if not _dw2.empty:
@@ -8852,7 +8871,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     else:
                         st.info("Données hebdomadaires non disponibles.")
 
-                with _st3:
+                with _entr_sub3:
                     _dg = _gr[_gr["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)].copy()
                     _dg = ensure_date_column(_dg)
                     _dg = _dg[_dg["DATE"].notna()].copy()
@@ -8888,7 +8907,12 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 st.pyplot(fig_md, use_container_width=True)
                                 plt.close(fig_md)
 
-                with _st4:
+                with _st_match:
+                    _match_sub1, _match_sub2 = st.tabs(["⚽ Match", "⚖️ Charge"])
+                    _st4 = _match_sub1
+                    _st5 = _match_sub2
+
+                with _match_sub1:
                     # ── Données GPS match pour la joueuse ─────────────────
                     _gm_df = _gps_match_df.copy() if _gps_match_df is not None and not _gps_match_df.empty else pd.DataFrame()
 
@@ -9308,7 +9332,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                         st.pyplot(_fig_c, use_container_width=True)
                                         _plt_c.close(_fig_c)
 
-                with _st5:
+                with _match_sub2:
                     if _gr is None or _gr.empty:
                         st.info("Aucune donnée GPS brute disponible.")
                     else:
@@ -9472,7 +9496,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 "et donc plus adapté aux calendriers irréguliers."
                             )
 
-                with _st6:
+                with _st_params:
                     _tpc = []
                     for _sk in ["kpi_df","pfc_kpi_df"]:
                         _kdf = st.session_state.get(_sk)
@@ -10174,10 +10198,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             aggregated.insert(0, "Joueuse", resolved_player)
 
                         try:
-                            fig = create_individual_radar(aggregated)
-                            if fig:
+                            _radar_result = create_individual_radar(aggregated)
+                            if _radar_result is not None:
+                                fig = _radar_result[0] if isinstance(_radar_result, tuple) else _radar_result
                                 st.pyplot(fig, use_container_width=True)
-                                plt.close(fig)  # libère la mémoire
+                                plt.close(fig)
                         except Exception as e:
                             st.warning(f"Radar indisponible : {e}")
 
@@ -10651,13 +10676,12 @@ def main():
     )
 
     st.markdown(
-        "<div style='background:#08090D;border-bottom:1px solid rgba(0,163,224,0.2);padding:1.6rem 2.5rem;margin:-1.5rem -2.5rem 2rem -2.5rem;display:flex;align-items:center;justify-content:center;gap:2rem;position:relative;overflow:hidden;'>"
+        "<div style='background:#08090D;border-bottom:1px solid rgba(0,163,224,0.2);padding:0.8rem 2rem;margin:-1.5rem -2.5rem 1.5rem -2.5rem;display:flex;align-items:center;justify-content:center;gap:1.5rem;position:relative;overflow:hidden;'>"
         "<div style='position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,#00A3E0,transparent);'></div>"
-        "<div style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:300px;height:200px;background:radial-gradient(circle,rgba(0,163,224,0.08) 0%,transparent 70%);pointer-events:none;'></div>"
-        "<img src='https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png' alt='Paris FC' style='width:80px;height:80px;object-fit:contain;flex-shrink:0;position:relative;z-index:1;'>"
+        "<img src='https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png' alt='Paris FC' style='width:52px;height:52px;object-fit:contain;flex-shrink:0;position:relative;z-index:1;'>"
         "<div style='position:relative;z-index:1;text-align:center;'>"
-        "<div style='font-family:Oswald,sans-serif;font-size:32px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;line-height:1;color:#FFFFFF;'>Centre de Formation F&eacute;minin</div>"
-        "<div style='font-family:Inter,sans-serif;font-size:13px;font-weight:300;letter-spacing:0.16em;color:#00A3E0;margin-top:8px;text-transform:uppercase;'>Analyse &amp; Suivi des Joueuses</div>"
+        "<div style='font-family:Oswald,sans-serif;font-size:22px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;line-height:1;color:#FFFFFF;'>Centre de Formation F&eacute;minin</div>"
+        "<div style='font-family:Inter,sans-serif;font-size:11px;font-weight:300;letter-spacing:0.16em;color:#00A3E0;margin-top:5px;text-transform:uppercase;'>Analyse &amp; Suivi des Joueuses</div>"
         "</div></div>",
         unsafe_allow_html=True,
     )
