@@ -1,0 +1,11 @@
+dash==2.11.1
+plotly==5.18.0
+pandas==2.1.4
+dash-extensions==0.1.6
+google-api-python-client==2.100.0
+google-auth-httplib2==0.1.0
+google-auth-oauthlib==1.0.0
+mplsoccer==0.1.0
+matplotlib==3.8.2
+gunicorn==21.2.0
+openpyxl==3.1.2  # Pour lire les fichiers Excel
