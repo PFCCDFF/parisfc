@@ -1,0 +1,23 @@
+# Environnement virtuel
+venv/
+.env/
+
+# Fichiers de credentials (À NE JAMAIS COMMITER)
+credentials.json
+*.json
+
+# Données locales (peuvent être volumineuses)
+data/
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE
+.vscode/
+.idea/
+
+# Système
+.DS_Store
+Thumbs.db
