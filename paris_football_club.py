@@ -2187,8 +2187,7 @@ def download_google_drive():
                     _warn(f"Drive: impossible de télécharger le fichier passerelle → {e}")
             break
 
-st.session_state["gps_drive_found"] = 0
-st.session_state["gps_drive_downloaded"] = 0
+# (initialisé dans main() pour éviter l'exécution hors contexte Streamlit)
 
 
 # =========================
@@ -10741,24 +10740,48 @@ def main():
                 _run_initial_sync()
                 st.cache_data.clear()
 
+    # Initialiser les compteurs GPS ici (évite l'exécution hors contexte au niveau module)
+    if "gps_drive_found" not in st.session_state:
+        st.session_state["gps_drive_found"] = 0
+    if "gps_drive_downloaded" not in st.session_state:
+        st.session_state["gps_drive_downloaded"] = 0
+
     # Indicateur non-bloquant si sync en attente
-    if st.session_state.get("_sync_pending"):
+    # La sync ne tourne qu'une seule fois par session (flag _sync_running)
+    if st.session_state.get("_sync_pending") and not st.session_state.get("_sync_running"):
+        st.session_state["_sync_running"] = True
         st.sidebar.info("🔄 Mise à jour Drive en cours…")
         try:
             _run_initial_sync()
             st.cache_data.clear()
-            st.session_state["_sync_pending"] = False
+            st.session_state.pop("_collect_data_cache", None)
         except Exception as _se:
             st.sidebar.warning(f"Sync Drive partielle : {_se}")
+        finally:
             st.session_state["_sync_pending"] = False
+            st.session_state["_sync_running"] = False
             st.session_state["_sync_done"] = True
 
-    with st.spinner("Chargement des données…"):
-        pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, gps_match_df, name_report_df = collect_data()
+    # ── Chargement des données avec cache session ──────────────────────────
+    # collect_data() ne tourne qu'une fois par session.
+    # Le bouton "Rafraîchir" dans la sidebar invalide le cache manuellement.
+    _DATA_CACHE_KEY = "_collect_data_cache"
+    if _DATA_CACHE_KEY not in st.session_state:
+        with st.spinner("Chargement des données…"):
+            st.session_state[_DATA_CACHE_KEY] = collect_data()
+
+    pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, gps_match_df, name_report_df = st.session_state[_DATA_CACHE_KEY]
     st.session_state["name_report_df"] = name_report_df
     st.session_state["gps_raw_df"] = gps_raw_df
     st.session_state["gps_weekly_df"] = gps_week_df
     st.session_state["gps_match_df"] = gps_match_df
+
+    # Bouton de rafraîchissement manuel dans la sidebar
+    st.sidebar.divider()
+    if st.sidebar.button("🔄 Rafraîchir les données", help="Recharge les fichiers depuis le disque (après une sync Drive par exemple)"):
+        st.session_state.pop(_DATA_CACHE_KEY, None)
+        st.cache_data.clear()
+        st.rerun()
 
     script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
 
