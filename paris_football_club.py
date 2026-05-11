@@ -3662,7 +3662,23 @@ def prepare_combined_ranking(player_df: pd.DataFrame,
 
     result = pd.DataFrame([player_row[["Player"] + ratio_cols],
                            ref_mean_row[["Player"] + ratio_cols]])
-    return result.reset_index(drop=True)
+    result = result.reset_index(drop=True)
+
+    # ── Renommer les colonnes pour correspondre aux noms attendus par create_comparison_radar ──
+    _col_rename = {
+        "Timing":          "Timing",
+        "Force physique":  "Force physique",
+        "Technique passe": "Intelligence tactique",
+        "Passe courte":    "Technique 1",
+        "Passe longue":    "Technique 2",
+        "Explosivité":     "Explosivité",
+        "Précision":       "Précision",
+        "Interceptions":   "Sang-froid",
+        "Passes":          "Prise de risque",
+        "Dribbles":        "Technique 3",
+    }
+    result = result.rename(columns={k: v for k, v in _col_rename.items() if k in result.columns})
+    return result
 
 
 def aggregate_player_stats(df: pd.DataFrame) -> pd.DataFrame:
