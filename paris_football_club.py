@@ -6561,22 +6561,24 @@ def create_individual_radar(df: pd.DataFrame):
     center = patches.Circle((0, 0), 4.0, transform=ax.transData._b, color="#08090D", zorder=10)
     ax.add_artist(center)
 
-    fig.subplots_adjust(top=0.92, bottom=0.08, left=0.05, right=0.95)
+    fig.subplots_adjust(top=0.92, bottom=0.14, left=0.05, right=0.95)
 
-    # Légende familles de couleurs en bas de figure
+    # Légende KPIs — 2 lignes de 3
     _families = [
-        ("#2FB8FF", "Physique"),
-        ("#FFA06E", "Tactique"),
-        ("#FF6B6B", "Technique"),
-        ("#7B84FF", "Explosivité"),
-        ("#BFBFBF", "Mental"),
+        ("#2FB8FF", "Rigueur"),
+        ("#FFA06E", "Récupération"),
+        ("#FF6B6B", "Distribution"),
+        ("#7B84FF", "Percussion"),
+        ("#BFBFBF", "Finition"),
         ("#8E9BFF", "Créativité"),
     ]
-    _legend_x = 0.02
-    for _fc, _fl in _families:
-        fig.text(_legend_x, 0.03, "●", color=_fc, fontsize=8, ha="left", va="bottom", transform=fig.transFigure)
-        fig.text(_legend_x + 0.025, 0.03, _fl, color="#6A8090", fontsize=6.5, ha="left", va="bottom", transform=fig.transFigure)
-        _legend_x += 0.155
+    _x_positions = [0.05, 0.38, 0.68]
+    for (_fc, _fl), _lx in zip(_families[:3], _x_positions):
+        fig.text(_lx, 0.065, "●", color=_fc, fontsize=11, ha="left", va="bottom", transform=fig.transFigure)
+        fig.text(_lx + 0.035, 0.065, _fl, color="#C8D8E8", fontsize=8.5, ha="left", va="bottom", transform=fig.transFigure)
+    for (_fc, _fl), _lx in zip(_families[3:], _x_positions):
+        fig.text(_lx, 0.03, "●", color=_fc, fontsize=11, ha="left", va="bottom", transform=fig.transFigure)
+        fig.text(_lx + 0.035, 0.03, _fl, color="#C8D8E8", fontsize=8.5, ha="left", va="bottom", transform=fig.transFigure)
 
     fig.set_facecolor("#08090D")
 
