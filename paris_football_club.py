@@ -10929,7 +10929,7 @@ def main():
 
     # ── Sync Drive ────────────────────────────────────────────────────────
     # Si données locales disponibles → afficher l'app immédiatement.
-    # La sync se fait en arrière-plan avec un indicateur discret dans la sidebar.
+    # La sync se fait en arrière-plan dans un thread séparé.
     # Seule la toute première installation (dossier vide) reste bloquante.
     _has_local_data = (
         os.path.exists(DATA_FOLDER)
@@ -10942,25 +10942,30 @@ def main():
 
     if not st.session_state.get("_sync_done"):
         if _has_local_data:
-            # Données locales présentes → sync différée après affichage
-            st.session_state["_sync_pending"] = True
+            # Données locales présentes → sync en arrière-plan (non bloquante)
+            if not st.session_state.get("_sync_thread_started"):
+                import threading
+                def _bg_sync():
+                    try:
+                        _run_initial_sync()
+                    except Exception:
+                        pass
+                    finally:
+                        st.session_state["_sync_pending"] = False
+                        st.session_state["_sync_thread_started"] = False
+                _t = threading.Thread(target=_bg_sync, daemon=True)
+                _t.start()
+                st.session_state["_sync_thread_started"] = True
+                st.session_state["_sync_pending"] = True
         else:
             # Première installation : sync bloquante nécessaire
             with st.spinner("⏳ Première synchronisation Drive…"):
                 _run_initial_sync()
                 st.cache_data.clear()
 
-    # Indicateur non-bloquant si sync en attente
+    # Indicateur discret si sync en cours en arrière-plan
     if st.session_state.get("_sync_pending"):
-        st.sidebar.info("🔄 Mise à jour Drive en cours…")
-        try:
-            _run_initial_sync()
-            st.cache_data.clear()
-            st.session_state["_sync_pending"] = False
-        except Exception as _se:
-            st.sidebar.warning(f"Sync Drive partielle : {_se}")
-            st.session_state["_sync_pending"] = False
-            st.session_state["_sync_done"] = True
+        st.sidebar.caption("🔄 Mise à jour Drive en cours…")
 
     with st.spinner("Chargement des données…"):
         pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, gps_match_df, name_report_df = collect_data()
