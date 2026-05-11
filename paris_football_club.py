@@ -6523,19 +6523,25 @@ def create_individual_radar(df: pd.DataFrame):
 
     fig, ax = pizza.make_pizza(
         values=values,
-        figsize=(5, 5),
+        figsize=(7, 7),
         slice_colors=slice_colors,
         value_colors=["#FFFFFF"] * len(available),
-        kwargs_slices=dict(edgecolor="#08090D", linewidth=1.8),
-        kwargs_params=dict(color="#C8D8E8", fontsize=8.5, fontproperties="monospace"),
+        kwargs_slices=dict(edgecolor="#08090D", linewidth=1.5),
+        kwargs_params=dict(
+            color="#C8D8E8",
+            fontsize=7,
+            fontfamily="sans-serif",
+            fontweight="normal",
+        ),
         kwargs_values=dict(
             color="#FFFFFF",
-            fontsize=9,
+            fontsize=8,
+            fontweight="bold",
             bbox=dict(
                 edgecolor="#00A3E0",
                 facecolor="#0C1220",
-                boxstyle="round,pad=0.2",
-                lw=1.0
+                boxstyle="round,pad=0.25",
+                lw=0.8,
             ),
         ),
     )
@@ -6543,9 +6549,9 @@ def create_individual_radar(df: pd.DataFrame):
     import matplotlib.patches as patches
 
     zone_specs = [
-        (40, "#FF6B6B", 0.08),
-        (70, "#FFA06E", 0.07),
-        (100, "#2ED47A", 0.05),
+        (40, "#FF6B6B", 0.07),
+        (70, "#FFA06E", 0.06),
+        (100, "#2ED47A", 0.04),
     ]
 
     for r, col, alpha in sorted(zone_specs, key=lambda x: x[0], reverse=True):
@@ -6555,7 +6561,22 @@ def create_individual_radar(df: pd.DataFrame):
     center = patches.Circle((0, 0), 4.0, transform=ax.transData._b, color="#08090D", zorder=10)
     ax.add_artist(center)
 
-    fig.subplots_adjust(top=0.95, bottom=0.05)
+    fig.subplots_adjust(top=0.92, bottom=0.08, left=0.05, right=0.95)
+
+    # Légende familles de couleurs en bas de figure
+    _families = [
+        ("#2FB8FF", "Physique"),
+        ("#FFA06E", "Tactique"),
+        ("#FF6B6B", "Technique"),
+        ("#7B84FF", "Explosivité"),
+        ("#BFBFBF", "Mental"),
+        ("#8E9BFF", "Créativité"),
+    ]
+    _legend_x = 0.02
+    for _fc, _fl in _families:
+        fig.text(_legend_x, 0.03, "●", color=_fc, fontsize=8, ha="left", va="bottom", transform=fig.transFigure)
+        fig.text(_legend_x + 0.025, 0.03, _fl, color="#6A8090", fontsize=6.5, ha="left", va="bottom", transform=fig.transFigure)
+        _legend_x += 0.155
 
     fig.set_facecolor("#08090D")
 
