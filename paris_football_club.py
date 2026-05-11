@@ -37,6 +37,7 @@ warnings.filterwarnings("ignore")
 DATA_FOLDER = "data"
 PASSERELLE_FOLDER = "data/passerelle"
 GPS_FOLDER = "data/gps"
+PLAYER_SETTINGS_PATH = os.path.join("data", "player_settings.json")
 
 # Dossiers Drive
 DRIVE_MAIN_FOLDER_ID = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
@@ -73,6 +74,51 @@ LOGOS_FOLDER = "data/logos"  # Cache local
 EVAL_FILENAME = "Auto-évaluation de votre match (post-match).xlsx"  # Fichier Microsoft Forms export
 EVAL_LOCAL_PATH = "data/evaluations.xlsx"  # Cache local
 EVAL_COACH_SHEET = "Feuille 1"  # Feuille évaluations entraîneurs dans le même fichier
+
+# =========================
+# PLAYER SETTINGS (filtre & alias noms — persistant sur disque)
+# =========================
+
+def load_player_settings() -> dict:
+    """Charge les réglages joueuses depuis le fichier JSON persistant."""
+    if os.path.exists(PLAYER_SETTINGS_PATH):
+        try:
+            with open(PLAYER_SETTINGS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"hidden": [], "aliases": {}}
+
+
+def save_player_settings(settings: dict) -> bool:
+    """Sauvegarde les réglages joueuses dans le fichier JSON persistant."""
+    try:
+        os.makedirs(os.path.dirname(PLAYER_SETTINGS_PATH), exist_ok=True)
+        with open(PLAYER_SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def apply_player_settings(player_list: list, settings: dict) -> list:
+    """Applique filtres et aliases à une liste de noms de joueuses."""
+    hidden = set(settings.get("hidden", []))
+    aliases = settings.get("aliases", {})
+    result = []
+    for p in player_list:
+        if p in hidden:
+            continue
+        result.append(aliases.get(p, p))
+    return sorted(set(result))
+
+
+def resolve_alias_to_original(name: str, settings: dict) -> str:
+    """Retrouve le nom original depuis un alias (pour les requêtes de données)."""
+    aliases = settings.get("aliases", {})
+    reverse = {v: k for k, v in aliases.items()}
+    return reverse.get(name, name)
+
 
 # =========================
 # UTILS
@@ -8473,6 +8519,10 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
         else:
             _all_p = sorted(pfc_kpi["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
                      if pfc_kpi is not None and not pfc_kpi.empty else []
+            # Appliquer filtres et aliases depuis les réglages persistants
+            _ps_perf = st.session_state.get("_player_settings") or load_player_settings()
+            st.session_state["_player_settings"] = _ps_perf
+            _all_p = apply_player_settings(_all_p, _ps_perf)
             _perf_player = st.selectbox("Joueuse", _all_p, key="perf_player_sel") if _all_p else None
         # Stocker en session_state pour propagation
         if _perf_player:
@@ -8527,9 +8577,11 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
             _pgps_name = _best_gps
 
     # Données joueuse filtrées
+    # Résoudre l'alias vers le nom original pour les requêtes de données
+    _perf_player_orig = resolve_alias_to_original(_perf_player, _ps_perf) if _perf_player else None
     _df_player = pd.DataFrame()
-    if pfc_kpi is not None and not pfc_kpi.empty and _perf_player:
-        _df_player = pfc_kpi[pfc_kpi["Player"].apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(_perf_player)].copy()
+    if pfc_kpi is not None and not pfc_kpi.empty and _perf_player_orig:
+        _df_player = pfc_kpi[pfc_kpi["Player"].apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(_perf_player_orig)].copy()
         if _perf_matches_sel:
             _df_player = _df_player[_df_player["Adversaire"].isin(_perf_matches_sel)].copy()
         elif _perf_period == "Plage de dates" and "Date" in _df_player.columns:
@@ -9699,7 +9751,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         if not check_permission(user_profile, "all", permissions):
             st.warning("⛔ Accès réservé aux administrateurs.")
         else:
-            tab_ref, tab_perms, tab_admin = st.tabs(["📋 Référentiel joueuses", "🔐 Profils & permissions", "🛠️ Administration"])
+            tab_ref, tab_perms, tab_jouеuses, tab_admin = st.tabs(["📋 Référentiel joueuses", "🔐 Profils & permissions", "👥 Joueuses", "🛠️ Administration"])
 
             # ── Référentiel joueuses ──────────────────────────────────────
             with tab_ref:
@@ -9745,6 +9797,74 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                     st.dataframe(perms_df, use_container_width=True)
                 else:
                     st.info("Aucune permission chargée.")
+
+            # ── Joueuses — filtre & aliases ───────────────────────────────
+            with tab_jouеuses:
+                st.subheader("Gestion des joueuses")
+                st.caption("Masquez des joueuses ou corrigez leurs noms pour les raccrocher au bon profil. Ces réglages sont permanents.")
+
+                # Charger settings depuis disque
+                _ps = load_player_settings()
+                _hidden = set(_ps.get("hidden", []))
+                _aliases = _ps.get("aliases", {})
+
+                # Récupérer la liste complète des joueuses depuis les données
+                _all_raw = []
+                if pfc_kpi is not None and not pfc_kpi.empty and "Player" in pfc_kpi.columns:
+                    _all_raw = sorted(pfc_kpi["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist())
+
+                if not _all_raw:
+                    st.warning("Aucune joueuse trouvée dans les données Performance.")
+                else:
+                    st.markdown(f"**{len(_all_raw)} joueuses** dans la base · {len(_hidden)} masquée(s) · {len(_aliases)} alias")
+
+                    # ── Section Visibilité ────────────────────────────────
+                    st.markdown("---")
+                    st.markdown("**Visibilité des joueuses**")
+                    st.caption("Décochez pour masquer une joueuse dans Performance.")
+
+                    _new_hidden = set()
+                    _cols_vis = st.columns(3)
+                    for _i, _p in enumerate(_all_raw):
+                        _col = _cols_vis[_i % 3]
+                        _visible = _col.checkbox(
+                            _p,
+                            value=(_p not in _hidden),
+                            key=f"vis_{_p}"
+                        )
+                        if not _visible:
+                            _new_hidden.add(_p)
+
+                    # ── Section Aliases ───────────────────────────────────
+                    st.markdown("---")
+                    st.markdown("**Corrections de noms (aliases)**")
+                    st.caption("Associe un nom CSV à un nom corrigé. Laisser vide = pas d'alias.")
+
+                    _new_aliases = {}
+                    for _p in _all_raw:
+                        _current_alias = _aliases.get(_p, "")
+                        _col_a, _col_b = st.columns([2, 2])
+                        _col_a.markdown(f"`{_p}`")
+                        _alias_val = _col_b.text_input(
+                            "Nom corrigé",
+                            value=_current_alias,
+                            key=f"alias_{_p}",
+                            label_visibility="collapsed",
+                            placeholder="Laisser vide si correct"
+                        )
+                        if _alias_val.strip() and _alias_val.strip() != _p:
+                            _new_aliases[_p] = _alias_val.strip()
+
+                    # ── Bouton sauvegarder ────────────────────────────────
+                    st.markdown("---")
+                    if st.button("💾 Sauvegarder les réglages", type="primary", key="save_player_settings"):
+                        _new_settings = {"hidden": list(_new_hidden), "aliases": _new_aliases}
+                        if save_player_settings(_new_settings):
+                            st.session_state["_player_settings"] = _new_settings
+                            st.success(f"✅ Réglages sauvegardés — {len(_new_hidden)} masquée(s), {len(_new_aliases)} alias")
+                            st.rerun()
+                        else:
+                            st.error("❌ Erreur lors de la sauvegarde.")
 
             # ── Administration ────────────────────────────────────────────
             with tab_admin:
