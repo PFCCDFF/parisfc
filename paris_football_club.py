@@ -39,6 +39,14 @@ PASSERELLE_FOLDER = "data/passerelle"
 GPS_FOLDER = "data/gps"
 PLAYER_SETTINGS_PATH = os.path.join("data", "player_settings.json")
 
+# Cache Parquet — accélère le chargement des nouvelles sessions
+PARQUET_PFC_PATH    = os.path.join("data", "_cache_pfc_kpi.parquet")
+PARQUET_GPS_PATH    = os.path.join("data", "_cache_gps_raw.parquet")
+PARQUET_GPSW_PATH   = os.path.join("data", "_cache_gps_week.parquet")
+PARQUET_GPSM_PATH   = os.path.join("data", "_cache_gps_match.parquet")
+PARQUET_EDF_PATH    = os.path.join("data", "_cache_edf_kpi.parquet")
+PARQUET_META_PATH   = os.path.join("data", "_cache_meta.json")
+
 # Dossiers Drive
 DRIVE_MAIN_FOLDER_ID = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
 DRIVE_PASSERELLE_FOLDER_ID = "19_ZU-FsAiNKxCfTw_WKzhTcuPDsGoVhL"
@@ -74,6 +82,79 @@ LOGOS_FOLDER = "data/logos"  # Cache local
 EVAL_FILENAME = "Auto-évaluation de votre match (post-match).xlsx"  # Fichier Microsoft Forms export
 EVAL_LOCAL_PATH = "data/evaluations.xlsx"  # Cache local
 EVAL_COACH_SHEET = "Feuille 1"  # Feuille évaluations entraîneurs dans le même fichier
+
+# =========================
+# CACHE PARQUET — accélération chargement inter-sessions
+# =========================
+
+def _parquet_cache_is_valid() -> bool:
+    """Vérifie si le cache Parquet est valide (fichiers présents et plus récents que les CSV source)."""
+    try:
+        if not os.path.exists(PARQUET_META_PATH):
+            return False
+        with open(PARQUET_META_PATH, "r") as f:
+            meta = json.load(f)
+        # Vérifier que tous les fichiers cache existent
+        for p in [PARQUET_PFC_PATH, PARQUET_GPS_PATH, PARQUET_EDF_PATH]:
+            if not os.path.exists(p):
+                return False
+        # Vérifier que la date de génération est postérieure au dernier CSV modifié
+        cache_ts = meta.get("generated_at", 0)
+        if not os.path.exists(DATA_FOLDER):
+            return False
+        latest_src = max(
+            (os.path.getmtime(os.path.join(DATA_FOLDER, f))
+             for f in os.listdir(DATA_FOLDER)
+             if f.endswith((".csv", ".xlsx", ".xls")) and not f.startswith("_cache")),
+            default=0
+        )
+        return cache_ts >= latest_src
+    except Exception:
+        return False
+
+
+def _save_parquet_cache(pfc_kpi, edf_kpi, gps_raw, gps_week, gps_match, name_report):
+    """Sauvegarde le cache Parquet sur disque."""
+    try:
+        os.makedirs(DATA_FOLDER, exist_ok=True)
+        for df, path in [
+            (pfc_kpi,   PARQUET_PFC_PATH),
+            (edf_kpi,   PARQUET_EDF_PATH),
+            (gps_raw,   PARQUET_GPS_PATH),
+            (gps_week,  PARQUET_GPSW_PATH),
+            (gps_match, PARQUET_GPSM_PATH),
+        ]:
+            if df is not None and not df.empty:
+                df.to_parquet(path, index=False)
+            elif os.path.exists(path):
+                os.remove(path)
+        # Sauvegarder name_report séparément (petit, JSON)
+        _nr_path = os.path.join(DATA_FOLDER, "_cache_name_report.parquet")
+        if name_report is not None and not name_report.empty:
+            name_report.to_parquet(_nr_path, index=False)
+        meta = {"generated_at": datetime.now().timestamp()}
+        with open(PARQUET_META_PATH, "w") as f:
+            json.dump(meta, f)
+    except Exception as e:
+        pass  # Cache optionnel — pas bloquant
+
+
+def _load_parquet_cache():
+    """Charge le cache Parquet depuis le disque. Retourne None si invalide."""
+    try:
+        def _read(path):
+            return pd.read_parquet(path) if os.path.exists(path) else pd.DataFrame()
+        pfc_kpi   = _read(PARQUET_PFC_PATH)
+        edf_kpi   = _read(PARQUET_EDF_PATH)
+        gps_raw   = _read(PARQUET_GPS_PATH)
+        gps_week  = _read(PARQUET_GPSW_PATH)
+        gps_match = _read(PARQUET_GPSM_PATH)
+        _nr_path  = os.path.join(DATA_FOLDER, "_cache_name_report.parquet")
+        name_report = _read(_nr_path)
+        return pfc_kpi, edf_kpi, gps_raw, gps_week, gps_match, name_report
+    except Exception:
+        return None
+
 
 # =========================
 # PLAYER SETTINGS (filtre & alias noms — persistant sur disque)
@@ -6088,10 +6169,15 @@ def _run_initial_sync():
 def collect_data(selected_season=None):
     """
     Chargement principal des données PFC + EDF + GPS.
-    Mis en cache 5 min (ttl=300) — ne re-télécharge pas Drive à chaque rerun.
+    Utilise un cache Parquet pour accélérer le chargement des nouvelles sessions.
     Les syncs Drive/GPS/Photos sont faits UNE SEULE FOIS au démarrage
     (voir _run_initial_sync) ou via le bouton "Mettre à jour".
     """
+    # ── Cache Parquet — chargement rapide si les sources n'ont pas changé ──
+    if selected_season is None and _parquet_cache_is_valid():
+        _cached = _load_parquet_cache()
+        if _cached is not None:
+            return _cached
     ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
     if not os.path.exists(ref_path):
         ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME)
@@ -6362,7 +6448,13 @@ def collect_data(selected_season=None):
             _warn(f"Match: impossible de lire {filename} → {e}")
             continue
 
-    return pfc_kpi, edf_kpi, gps_raw, gps_week, gps_match, pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
+    _nr_df = pd.DataFrame(name_report).drop_duplicates() if name_report else pd.DataFrame()
+
+    # ── Sauvegarder le cache Parquet pour accélérer les prochaines sessions ──
+    if selected_season is None:
+        _save_parquet_cache(pfc_kpi, edf_kpi, gps_raw, gps_week, gps_match, _nr_df)
+
+    return pfc_kpi, edf_kpi, gps_raw, gps_week, gps_match, _nr_df
 
 
 # =========================
@@ -9877,6 +9969,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                     if st.button("🔄 Mettre à jour la base", key="gestion_update_db"):
                         st.session_state["_sync_done"] = False
                         st.cache_data.clear()
+                        # Invalider le cache Parquet pour forcer le rechargement complet
+                        for _cp in [PARQUET_PFC_PATH, PARQUET_GPS_PATH, PARQUET_GPSW_PATH,
+                                    PARQUET_GPSM_PATH, PARQUET_EDF_PATH, PARQUET_META_PATH]:
+                            if os.path.exists(_cp):
+                                os.remove(_cp)
                         st.rerun()
 
                     if st.button("🔄 Synchroniser GPS Match", key="gestion_sync_gps_match"):
