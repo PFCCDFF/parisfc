@@ -3411,7 +3411,92 @@ def parse_apl_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def load_apl_files() -> pd.DataFrame:
+def load_apl_files_raw() -> pd.DataFrame:
+    """Charge tous les CSV APL et retourne les lignes individuelles par match
+    (non agrégées) pour permettre le calcul de Z-scores avec variance réelle."""
+    import glob as _glob
+
+    candidates = _glob.glob(os.path.join(DATA_FOLDER, "Indiv_*.csv")) + \
+                 _glob.glob(os.path.join(DATA_FOLDER, "APL_*.csv")) + \
+                 _glob.glob(os.path.join(DATA_FOLDER, "apl_*.csv"))
+
+    if not candidates:
+        return pd.DataFrame()
+
+    all_dfs = []
+    for path in candidates:
+        try:
+            raw = read_csv_auto(path)
+            if 'Row' not in raw.columns or 'Action' not in raw.columns:
+                continue
+            apl_rows = {'Gardienne','Défenseure centrale','Défenseure latérale',
+                        'Milieux axiale','Milieux offensive','Attaquante'}
+            rows_found = set(raw['Row'].dropna().apply(
+                lambda r: re.sub(r'\s*\d+$', '', str(r)).strip()
+            ).unique())
+            if not rows_found & apl_rows:
+                continue
+            # Parser sans agréger → une ligne par joueuse par match
+            parsed = parse_apl_csv_individual(raw)
+            if not parsed.empty:
+                all_dfs.append(parsed)
+        except Exception as e:
+            _warn(f"APL raw: impossible de lire {os.path.basename(path)} → {e}")
+
+    if not all_dfs:
+        return pd.DataFrame()
+
+    return pd.concat(all_dfs, ignore_index=True)
+
+
+def parse_apl_csv_individual(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Parse un CSV APL et retourne une ligne par (profil, match) sans agréger."""
+    rows_out = []
+    profils_found = set()
+
+    for _, row in df_raw.iterrows():
+        raw_row = str(row.get('Row', '')).strip()
+        profil = re.sub(r'\s*\d+$', '', raw_row).strip()
+        if profil not in {'Gardienne','Défenseure centrale','Défenseure latérale',
+                          'Milieux axiale','Milieux offensive','Attaquante'}:
+            continue
+        profils_found.add(profil)
+
+    if not profils_found:
+        return pd.DataFrame()
+
+    # Grouper par profil, puis prendre chaque action comme une observation
+    for profil in profils_found:
+        mask = df_raw['Row'].apply(lambda r: re.sub(r'\s*\d+$', '', str(r)).strip()) == profil
+        sub = df_raw[mask].copy()
+        if sub.empty:
+            continue
+
+        def _val(col):
+            if col not in sub.columns: return np.nan
+            return pd.to_numeric(sub[col], errors='coerce').sum()
+
+        poste = _APL_PROFIL_TO_POSTE.get(profil, profil)
+        rows_out.append({
+            'Player': f"{profil} (APL)",
+            'Poste': poste,
+            'Passes':                    _val('passes') if 'passes' in sub.columns else np.nan,
+            'Passes courtes':            _val('passes_courtes') if 'passes_courtes' in sub.columns else np.nan,
+            'Passes longues':            _val('passes_longues') if 'passes_longues' in sub.columns else np.nan,
+            'Passes réussies':           _val('passes_ok') if 'passes_ok' in sub.columns else np.nan,
+            'Passes réussies (courtes)': _val('passes_ok_courtes') if 'passes_ok_courtes' in sub.columns else np.nan,
+            'Passes réussies (longues)': _val('passes_ok_longues') if 'passes_ok_longues' in sub.columns else np.nan,
+            'Duels défensifs':           _val('duels') if 'duels' in sub.columns else np.nan,
+            'Duels défensifs gagnés':    _val('duels_ok') if 'duels_ok' in sub.columns else np.nan,
+            'Fautes':                    _val('fautes') if 'fautes' in sub.columns else np.nan,
+            'Dribbles':                  _val('dribbles') if 'dribbles' in sub.columns else np.nan,
+            'Dribbles réussis':          _val('dribbles_ok') if 'dribbles_ok' in sub.columns else np.nan,
+            'Interceptions':             _val('interceptions') if 'interceptions' in sub.columns else np.nan,
+            'Tirs':                      _val('tirs') if 'tirs' in sub.columns else np.nan,
+            'Tirs cadrés':               _val('tirs_cadres') if 'tirs_cadres' in sub.columns else np.nan,
+        })
+
+    return pd.DataFrame(rows_out)
     """Charge tous les CSV APL depuis data/ et retourne un DataFrame
     agrégé par profil de poste (moyenne toutes joueuses, tous matchs).
     Compatible avec create_metrics / create_kpis / create_poste.
@@ -3572,63 +3657,59 @@ def prepare_combined_ranking(player_df: pd.DataFrame,
                               ref_df: pd.DataFrame,
                               player_label: str,
                               ref_label: str) -> pd.DataFrame:
-    """Solution 2 — Percentile global sur dataset combiné PFC + référentiel.
-
-    Étapes :
-    1. Calculer les RATIOS bruts (avant tout ranking) sur les deux datasets
-       avec exactement les mêmes formules.
-    2. Concaténer joueuse(s) PFC + toutes les lignes du référentiel.
-    3. Appliquer rank(pct=True) sur le dataset combiné.
-    4. Extraire la ligne joueuse et une ligne « moyenne référentiel ».
-
-    Avantage : une joueuse avec score 75 est réellement meilleure que
-    75% des joueuses de la distribution combinée PFC+EDF/APL.
     """
-    # Ratios bruts comparables entre PFC et EDF/APL (formules identiques)
+    Comparaison Z-score : positionne la joueuse PFC par rapport aux standards APL/EDF.
+
+    Méthode :
+    1. Calculer les ratios bruts sur la joueuse PFC et sur chaque ligne APL.
+    2. Calculer mean et std sur les lignes APL (distribution de référence).
+    3. Z-score joueuse = (ratio_joueuse - mean_apl) / std_apl
+    4. Normaliser sur 0-100 : z_norm = clip((z + 3) / 6 * 100, 0, 100)
+       → Z=0 (= moyenne APL) donne 50/100
+       → Z=+3 (très au-dessus) donne 100/100
+       → Z=-3 (très en dessous) donne 0/100
+    5. La ligne de référence APL est fixée à 50 (= sa moyenne par définition).
+
+    Interprétation : score > 50 = au-dessus de la moyenne APL sur cette métrique.
+    """
+    # ── Définition des métriques comparables ──────────────────────────────
     _RATIO_DEFS = {
-        "Timing":            lambda r: _ratio(r, "Duels défensifs", None, "Fautes",
-                                              formula="(d-f)/d"),
-        "Force physique":    lambda r: _ratio(r, "Duels défensifs gagnés",
-                                              "Duels défensifs"),
-        "Technique passe":   lambda r: _ratio(r, "Passes réussies", "Passes"),
-        "Passe courte":      lambda r: _ratio(r, "Passes réussies (courtes)",
-                                              "Passes courtes"),
-        "Passe longue":      lambda r: _ratio(r, "Passes réussies (longues)",
-                                              "Passes longues"),
-        "Explosivité":       lambda r: _ratio(r, "Dribbles réussis", "Dribbles"),
-        "Précision":         lambda r: _ratio(r, "Tirs cadrés", "Tirs"),
-        "Interceptions":     lambda r: _ratio_vol(r, "Interceptions"),
-        "Passes":            lambda r: _ratio_vol(r, "Passes"),
-        "Dribbles":          lambda r: _ratio_vol(r, "Dribbles"),
+        "Timing":           lambda r: _safe_ratio(r, "Duels défensifs", fautes_col="Fautes"),
+        "Force physique":   lambda r: _safe_ratio(r, "Duels défensifs gagnés", "Duels défensifs"),
+        "Intelligence tactique": lambda r: _safe_ratio(r, "Passes réussies", "Passes"),
+        "Technique 1":      lambda r: _safe_ratio(r, "Passes réussies (courtes)", "Passes courtes"),
+        "Technique 2":      lambda r: _safe_ratio(r, "Passes réussies (longues)", "Passes longues"),
+        "Technique 3":      lambda r: _safe_ratio(r, "Dribbles réussis", "Dribbles"),
+        "Explosivité":      lambda r: _safe_ratio(r, "Dribbles réussis", "Dribbles"),
+        "Précision":        lambda r: _safe_ratio(r, "Tirs cadrés", "Tirs"),
+        "Sang-froid":       lambda r: _safe_vol(r, "Interceptions"),
+        "Prise de risque":  lambda r: _safe_vol(r, "Passes"),
     }
 
-    def _ratio(row, num_col, den_col, sub_col=None, formula=None):
-        num = _flt(row, num_col)
-        den = _flt(row, den_col) if den_col else None
-        sub = _flt(row, sub_col) if sub_col else 0
-        if formula == "(d-f)/d":
-            d = _flt(row, num_col)
-            f = _flt(row, sub_col) if sub_col else 0
+    def _safe_ratio(row, num_col, den_col=None, fautes_col=None):
+        def _g(col):
+            if col is None or col not in row.index: return None
+            v = pd.to_numeric(row.get(col), errors="coerce")
+            return float(v) if pd.notna(v) else None
+        if fautes_col:
+            d = _g(num_col); f = _g(fautes_col) or 0
             return (d - f) / d if (d and d > 0) else np.nan
-        return (num / den) if (num is not None and den and den > 0) else np.nan
+        n = _g(num_col); d = _g(den_col) if den_col else None
+        return n / d if (n is not None and d and d > 0) else np.nan
 
-    def _ratio_vol(row, col):
-        v = _flt(row, col)
-        return v if v is not None else np.nan
-
-    def _flt(row, col):
-        if col is None or col not in row.index: return None
+    def _safe_vol(row, col):
+        if col not in row.index: return np.nan
         v = pd.to_numeric(row.get(col), errors="coerce")
-        return float(v) if pd.notna(v) else None
+        return float(v) if pd.notna(v) else np.nan
 
     if player_df is None or player_df.empty or ref_df is None or ref_df.empty:
         return pd.DataFrame()
 
-    # ── Calculer les ratios sur chaque dataset ─────────────────────────────
-    def _compute_ratios(df, label_col="Player"):
+    # ── Calculer les ratios bruts ─────────────────────────────────────────
+    def _compute_ratios(df):
         rows = []
         for _, row in df.iterrows():
-            d = {"Player": row.get(label_col, "?")}
+            d = {"Player": row.get("Player", "?")}
             for name, fn in _RATIO_DEFS.items():
                 try: d[name] = fn(row)
                 except: d[name] = np.nan
@@ -3638,47 +3719,36 @@ def prepare_combined_ranking(player_df: pd.DataFrame,
     pfc_ratios = _compute_ratios(player_df)
     ref_ratios = _compute_ratios(ref_df)
 
-    # Colonnes disponibles dans les deux
+    # Colonnes avec données suffisantes dans les deux datasets
     ratio_cols = [c for c in _RATIO_DEFS.keys()
                   if c in pfc_ratios.columns and c in ref_ratios.columns
                   and pfc_ratios[c].notna().any() and ref_ratios[c].notna().any()]
     if len(ratio_cols) < 3:
         return pd.DataFrame()
 
-    # ── Concaténer et appliquer rank(pct=True) sur l'ensemble ──────────────
-    combined = pd.concat([pfc_ratios, ref_ratios], ignore_index=True)
-    for c in ratio_cols:
-        combined[c] = (pd.to_numeric(combined[c], errors="coerce")
-                       .rank(pct=True, na_option="keep") * 100)
+    # ── Z-score : normaliser la joueuse par rapport à la distribution APL ─
+    apl_means = ref_ratios[ratio_cols].mean()
+    apl_stds  = ref_ratios[ratio_cols].std().replace(0, np.nan)
 
-    # ── Extraire joueuse (1re ligne) + moyenne référentiel ─────────────────
-    n_pfc = len(pfc_ratios)
-    player_row = combined.iloc[0].copy()
+    player_vals = pfc_ratios[ratio_cols].mean()  # moyenne si plusieurs matchs
+
+    # Z-score → normalisation 0-100 (Z=0→50, Z=±3→0/100)
+    z_scores = (player_vals - apl_means) / apl_stds
+    player_norm = ((z_scores + 3) / 6 * 100).clip(0, 100)
+
+    # Ligne joueuse
+    player_row = player_norm.copy()
     player_row["Player"] = player_label
 
-    ref_rows = combined.iloc[n_pfc:]
-    ref_mean_row = ref_rows[ratio_cols].mean()
-    ref_mean_row["Player"] = ref_label
+    # Ligne référence APL = 50 partout (= sa propre moyenne par définition du Z-score)
+    ref_row = pd.Series({c: 50.0 for c in ratio_cols})
+    ref_row["Player"] = ref_label
 
-    result = pd.DataFrame([player_row[["Player"] + ratio_cols],
-                           ref_mean_row[["Player"] + ratio_cols]])
-    result = result.reset_index(drop=True)
-
-    # ── Renommer les colonnes pour correspondre aux noms attendus par create_comparison_radar ──
-    _col_rename = {
-        "Timing":          "Timing",
-        "Force physique":  "Force physique",
-        "Technique passe": "Intelligence tactique",
-        "Passe courte":    "Technique 1",
-        "Passe longue":    "Technique 2",
-        "Explosivité":     "Explosivité",
-        "Précision":       "Précision",
-        "Interceptions":   "Sang-froid",
-        "Passes":          "Prise de risque",
-        "Dribbles":        "Technique 3",
-    }
-    result = result.rename(columns={k: v for k, v in _col_rename.items() if k in result.columns})
-    return result
+    result = pd.DataFrame([
+        {**{"Player": player_label}, **player_norm.to_dict()},
+        {**{"Player": ref_label},    **ref_row.to_dict()},
+    ])
+    return result.reset_index(drop=True)
 
 
 def aggregate_player_stats(df: pd.DataFrame) -> pd.DataFrame:
@@ -8875,10 +8945,15 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                              if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
                     if not _apl_f.empty:
                         _ps = st.selectbox("Poste APL", sorted(_apl_f["Poste"].unique()), key="perf_apl_p")
-                        _ref_pop = _apl_f.copy()
+                        # Charger les lignes individuelles APL pour le Z-score
+                        _apl_raw = load_apl_files_raw()
+                        _poste_key = _ps.replace(" moyenne (APL)", "").strip()
+                        _ref_pop = _apl_raw[
+                            _apl_raw["Poste"].astype(str).str.contains(_poste_key, na=False)
+                        ].copy() if not _apl_raw.empty else _apl_f.copy()
                         st.caption(
-                            "📊 Percentile global — score 75 = meilleure que 75% "
-                            "des joueuses de la distribution combinée PFC + APL"
+                            "📊 Z-score — score 50 = dans la moyenne APL · "
+                            "> 50 = au-dessus des standards pro · < 50 = en dessous"
                         )
                         if not _player_df_c.empty and not _ref_pop.empty:
                             _comb_df = prepare_combined_ranking(
