@@ -3616,6 +3616,218 @@ def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
     return df
 
 
+# ─── Référentiel Niveau International (StatsBomb Open Data) ──────────────────
+
+# Mapping position StatsBomb → code poste PFC
+_SB_POSITION_TO_POSTE = {
+    "Goalkeeper":                 "GB",
+    "Center Back":                "DC",
+    "Left Center Back":           "DC",
+    "Right Center Back":          "DC",
+    "Left Back":                  "DL",
+    "Right Back":                 "DL",
+    "Left Wing Back":             "DL",
+    "Right Wing Back":            "DL",
+    "Defensive Midfield":         "MD",
+    "Left Center Midfield":       "MD",
+    "Right Center Midfield":      "MD",
+    "Center Midfield":            "MD",
+    "Left Midfield":              "MO",
+    "Right Midfield":             "MO",
+    "Left Attacking Midfield":    "MO",
+    "Right Attacking Midfield":   "MO",
+    "Center Attacking Midfield":  "MO",
+    "Left Wing":                  "ATT",
+    "Right Wing":                 "ATT",
+    "Center Forward":             "ATT",
+    "Secondary Striker":          "ATT",
+}
+
+# Compétitions féminines StatsBomb Open Data
+_SB_FEMALE_COMPETITIONS = [
+    {"name": "UEFA Women's Euro 2022",  "competition_id": 53,  "season_id": 106},
+    {"name": "UEFA Women's Euro 2025",  "competition_id": 53,  "season_id": 315},
+    {"name": "Women's World Cup 2019",  "competition_id": 72,  "season_id": 30},
+    {"name": "Women's World Cup 2023",  "competition_id": 72,  "season_id": 107},
+]
+
+# Cache fichier pour éviter de recalculer à chaque refresh
+PARQUET_INTER_PATH = os.path.join("data", "_cache_international_kpi.parquet")
+
+
+def _sb_events_to_raw(events: "pd.DataFrame", position: str, minutes: float) -> dict:
+    """Convertit un sous-ensemble d'événements StatsBomb en colonnes brutes compatibles create_metrics."""
+    ev = events.copy()
+
+    def _count(mask): return int(mask.sum()) if len(mask) > 0 else 0
+
+    passes_all     = ev[ev["type"] == "Pass"]
+    passes_ok      = passes_all[passes_all["pass_outcome"].isna()]  # NaN = réussi dans SB
+    passes_courtes = passes_all[pd.to_numeric(passes_all.get("pass_length", pd.Series(dtype=float)), errors="coerce").fillna(0) < 25]
+    passes_longues = passes_all[pd.to_numeric(passes_all.get("pass_length", pd.Series(dtype=float)), errors="coerce").fillna(0) >= 25]
+    passes_ok_c    = passes_ok[pd.to_numeric(passes_ok.get("pass_length",  pd.Series(dtype=float)), errors="coerce").fillna(0) < 25]
+    passes_ok_l    = passes_ok[pd.to_numeric(passes_ok.get("pass_length",  pd.Series(dtype=float)), errors="coerce").fillna(0) >= 25]
+
+    shots          = ev[ev["type"] == "Shot"]
+    shots_ok       = shots[shots.get("shot_outcome", pd.Series(dtype=str)).isin(["Goal", "Saved", "Saved To Post"])]
+
+    duels          = ev[ev["type"] == "Duel"]
+    duels_ok       = duels[duels.get("duel_outcome", pd.Series(dtype=str)).isin(
+                        ["Won", "Success", "Success In Play", "Success Out"])]
+
+    dribbles       = ev[ev["type"] == "Dribble"]
+    dribbles_ok    = dribbles[dribbles.get("dribble_outcome", pd.Series(dtype=str)) == "Complete"]
+
+    interceptions  = ev[ev["type"] == "Interception"]
+    fouls          = ev[ev["type"] == "Foul Committed"]
+
+    # Passes en dernier tiers (x > 80 sur terrain 120x80)
+    def _last_third(df_p):
+        locs = df_p.get("pass_end_location", pd.Series(dtype=object))
+        count = 0
+        for loc in locs:
+            try:
+                if isinstance(loc, (list, tuple)) and loc[0] > 80:
+                    count += 1
+                elif isinstance(loc, str):
+                    import json as _json
+                    parsed = _json.loads(loc.replace("'", '"'))
+                    if parsed[0] > 80:
+                        count += 1
+            except Exception:
+                pass
+        return count
+
+    assists = _count(passes_all.get("pass_goal_assist", pd.Series(dtype=object)).astype(bool)) \
+              if "pass_goal_assist" in passes_all.columns else 0
+
+    return {
+        "Temps de jeu (en minutes)": minutes,
+        "Poste":                      _SB_POSITION_TO_POSTE.get(position, "MD"),
+        "Passes":                     _count(passes_all.index),
+        "Passes courtes":             _count(passes_courtes.index),
+        "Passes longues":             _count(passes_longues.index),
+        "Passes réussies":            _count(passes_ok.index),
+        "Passes réussies (courtes)":  _count(passes_ok_c.index),
+        "Passes réussies (longues)":  _count(passes_ok_l.index),
+        "Duels défensifs":            _count(duels.index),
+        "Duels défensifs gagnés":     _count(duels_ok.index),
+        "Fautes":                     _count(fouls.index),
+        "Dribbles":                   _count(dribbles.index),
+        "Dribbles réussis":           _count(dribbles_ok.index),
+        "Interceptions":              _count(interceptions.index),
+        "Tirs":                       _count(shots.index),
+        "Tirs cadrés":                _count(shots_ok.index),
+        "__total_passes":             _count(passes_all.index),
+        "__last_third":               _last_third(passes_all),
+        "__assists":                  assists,
+        "__deseq":                    0,
+        "__team_deseq_total":         1,
+    }
+
+
+def load_statsbomb_international(force_rebuild: bool = False) -> pd.DataFrame:
+    """
+    Charge les 4 tournois féminins StatsBomb Open Data et construit
+    un référentiel KPI moyen par poste, compatible avec create_metrics/create_kpis.
+    Résultat mis en cache dans PARQUET_INTER_PATH.
+    Retourne un DataFrame avec colonne 'Poste' suffixée ' moyenne (International)'.
+    """
+    # Vérifier cache
+    if not force_rebuild and os.path.exists(PARQUET_INTER_PATH):
+        try:
+            cached = pd.read_parquet(PARQUET_INTER_PATH)
+            if not cached.empty:
+                return cached
+        except Exception:
+            pass
+
+    try:
+        from statsbombpy import sb as _sb
+    except ImportError:
+        _warn("Référentiel International : statsbombpy non installé (pip install statsbombpy)")
+        return pd.DataFrame()
+
+    all_rows = []
+
+    for comp in _SB_FEMALE_COMPETITIONS:
+        try:
+            matches = _sb.matches(
+                competition_id=comp["competition_id"],
+                season_id=comp["season_id"],
+                creds={"user": "", "passwd": ""},
+            )
+            if matches is None or matches.empty:
+                continue
+        except Exception as e:
+            _warn(f"StatsBomb: impossible de charger {comp['name']} → {e}")
+            continue
+
+        for match_id in matches["match_id"].tolist():
+            try:
+                events = _sb.events(match_id=match_id, creds={"user": "", "passwd": ""})
+                if events is None or events.empty:
+                    continue
+
+                # Regrouper par joueuse
+                players = events[["player", "player_id", "position", "team"]].dropna(subset=["player"]).drop_duplicates("player_id")
+
+                for _, prow in players.iterrows():
+                    pid    = prow["player_id"]
+                    pos    = str(prow.get("position", "")) if pd.notna(prow.get("position")) else ""
+                    if pos not in _SB_POSITION_TO_POSTE:
+                        continue
+
+                    pev = events[events["player_id"] == pid].copy()
+                    if pev.empty:
+                        continue
+
+                    # Estimer minutes jouées via timestamp max
+                    try:
+                        mins = float(pev["minute"].max()) + float(pev["second"].max()) / 60
+                    except Exception:
+                        mins = 45.0
+                    if mins < 10:
+                        continue
+
+                    raw = _sb_events_to_raw(pev, pos, mins)
+                    raw["Player"]       = str(prow["player"])
+                    raw["Competition"]  = comp["name"]
+                    raw["match_id"]     = match_id
+                    all_rows.append(raw)
+
+            except Exception as e:
+                _warn(f"StatsBomb: erreur match {match_id} ({comp['name']}) → {e}")
+                continue
+
+    if not all_rows:
+        _warn("Référentiel International : aucune donnée chargée depuis StatsBomb")
+        return pd.DataFrame()
+
+    df_inter = pd.DataFrame(all_rows)
+    df_inter = df_inter[df_inter["Temps de jeu (en minutes)"] >= 10].copy()
+
+    # Appliquer le même pipeline que EDF/APL
+    df_inter = create_metrics(df_inter)
+    df_inter = create_kpis(df_inter)
+    df_inter = create_poste(df_inter)
+
+    if df_inter.empty or "Poste" not in df_inter.columns:
+        return pd.DataFrame()
+
+    # Agréger par poste
+    inter_kpi = df_inter.groupby("Poste").mean(numeric_only=True).reset_index()
+    inter_kpi["Poste"] = inter_kpi["Poste"].astype(str) + " moyenne (International)"
+
+    # Sauvegarder le cache
+    try:
+        inter_kpi.to_parquet(PARQUET_INTER_PATH, index=False)
+    except Exception:
+        pass
+
+    return inter_kpi
+
+
 def filter_data_by_player(df, player_name):
     if not player_name or df is None or df.empty or "Player" not in df.columns:
         return df
@@ -6412,6 +6624,17 @@ def collect_data(selected_season=None):
     except Exception as e:
         _warn(f"APL: erreur chargement → {e}")
 
+    # ── Niveau International (StatsBomb Open Data) ────────────────────────
+    try:
+        df_inter = load_statsbomb_international()
+        if not df_inter.empty:
+            if edf_kpi is None or (isinstance(edf_kpi, pd.DataFrame) and edf_kpi.empty):
+                edf_kpi = df_inter
+            else:
+                edf_kpi = pd.concat([edf_kpi, df_inter], ignore_index=True)
+    except Exception as e:
+        _warn(f"International StatsBomb: erreur chargement → {e}")
+
     # ======================================================
     # PFC Matchs
     # ======================================================
@@ -8735,7 +8958,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     with _col_c:
         _perf_compare = st.selectbox("Comparer avec",
             ["— aucune —", "vs une autre joueuse",
-             "vs Référentiel EDF U19 (poste)", "vs Référentiel APL (poste)"],
+             "vs Référentiel EDF U19 (poste)", "vs Référentiel APL (poste)",
+             "vs Référentiel Niveau International (poste)"],
             key="perf_compare_sel")
 
     # ── Filtre période ─────────────────────────────────────────────────────
@@ -8971,7 +9195,49 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     else:
                         st.warning("Référentiel APL non disponible. Dépose les fichiers `Indiv_*.csv` dans Drive.")
 
-        # Rapport de match tactique
+                elif "International" in _perf_compare:
+                    _inter_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("International", na=False)] \
+                               if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
+                    if not _inter_f.empty:
+                        _ps = st.selectbox(
+                            "Poste (référentiel international)",
+                            sorted(_inter_f["Poste"].unique()),
+                            key="perf_inter_p"
+                        )
+                        st.caption(
+                            "📊 Percentile — comparaison vs la moyenne des joueuses internationales "
+                            "(Euro & Coupe du Monde féminins, données StatsBomb Open Data)"
+                        )
+                        _ref_inter = _inter_f[_inter_f["Poste"] == _ps].copy()
+                        if not _player_df_c.empty and not _ref_inter.empty:
+                            _comb_df = prepare_combined_ranking(
+                                _player_df_c, _ref_inter,
+                                player_label=_perf_player,
+                                ref_label=f"Moyenne {_ps}"
+                            )
+                            if not _comb_df.empty:
+                                fig_i = create_comparison_radar(
+                                    _comb_df, _perf_player, f"Moyenne {_ps}",
+                                    exclude_creativity=True)
+                                if fig_i:
+                                    st.pyplot(fig_i, use_container_width=True)
+                                    plt.close(fig_i)
+                            else:
+                                st.info("Colonnes insuffisantes pour la comparaison.")
+                    else:
+                        if st.button("⬇️ Charger le référentiel international (StatsBomb)", key="btn_load_inter"):
+                            with st.spinner("Chargement StatsBomb Open Data (peut prendre 1-2 min)…"):
+                                df_inter_fresh = load_statsbomb_international(force_rebuild=True)
+                                if not df_inter_fresh.empty:
+                                    st.success("Référentiel international chargé ! Rafraîchis la page.")
+                                else:
+                                    st.error("Échec du chargement. Vérifie que statsbombpy est installé.")
+                        st.info(
+                            "Référentiel international non encore chargé. "
+                            "Clique sur le bouton ci-dessus ou installe `statsbombpy` sur le serveur."
+                        )
+
+
         st.divider()
         st.markdown("#### 🎯 Rapport de match")
         if not _tac_files:
