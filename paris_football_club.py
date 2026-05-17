@@ -3728,10 +3728,10 @@ def _sb_events_to_raw(events: "pd.DataFrame", position: str, minutes: float) -> 
 
 def load_statsbomb_international(force_rebuild: bool = False) -> pd.DataFrame:
     """
-    Charge les 4 tournois féminins StatsBomb Open Data et construit
-    un référentiel KPI moyen par poste, compatible avec create_metrics/create_kpis.
+    Charge les tournois féminins StatsBomb Open Data et construit
+    un référentiel KPI moyen par poste.
+    Utilise ThreadPoolExecutor pour paralléliser les appels API.
     Résultat mis en cache dans PARQUET_INTER_PATH.
-    Retourne un DataFrame avec colonne 'Poste' suffixée ' moyenne (International)'.
     """
     # Vérifier cache
     if not force_rebuild and os.path.exists(PARQUET_INTER_PATH):
@@ -3748,7 +3748,40 @@ def load_statsbomb_international(force_rebuild: bool = False) -> pd.DataFrame:
         _warn("Référentiel International : statsbombpy non installé (pip install statsbombpy)")
         return pd.DataFrame()
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
+
     all_rows = []
+
+    def _process_match(match_id, comp_name):
+        """Traite un match et retourne les lignes joueuses."""
+        rows = []
+        try:
+            events = _sb.events(match_id=match_id, creds={"user": "", "passwd": ""})
+            if events is None or events.empty:
+                return rows
+            players = events[["player", "player_id", "position", "team"]].dropna(subset=["player"]).drop_duplicates("player_id")
+            for _, prow in players.iterrows():
+                pid = prow["player_id"]
+                pos = str(prow.get("position", "")) if pd.notna(prow.get("position")) else ""
+                if pos not in _SB_POSITION_TO_POSTE:
+                    continue
+                pev = events[events["player_id"] == pid].copy()
+                if pev.empty:
+                    continue
+                try:
+                    mins = float(pev["minute"].max()) + float(pev["second"].max()) / 60
+                except Exception:
+                    mins = 45.0
+                if mins < 10:
+                    continue
+                raw = _sb_events_to_raw(pev, pos, mins)
+                raw["Player"] = str(prow["player"])
+                raw["Competition"] = comp_name
+                raw["match_id"] = match_id
+                rows.append(raw)
+        except Exception as e:
+            _warn(f"StatsBomb: erreur match {match_id} ({comp_name}) → {e}")
+        return rows
 
     for comp in _SB_FEMALE_COMPETITIONS:
         try:
@@ -3763,42 +3796,20 @@ def load_statsbomb_international(force_rebuild: bool = False) -> pd.DataFrame:
             _warn(f"StatsBomb: impossible de charger {comp['name']} → {e}")
             continue
 
-        for match_id in matches["match_id"].tolist():
-            try:
-                events = _sb.events(match_id=match_id, creds={"user": "", "passwd": ""})
-                if events is None or events.empty:
-                    continue
+        match_ids = matches["match_id"].tolist()
 
-                # Regrouper par joueuse
-                players = events[["player", "player_id", "position", "team"]].dropna(subset=["player"]).drop_duplicates("player_id")
-
-                for _, prow in players.iterrows():
-                    pid    = prow["player_id"]
-                    pos    = str(prow.get("position", "")) if pd.notna(prow.get("position")) else ""
-                    if pos not in _SB_POSITION_TO_POSTE:
-                        continue
-
-                    pev = events[events["player_id"] == pid].copy()
-                    if pev.empty:
-                        continue
-
-                    # Estimer minutes jouées via timestamp max
-                    try:
-                        mins = float(pev["minute"].max()) + float(pev["second"].max()) / 60
-                    except Exception:
-                        mins = 45.0
-                    if mins < 10:
-                        continue
-
-                    raw = _sb_events_to_raw(pev, pos, mins)
-                    raw["Player"]       = str(prow["player"])
-                    raw["Competition"]  = comp["name"]
-                    raw["match_id"]     = match_id
-                    all_rows.append(raw)
-
-            except Exception as e:
-                _warn(f"StatsBomb: erreur match {match_id} ({comp['name']}) → {e}")
-                continue
+        # Paralléliser avec max 8 threads, timeout 90s par match
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {
+                executor.submit(_process_match, mid, comp["name"]): mid
+                for mid in match_ids
+            }
+            for future in as_completed(futures, timeout=300):
+                try:
+                    rows = future.result(timeout=90)
+                    all_rows.extend(rows)
+                except Exception as e:
+                    _warn(f"StatsBomb: timeout/erreur match → {e}")
 
     if not all_rows:
         _warn("Référentiel International : aucune donnée chargée depuis StatsBomb")
@@ -3807,7 +3818,6 @@ def load_statsbomb_international(force_rebuild: bool = False) -> pd.DataFrame:
     df_inter = pd.DataFrame(all_rows)
     df_inter = df_inter[df_inter["Temps de jeu (en minutes)"] >= 10].copy()
 
-    # Appliquer le même pipeline que EDF/APL
     df_inter = create_metrics(df_inter)
     df_inter = create_kpis(df_inter)
     df_inter = create_poste(df_inter)
@@ -3815,11 +3825,9 @@ def load_statsbomb_international(force_rebuild: bool = False) -> pd.DataFrame:
     if df_inter.empty or "Poste" not in df_inter.columns:
         return pd.DataFrame()
 
-    # Agréger par poste
     inter_kpi = df_inter.groupby("Poste").mean(numeric_only=True).reset_index()
     inter_kpi["Poste"] = inter_kpi["Poste"].astype(str) + " moyenne (International)"
 
-    # Sauvegarder le cache
     try:
         inter_kpi.to_parquet(PARQUET_INTER_PATH, index=False)
     except Exception:
