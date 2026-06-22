@@ -11380,6 +11380,14 @@ def main():
                     except Exception:
                         pass
                     finally:
+                        # Invalider le cache st.cache_data(collect_data) pour que
+                        # le prochain appel relise les fichiers fraîchement synchronisés.
+                        # Sans ça, collect_data() continue de servir son résultat
+                        # caché pendant 30 min (ttl=1800) même si le disque a changé.
+                        try:
+                            st.cache_data.clear()
+                        except Exception:
+                            pass
                         st.session_state["_sync_pending"] = False
                         st.session_state["_sync_thread_started"] = False
                 _t = threading.Thread(target=_bg_sync, daemon=True)
