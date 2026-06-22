@@ -46,6 +46,7 @@ PARQUET_GPSW_PATH   = os.path.join("data", "_cache_gps_week.parquet")
 PARQUET_GPSM_PATH   = os.path.join("data", "_cache_gps_match.parquet")
 PARQUET_EDF_PATH    = os.path.join("data", "_cache_edf_kpi.parquet")
 PARQUET_META_PATH   = os.path.join("data", "_cache_meta.json")
+SYNC_SIGNAL_PATH    = os.path.join("data", "_sync_completed_signal.txt")
 
 # Dossiers Drive
 DRIVE_MAIN_FOLDER_ID = "1wXIqggriTHD9NIx8U89XmtlbZqNWniGD"
@@ -2346,8 +2347,7 @@ def download_google_drive():
                     _warn(f"Drive: impossible de télécharger le fichier passerelle → {e}")
             break
 
-st.session_state["gps_drive_found"] = 0
-st.session_state["gps_drive_downloaded"] = 0
+# (initialisé dans main() pour éviter l'exécution hors contexte Streamlit)
 
 
 # =========================
@@ -10403,6 +10403,12 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                     PARQUET_GPSM_PATH, PARQUET_EDF_PATH, PARQUET_META_PATH]:
                             if os.path.exists(_cp):
                                 os.remove(_cp)
+                        # Invalider le snapshot pfc_kpi_all/edf_kpi_all gardé en session —
+                        # sans ça, l'affichage reste bloqué sur les anciennes données même
+                        # après une sync complète, car ce snapshot n'est rafraîchi que
+                        # lorsque la saison sélectionnée change (_last_saison).
+                        for _k in ("pfc_kpi_all", "edf_kpi_all", "_last_saison"):
+                            st.session_state.pop(_k, None)
                         st.rerun()
 
                     if st.button("🔄 Synchroniser GPS Match", key="gestion_sync_gps_match"):
@@ -11360,6 +11366,11 @@ def main():
     # Si données locales disponibles → afficher l'app immédiatement.
     # La sync se fait en arrière-plan dans un thread séparé.
     # Seule la toute première installation (dossier vide) reste bloquante.
+    if "gps_drive_found" not in st.session_state:
+        st.session_state["gps_drive_found"] = 0
+    if "gps_drive_downloaded" not in st.session_state:
+        st.session_state["gps_drive_downloaded"] = 0
+
     _has_local_data = (
         os.path.exists(DATA_FOLDER)
         and any(
@@ -11375,21 +11386,21 @@ def main():
             if not st.session_state.get("_sync_thread_started"):
                 import threading
                 def _bg_sync():
+                    # ⚠️ Ce thread n'a PAS de ScriptRunContext — écrire dans
+                    # st.session_state depuis ici est non fiable (cf. warnings
+                    # "missing ScriptRunContext"). On utilise un fichier sur
+                    # disque comme signal, lu ensuite par le thread principal
+                    # (qui a le bon contexte) pour faire le nettoyage de cache.
                     try:
                         _run_initial_sync()
                     except Exception:
                         pass
                     finally:
-                        # Invalider le cache st.cache_data(collect_data) pour que
-                        # le prochain appel relise les fichiers fraîchement synchronisés.
-                        # Sans ça, collect_data() continue de servir son résultat
-                        # caché pendant 30 min (ttl=1800) même si le disque a changé.
                         try:
-                            st.cache_data.clear()
+                            with open(SYNC_SIGNAL_PATH, "w") as _f:
+                                _f.write(str(datetime.now().timestamp()))
                         except Exception:
                             pass
-                        st.session_state["_sync_pending"] = False
-                        st.session_state["_sync_thread_started"] = False
                 _t = threading.Thread(target=_bg_sync, daemon=True)
                 _t.start()
                 st.session_state["_sync_thread_started"] = True
@@ -11400,9 +11411,33 @@ def main():
                 _run_initial_sync()
                 st.cache_data.clear()
 
-    # Indicateur discret si sync en cours en arrière-plan
+    # ── Détection de fin de sync (thread principal — contexte fiable) ──────
+    # Le thread _bg_sync ne peut pas écrire dans st.session_state de façon
+    # fiable. On lit ici le fichier-signal qu'il dépose en fin de sync, et
+    # c'est CE thread (avec le bon ScriptRunContext) qui fait le nettoyage —
+    # sans bloquer l'affichage : si le signal est nouveau, on nettoie puis on
+    # continue normalement (le collect_data() qui suit récupère déjà les
+    # données fraîches dans cette même exécution, pas besoin de rerun/sleep).
     if st.session_state.get("_sync_pending"):
-        st.sidebar.caption("🔄 Mise à jour Drive en cours…")
+        _signal_ts = None
+        if os.path.exists(SYNC_SIGNAL_PATH):
+            try:
+                with open(SYNC_SIGNAL_PATH, "r") as _f:
+                    _signal_ts = float(_f.read().strip())
+            except Exception:
+                _signal_ts = None
+
+        if _signal_ts is not None and _signal_ts != st.session_state.get("_last_sync_signal_seen"):
+            # Sync terminée → nettoyage complet du cache, sans bloquer l'affichage
+            st.session_state["_last_sync_signal_seen"] = _signal_ts
+            st.session_state["_sync_pending"] = False
+            st.session_state["_sync_thread_started"] = False
+            st.session_state["_sync_done"] = True
+            st.cache_data.clear()
+            for _k in ("pfc_kpi_all", "edf_kpi_all", "_last_saison"):
+                st.session_state.pop(_k, None)
+        else:
+            st.sidebar.caption("🔄 Mise à jour Drive en cours…")
 
     with st.spinner("Chargement des données…"):
         pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, gps_match_df, name_report_df = collect_data()
