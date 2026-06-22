@@ -254,13 +254,19 @@ def safe_int_numeric_only(df: pd.DataFrame, round_first: bool = True) -> pd.Data
     return out
 
 
+_ILLEGAL_XLSX_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+
+
+def _clean_str_for_excel(s: str) -> str:
+    """Retire les caractères de contrôle interdits par le format XLSX (cause d'IllegalCharacterError)."""
+    return _ILLEGAL_XLSX_CHARS_RE.sub("", s)
+
+
 def _sanitize_df_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     """Convertit TOUS les types incompatibles avec Excel en types sérialisables."""
     import numpy as np
     import datetime
     df = df.copy()
-
-    EXCEL_SAFE = (str, int, float, bool, type(None), datetime.datetime, datetime.date)
 
     def _safe(v):
         if v is None or (isinstance(v, float) and np.isnan(v)):
@@ -270,7 +276,12 @@ def _sanitize_df_for_excel(df: pd.DataFrame) -> pd.DataFrame:
             return v.replace(tzinfo=None)
         if isinstance(v, datetime.date):
             return v
-        if isinstance(v, EXCEL_SAFE):
+        # Strings : toujours nettoyer les caractères de contrôle interdits par XLSX,
+        # même pour une str "valide" au sens du type (c'était le bug : on ne vérifiait
+        # que le type, jamais le contenu).
+        if isinstance(v, str):
+            return _clean_str_for_excel(v)
+        if isinstance(v, (int, float, bool)):
             return v
         if hasattr(v, "item"):           # numpy scalar → python natif
             try: return v.item()
@@ -279,14 +290,14 @@ def _sanitize_df_for_excel(df: pd.DataFrame) -> pd.DataFrame:
             try:
                 ts = v.tz_localize(None) if v.tzinfo is not None else v
                 return ts.to_pydatetime()
-            except Exception: return str(v)
+            except Exception: return _clean_str_for_excel(str(v))
         if isinstance(v, np.datetime64):
             try: return pd.Timestamp(v).tz_localize(None).to_pydatetime()
-            except Exception: return str(v)
+            except Exception: return _clean_str_for_excel(str(v))
         if isinstance(v, type(pd.NaT)):
             return None
-        # Tout le reste (list, dict, set, timedelta, etc.) → str
-        return str(v)
+        # Tout le reste (list, dict, set, timedelta, bytes, etc.) → str nettoyée
+        return _clean_str_for_excel(str(v))
 
     for col in df.columns:
         # Retirer le timezone des colonnes datetime avec tz directement (plus rapide)
