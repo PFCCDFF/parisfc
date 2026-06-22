@@ -2815,6 +2815,52 @@ def extract_lineup_from_row(row: pd.Series, available_posts: List[str]) -> Set[s
     return players
 
 
+def players_duration_from_player_rows(d2: pd.DataFrame, available_posts: list) -> pd.DataFrame:
+    """
+    Fallback quand le CSV ne contient PAS de ligne d'équipe (ex: pas de ligne
+    "PFC"/"Sarcelles" dans Row) — certains exports Sportscode placent la durée
+    et le poste directement sur la ligne de chaque joueuse plutôt que sur une
+    ligne d'équipe avec un instant par formation.
+    Calcule "Temps de jeu (en minutes)" en sommant la Duration de chaque ligne
+    où la joueuse a un poste renseigné.
+    """
+    if d2 is None or d2.empty or "Duration" not in d2.columns or not available_posts:
+        return pd.DataFrame()
+
+    mask = d2["Duration"].notna() & d2[available_posts].notna().any(axis=1)
+    rows = d2.loc[mask].copy()
+    if rows.empty:
+        return pd.DataFrame()
+
+    unit = infer_duration_unit(rows["Duration"])
+
+    def to_seconds(x):
+        try:
+            x = float(x)
+        except Exception:
+            return 0.0
+        return (x * 60.0 if unit == "minutes" else x) if x > 0 else 0.0
+
+    played_seconds: Dict[str, float] = {}
+    for _, row in rows.iterrows():
+        player = nettoyer_nom_joueuse(str(row.get("Row", "")))
+        if not player:
+            continue
+        dur_sec = to_seconds(row["Duration"])
+        if dur_sec <= 0:
+            continue
+        played_seconds[player] = played_seconds.get(player, 0.0) + dur_sec
+
+    if not played_seconds:
+        return pd.DataFrame()
+
+    df = pd.DataFrame({
+        "Player": list(played_seconds.keys()),
+        "Temps de jeu (en minutes)": [v / 60.0 for v in played_seconds.values()],
+    })
+    return df.sort_values("Temps de jeu (en minutes)", ascending=False).reset_index(drop=True)
+
+
 def players_duration(match: pd.DataFrame, home_team: str, away_team: str) -> pd.DataFrame:
     if match is None or match.empty:
         return pd.DataFrame()
@@ -3591,7 +3637,7 @@ def parse_apl_csv_individual(df_raw: pd.DataFrame) -> pd.DataFrame:
         lambda x: f"{x} (APL)"
     )
     return agg
-def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
+def create_data(match, joueurs, is_edf, home_team=None, away_team=None, duration_df=None):
     if is_edf:
         if "Player" not in joueurs.columns or "Temps de jeu" not in joueurs.columns or "Poste" not in joueurs.columns:
             return pd.DataFrame()
@@ -3603,6 +3649,10 @@ def create_data(match, joueurs, is_edf, home_team=None, away_team=None):
             }
         )
         dfs = [df_duration]
+    elif duration_df is not None and not duration_df.empty:
+        # Fallback : durée calculée directement depuis les lignes joueuses
+        # (format CSV sans ligne d'équipe — cf. _bg_sync fix Sarcelles U18)
+        dfs = [duration_df]
     else:
         if not home_team or not away_team:
             return pd.DataFrame()
@@ -6759,8 +6809,17 @@ def collect_data(selected_season=None):
             away_clean = nettoyer_nom_equipe(equipe_adv_team)
 
             match = d2[d2["Row_clean"].isin({home_clean, away_clean})].copy()
+
+            _fallback_duration_df = None
             if match.empty:
-                continue
+                # Pas de ligne d'équipe ("PFC"/adversaire) dans ce CSV — calcul
+                # du temps de jeu directement depuis les lignes joueuses plutôt
+                # que d'abandonner silencieusement le fichier (cf. cas Sarcelles U18).
+                _fallback_duration_df = players_duration_from_player_rows(d2, available_posts)
+                if _fallback_duration_df.empty:
+                    _warn(f"Match: aucune ligne d'équipe ni donnée de temps de jeu exploitable dans {filename}")
+                    continue
+                _warn(f"Match: {filename} — pas de ligne d'équipe, temps de jeu calculé depuis les lignes joueuses")
 
             mask_joueurs = ~d2["Row_clean"].str.contains("CORNER|COUP-FRANC|COUP FRANC|PENALTY|CARTON", na=False)
             mask_joueurs &= ~d2.index.isin(match.index)
@@ -6768,7 +6827,8 @@ def collect_data(selected_season=None):
             if joueurs.empty:
                 joueurs = pd.DataFrame(columns=["Row", "Action"])
 
-            df = create_data(match, joueurs, False, home_team=equipe_pfc, away_team=equipe_adv_team)
+            df = create_data(match, joueurs, False, home_team=equipe_pfc, away_team=equipe_adv_team,
+                              duration_df=_fallback_duration_df)
             if df.empty:
                 continue
 
