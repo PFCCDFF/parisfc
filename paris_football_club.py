@@ -254,12 +254,21 @@ def safe_int_numeric_only(df: pd.DataFrame, round_first: bool = True) -> pd.Data
     return out
 
 
-_ILLEGAL_XLSX_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+_ILLEGAL_XLSX_CHARS_RE = re.compile(
+    r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]|[\ud800-\udfff]"
+)
 
 
 def _clean_str_for_excel(s: str) -> str:
     """Retire les caractères de contrôle interdits par le format XLSX (cause d'IllegalCharacterError)."""
-    return _ILLEGAL_XLSX_CHARS_RE.sub("", s)
+    try:
+        return _ILLEGAL_XLSX_CHARS_RE.sub("", s)
+    except Exception:
+        # Sécurité ultime : reconstruire la chaîne caractère par caractère
+        return "".join(c for c in s if ord(c) not in range(0x00, 0x09)
+                        and ord(c) not in (0x0B, 0x0C, 0x7F)
+                        and not (0x0E <= ord(c) <= 0x1F)
+                        and not (0xD800 <= ord(c) <= 0xDFFF))
 
 
 def _sanitize_df_for_excel(df: pd.DataFrame) -> pd.DataFrame:
@@ -267,6 +276,20 @@ def _sanitize_df_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     import numpy as np
     import datetime
     df = df.copy()
+
+    # ── Sécurité : colonnes dupliquées cassent df[col] (retourne un DataFrame
+    # au lieu d'une Series) et faussent tout le nettoyage qui suit. ──────────
+    if df.columns.duplicated().any():
+        seen = {}
+        new_cols = []
+        for c in df.columns:
+            if c in seen:
+                seen[c] += 1
+                new_cols.append(f"{c}_{seen[c]}")
+            else:
+                seen[c] = 0
+                new_cols.append(c)
+        df.columns = new_cols
 
     def _safe(v):
         if v is None or (isinstance(v, float) and np.isnan(v)):
@@ -310,7 +333,12 @@ def _sanitize_df_for_excel(df: pd.DataFrame) -> pd.DataFrame:
         try:
             df[col] = df[col].apply(_safe)
         except Exception:
-            df[col] = df[col].astype(str)
+            # Fallback : caster en str PUIS nettoyer — ne jamais laisser passer
+            # un caractère de contrôle non filtré (c'était la cause du crash).
+            try:
+                df[col] = df[col].astype(str).apply(_clean_str_for_excel)
+            except Exception:
+                df[col] = df[col].apply(lambda v: _clean_str_for_excel(str(v)) if v is not None else None)
     return df
 
 
