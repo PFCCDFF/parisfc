@@ -277,6 +277,13 @@ def _sanitize_df_for_excel(df: pd.DataFrame) -> pd.DataFrame:
     import datetime
     df = df.copy()
 
+    # ── Nettoyer les EN-TÊTES de colonnes (souvent oublié — un .xls binaire
+    # mal parsé en CSV peut injecter sa signature OLE2 dans un nom de colonne) ──
+    df.columns = [
+        _clean_str_for_excel(str(c)) if c is not None else ""
+        for c in df.columns
+    ]
+
     # ── Sécurité : colonnes dupliquées cassent df[col] (retourne un DataFrame
     # au lieu d'une Series) et faussent tout le nettoyage qui suit. ──────────
     if df.columns.duplicated().any():
@@ -344,12 +351,15 @@ def _sanitize_df_for_excel(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
     output = io.BytesIO()
+    # Caractères interdits dans un nom de feuille Excel : \ / ? * [ ] : et contrôle
+    _sheet_illegal_re = re.compile(r'[\\/?*\[\]:\x00-\x1f\x7f]')
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         used = set()
         for name, df in sheets.items():
             if df is None:
                 continue
-            sheet = (str(name) or "Sheet1")[:31]
+            clean_name = _sheet_illegal_re.sub("_", str(name) or "Sheet1")
+            sheet = clean_name[:31]
             base = sheet
             k = 1
             while sheet in used:
