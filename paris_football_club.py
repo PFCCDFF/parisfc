@@ -11166,7 +11166,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             )
             st.caption("Application de préparation physique — connectez-vous avec vos identifiants.")
             st.components.v1.iframe(
-                src="https://parisfc-prepa.streamlit.app/",
+                src="https://parisfc-prepa.streamlit.app/?embed=true",
                 width=None,
                 height=900,
                 scrolling=True,
