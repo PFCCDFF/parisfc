@@ -10293,12 +10293,29 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     options = ["Performance", "Joueuses Passerelles", "Médical", "Recrutement"]
     if check_permission(user_profile, "all", permissions):
         options.insert(2, "Gestion")
+    # Onglet Staff Pro — visible uniquement pour le profil "Staff Pro"
+    _is_staff_pro = str(user_profile).strip().lower() in ("staff pro", "staffpro", "staff_pro")
+    if _is_staff_pro:
+        options.append("Staff Pro")
+
+    _base_icons = ["lightning-charge", "people-fill", "heart-pulse", "search"]
+    _all_icons   = ["lightning-charge", "people-fill", "gear-fill", "people-fill", "heart-pulse", "search", "star-fill"]
+    # Reconstruire la liste d'icônes en suivant l'ordre des options
+    _icon_map = {
+        "Performance":        "lightning-charge",
+        "Joueuses Passerelles": "people-fill",
+        "Gestion":            "gear-fill",
+        "Médical":            "heart-pulse",
+        "Recrutement":        "search",
+        "Staff Pro":          "star-fill",
+    }
+    icons = [_icon_map.get(o, "circle") for o in options]
 
     with st.sidebar:
         page = option_menu(
             menu_title="",
             options=options,
-            icons=["lightning-charge", "people-fill", "heart-pulse", "search"][: len(options)],
+            icons=icons,
             menu_icon="cast",
             default_index=0,
             orientation="vertical",
@@ -10589,7 +10606,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
     elif page == "Joueuses Passerelles":
         st.header("🔄 Joueuses Passerelles")
-
         passerelle_data = load_passerelle_data()
         if not passerelle_data:
             st.warning("Aucune donnée passerelle.")
@@ -11130,7 +11146,26 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                 except Exception as e:
                                     st.warning(f"Graphique indisponible : {e}")
 
-
+    # ══════════════════════════════════════════════════════
+    # PAGE STAFF PRO
+    # ══════════════════════════════════════════════════════
+    elif page == "Staff Pro":
+        if not _is_staff_pro:
+            st.error("⛔ Accès réservé au profil Staff Pro.")
+        else:
+            st.markdown(
+                "<div style='font-family:Oswald,sans-serif;font-size:20px;font-weight:700;"
+                "letter-spacing:0.08em;text-transform:uppercase;color:#FFFFFF;margin-bottom:16px;'>"
+                "⭐ Espace Staff Pro</div>",
+                unsafe_allow_html=True
+            )
+            st.caption("Application de préparation physique — connectez-vous avec vos identifiants.")
+            st.components.v1.iframe(
+                src="https://parisfc-prepa.streamlit.app/",
+                width=None,
+                height=900,
+                scrolling=True,
+            )
 
 
 # =========================
