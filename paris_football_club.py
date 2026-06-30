@@ -10298,6 +10298,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     if _is_staff_pro:
         options.append("Staff Pro")
 
+    # Forcer la navigation vers "Staff Pro" à la première exécution après connexion
+    _default_index = 0
+    if _is_staff_pro and "Staff Pro" in options:
+        _default_index = options.index("Staff Pro")
+
     _base_icons = ["lightning-charge", "people-fill", "heart-pulse", "search"]
     _all_icons   = ["lightning-charge", "people-fill", "gear-fill", "people-fill", "heart-pulse", "search", "star-fill"]
     # Reconstruire la liste d'icônes en suivant l'ordre des options
@@ -10317,7 +10322,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             options=options,
             icons=icons,
             menu_icon="cast",
-            default_index=0,
+            default_index=_default_index,
             orientation="vertical",
             styles={
                 "container": {"padding": "6px 4px !important", "background-color": "transparent"},
