@@ -9161,18 +9161,24 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 ].copy()
             except Exception:
                 pass
-    # ── 3 onglets internes ─────────────────────────────────────────────────
-    _tab_tac, _tab_eval, _tab_gps, _tab_fiche = st.tabs([
-        "🎯 Technique & Tactique",
-        "⭐ Évaluation",
-        "🏃 Physique GPS",
-        "📋 Fiche Bilan",
+    # ── 4 onglets internes ─────────────────────────────────────────────────
+    _tab_matchs, _tab_entrainement, _tab_monitoring, _tab_suivi = st.tabs([
+        "⚽ Matchs",
+        "🏋️ Entraînement",
+        "📡 Monitoring",
+        "📊 Suivi de la performance",
     ])
 
     # ══════════════════════════════════
-    # TAB 1 — TECHNIQUE & TACTIQUE
+    # TAB — ENTRAÎNEMENT (placeholder)
     # ══════════════════════════════════
-    with _tab_tac:
+    with _tab_entrainement:
+        st.info("Section en construction — contenu à venir.")
+
+    # ══════════════════════════════════
+    # TAB 1 — MATCHS
+    # ══════════════════════════════════
+    with _tab_matchs:
         if _df_player.empty:
             st.info("Aucune donnée technico-tactique pour cette sélection.")
         else:
@@ -9465,7 +9471,10 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     # ══════════════════════════════════
     # TAB 2 — ÉVALUATION
     # ══════════════════════════════════
-    with _tab_eval:
+    # ══════════════════════════════════
+    # TAB — SUIVI DE LA PERFORMANCE (anciennement Évaluation)
+    # ══════════════════════════════════
+    with _tab_suivi:
         if role == ROLE_JOUEUSE:
             st.info("Accès réservé au staff.")
         else:
@@ -9474,7 +9483,10 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     # ══════════════════════════════════
     # TAB 3 — PHYSIQUE GPS
     # ══════════════════════════════════
-    with _tab_gps:
+    # ══════════════════════════════════
+    # TAB 3 — MONITORING (partie 1 : GPS — Entraînement + Match & Charge)
+    # ══════════════════════════════════
+    with _tab_monitoring:
         if _gps_raw_df is None or _gps_raw_df.empty:
             st.warning("Aucune donnée GPS brute trouvée.")
         else:
@@ -10184,9 +10196,11 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     render_gps_concordance_ui(_gps_match_df, sorted(set(_tpc)))
 
     # ══════════════════════════════════════
-    # TAB 4 — FICHE BILAN
+    # TAB 3 — MONITORING (partie 2 : Fiche Bilan)
     # ══════════════════════════════════════
-    with _tab_fiche:
+    with _tab_monitoring:
+        st.divider()
+        st.markdown("#### 📋 Fiche Bilan")
         if not _perf_player:
             st.info("Sélectionne une joueuse dans les contrôles ci-dessus.")
         else:
@@ -10339,9 +10353,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     role = get_user_role(user_profile, permissions)
 
     if role == ROLE_ADMIN:
-        options = ["Performance", "Joueuses Passerelles", "Gestion", "Médical", "Recrutement"]
+        options = ["Performance", "Programme talent", "Gestion", "Médical", "Recrutement"]
     elif role == ROLE_STAFF:
-        options = ["Performance", "Joueuses Passerelles", "Médical", "Recrutement"]
+        options = ["Performance", "Programme talent", "Médical", "Recrutement"]
     else:  # ROLE_JOUEUSE
         options = ["Performance"]
 
@@ -10360,7 +10374,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     # Reconstruire la liste d'icônes en suivant l'ordre des options
     _icon_map = {
         "Performance":        "lightning-charge",
-        "Joueuses Passerelles": "people-fill",
+        "Programme talent": "people-fill",
         "Gestion":            "gear-fill",
         "Médical":            "heart-pulse",
         "Recrutement":        "search",
@@ -10661,7 +10675,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         key="download_export_xlsx_gestion",
                     )
 
-    elif page == "Joueuses Passerelles":
+    elif page == "Programme talent":
         st.header("🔄 Joueuses Passerelles")
         passerelle_data = load_passerelle_data()
         if not passerelle_data:
