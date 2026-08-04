@@ -2230,6 +2230,28 @@ def download_permissions_file():
         return None
 
 
+# =========================
+# RÔLES
+# =========================
+ROLE_ADMIN   = "Admin"
+ROLE_STAFF   = "Staff"
+ROLE_JOUEUSE = "Joueuse"
+
+
+def _infer_role(perm_list: list, player) -> str:
+    """Déduit le rôle si la colonne 'Rôle' est absente ou vide dans le fichier permissions."""
+    if "all" in perm_list:
+        return ROLE_ADMIN
+    if player:
+        return ROLE_JOUEUSE
+    return ROLE_STAFF
+
+
+def get_user_role(user_profile: str, permissions: dict) -> str:
+    """Retourne le rôle (Admin/Staff/Joueuse) du profil connecté."""
+    return permissions.get(user_profile, {}).get("role", ROLE_STAFF)
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_permissions():
     try:
@@ -2245,7 +2267,7 @@ def load_permissions():
         if not isinstance(permissions_df, pd.DataFrame) or permissions_df.empty:
             return {}
 
-        for col in ["Profil", "Mot de passe", "Permissions", "Joueuse"]:
+        for col in ["Profil", "Mot de passe", "Permissions", "Joueuse", "Rôle"]:
             if col not in permissions_df.columns:
                 permissions_df[col] = np.nan
 
@@ -2261,10 +2283,16 @@ def load_permissions():
             player = row.get("Joueuse", np.nan)
             player = nettoyer_nom_joueuse(str(player)) if pd.notna(player) else None
 
+            role_raw = row.get("Rôle", np.nan)
+            role = str(role_raw).strip() if pd.notna(role_raw) and str(role_raw).strip() else None
+            if role not in (ROLE_ADMIN, ROLE_STAFF, ROLE_JOUEUSE):
+                role = _infer_role(perm_list, player)
+
             permissions[profile] = {
                 "password": str(row.get("Mot de passe", "")).strip(),
                 "permissions": perm_list,
                 "player": player,
+                "role": role,
             }
         return permissions
     except Exception as e:
@@ -9036,9 +9064,12 @@ table {{ width: 100%; border-collapse: collapse; }}
 # ═══════════════════════════════════════════════════════════════════════════
 
 def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
-                             player_name, user_profile, permissions):
+                             player_name, user_profile, permissions, role=None):
     """Page Performance unifiée — données chargées une seule fois."""
     import streamlit.components.v1 as _comp_perf
+
+    if role is None:
+        role = get_user_role(user_profile, permissions)
 
     st.header("🏆 Performance")
     _saison_sel = st.session_state.get("selected_saison", "Toutes les saisons")
@@ -9065,11 +9096,14 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
             ["Toute la saison", "Sélectionner des matchs", "Plage de dates"],
             key="perf_period_sel")
     with _col_c:
-        _perf_compare = st.selectbox("Comparer avec",
-            ["— aucune —", "vs une autre joueuse",
-             "vs Référentiel EDF U19 (poste)", "vs Référentiel APL (poste)",
-             "vs Référentiel Niveau International (poste)"],
-            key="perf_compare_sel")
+        _compare_options = [
+            "— aucune —",
+            "vs Référentiel EDF U19 (poste)", "vs Référentiel APL (poste)",
+            "vs Référentiel Niveau International (poste)"
+        ]
+        if role != ROLE_JOUEUSE:
+            _compare_options.insert(1, "vs une autre joueuse")
+        _perf_compare = st.selectbox("Comparer avec", _compare_options, key="perf_compare_sel")
 
     # ── Filtre période ─────────────────────────────────────────────────────
     _perf_matches_sel = None
@@ -9383,7 +9417,15 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         _pn = normalize_str(_perf_player)
                         for _ii, _pp in enumerate(_tplayers):
                             if normalize_str(_pp)==_pn or _pn in normalize_str(_pp): _di=_ii; break
-                    _sp = st.selectbox("Joueuse", _tplayers, index=_di, key="perf_player_tac") if _tplayers else None
+
+                    if role == ROLE_JOUEUSE:
+                        _sp = _tplayers[_di] if _tplayers else None
+                        if _sp:
+                            st.markdown(f"**Joueuse :** {_sp}")
+                        elif _tplayers:
+                            st.info("Vous n'apparaissez pas dans ce fichier tactique.")
+                    else:
+                        _sp = st.selectbox("Joueuse", _tplayers, index=_di, key="perf_player_tac") if _tplayers else None
 
                 if _sp:
                     _gs = get_gps_match_summary_for_player(_gps_match_df, _sp,
@@ -9424,9 +9466,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     # TAB 2 — ÉVALUATION
     # ══════════════════════════════════
     with _tab_eval:
-        if not (check_permission(user_profile, "all", permissions) or
-                check_permission(user_profile, "update_data", permissions)):
-            st.info("Accès réservé aux administrateurs.")
+        if role == ROLE_JOUEUSE:
+            st.info("Accès réservé au staff.")
         else:
             render_evaluation_page(user_profile, permissions, _saison_sel)
 
@@ -9448,11 +9489,16 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
             # Sélecteur joueuse — modifiable indépendamment du contrôle global
             _def_idx = _all_gps_p.index(_pgps_default) if _pgps_default in _all_gps_p else 0
-            _pgps = st.selectbox(
-                "Joueuse", _all_gps_p,
-                index=_def_idx,
-                key="perf_gps_player_sel"
-            )
+
+            if role == ROLE_JOUEUSE and _pgps_default:
+                _pgps = _pgps_default
+                st.caption(f"Joueuse : **{_pgps}**")
+            else:
+                _pgps = st.selectbox(
+                    "Joueuse", _all_gps_p,
+                    index=_def_idx,
+                    key="perf_gps_player_sel"
+                )
 
             if _pgps:
                 _st_entr, _st_match, _st_params = st.tabs([
@@ -10290,9 +10336,15 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     st.session_state["_export_edf"] = export_edf
     st.session_state["_export_is_admin"] = export_is_admin
 
-    options = ["Performance", "Joueuses Passerelles", "Médical", "Recrutement"]
-    if check_permission(user_profile, "all", permissions):
-        options.insert(2, "Gestion")
+    role = get_user_role(user_profile, permissions)
+
+    if role == ROLE_ADMIN:
+        options = ["Performance", "Joueuses Passerelles", "Gestion", "Médical", "Recrutement"]
+    elif role == ROLE_STAFF:
+        options = ["Performance", "Joueuses Passerelles", "Médical", "Recrutement"]
+    else:  # ROLE_JOUEUSE
+        options = ["Performance"]
+
     # Onglet Staff Pro — visible uniquement pour le profil "Staff Pro"
     _is_staff_pro = str(user_profile).strip().lower() in ("staff pro", "staffpro", "staff_pro")
     if _is_staff_pro:
@@ -10346,7 +10398,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     # =====================
     if page == "Performance":
         render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
-                                player_name, user_profile, permissions)
+                                player_name, user_profile, permissions, role=role)
 
     elif page == "Gestion":
         st.header("⚙️ Gestion")
