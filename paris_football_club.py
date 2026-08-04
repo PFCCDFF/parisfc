@@ -9175,294 +9175,349 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     # TAB 1 — MATCHS
     # ══════════════════════════════════
     with _tab_matchs:
-        if _df_player.empty:
-            st.info("Aucune donnée technico-tactique pour cette sélection.")
-        else:
-            # Agrégation : moyenne pour les percentiles, somme pour Buts
-            try:
-                aggregated = (
-                    _df_player.groupby("Player")
-                    .agg({"Temps de jeu (en minutes)": "sum", "Buts": "sum"})
-                    .join(
-                        _df_player.groupby("Player")
-                        .mean(numeric_only=True)
-                        .drop(columns=["Temps de jeu (en minutes)", "Buts"], errors="ignore")
-                    )
-                    .reset_index()
-                )
-            except Exception:
-                aggregated = _df_player.head(1).copy()
+        _mat_collectif, _mat_individuel = st.tabs(["🤝 Performance Collective", "🎯 Performance Individuelle"])
 
-            # ── Temps de jeu réel depuis GPS match ────────────────────────
-            # pfc_kpi normalise toujours à 90min — on utilise GPS Durée_min
-            _tps_reel = None
-            _gm_tps = st.session_state.get("gps_match_df", pd.DataFrame())
-            if _gm_tps is not None and not _gm_tps.empty and "Player" in _gm_tps.columns and "Durée_min" in _gm_tps.columns:
-                _gm_p = _gm_tps[
-                    _gm_tps["Player"].astype(str).apply(nettoyer_nom_joueuse)
-                    == nettoyer_nom_joueuse(_pgps_name or _perf_player or "")
-                ].copy()
-                # Filtrer par matchs sélectionnés si applicable
-                if _perf_matches_sel and "__adversaire" in _gm_p.columns:
-                    _gm_p = _gm_p[_gm_p["__adversaire"].isin(_perf_matches_sel)]
-                elif _perf_period == "Plage de dates" and "DATE" in _gm_p.columns:
-                    try:
-                        _gm_p = ensure_date_column(_gm_p)
-                        _gm_p = _gm_p[
-                            (_gm_p["DATE"] >= pd.Timestamp(_date_deb)) &
-                            (_gm_p["DATE"] <= pd.Timestamp(_date_fin))
-                        ]
-                    except Exception:
-                        pass
-                if not _gm_p.empty:
-                    _tps_reel = pd.to_numeric(_gm_p["Durée_min"], errors="coerce").sum()
-
-            _m1, _m2 = st.columns(2)
-            if _tps_reel is not None and not pd.isna(_tps_reel) and _tps_reel > 0:
-                _m1.metric("Temps de jeu", f"{int(_tps_reel)} min")
+        with _mat_collectif:
+            if not _tac_files:
+                st.info("Aucun fichier tactique trouvé dans `data/`.")
             else:
-                # Fallback : nombre de matchs × temps moyen estimé
-                _n_matchs = len(_df_player)
-                _m1.metric("Temps de jeu", f"{_n_matchs} match{'s' if _n_matchs > 1 else ''}")
-            _m2.metric("Buts", f"{int(aggregated['Buts'].iloc[0])}")
+                _mrows_c = []
+                for _tac in _tac_files:
+                    _s = _tac.get("saison", ""); _sc = re.sub(r"20(\d{2})/20(\d{2})", r"\1/\2", _s) if _s else ""
+                    _j = _tac.get("journee", ""); _a = _tac.get("adversaire", ""); _cp = _tac.get("competition", "")
+                    _pts = [p for p in [_sc, _cp, f"J{_j}" if _j else "", _a] if p]
+                    _mrows_c.append({
+                        "display": " · ".join(_pts) if _pts else _tac.get("filename", ""),
+                        "journee": _j,
+                        "adversaire": _a,
+                        "competition": _cp,
+                        "tac_obj": _tac,
+                    })
+                _mrows_c.sort(key=lambda m: (
+                    (m.get("competition") or "").lower(),
+                    int(m["journee"]) if m.get("journee") and str(m["journee"]).isdigit() else 999,
+                    (m.get("adversaire") or "").lower()
+                ))
 
-            # ── Radar + KPIs + Postes côte à côte (sans onglets) ──────────
-            _col_radar, _col_kpis = st.columns([1, 1])
-            with _col_radar:
-                with st.spinner("Génération du radar…"):
-                    _radar_result = create_individual_radar(aggregated)
-                    if _radar_result is not None:
-                        fig_r, _top_txt, _low_txt = _radar_result
-                        st.pyplot(fig_r, use_container_width=True)
-                        plt.close(fig_r)
-                        st.markdown(
-                            f"<div style='font-size:12px;color:#C8D8E8;margin-top:4px;'>✅ <b>Forces :</b> {_top_txt}</div>"
-                            f"<div style='font-size:12px;color:#6A8090;margin-top:2px;'>⚠️ <b>Axes :</b> {_low_txt}</div>",
-                            unsafe_allow_html=True
+                _sd_c = st.selectbox("Match", [m["display"] for m in _mrows_c], key="perf_match_sel_collectif")
+                _sr_c = next((m for m in _mrows_c if m["display"] == _sd_c), _mrows_c[0])
+                _dft_c = _sr_c["tac_obj"].get("df")
+
+                if _dft_c is None:
+                    st.info("Fichier tactique introuvable pour ce match.")
+                else:
+                    _ctx_c = _get_match_context(_dft_c)
+
+                    st.markdown(
+                        f"### {_ctx_c.get('pfc', 'Paris FC')}  "
+                        f"{_ctx_c.get('score_pfc', '?')} – {_ctx_c.get('score_adv', '?')}  "
+                        f"{_ctx_c.get('adversaire', '')}"
+                    )
+
+                    _cc1, _cc2, _cc3, _cc4 = st.columns(4)
+                    _cc1.metric("Compétition", _ctx_c.get("competition", "") or "—")
+                    _cc2.metric("Journée", _ctx_c.get("journee", "") or "—")
+                    _cc3.metric("Lieu", _ctx_c.get("lieu", "") or "—")
+                    _cc4.metric("Système de jeu", _ctx_c.get("systeme", "") or "—")
+
+                    st.divider()
+                    st.markdown("#### Possession")
+                    _pp1, _pp2 = st.columns(2)
+                    _pp1.metric("Paris FC", f"{_ctx_c.get('poss_pfc', 50.0):.1f} %")
+                    _pp2.metric(
+                        _ctx_c.get("adversaire", "Adversaire") or "Adversaire",
+                        f"{_ctx_c.get('poss_adv', 50.0):.1f} %"
+                    )
+
+        with _mat_individuel:
+            if _df_player.empty:
+                st.info("Aucune donnée technico-tactique pour cette sélection.")
+            else:
+                # Agrégation : moyenne pour les percentiles, somme pour Buts
+                try:
+                    aggregated = (
+                        _df_player.groupby("Player")
+                        .agg({"Temps de jeu (en minutes)": "sum", "Buts": "sum"})
+                        .join(
+                            _df_player.groupby("Player")
+                            .mean(numeric_only=True)
+                            .drop(columns=["Temps de jeu (en minutes)", "Buts"], errors="ignore")
                         )
+                        .reset_index()
+                    )
+                except Exception:
+                    aggregated = _df_player.head(1).copy()
 
-            with _col_kpis:
-                # KPIs
-                _kpis = [("Rigueur","Rigueur"),("Récupération","Récupération"),
-                         ("Distribution","Distribution"),("Percussion","Percussion"),
-                         ("Finition","Finition"),("Créativité","Créativité")]
-                _avail_kpis = [(l,c) for l,c in _kpis if c in aggregated.columns]
-                if _avail_kpis:
-                    st.markdown("<div style='font-family:Oswald,sans-serif;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6A8090;margin-bottom:8px;'>KPIs</div>", unsafe_allow_html=True)
-                    _kc = st.columns(min(3, len(_avail_kpis)))
-                    for _i, (_col_ui, (lbl, col)) in enumerate(zip(_kc * 2, _avail_kpis)):
-                        _col_ui.metric(lbl, f"{int(aggregated[col].iloc[0])}/100")
+                # ── Temps de jeu réel depuis GPS match ────────────────────────
+                # pfc_kpi normalise toujours à 90min — on utilise GPS Durée_min
+                _tps_reel = None
+                _gm_tps = st.session_state.get("gps_match_df", pd.DataFrame())
+                if _gm_tps is not None and not _gm_tps.empty and "Player" in _gm_tps.columns and "Durée_min" in _gm_tps.columns:
+                    _gm_p = _gm_tps[
+                        _gm_tps["Player"].astype(str).apply(nettoyer_nom_joueuse)
+                        == nettoyer_nom_joueuse(_pgps_name or _perf_player or "")
+                    ].copy()
+                    # Filtrer par matchs sélectionnés si applicable
+                    if _perf_matches_sel and "__adversaire" in _gm_p.columns:
+                        _gm_p = _gm_p[_gm_p["__adversaire"].isin(_perf_matches_sel)]
+                    elif _perf_period == "Plage de dates" and "DATE" in _gm_p.columns:
+                        try:
+                            _gm_p = ensure_date_column(_gm_p)
+                            _gm_p = _gm_p[
+                                (_gm_p["DATE"] >= pd.Timestamp(_date_deb)) &
+                                (_gm_p["DATE"] <= pd.Timestamp(_date_fin))
+                            ]
+                        except Exception:
+                            pass
+                    if not _gm_p.empty:
+                        _tps_reel = pd.to_numeric(_gm_p["Durée_min"], errors="coerce").sum()
 
-                st.divider()
+                _m1, _m2 = st.columns(2)
+                if _tps_reel is not None and not pd.isna(_tps_reel) and _tps_reel > 0:
+                    _m1.metric("Temps de jeu", f"{int(_tps_reel)} min")
+                else:
+                    # Fallback : nombre de matchs × temps moyen estimé
+                    _n_matchs = len(_df_player)
+                    _m1.metric("Temps de jeu", f"{_n_matchs} match{'s' if _n_matchs > 1 else ''}")
+                _m2.metric("Buts", f"{int(aggregated['Buts'].iloc[0])}")
 
-                # Postes
-                _postes_def = [("DC","Défenseur central"),("DL","Défenseur latéral"),
-                               ("MD","Milieu défensif"),("MR","Milieu relayeur"),
-                               ("MO","Milieu offensif"),("ATT","Attaquant")]
-                _avail_postes = [(l,c) for l,c in _postes_def if c in aggregated.columns]
-                if _avail_postes:
-                    st.markdown("<div style='font-family:Oswald,sans-serif;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6A8090;margin-bottom:8px;'>Postes</div>", unsafe_allow_html=True)
-                    _pc = st.columns(min(3, len(_avail_postes)))
-                    for _i, (_cu, (lbl, col)) in enumerate(zip(_pc * 2, _avail_postes)):
-                        _cu.metric(lbl, f"{int(aggregated[col].iloc[0])}/100")
-
-            # Comparaison optionnelle
-            if _perf_compare != "— aucune —":
-                st.divider()
-                _player_df_c = prepare_comparison_data(pfc_kpi, _perf_player,
-                    selected_matches=_perf_matches_sel or None)
-
-                if "vs une autre joueuse" in _perf_compare:
-                    _others = [p for p in sorted(pfc_kpi["Player"].dropna().unique())
-                               if nettoyer_nom_joueuse(p) != nettoyer_nom_joueuse(_perf_player)]
-                    _p2 = st.selectbox("Autre joueuse", _others, key="perf_p2")
-                    _p2_df = prepare_comparison_data(pfc_kpi, _p2)
-                    if not _player_df_c.empty and not _p2_df.empty:
-                        fig_c = create_comparison_radar(
-                            pd.concat([_player_df_c, _p2_df], ignore_index=True, sort=False),
-                            _perf_player, _p2)
-                        if fig_c: st.pyplot(fig_c, use_container_width=True); plt.close(fig_c)
-
-                elif "EDF" in _perf_compare:
-                    _edf_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("EDF", na=False)] \
-                             if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
-                    if not _edf_f.empty:
-                        _ps = st.selectbox("Poste EDF", sorted(_edf_f["Poste"].unique()), key="perf_edf_p")
-                        _ref_pop = _edf_f.copy()
-                        st.caption(
-                            "📊 Percentile global — score 75 = meilleure que 75% "
-                            "des joueuses de la distribution combinée PFC + EDF"
-                        )
-                        if not _player_df_c.empty and not _ref_pop.empty:
-                            _comb_df = prepare_combined_ranking(
-                                _player_df_c, _ref_pop,
-                                player_label=_perf_player,
-                                ref_label=f"Moyenne {_ps}"
+                # ── Radar + KPIs + Postes côte à côte (sans onglets) ──────────
+                _col_radar, _col_kpis = st.columns([1, 1])
+                with _col_radar:
+                    with st.spinner("Génération du radar…"):
+                        _radar_result = create_individual_radar(aggregated)
+                        if _radar_result is not None:
+                            fig_r, _top_txt, _low_txt = _radar_result
+                            st.pyplot(fig_r, use_container_width=True)
+                            plt.close(fig_r)
+                            st.markdown(
+                                f"<div style='font-size:12px;color:#C8D8E8;margin-top:4px;'>✅ <b>Forces :</b> {_top_txt}</div>"
+                                f"<div style='font-size:12px;color:#6A8090;margin-top:2px;'>⚠️ <b>Axes :</b> {_low_txt}</div>",
+                                unsafe_allow_html=True
                             )
-                            if not _comb_df.empty:
-                                fig_e = create_comparison_radar(
-                                    _comb_df, _perf_player, f"Moyenne {_ps}",
-                                    exclude_creativity=True)
-                                if fig_e: st.pyplot(fig_e, use_container_width=True); plt.close(fig_e)
-                            else:
-                                st.info("Colonnes insuffisantes pour la comparaison.")
-                    else:
-                        st.info("Référentiel EDF non disponible.")
 
-                elif "APL" in _perf_compare:
-                    _apl_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("APL", na=False)] \
-                             if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
-                    if not _apl_f.empty:
-                        _ps = st.selectbox("Poste APL", sorted(_apl_f["Poste"].unique()), key="perf_apl_p")
-                        # Charger les lignes individuelles APL pour le Z-score
-                        _apl_raw = load_apl_files_raw()
-                        _poste_key = _ps.replace(" moyenne (APL)", "").strip()
-                        _ref_pop = _apl_raw[
-                            _apl_raw["Poste"].astype(str).str.contains(_poste_key, na=False)
-                        ].copy() if not _apl_raw.empty else _apl_f.copy()
-                        st.caption(
-                            "📊 Z-score — score 50 = dans la moyenne APL · "
-                            "> 50 = au-dessus des standards pro · < 50 = en dessous"
-                        )
-                        if not _player_df_c.empty and not _ref_pop.empty:
-                            _comb_df = prepare_combined_ranking(
-                                _player_df_c, _ref_pop,
-                                player_label=_perf_player,
-                                ref_label=f"Moyenne {_ps}"
-                            )
-                            if not _comb_df.empty:
-                                fig_a = create_comparison_radar(
-                                    _comb_df, _perf_player, f"Moyenne {_ps}",
-                                    exclude_creativity=True)
-                                if fig_a: st.pyplot(fig_a, use_container_width=True); plt.close(fig_a)
-                            else:
-                                st.info("Colonnes insuffisantes pour la comparaison.")
-                    else:
-                        st.warning("Référentiel APL non disponible. Dépose les fichiers `Indiv_*.csv` dans Drive.")
+                with _col_kpis:
+                    # KPIs
+                    _kpis = [("Rigueur","Rigueur"),("Récupération","Récupération"),
+                             ("Distribution","Distribution"),("Percussion","Percussion"),
+                             ("Finition","Finition"),("Créativité","Créativité")]
+                    _avail_kpis = [(l,c) for l,c in _kpis if c in aggregated.columns]
+                    if _avail_kpis:
+                        st.markdown("<div style='font-family:Oswald,sans-serif;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6A8090;margin-bottom:8px;'>KPIs</div>", unsafe_allow_html=True)
+                        _kc = st.columns(min(3, len(_avail_kpis)))
+                        for _i, (_col_ui, (lbl, col)) in enumerate(zip(_kc * 2, _avail_kpis)):
+                            _col_ui.metric(lbl, f"{int(aggregated[col].iloc[0])}/100")
 
-                elif "International" in _perf_compare:
-                    _inter_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("International", na=False)] \
-                               if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
-                    if not _inter_f.empty:
-                        _ps = st.selectbox(
-                            "Poste (référentiel international)",
-                            sorted(_inter_f["Poste"].unique()),
-                            key="perf_inter_p"
-                        )
-                        st.caption(
-                            "📊 Percentile — comparaison vs la moyenne des joueuses internationales "
-                            "(Euro & Coupe du Monde féminins, données StatsBomb Open Data)"
-                        )
-                        _ref_inter = _inter_f[_inter_f["Poste"] == _ps].copy()
-                        if not _player_df_c.empty and not _ref_inter.empty:
-                            _comb_df = prepare_combined_ranking(
-                                _player_df_c, _ref_inter,
-                                player_label=_perf_player,
-                                ref_label=f"Moyenne {_ps}"
+                    st.divider()
+
+                    # Postes
+                    _postes_def = [("DC","Défenseur central"),("DL","Défenseur latéral"),
+                                   ("MD","Milieu défensif"),("MR","Milieu relayeur"),
+                                   ("MO","Milieu offensif"),("ATT","Attaquant")]
+                    _avail_postes = [(l,c) for l,c in _postes_def if c in aggregated.columns]
+                    if _avail_postes:
+                        st.markdown("<div style='font-family:Oswald,sans-serif;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6A8090;margin-bottom:8px;'>Postes</div>", unsafe_allow_html=True)
+                        _pc = st.columns(min(3, len(_avail_postes)))
+                        for _i, (_cu, (lbl, col)) in enumerate(zip(_pc * 2, _avail_postes)):
+                            _cu.metric(lbl, f"{int(aggregated[col].iloc[0])}/100")
+
+                # Comparaison optionnelle
+                if _perf_compare != "— aucune —":
+                    st.divider()
+                    _player_df_c = prepare_comparison_data(pfc_kpi, _perf_player,
+                        selected_matches=_perf_matches_sel or None)
+
+                    if "vs une autre joueuse" in _perf_compare:
+                        _others = [p for p in sorted(pfc_kpi["Player"].dropna().unique())
+                                   if nettoyer_nom_joueuse(p) != nettoyer_nom_joueuse(_perf_player)]
+                        _p2 = st.selectbox("Autre joueuse", _others, key="perf_p2")
+                        _p2_df = prepare_comparison_data(pfc_kpi, _p2)
+                        if not _player_df_c.empty and not _p2_df.empty:
+                            fig_c = create_comparison_radar(
+                                pd.concat([_player_df_c, _p2_df], ignore_index=True, sort=False),
+                                _perf_player, _p2)
+                            if fig_c: st.pyplot(fig_c, use_container_width=True); plt.close(fig_c)
+
+                    elif "EDF" in _perf_compare:
+                        _edf_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("EDF", na=False)] \
+                                 if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
+                        if not _edf_f.empty:
+                            _ps = st.selectbox("Poste EDF", sorted(_edf_f["Poste"].unique()), key="perf_edf_p")
+                            _ref_pop = _edf_f.copy()
+                            st.caption(
+                                "📊 Percentile global — score 75 = meilleure que 75% "
+                                "des joueuses de la distribution combinée PFC + EDF"
                             )
-                            if not _comb_df.empty:
-                                fig_i = create_comparison_radar(
-                                    _comb_df, _perf_player, f"Moyenne {_ps}",
-                                    exclude_creativity=True)
-                                if fig_i:
-                                    st.pyplot(fig_i, use_container_width=True)
-                                    plt.close(fig_i)
-                            else:
-                                st.info("Colonnes insuffisantes pour la comparaison.")
-                    else:
-                        if st.button("⬇️ Charger le référentiel international (StatsBomb)", key="btn_load_inter"):
-                            with st.spinner("Chargement StatsBomb Open Data (peut prendre 1-2 min)…"):
-                                df_inter_fresh = load_statsbomb_international(force_rebuild=True)
-                                if not df_inter_fresh.empty:
-                                    st.success("Référentiel international chargé ! Rafraîchis la page.")
+                            if not _player_df_c.empty and not _ref_pop.empty:
+                                _comb_df = prepare_combined_ranking(
+                                    _player_df_c, _ref_pop,
+                                    player_label=_perf_player,
+                                    ref_label=f"Moyenne {_ps}"
+                                )
+                                if not _comb_df.empty:
+                                    fig_e = create_comparison_radar(
+                                        _comb_df, _perf_player, f"Moyenne {_ps}",
+                                        exclude_creativity=True)
+                                    if fig_e: st.pyplot(fig_e, use_container_width=True); plt.close(fig_e)
                                 else:
-                                    st.error("Échec du chargement. Vérifie que statsbombpy est installé.")
-                        st.info(
-                            "Référentiel international non encore chargé. "
-                            "Clique sur le bouton ci-dessus ou installe `statsbombpy` sur le serveur."
-                        )
+                                    st.info("Colonnes insuffisantes pour la comparaison.")
+                        else:
+                            st.info("Référentiel EDF non disponible.")
+
+                    elif "APL" in _perf_compare:
+                        _apl_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("APL", na=False)] \
+                                 if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
+                        if not _apl_f.empty:
+                            _ps = st.selectbox("Poste APL", sorted(_apl_f["Poste"].unique()), key="perf_apl_p")
+                            # Charger les lignes individuelles APL pour le Z-score
+                            _apl_raw = load_apl_files_raw()
+                            _poste_key = _ps.replace(" moyenne (APL)", "").strip()
+                            _ref_pop = _apl_raw[
+                                _apl_raw["Poste"].astype(str).str.contains(_poste_key, na=False)
+                            ].copy() if not _apl_raw.empty else _apl_f.copy()
+                            st.caption(
+                                "📊 Z-score — score 50 = dans la moyenne APL · "
+                                "> 50 = au-dessus des standards pro · < 50 = en dessous"
+                            )
+                            if not _player_df_c.empty and not _ref_pop.empty:
+                                _comb_df = prepare_combined_ranking(
+                                    _player_df_c, _ref_pop,
+                                    player_label=_perf_player,
+                                    ref_label=f"Moyenne {_ps}"
+                                )
+                                if not _comb_df.empty:
+                                    fig_a = create_comparison_radar(
+                                        _comb_df, _perf_player, f"Moyenne {_ps}",
+                                        exclude_creativity=True)
+                                    if fig_a: st.pyplot(fig_a, use_container_width=True); plt.close(fig_a)
+                                else:
+                                    st.info("Colonnes insuffisantes pour la comparaison.")
+                        else:
+                            st.warning("Référentiel APL non disponible. Dépose les fichiers `Indiv_*.csv` dans Drive.")
+
+                    elif "International" in _perf_compare:
+                        _inter_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("International", na=False)] \
+                                   if edf_kpi is not None and not edf_kpi.empty else pd.DataFrame()
+                        if not _inter_f.empty:
+                            _ps = st.selectbox(
+                                "Poste (référentiel international)",
+                                sorted(_inter_f["Poste"].unique()),
+                                key="perf_inter_p"
+                            )
+                            st.caption(
+                                "📊 Percentile — comparaison vs la moyenne des joueuses internationales "
+                                "(Euro & Coupe du Monde féminins, données StatsBomb Open Data)"
+                            )
+                            _ref_inter = _inter_f[_inter_f["Poste"] == _ps].copy()
+                            if not _player_df_c.empty and not _ref_inter.empty:
+                                _comb_df = prepare_combined_ranking(
+                                    _player_df_c, _ref_inter,
+                                    player_label=_perf_player,
+                                    ref_label=f"Moyenne {_ps}"
+                                )
+                                if not _comb_df.empty:
+                                    fig_i = create_comparison_radar(
+                                        _comb_df, _perf_player, f"Moyenne {_ps}",
+                                        exclude_creativity=True)
+                                    if fig_i:
+                                        st.pyplot(fig_i, use_container_width=True)
+                                        plt.close(fig_i)
+                                else:
+                                    st.info("Colonnes insuffisantes pour la comparaison.")
+                        else:
+                            if st.button("⬇️ Charger le référentiel international (StatsBomb)", key="btn_load_inter"):
+                                with st.spinner("Chargement StatsBomb Open Data (peut prendre 1-2 min)…"):
+                                    df_inter_fresh = load_statsbomb_international(force_rebuild=True)
+                                    if not df_inter_fresh.empty:
+                                        st.success("Référentiel international chargé ! Rafraîchis la page.")
+                                    else:
+                                        st.error("Échec du chargement. Vérifie que statsbombpy est installé.")
+                            st.info(
+                                "Référentiel international non encore chargé. "
+                                "Clique sur le bouton ci-dessus ou installe `statsbombpy` sur le serveur."
+                            )
 
 
-        st.divider()
-        st.markdown("#### 🎯 Rapport de match")
-        if not _tac_files:
-            st.info("Aucun fichier tactique trouvé dans `data/`.")
-        else:
-            _mrows = []
-            for _tac in _tac_files:
-                _s = _tac.get("saison",""); _sc = re.sub(r"20(\d{2})/20(\d{2})", r"\1/\2", _s) if _s else ""
-                _j = _tac.get("journee",""); _a = _tac.get("adversaire",""); _cp = _tac.get("competition","")
-                _pts = [p for p in [_sc, _cp, f"J{_j}" if _j else "", _a] if p]
-                _mrows.append({"display":" · ".join(_pts) if _pts else _tac.get("filename",""),
-                               "date":_tac.get("date"),"adversaire":_a,"journee":_j,
-                               "tac_obj":_tac,"gps_label":""})
-            _mrows.sort(key=lambda m:(
-                (m.get("tac_obj") or {}).get("competition","").lower(),
-                int(m["journee"]) if m.get("journee") and str(m["journee"]).isdigit() else 999,
-                (m.get("adversaire") or "").lower()))
+            st.divider()
+            st.markdown("#### 🎯 Rapport de match")
+            if not _tac_files:
+                st.info("Aucun fichier tactique trouvé dans `data/`.")
+            else:
+                _mrows = []
+                for _tac in _tac_files:
+                    _s = _tac.get("saison",""); _sc = re.sub(r"20(\d{2})/20(\d{2})", r"\1/\2", _s) if _s else ""
+                    _j = _tac.get("journee",""); _a = _tac.get("adversaire",""); _cp = _tac.get("competition","")
+                    _pts = [p for p in [_sc, _cp, f"J{_j}" if _j else "", _a] if p]
+                    _mrows.append({"display":" · ".join(_pts) if _pts else _tac.get("filename",""),
+                                   "date":_tac.get("date"),"adversaire":_a,"journee":_j,
+                                   "tac_obj":_tac,"gps_label":""})
+                _mrows.sort(key=lambda m:(
+                    (m.get("tac_obj") or {}).get("competition","").lower(),
+                    int(m["journee"]) if m.get("journee") and str(m["journee"]).isdigit() else 999,
+                    (m.get("adversaire") or "").lower()))
 
-            _cm, _cpj = st.columns([3,2])
-            with _cm:
-                _sd = st.selectbox("Match", [m["display"] for m in _mrows], key="perf_match_sel")
-            _sr = next((m for m in _mrows if m["display"]==_sd), _mrows[0])
-            _dft = _sr["tac_obj"].get("df")
+                _cm, _cpj = st.columns([3,2])
+                with _cm:
+                    _sd = st.selectbox("Match", [m["display"] for m in _mrows], key="perf_match_sel")
+                _sr = next((m for m in _mrows if m["display"]==_sd), _mrows[0])
+                _dft = _sr["tac_obj"].get("df")
 
-            if _dft is not None:
-                _skip = {"START","PFC",""}
-                _adv_n = _sr.get("adversaire","")
-                if _adv_n: _skip.add(_adv_n)
-                _tplayers = [r for r in _dft["Row"].dropna().unique()
-                             if r not in _skip and not any(k in str(r) for k in ["Transition","Carton","def "])]                             if "Row" in _dft.columns else []
-                with _cpj:
-                    _di = 0
-                    if _perf_player:
-                        _pn = normalize_str(_perf_player)
-                        for _ii, _pp in enumerate(_tplayers):
-                            if normalize_str(_pp)==_pn or _pn in normalize_str(_pp): _di=_ii; break
+                if _dft is not None:
+                    _skip = {"START","PFC",""}
+                    _adv_n = _sr.get("adversaire","")
+                    if _adv_n: _skip.add(_adv_n)
+                    _tplayers = [r for r in _dft["Row"].dropna().unique()
+                                 if r not in _skip and not any(k in str(r) for k in ["Transition","Carton","def "])]                             if "Row" in _dft.columns else []
+                    with _cpj:
+                        _di = 0
+                        if _perf_player:
+                            _pn = normalize_str(_perf_player)
+                            for _ii, _pp in enumerate(_tplayers):
+                                if normalize_str(_pp)==_pn or _pn in normalize_str(_pp): _di=_ii; break
 
-                    if role == ROLE_JOUEUSE:
-                        _sp = _tplayers[_di] if _tplayers else None
-                        if _sp:
-                            st.markdown(f"**Joueuse :** {_sp}")
-                        elif _tplayers:
-                            st.info("Vous n'apparaissez pas dans ce fichier tactique.")
-                    else:
-                        _sp = st.selectbox("Joueuse", _tplayers, index=_di, key="perf_player_tac") if _tplayers else None
+                        if role == ROLE_JOUEUSE:
+                            _sp = _tplayers[_di] if _tplayers else None
+                            if _sp:
+                                st.markdown(f"**Joueuse :** {_sp}")
+                            elif _tplayers:
+                                st.info("Vous n'apparaissez pas dans ce fichier tactique.")
+                        else:
+                            _sp = st.selectbox("Joueuse", _tplayers, index=_di, key="perf_player_tac") if _tplayers else None
 
-                if _sp:
-                    _gs = get_gps_match_summary_for_player(_gps_match_df, _sp,
-                        match_date=pd.to_datetime(_sr.get("date"), errors="coerce"),
-                        match_label=_sr.get("gps_label") or _sr.get("display",""))
-                    _ctx = _get_match_context(_dft)
-                    _mi = {"adversaire":_sr.get("adversaire") or _ctx.get("adversaire",""),
-                           "journee":_sr.get("journee") or _ctx.get("journee",""),
-                           "saison":_sr.get("saison",""),
-                           "score":f"{_ctx.get('score_pfc','?')} – {_ctx.get('score_adv','?')}",
-                           "lieu":_ctx.get("lieu",""), "competition":_ctx.get("competition","")}
-                    _pb64 = ""
-                    try:
-                        _pp2 = find_photo_for_player(_sp,
-                            concordance=st.session_state.get("photo_concordance",{}),
-                            photos_index=st.session_state.get("photos_index",{}))
-                        if _pp2 and os.path.exists(str(_pp2)):
-                            import base64 as _b64x
-                            _rawb = load_photo_bytes(str(_pp2))
-                            if _rawb: _pb64 = "data:image/jpeg;base64," + _b64x.b64encode(_rawb).decode()
-                    except Exception:
-                        pass
-                    _html = build_tactical_report_html(_dft, _sp, gps_summary=_gs,
-                        photo_b64=_pb64, match_info=_mi)
-                    _pjs = ('<script>function pr(){var w=window.open("","_blank","width=900,height=1200");'
-                            'w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">'
-                            '<style>@page{size:A4 portrait;margin:0}body{margin:0;background:#060F1A}</style>'
-                            '</head><body>' + '' + '</body></html>`);'
-                            'w.document.close();setTimeout(()=>w.print(),800);}</script>'
-                            '<button onclick="pr()" style="background:#00A3E0;color:#060F1A;border:none;'
-                            'border-radius:4px;padding:8px 18px;font-family:Oswald,sans-serif;'
-                            'font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px;">'
-                            '\U0001f5a8\ufe0f Imprimer / A4</button>')
-                    _comp_perf.html(_pjs, height=55)
-                    _comp_perf.html(_html, height=1120, scrolling=False)
+                    if _sp:
+                        _gs = get_gps_match_summary_for_player(_gps_match_df, _sp,
+                            match_date=pd.to_datetime(_sr.get("date"), errors="coerce"),
+                            match_label=_sr.get("gps_label") or _sr.get("display",""))
+                        _ctx = _get_match_context(_dft)
+                        _mi = {"adversaire":_sr.get("adversaire") or _ctx.get("adversaire",""),
+                               "journee":_sr.get("journee") or _ctx.get("journee",""),
+                               "saison":_sr.get("saison",""),
+                               "score":f"{_ctx.get('score_pfc','?')} – {_ctx.get('score_adv','?')}",
+                               "lieu":_ctx.get("lieu",""), "competition":_ctx.get("competition","")}
+                        _pb64 = ""
+                        try:
+                            _pp2 = find_photo_for_player(_sp,
+                                concordance=st.session_state.get("photo_concordance",{}),
+                                photos_index=st.session_state.get("photos_index",{}))
+                            if _pp2 and os.path.exists(str(_pp2)):
+                                import base64 as _b64x
+                                _rawb = load_photo_bytes(str(_pp2))
+                                if _rawb: _pb64 = "data:image/jpeg;base64," + _b64x.b64encode(_rawb).decode()
+                        except Exception:
+                            pass
+                        _html = build_tactical_report_html(_dft, _sp, gps_summary=_gs,
+                            photo_b64=_pb64, match_info=_mi)
+                        _pjs = ('<script>function pr(){var w=window.open("","_blank","width=900,height=1200");'
+                                'w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">'
+                                '<style>@page{size:A4 portrait;margin:0}body{margin:0;background:#060F1A}</style>'
+                                '</head><body>' + '' + '</body></html>`);'
+                                'w.document.close();setTimeout(()=>w.print(),800);}</script>'
+                                '<button onclick="pr()" style="background:#00A3E0;color:#060F1A;border:none;'
+                                'border-radius:4px;padding:8px 18px;font-family:Oswald,sans-serif;'
+                                'font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px;">'
+                                '\U0001f5a8\ufe0f Imprimer / A4</button>')
+                        _comp_perf.html(_pjs, height=55)
+                        _comp_perf.html(_html, height=1120, scrolling=False)
 
     # ══════════════════════════════════
     # TAB 2 — ÉVALUATION
