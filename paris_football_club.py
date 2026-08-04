@@ -18,6 +18,8 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import streamlit as st
+import matplotlib
+matplotlib.use("Agg", force=True)  # Backend non-interactif, thread-safe — évite les crashs mémoire (SIGSEGV) en usage concurrent (Streamlit multi-session + thread de sync Drive)
 import matplotlib.pyplot as plt
 from streamlit_option_menu import option_menu
 from mplsoccer import PyPizza, Radar, FontManager, grid
@@ -5729,6 +5731,285 @@ def _get_match_context(df_tactic):
     return ctx
 
 
+def _clean_tag(v):
+    """Nettoie une valeur de tag Sportscode ('X, X' -> 'X'), retourne None si vide."""
+    if pd.isna(v):
+        return None
+    return str(v).split(",")[0].strip()
+
+
+def _tag_contains(v, target):
+    """Vérifie si `target` figure parmi les tags d'une valeur Sportscode potentiellement
+    combinée (ex: 'Centre, Tir cadré' contient bien 'Tir cadré'), sans se limiter au premier tag."""
+    if pd.isna(v):
+        return False
+    return target in [p.strip() for p in str(v).split(",")]
+
+
+def compute_collective_report(df_tactic):
+    """Calcule les indicateurs collectifs (comparaison équipes + répartitions PFC)
+    à partir des lignes de séquence 'PFC' / adversaire d'un fichier tactique Sportscode.
+    Retourne un dict prêt à afficher, ou {} si données insuffisantes.
+    """
+    if df_tactic is None or df_tactic.empty or "Row" not in df_tactic.columns:
+        return {}
+
+    ctx = _get_match_context(df_tactic)
+    pfc_name = "PFC"
+    adv_name = ctx.get("adversaire", "")
+
+    if adv_name not in set(df_tactic["Row"].dropna().unique()):
+        counts = df_tactic["Row"].value_counts()
+        cands = [r for r in counts.index
+                 if r != pfc_name and counts[r] > 20
+                 and not any(k in str(r) for k in ["Transition", "Carton", "def "])]
+        if cands:
+            adv_name = cands[0]
+        else:
+            return {}
+
+    seq = df_tactic[df_tactic["Row"].isin([pfc_name, adv_name])].copy()
+    if seq.empty:
+        return {}
+
+    for col in ["Issue d'action", "Type d'animation offensive", "Mode de circulation du ballon",
+                "Entrée dernier 1/3", "Zone Départ action", "Lancement de Possession", "Mi-temps"]:
+        seq[col + "_c"] = seq[col].apply(_clean_tag) if col in seq.columns else None
+
+    def team_stats(team):
+        t = seq[seq["Row"] == team]
+        n_poss = len(t)
+        dur_totale = pd.to_numeric(t["Duration"], errors="coerce").sum()
+        dur_moy = pd.to_numeric(t["Duration"], errors="coerce").mean()
+        _issue_raw = t["Issue d'action"] if "Issue d'action" in t.columns else pd.Series(dtype=object, index=t.index)
+        tirs_cadres = int(_issue_raw.apply(lambda v: _tag_contains(v, "Tir cadré") or _tag_contains(v, "But")).sum())
+        tirs_non_cadres = int(_issue_raw.apply(lambda v: _tag_contains(v, "Tir non cadré")).sum())
+        buts = int(_issue_raw.apply(lambda v: _tag_contains(v, "But")).sum())
+        tirs = tirs_cadres + tirs_non_cadres
+        hors_jeu = int(_issue_raw.apply(lambda v: _tag_contains(v, "Hors-jeu")).sum())
+        pertes = int(_issue_raw.apply(lambda v: _tag_contains(v, "Perte de balle")).sum())
+        entrees_1_3 = int(t["Entrée dernier 1/3_c"].notna().sum())
+        _issue_raw_seq = seq["Issue d'action"] if "Issue d'action" in seq.columns else pd.Series(dtype=object, index=seq.index)
+        fautes = int(_issue_raw_seq.apply(lambda v: _tag_contains(v, f"Faute {team}")).sum())
+        return {
+            "possessions": n_poss,
+            "duree_totale": float(dur_totale) if pd.notna(dur_totale) else 0.0,
+            "duree_moyenne": float(dur_moy) if pd.notna(dur_moy) else 0.0,
+            "tirs": tirs, "tirs_cadres": tirs_cadres, "tirs_non_cadres": tirs_non_cadres,
+            "buts": buts, "hors_jeu": hors_jeu, "pertes": pertes,
+            "pct_pertes": round(pertes / n_poss * 100, 1) if n_poss else 0.0,
+            "pct_tirs_cadres": round(tirs_cadres / tirs * 100, 1) if tirs else 0.0,
+            "entrees_1_3": entrees_1_3,
+            "poss_par_entree": round(n_poss / entrees_1_3, 1) if entrees_1_3 else None,
+            "entrees_par_tir": round(entrees_1_3 / tirs, 1) if tirs else None,
+            "fautes": fautes,
+        }
+
+    stats = {pfc_name: team_stats(pfc_name), adv_name: team_stats(adv_name)}
+
+    def dur_by_half(team, half):
+        t = seq[seq["Row"] == team]
+        if "Mi-temps_c" not in t.columns:
+            return 0.0
+        mask = t["Mi-temps_c"] == half
+        v = pd.to_numeric(t.loc[mask, "Duration"], errors="coerce").sum()
+        return float(v) if pd.notna(v) else 0.0
+
+    temps_mt1_pfc, temps_mt1_adv = dur_by_half(pfc_name, "MT1"), dur_by_half(adv_name, "MT1")
+    temps_mt2_pfc, temps_mt2_adv = dur_by_half(pfc_name, "MT2"), dur_by_half(adv_name, "MT2")
+
+    def pct_poss(team, half=None):
+        if half == "MT1":
+            d_t, d_a = temps_mt1_pfc, temps_mt1_adv
+        elif half == "MT2":
+            d_t, d_a = temps_mt2_pfc, temps_mt2_adv
+        else:
+            d_t, d_a = stats[pfc_name]["duree_totale"], stats[adv_name]["duree_totale"]
+        tot = d_t + d_a
+        d = d_t if team == pfc_name else d_a
+        return round(d / tot * 100, 1) if tot else 50.0
+
+    pfc_seq = seq[seq["Row"] == pfc_name]
+
+    def pct_counts(col_c, categories):
+        vc = pfc_seq[col_c].value_counts()
+        total = vc.sum()
+        return {c: round(vc.get(c, 0) / total * 100, 1) if total else 0.0 for c in categories}
+
+    animation = pct_counts("Type d'animation offensive_c",
+                            ["Attaque Organisée", "Attaque Rapide", "Transition"])
+    circulation = pct_counts("Mode de circulation du ballon_c",
+                              ["Jeu par dessus", "Jeu en contournement", "À travers par le dribble",
+                               "À travers par la passe", "Renversement"])
+    entree_tiers = pct_counts("Entrée dernier 1/3_c",
+                               ["Couloir Gauche", "Couloir Central", "Couloir Droit"])
+
+    zone_rows = ["Def", "MDef", "MOf", "Off"]
+    zone_cols = ["G", "C", "D"]
+
+    recup_mask = pfc_seq["Lancement de Possession_c"].isin(["Pertes de balle Adv", "Duel gagné"])
+    recup_zones = pfc_seq.loc[recup_mask, "Zone Départ action_c"].value_counts()
+    recup_total = recup_zones.sum()
+
+    perte_mask = pfc_seq["Issue d'action_c"] == "Perte de balle"
+    perte_zones = pfc_seq.loc[perte_mask, "Zone Départ action_c"].value_counts()
+    perte_total = perte_zones.sum()
+
+    def zone_grid_pct(zone_counts, total):
+        grid = []
+        for r in zone_rows:
+            row_vals = []
+            for c in zone_cols:
+                v = zone_counts.get(f"{r}{c}", 0)
+                row_vals.append(round(v / total * 100, 1) if total else 0.0)
+            grid.append(row_vals)
+        return grid
+
+    return {
+        "pfc_name": pfc_name, "adv_name": adv_name,
+        "stats": stats,
+        "temps_total": temps_mt1_pfc + temps_mt1_adv + temps_mt2_pfc + temps_mt2_adv,
+        "temps_mt1": temps_mt1_pfc + temps_mt1_adv,
+        "temps_mt2": temps_mt2_pfc + temps_mt2_adv,
+        "poss_total": {pfc_name: pct_poss(pfc_name), adv_name: pct_poss(adv_name)},
+        "poss_mt1": {pfc_name: pct_poss(pfc_name, "MT1"), adv_name: pct_poss(adv_name, "MT1")},
+        "poss_mt2": {pfc_name: pct_poss(pfc_name, "MT2"), adv_name: pct_poss(adv_name, "MT2")},
+        "animation": animation,
+        "circulation": circulation,
+        "entree_tiers": entree_tiers,
+        "grid_recup": zone_grid_pct(recup_zones, recup_total),
+        "grid_perte": zone_grid_pct(perte_zones, perte_total),
+        "zone_rows": zone_rows, "zone_cols": zone_cols,
+    }
+
+
+def _fmt_secs_to_mmss(v):
+    """Convertit un nombre de secondes en 'MM:SS.d'."""
+    try:
+        v = float(v)
+    except Exception:
+        return "—"
+    m = int(v // 60)
+    s = v - m * 60
+    return f"{m}:{s:04.1f}"
+
+
+def render_collective_report(report: dict):
+    """Affiche le rapport collectif (tableau comparatif + répartitions PFC + zones)."""
+    if not report:
+        st.info("Données insuffisantes pour générer le rapport collectif sur ce match.")
+        return
+
+    pfc_name, adv_name = report["pfc_name"], report["adv_name"]
+    s_pfc, s_adv = report["stats"][pfc_name], report["stats"][adv_name]
+
+    st.markdown("#### ⏱️ Temps de jeu effectif")
+    _t1, _t2, _t3 = st.columns(3)
+    _t1.metric("Total", _fmt_secs_to_mmss(report["temps_total"]))
+    _t2.metric("MT1", _fmt_secs_to_mmss(report["temps_mt1"]))
+    _t3.metric("MT2", _fmt_secs_to_mmss(report["temps_mt2"]))
+
+    st.divider()
+    st.markdown("#### 📊 Statistiques comparées")
+
+    rows = [
+        ("% Possession", f"{report['poss_total'][pfc_name]} %", f"{report['poss_total'][adv_name]} %"),
+        ("% Possession MT1", f"{report['poss_mt1'][pfc_name]} %", f"{report['poss_mt1'][adv_name]} %"),
+        ("% Possession MT2", f"{report['poss_mt2'][pfc_name]} %", f"{report['poss_mt2'][adv_name]} %"),
+        ("Nombre de possessions", s_pfc["possessions"], s_adv["possessions"]),
+        ("Durée moyenne possession (s)", round(s_pfc["duree_moyenne"], 1), round(s_adv["duree_moyenne"], 1)),
+        ("Nombre de tirs", s_pfc["tirs"], s_adv["tirs"]),
+        ("Nombre de tirs cadrés", s_pfc["tirs_cadres"], s_adv["tirs_cadres"]),
+        ("% tirs cadrés", f"{s_pfc['pct_tirs_cadres']} %", f"{s_adv['pct_tirs_cadres']} %"),
+        ("Nombre de tirs non cadrés", s_pfc["tirs_non_cadres"], s_adv["tirs_non_cadres"]),
+        ("Nombre de buts", s_pfc["buts"], s_adv["buts"]),
+        ("Nombre de fautes", s_pfc["fautes"], s_adv["fautes"]),
+        ("Nombre de hors-jeu", s_pfc["hors_jeu"], s_adv["hors_jeu"]),
+        ("Nombre de pertes de balle", s_pfc["pertes"], s_adv["pertes"]),
+        ("% pertes de balle", f"{s_pfc['pct_pertes']} %", f"{s_adv['pct_pertes']} %"),
+        ("Entrées dans le dernier 1/3", s_pfc["entrees_1_3"], s_adv["entrees_1_3"]),
+        ("Possessions nécessaires / entrée dernier 1/3",
+         s_pfc["poss_par_entree"] if s_pfc["poss_par_entree"] is not None else "—",
+         s_adv["poss_par_entree"] if s_adv["poss_par_entree"] is not None else "—"),
+        ("Entrées dernier 1/3 nécessaires / tir",
+         s_pfc["entrees_par_tir"] if s_pfc["entrees_par_tir"] is not None else "—",
+         s_adv["entrees_par_tir"] if s_adv["entrees_par_tir"] is not None else "—"),
+    ]
+    _tbl = pd.DataFrame(rows, columns=[pfc_name, "Indicateur", adv_name]).set_index("Indicateur")
+    _tbl = _tbl[[pfc_name, adv_name]]
+    st.dataframe(_tbl, use_container_width=True)
+
+    st.divider()
+    st.markdown(f"#### 🎯 Répartitions {pfc_name} (jeu offensif)")
+
+    _rc1, _rc2, _rc3 = st.columns(3)
+    with _rc1:
+        st.markdown("**Type d'animation offensive**")
+        for lbl, val in report["animation"].items():
+            st.markdown(
+                f"<div style='display:flex;justify-content:space-between;font-size:13px;padding:3px 0;'>"
+                f"<span style='color:#C8D8E8;'>{lbl}</span>"
+                f"<span style='color:#00A3E0;font-weight:600;'>{val} %</span></div>",
+                unsafe_allow_html=True)
+    with _rc2:
+        st.markdown("**Élimination des lignes adverses**")
+        for lbl, val in report["circulation"].items():
+            st.markdown(
+                f"<div style='display:flex;justify-content:space-between;font-size:13px;padding:3px 0;'>"
+                f"<span style='color:#C8D8E8;'>{lbl}</span>"
+                f"<span style='color:#00A3E0;font-weight:600;'>{val} %</span></div>",
+                unsafe_allow_html=True)
+    with _rc3:
+        st.markdown("**Entrée dernier 1/3 (couloir)**")
+        for lbl, val in report["entree_tiers"].items():
+            st.markdown(
+                f"<div style='display:flex;justify-content:space-between;font-size:13px;padding:3px 0;'>"
+                f"<span style='color:#C8D8E8;'>{lbl}</span>"
+                f"<span style='color:#00A3E0;font-weight:600;'>{val} %</span></div>",
+                unsafe_allow_html=True)
+
+    st.divider()
+    st.markdown(f"#### 🗺️ Zones de récupération / perte du ballon — {pfc_name}")
+    st.caption(
+        "Zones calculées à partir de la Zone de départ d'action, croisée avec le Lancement de possession "
+        "(récupération) et l'Issue d'action (perte). Grille : lignes = profondeur (Défense / Milieu défensif / "
+        "Milieu offensif / Attaque), colonnes = largeur (Gauche / Centre / Droite)."
+    )
+
+    _zg1, _zg2 = st.columns(2)
+
+    def _plot_zone_grid(grid, rows_lbl, cols_lbl, title, cmap_color):
+        fig, ax = plt.subplots(figsize=(4, 4), dpi=90)
+        fig.patch.set_facecolor("#08090D")
+        ax.set_facecolor("#08090D")
+        arr = np.array(grid)
+        im = ax.imshow(arr, cmap=cmap_color, vmin=0, vmax=max(arr.max(), 1))
+        ax.set_xticks(range(len(cols_lbl))); ax.set_xticklabels(cols_lbl, color="#C8D8E8", fontsize=9)
+        ax.set_yticks(range(len(rows_lbl))); ax.set_yticklabels(rows_lbl, color="#C8D8E8", fontsize=9)
+        for i in range(arr.shape[0]):
+            for j in range(arr.shape[1]):
+                ax.text(j, i, f"{arr[i,j]:.1f}", ha="center", va="center",
+                        color="#08090D" if arr[i, j] > arr.max() * 0.5 else "#C8D8E8",
+                        fontsize=10, fontweight="bold")
+        ax.set_title(title, color="#C8D8E8", fontsize=11)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        fig.tight_layout()
+        return fig
+
+    with _zg1:
+        fig_r = _plot_zone_grid(report["grid_recup"], report["zone_rows"], report["zone_cols"],
+                                 "Récupération (%)", "Greens")
+        st.pyplot(fig_r, use_container_width=True)
+        plt.close(fig_r)
+    with _zg2:
+        fig_p = _plot_zone_grid(report["grid_perte"], report["zone_rows"], report["zone_cols"],
+                                 "Perte (%)", "Oranges")
+        st.pyplot(fig_p, use_container_width=True)
+        plt.close(fig_p)
+
+
+
 
 def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
                                     player_name: str,
@@ -9221,13 +9502,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     _cc4.metric("Système de jeu", _ctx_c.get("systeme", "") or "—")
 
                     st.divider()
-                    st.markdown("#### Possession")
-                    _pp1, _pp2 = st.columns(2)
-                    _pp1.metric("Paris FC", f"{_ctx_c.get('poss_pfc', 50.0):.1f} %")
-                    _pp2.metric(
-                        _ctx_c.get("adversaire", "Adversaire") or "Adversaire",
-                        f"{_ctx_c.get('poss_adv', 50.0):.1f} %"
-                    )
+                    _collectif_report = compute_collective_report(_dft_c)
+                    render_collective_report(_collectif_report)
 
         with _mat_individuel:
             if _df_player.empty:
