@@ -5895,7 +5895,8 @@ def _fmt_secs_to_mmss(v):
 
 
 def render_collective_report(report: dict):
-    """Affiche le rapport collectif (tableau comparatif + répartitions PFC + zones)."""
+    """Affiche le rapport collectif — cartes + barres comparatives miroir + barres de répartition,
+    cohérent avec la charte graphique Paris FC (fond sombre, accents cyan/corail)."""
     if not report:
         st.info("Données insuffisantes pour générer le rapport collectif sur ce match.")
         return
@@ -5903,73 +5904,128 @@ def render_collective_report(report: dict):
     pfc_name, adv_name = report["pfc_name"], report["adv_name"]
     s_pfc, s_adv = report["stats"][pfc_name], report["stats"][adv_name]
 
-    st.markdown("#### ⏱️ Temps de jeu effectif")
+    CYAN = "#00A3E0"
+    CORAIL = "#FF6B6B"
+    TXT = "#C8D8E8"
+    MUTED = "#6A8090"
+
+    def _section_title(icon, txt):
+        st.markdown(
+            f"<div style='display:flex;align-items:center;gap:8px;margin:18px 0 10px;'>"
+            f"<span style='font-size:18px;'>{icon}</span>"
+            f"<span style='font-family:Oswald,sans-serif;font-size:16px;font-weight:600;"
+            f"letter-spacing:0.08em;text-transform:uppercase;color:#FFFFFF;'>{txt}</span>"
+            f"<div style='flex:1;height:1px;background:rgba(0,163,224,0.25);margin-left:8px;'></div>"
+            f"</div>", unsafe_allow_html=True)
+
+    # ── Temps de jeu effectif ────────────────────────────────────────────
+    _section_title("⏱️", "Temps de jeu effectif")
     _t1, _t2, _t3 = st.columns(3)
     _t1.metric("Total", _fmt_secs_to_mmss(report["temps_total"]))
     _t2.metric("MT1", _fmt_secs_to_mmss(report["temps_mt1"]))
     _t3.metric("MT2", _fmt_secs_to_mmss(report["temps_mt2"]))
 
-    st.divider()
-    st.markdown("#### 📊 Statistiques comparées")
+    # ── Statistiques comparées — barres miroir ──────────────────────────
+    _section_title("📊", "Statistiques comparées")
 
-    rows = [
-        ("% Possession", f"{report['poss_total'][pfc_name]} %", f"{report['poss_total'][adv_name]} %"),
-        ("% Possession MT1", f"{report['poss_mt1'][pfc_name]} %", f"{report['poss_mt1'][adv_name]} %"),
-        ("% Possession MT2", f"{report['poss_mt2'][pfc_name]} %", f"{report['poss_mt2'][adv_name]} %"),
-        ("Nombre de possessions", s_pfc["possessions"], s_adv["possessions"]),
-        ("Durée moyenne possession (s)", round(s_pfc["duree_moyenne"], 1), round(s_adv["duree_moyenne"], 1)),
-        ("Nombre de tirs", s_pfc["tirs"], s_adv["tirs"]),
-        ("Nombre de tirs cadrés", s_pfc["tirs_cadres"], s_adv["tirs_cadres"]),
-        ("% tirs cadrés", f"{s_pfc['pct_tirs_cadres']} %", f"{s_adv['pct_tirs_cadres']} %"),
-        ("Nombre de tirs non cadrés", s_pfc["tirs_non_cadres"], s_adv["tirs_non_cadres"]),
-        ("Nombre de buts", s_pfc["buts"], s_adv["buts"]),
-        ("Nombre de fautes", s_pfc["fautes"], s_adv["fautes"]),
-        ("Nombre de hors-jeu", s_pfc["hors_jeu"], s_adv["hors_jeu"]),
-        ("Nombre de pertes de balle", s_pfc["pertes"], s_adv["pertes"]),
-        ("% pertes de balle", f"{s_pfc['pct_pertes']} %", f"{s_adv['pct_pertes']} %"),
-        ("Entrées dans le dernier 1/3", s_pfc["entrees_1_3"], s_adv["entrees_1_3"]),
-        ("Possessions nécessaires / entrée dernier 1/3",
-         s_pfc["poss_par_entree"] if s_pfc["poss_par_entree"] is not None else "—",
-         s_adv["poss_par_entree"] if s_adv["poss_par_entree"] is not None else "—"),
-        ("Entrées dernier 1/3 nécessaires / tir",
-         s_pfc["entrees_par_tir"] if s_pfc["entrees_par_tir"] is not None else "—",
-         s_adv["entrees_par_tir"] if s_adv["entrees_par_tir"] is not None else "—"),
-    ]
-    _tbl = pd.DataFrame(rows, columns=[pfc_name, "Indicateur", adv_name]).set_index("Indicateur")
-    _tbl = _tbl[[pfc_name, adv_name]]
-    st.dataframe(_tbl, use_container_width=True)
+    st.markdown(
+        f"<div style='display:flex;justify-content:space-between;padding:0 4px 10px;'>"
+        f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CYAN};font-size:14px;"
+        f"text-transform:uppercase;letter-spacing:.05em;'>{pfc_name}</span>"
+        f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CORAIL};font-size:14px;"
+        f"text-transform:uppercase;letter-spacing:.05em;'>{adv_name}</span>"
+        f"</div>", unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown(f"#### 🎯 Répartitions {pfc_name} (jeu offensif)")
+    def _mirror_row(label, val_pfc, val_adv, unit="", is_pct=False):
+        try:
+            v1 = float(val_pfc) if val_pfc not in (None, "—") else 0.0
+            v2 = float(val_adv) if val_adv not in (None, "—") else 0.0
+        except (TypeError, ValueError):
+            v1, v2 = 0.0, 0.0
+        max_v = max(v1, v2, 0.0001)
+        pct1 = min(v1 / max_v * 100, 100)
+        pct2 = min(v2 / max_v * 100, 100)
+        disp1 = val_pfc if val_pfc is not None else "—"
+        disp2 = val_adv if val_adv is not None else "—"
+        if is_pct:
+            disp1 = f"{disp1} %" if disp1 != "—" else "—"
+            disp2 = f"{disp2} %" if disp2 != "—" else "—"
+        elif unit:
+            disp1 = f"{disp1} {unit}" if disp1 != "—" else "—"
+            disp2 = f"{disp2} {unit}" if disp2 != "—" else "—"
+
+        html = f"""
+        <div style="margin-bottom:11px;">
+          <div style="text-align:center;font-size:11.5px;color:{MUTED};font-family:Oswald,sans-serif;
+                      letter-spacing:0.06em;text-transform:uppercase;margin-bottom:3px;">{label}</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div style="width:56px;text-align:right;font-weight:700;color:{CYAN};font-size:13.5px;">{disp1}</div>
+            <div style="flex:1;display:flex;justify-content:flex-end;">
+              <div style="height:9px;width:{pct1}%;background:{CYAN};border-radius:4px 0 0 4px;
+                          box-shadow:0 0 6px rgba(0,163,224,0.5);"></div>
+            </div>
+            <div style="width:2px;height:16px;background:rgba(255,255,255,0.15);"></div>
+            <div style="flex:1;display:flex;justify-content:flex-start;">
+              <div style="height:9px;width:{pct2}%;background:{CORAIL};border-radius:0 4px 4px 0;
+                          box-shadow:0 0 6px rgba(255,107,107,0.5);"></div>
+            </div>
+            <div style="width:56px;text-align:left;font-weight:700;color:{CORAIL};font-size:13.5px;">{disp2}</div>
+          </div>
+        </div>"""
+        st.markdown(html, unsafe_allow_html=True)
+
+    _mirror_row("% Possession", report["poss_total"][pfc_name], report["poss_total"][adv_name], is_pct=True)
+    _mirror_row("% Possession MT1", report["poss_mt1"][pfc_name], report["poss_mt1"][adv_name], is_pct=True)
+    _mirror_row("% Possession MT2", report["poss_mt2"][pfc_name], report["poss_mt2"][adv_name], is_pct=True)
+    _mirror_row("Nombre de possessions", s_pfc["possessions"], s_adv["possessions"])
+    _mirror_row("Durée moyenne possession", round(s_pfc["duree_moyenne"], 1), round(s_adv["duree_moyenne"], 1), unit="s")
+    _mirror_row("Nombre de tirs", s_pfc["tirs"], s_adv["tirs"])
+    _mirror_row("Nombre de tirs cadrés", s_pfc["tirs_cadres"], s_adv["tirs_cadres"])
+    _mirror_row("% tirs cadrés", s_pfc["pct_tirs_cadres"], s_adv["pct_tirs_cadres"], is_pct=True)
+    _mirror_row("Nombre de tirs non cadrés", s_pfc["tirs_non_cadres"], s_adv["tirs_non_cadres"])
+    _mirror_row("Nombre de buts", s_pfc["buts"], s_adv["buts"])
+    _mirror_row("Nombre de fautes", s_pfc["fautes"], s_adv["fautes"])
+    _mirror_row("Nombre de hors-jeu", s_pfc["hors_jeu"], s_adv["hors_jeu"])
+    _mirror_row("Nombre de pertes de balle", s_pfc["pertes"], s_adv["pertes"])
+    _mirror_row("% pertes de balle", s_pfc["pct_pertes"], s_adv["pct_pertes"], is_pct=True)
+    _mirror_row("Entrées dans le dernier 1/3", s_pfc["entrees_1_3"], s_adv["entrees_1_3"])
+    _mirror_row("Possessions nécessaires / entrée dernier 1/3",
+                s_pfc["poss_par_entree"], s_adv["poss_par_entree"])
+    _mirror_row("Entrées dernier 1/3 nécessaires / tir",
+                s_pfc["entrees_par_tir"], s_adv["entrees_par_tir"])
+
+    # ── Répartitions PFC — barres de répartition colorées ───────────────
+    _section_title("🎯", f"Répartitions {pfc_name} (jeu offensif)")
+
+    def _fill_bar(label, val, color=CYAN):
+        pct = max(0.0, min(float(val), 100.0))
+        st.markdown(f"""
+        <div style="margin-bottom:9px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+            <span style="font-size:12.5px;color:{TXT};">{label}</span>
+            <span style="font-size:12.5px;font-weight:700;color:{color};">{val} %</span>
+          </div>
+          <div style="height:7px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;">
+            <div style="height:100%;width:{pct}%;background:{color};border-radius:4px;"></div>
+          </div>
+        </div>""", unsafe_allow_html=True)
 
     _rc1, _rc2, _rc3 = st.columns(3)
     with _rc1:
-        st.markdown("**Type d'animation offensive**")
+        st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Type d'animation offensive</div>", unsafe_allow_html=True)
         for lbl, val in report["animation"].items():
-            st.markdown(
-                f"<div style='display:flex;justify-content:space-between;font-size:13px;padding:3px 0;'>"
-                f"<span style='color:#C8D8E8;'>{lbl}</span>"
-                f"<span style='color:#00A3E0;font-weight:600;'>{val} %</span></div>",
-                unsafe_allow_html=True)
+            _fill_bar(lbl, val, CYAN)
     with _rc2:
-        st.markdown("**Élimination des lignes adverses**")
+        st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Élimination des lignes adverses</div>", unsafe_allow_html=True)
         for lbl, val in report["circulation"].items():
-            st.markdown(
-                f"<div style='display:flex;justify-content:space-between;font-size:13px;padding:3px 0;'>"
-                f"<span style='color:#C8D8E8;'>{lbl}</span>"
-                f"<span style='color:#00A3E0;font-weight:600;'>{val} %</span></div>",
-                unsafe_allow_html=True)
+            _fill_bar(lbl, val, "#7B84FF")
     with _rc3:
-        st.markdown("**Entrée dernier 1/3 (couloir)**")
+        st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Entrée dernier 1/3 (couloir)</div>", unsafe_allow_html=True)
         for lbl, val in report["entree_tiers"].items():
-            st.markdown(
-                f"<div style='display:flex;justify-content:space-between;font-size:13px;padding:3px 0;'>"
-                f"<span style='color:#C8D8E8;'>{lbl}</span>"
-                f"<span style='color:#00A3E0;font-weight:600;'>{val} %</span></div>",
-                unsafe_allow_html=True)
+            _fill_bar(lbl, val, "#FFA06E")
 
-    st.divider()
-    st.markdown(f"#### 🗺️ Zones de récupération / perte du ballon — {pfc_name}")
+    # ── Zones de récupération / perte du ballon ─────────────────────────
+    _section_title("🗺️", f"Zones de récupération / perte du ballon — {pfc_name}")
     st.caption(
         "Zones calculées à partir de la Zone de départ d'action, croisée avec le Lancement de possession "
         "(récupération) et l'Issue d'action (perte). Grille : lignes = profondeur (Défense / Milieu défensif / "
@@ -5991,7 +6047,7 @@ def render_collective_report(report: dict):
                 ax.text(j, i, f"{arr[i,j]:.1f}", ha="center", va="center",
                         color="#08090D" if arr[i, j] > arr.max() * 0.5 else "#C8D8E8",
                         fontsize=10, fontweight="bold")
-        ax.set_title(title, color="#C8D8E8", fontsize=11)
+        ax.set_title(title, color="#C8D8E8", fontsize=11, fontfamily="sans-serif")
         for spine in ax.spines.values():
             spine.set_visible(False)
         fig.tight_layout()
@@ -5999,16 +6055,14 @@ def render_collective_report(report: dict):
 
     with _zg1:
         fig_r = _plot_zone_grid(report["grid_recup"], report["zone_rows"], report["zone_cols"],
-                                 "Récupération (%)", "Greens")
+                                 "Récupération (%)", "Blues")
         st.pyplot(fig_r, use_container_width=True)
         plt.close(fig_r)
     with _zg2:
         fig_p = _plot_zone_grid(report["grid_perte"], report["zone_rows"], report["zone_cols"],
-                                 "Perte (%)", "Oranges")
+                                 "Perte (%)", "Reds")
         st.pyplot(fig_p, use_container_width=True)
         plt.close(fig_p)
-
-
 
 
 def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
