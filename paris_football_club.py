@@ -5894,6 +5894,82 @@ def _fmt_secs_to_mmss(v):
     return f"{m}:{s:04.1f}"
 
 
+def _draw_collective_pitch(ax):
+    """Dessine un terrain vertical simplifié (attaque vers le haut) sur l'axe donné."""
+    ax.set_facecolor("#08090D")
+    ax.set_xlim(0, 68); ax.set_ylim(0, 100)
+    line_c = "#1E2D40"
+    ax.add_patch(plt.Rectangle((0, 0), 68, 100, fill=False, edgecolor=line_c, linewidth=1.2))
+    ax.axhline(50, color=line_c, linewidth=1)
+    ax.add_patch(plt.Circle((34, 50), 9, fill=False, edgecolor=line_c, linewidth=1))
+    ax.add_patch(plt.Rectangle((14, 0), 40, 16, fill=False, edgecolor=line_c, linewidth=1))
+    ax.add_patch(plt.Rectangle((14, 84), 40, 16, fill=False, edgecolor=line_c, linewidth=1))
+    ax.set_xticks([]); ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+
+def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 4.4), dpi=90):
+    """Terrain vertical avec 3 flèches (Gauche/Central/Droit), épaisseur/opacité ∝ %."""
+    _pg = entree_tiers.get("Couloir Gauche", 0.0)
+    _pc = entree_tiers.get("Couloir Central", 0.0)
+    _pd = entree_tiers.get("Couloir Droit", 0.0)
+    _pmax = max(_pg, _pc, _pd, 0.0001)
+
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    fig.patch.set_facecolor("#08090D")
+    _draw_collective_pitch(ax)
+
+    for x, pct in [(12, _pg), (34, _pc), (56, _pd)]:
+        lw = 1.5 + (pct / _pmax) * 7.5
+        alpha = 0.35 + (pct / _pmax) * 0.65
+        ax.annotate(
+            "", xy=(x, 96), xytext=(x, 55),
+            arrowprops=dict(arrowstyle="-|>", color="#FFA06E", lw=lw, alpha=alpha,
+                            mutation_scale=18 + (pct / _pmax) * 12),
+        )
+        ax.text(x, 50, f"{pct:.1f} %", ha="center", va="top",
+                color="#FFA06E", fontsize=10, fontweight="bold")
+
+    ax.set_title("Couloir d'entrée dans le dernier 1/3", color="#C8D8E8", fontsize=9.5)
+    fig.tight_layout()
+    return fig
+
+
+def build_zone_heatmap_figure(grid, rows_lbl, cols_lbl, title, cmap_name, figsize=(4, 5.6), dpi=90):
+    """Heatmap de zones (%) superposée à un terrain vertical (attaque vers le haut)."""
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
+
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    fig.patch.set_facecolor("#08090D")
+    _draw_collective_pitch(ax)
+
+    arr = np.array(grid)
+    n_rows, n_cols = arr.shape
+    vmax = max(arr.max(), 1)
+    cmap = cm.get_cmap(cmap_name)
+    norm = mcolors.Normalize(vmin=0, vmax=vmax)
+    cell_h = 100 / n_rows
+    cell_w = 68 / n_cols
+
+    for i in range(n_rows):
+        y0 = i * cell_h
+        for j in range(n_cols):
+            x0 = j * cell_w
+            val = arr[i, j]
+            color = cmap(norm(val))
+            ax.add_patch(plt.Rectangle((x0, y0), cell_w, cell_h,
+                                        facecolor=color, alpha=0.75, edgecolor="#08090D", linewidth=1.5))
+            txt_color = "#08090D" if val > vmax * 0.55 else "#FFFFFF"
+            ax.text(x0 + cell_w / 2, y0 + cell_h / 2, f"{val:.1f}%",
+                    ha="center", va="center", color=txt_color, fontsize=9.5, fontweight="bold")
+
+    ax.set_title(title, color="#C8D8E8", fontsize=11)
+    fig.tight_layout()
+    return fig
+
+
 def render_collective_report(report: dict):
     """Affiche le rapport collectif — cartes + barres comparatives miroir + barres de répartition,
     cohérent avec la charte graphique Paris FC (fond sombre, accents cyan/corail)."""
@@ -5917,6 +5993,23 @@ def render_collective_report(report: dict):
             f"letter-spacing:0.08em;text-transform:uppercase;color:#FFFFFF;'>{txt}</span>"
             f"<div style='flex:1;height:1px;background:rgba(0,163,224,0.25);margin-left:8px;'></div>"
             f"</div>", unsafe_allow_html=True)
+
+    # ── Bouton d'export PDF (A4 paysage) ─────────────────────────────────
+    try:
+        import streamlit.components.v1 as _comp_coll
+        _html_export = build_collective_report_html(report)
+        _print_js = (
+            '<script>function prColl(){var w=window.open("","_blank","width=1200,height=850");'
+            'w.document.write(`' + _html_export.replace("`", "\\`") + '`);'
+            'w.document.close();setTimeout(()=>w.print(),800);}</script>'
+            '<button onclick="prColl()" style="background:#00A3E0;color:#060F1A;border:none;'
+            'border-radius:4px;padding:8px 18px;font-family:Oswald,sans-serif;'
+            'font-size:13px;font-weight:700;cursor:pointer;margin-bottom:6px;">'
+            '🖨️ Exporter en PDF (A4 paysage)</button>'
+        )
+        _comp_coll.html(_print_js, height=50)
+    except Exception:
+        pass
 
     # ── Temps de jeu effectif ────────────────────────────────────────────
     _section_title("⏱️", "Temps de jeu effectif")
@@ -6010,21 +6103,6 @@ def render_collective_report(report: dict):
           </div>
         </div>""", unsafe_allow_html=True)
 
-    def _draw_pitch(ax):
-        """Dessine un terrain vertical simplifié (attaque vers le haut) sur l'axe donné."""
-        ax.set_facecolor("#08090D")
-        ax.set_xlim(0, 68); ax.set_ylim(0, 100)
-        line_c = "#1E2D40"
-        ax.add_patch(plt.Rectangle((0, 0), 68, 100, fill=False, edgecolor=line_c, linewidth=1.2))
-        ax.axhline(50, color=line_c, linewidth=1)
-        ax.add_patch(plt.Circle((34, 50), 9, fill=False, edgecolor=line_c, linewidth=1))
-        # surfaces de réparation (bas = notre camp, haut = camp adverse)
-        ax.add_patch(plt.Rectangle((14, 0), 40, 16, fill=False, edgecolor=line_c, linewidth=1))
-        ax.add_patch(plt.Rectangle((14, 84), 40, 16, fill=False, edgecolor=line_c, linewidth=1))
-        ax.set_xticks([]); ax.set_yticks([])
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-
     _rc1, _rc2, _rc3 = st.columns([1, 1, 1])
     with _rc1:
         st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Type d'animation offensive</div>", unsafe_allow_html=True)
@@ -6036,35 +6114,7 @@ def render_collective_report(report: dict):
             _fill_bar(lbl, val, "#7B84FF")
     with _rc3:
         st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Entrée dernier 1/3 (couloir)</div>", unsafe_allow_html=True)
-
-        _et = report["entree_tiers"]
-        _pg = _et.get("Couloir Gauche", 0.0)
-        _pc = _et.get("Couloir Central", 0.0)
-        _pd = _et.get("Couloir Droit", 0.0)
-        _pmax = max(_pg, _pc, _pd, 0.0001)
-
-        fig_e, ax_e = plt.subplots(figsize=(3.4, 4.4), dpi=90)
-        fig_e.patch.set_facecolor("#08090D")
-        _draw_pitch(ax_e)
-
-        _arrows = [
-            (12, _pg, "#FFA06E"),
-            (34, _pc, "#FFA06E"),
-            (56, _pd, "#FFA06E"),
-        ]
-        for x, pct, color in _arrows:
-            lw = 1.5 + (pct / _pmax) * 7.5
-            alpha = 0.35 + (pct / _pmax) * 0.65
-            ax_e.annotate(
-                "", xy=(x, 96), xytext=(x, 55),
-                arrowprops=dict(arrowstyle="-|>", color=color, lw=lw, alpha=alpha,
-                                mutation_scale=18 + (pct / _pmax) * 12),
-            )
-            ax_e.text(x, 50, f"{pct:.1f} %", ha="center", va="top",
-                      color=color, fontsize=10, fontweight="bold")
-
-        ax_e.set_title("Couloir d'entrée dans le dernier 1/3", color="#C8D8E8", fontsize=9.5)
-        fig_e.tight_layout()
+        fig_e = build_entree_tiers_figure(report["entree_tiers"])
         st.pyplot(fig_e, use_container_width=True)
         plt.close(fig_e)
 
@@ -6076,52 +6126,174 @@ def render_collective_report(report: dict):
     )
 
     _zg1, _zg2 = st.columns(2)
-
-    def _plot_zone_heatmap(grid, rows_lbl, cols_lbl, title, cmap_name):
-        """Superpose la grille de zones (% ) sous forme de heatmap sur un terrain vertical.
-        rows_lbl = profondeur (Def→Off, bas→haut), cols_lbl = largeur (G→D, gauche→droite)."""
-        import matplotlib.cm as cm
-        import matplotlib.colors as mcolors
-
-        fig, ax = plt.subplots(figsize=(4, 5.6), dpi=90)
-        fig.patch.set_facecolor("#08090D")
-        _draw_pitch(ax)
-
-        arr = np.array(grid)
-        n_rows, n_cols = arr.shape
-        vmax = max(arr.max(), 1)
-        cmap = cm.get_cmap(cmap_name)
-        norm = mcolors.Normalize(vmin=0, vmax=vmax)
-
-        cell_h = 100 / n_rows
-        cell_w = 68 / n_cols
-
-        for i, r_lbl in enumerate(rows_lbl):
-            y0 = i * cell_h
-            for j, c_lbl in enumerate(cols_lbl):
-                x0 = j * cell_w
-                val = arr[i, j]
-                color = cmap(norm(val))
-                ax.add_patch(plt.Rectangle((x0, y0), cell_w, cell_h,
-                                            facecolor=color, alpha=0.75, edgecolor="#08090D", linewidth=1.5))
-                txt_color = "#08090D" if val > vmax * 0.55 else "#FFFFFF"
-                ax.text(x0 + cell_w / 2, y0 + cell_h / 2, f"{val:.1f}%",
-                        ha="center", va="center", color=txt_color, fontsize=9.5, fontweight="bold")
-
-        ax.set_title(title, color="#C8D8E8", fontsize=11)
-        fig.tight_layout()
-        return fig
-
     with _zg1:
-        fig_r = _plot_zone_heatmap(report["grid_recup"], report["zone_rows"], report["zone_cols"],
-                                    "Récupération (%)", "Blues")
+        fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
+                                           "Récupération (%)", "Blues")
         st.pyplot(fig_r, use_container_width=True)
         plt.close(fig_r)
     with _zg2:
-        fig_p = _plot_zone_heatmap(report["grid_perte"], report["zone_rows"], report["zone_cols"],
-                                    "Perte (%)", "Reds")
+        fig_p = build_zone_heatmap_figure(report["grid_perte"], report["zone_rows"], report["zone_cols"],
+                                           "Perte (%)", "Reds")
         st.pyplot(fig_p, use_container_width=True)
         plt.close(fig_p)
+
+
+def build_collective_report_html(report: dict) -> str:
+    """Génère le rapport collectif en HTML imprimable, prévu pour tenir sur UNE page A4 PAYSAGE.
+    Réutilise les mêmes visuels (terrain à flèches, heatmaps) que la vue Streamlit, via fig_to_b64."""
+    if not report:
+        return "<html><body style='background:#08090D;color:#fff;'>Données insuffisantes.</body></html>"
+
+    pfc_name, adv_name = report["pfc_name"], report["adv_name"]
+    s_pfc, s_adv = report["stats"][pfc_name], report["stats"][adv_name]
+    CYAN, CORAIL = "#00A3E0", "#FF6B6B"
+
+    fig_e = build_entree_tiers_figure(report["entree_tiers"], figsize=(2.9, 6.6), dpi=110)
+    b64_entree = fig_to_b64(fig_e); plt.close(fig_e)
+    fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
+                                       "Récupération (%)", "Blues", figsize=(3.1, 6.6), dpi=110)
+    b64_recup = fig_to_b64(fig_r); plt.close(fig_r)
+    fig_p = build_zone_heatmap_figure(report["grid_perte"], report["zone_rows"], report["zone_cols"],
+                                       "Perte (%)", "Reds", figsize=(3.1, 6.6), dpi=110)
+    b64_perte = fig_to_b64(fig_p); plt.close(fig_p)
+
+    def _mirror_row_html(label, v1, v2, unit="", is_pct=False):
+        try:
+            f1 = float(v1) if v1 not in (None, "—") else 0.0
+            f2 = float(v2) if v2 not in (None, "—") else 0.0
+        except (TypeError, ValueError):
+            f1, f2 = 0.0, 0.0
+        m = max(f1, f2, 0.0001)
+        p1, p2 = min(f1 / m * 100, 100), min(f2 / m * 100, 100)
+        d1, d2 = v1 if v1 is not None else "—", v2 if v2 is not None else "—"
+        if is_pct:
+            d1 = f"{d1} %" if d1 != "—" else "—"; d2 = f"{d2} %" if d2 != "—" else "—"
+        elif unit:
+            d1 = f"{d1} {unit}" if d1 != "—" else "—"; d2 = f"{d2} {unit}" if d2 != "—" else "—"
+        return f"""
+        <div style="margin-bottom:9px;">
+          <div style="text-align:center;font-size:9.5px;color:#6A8090;text-transform:uppercase;letter-spacing:.05em;">{label}</div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <div style="width:40px;text-align:right;font-weight:700;color:{CYAN};font-size:12px;">{d1}</div>
+            <div style="flex:1;display:flex;justify-content:flex-end;">
+              <div style="height:8px;width:{p1}%;background:{CYAN};border-radius:3px 0 0 3px;"></div>
+            </div>
+            <div style="width:1px;height:14px;background:rgba(255,255,255,0.15);"></div>
+            <div style="flex:1;display:flex;justify-content:flex-start;">
+              <div style="height:8px;width:{p2}%;background:{CORAIL};border-radius:0 3px 3px 0;"></div>
+            </div>
+            <div style="width:40px;text-align:left;font-weight:700;color:{CORAIL};font-size:12px;">{d2}</div>
+          </div>
+        </div>"""
+
+    rows_html = "".join([
+        _mirror_row_html("% Possession", report["poss_total"][pfc_name], report["poss_total"][adv_name], is_pct=True),
+        _mirror_row_html("% Poss. MT1", report["poss_mt1"][pfc_name], report["poss_mt1"][adv_name], is_pct=True),
+        _mirror_row_html("% Poss. MT2", report["poss_mt2"][pfc_name], report["poss_mt2"][adv_name], is_pct=True),
+        _mirror_row_html("Possessions", s_pfc["possessions"], s_adv["possessions"]),
+        _mirror_row_html("Durée moy. poss.", round(s_pfc["duree_moyenne"], 1), round(s_adv["duree_moyenne"], 1), unit="s"),
+        _mirror_row_html("Tirs", s_pfc["tirs"], s_adv["tirs"]),
+        _mirror_row_html("Tirs cadrés", s_pfc["tirs_cadres"], s_adv["tirs_cadres"]),
+        _mirror_row_html("% tirs cadrés", s_pfc["pct_tirs_cadres"], s_adv["pct_tirs_cadres"], is_pct=True),
+        _mirror_row_html("Tirs non cadrés", s_pfc["tirs_non_cadres"], s_adv["tirs_non_cadres"]),
+        _mirror_row_html("Buts", s_pfc["buts"], s_adv["buts"]),
+        _mirror_row_html("Fautes", s_pfc["fautes"], s_adv["fautes"]),
+        _mirror_row_html("Hors-jeu", s_pfc["hors_jeu"], s_adv["hors_jeu"]),
+        _mirror_row_html("Pertes de balle", s_pfc["pertes"], s_adv["pertes"]),
+        _mirror_row_html("% pertes de balle", s_pfc["pct_pertes"], s_adv["pct_pertes"], is_pct=True),
+        _mirror_row_html("Entrées dernier 1/3", s_pfc["entrees_1_3"], s_adv["entrees_1_3"]),
+        _mirror_row_html("Poss. / entrée 1/3", s_pfc["poss_par_entree"], s_adv["poss_par_entree"]),
+        _mirror_row_html("Entrées 1/3 / tir", s_pfc["entrees_par_tir"], s_adv["entrees_par_tir"]),
+    ])
+
+    def _fill_bar_html(label, val, color):
+        pct = max(0.0, min(float(val), 100.0))
+        return f"""
+        <div style="margin-bottom:11px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+            <span style="font-size:11px;color:#C8D8E8;">{label}</span>
+            <span style="font-size:11px;font-weight:700;color:{color};">{val} %</span>
+          </div>
+          <div style="height:7px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;">
+            <div style="height:100%;width:{pct}%;background:{color};border-radius:3px;"></div>
+          </div>
+        </div>"""
+
+    animation_html = "".join(_fill_bar_html(l, v, CYAN) for l, v in report["animation"].items())
+    circulation_html = "".join(_fill_bar_html(l, v, "#7B84FF") for l, v in report["circulation"].items())
+
+    return f"""<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8"/>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=Inter:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box;}}
+body{{background:#050B12;-webkit-print-color-adjust:exact;print-color-adjust:exact;font-family:Inter,sans-serif;}}
+.page{{width:297mm;height:210mm;background:#08090D;padding:8mm 10mm;display:flex;flex-direction:column;}}
+@media print{{ body{{background:#050B12 !important;}} @page{{size:A4 landscape;margin:0;}} }}
+.section-title{{font-family:Oswald,sans-serif;font-size:12px;font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;color:#fff;display:flex;align-items:center;gap:6px;margin-bottom:6px;}}
+.section-title .line{{flex:1;height:1px;background:rgba(0,163,224,0.25);margin-left:6px;}}
+</style></head>
+<body><div class="page">
+
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;border-bottom:2px solid {CYAN};padding-bottom:6px;">
+    <div style="font-family:Oswald,sans-serif;font-size:20px;font-weight:700;color:#fff;text-transform:uppercase;">{pfc_name} vs {adv_name}</div>
+    <div style="font-family:Oswald,sans-serif;font-size:14px;color:#6A8090;text-transform:uppercase;letter-spacing:.08em;">Rapport collectif</div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:0.95fr 0.75fr 1.6fr;gap:18px;flex:1;min-height:0;align-items:stretch;">
+
+    <!-- Colonne 1 : temps de jeu + stats comparées -->
+    <div style="display:flex;flex-direction:column;">
+      <div class="section-title">⏱ Temps de jeu<div class="line"></div></div>
+      <div style="display:flex;gap:8px;margin-bottom:16px;">
+        <div style="flex:1;background:#0C1220;border-top:2px solid {CYAN};border-radius:4px;padding:9px 10px;">
+          <div style="font-size:9px;color:#6A8090;text-transform:uppercase;">Total</div>
+          <div style="font-family:Oswald,sans-serif;font-size:19px;font-weight:700;color:#fff;">{_fmt_secs_to_mmss(report['temps_total'])}</div>
+        </div>
+        <div style="flex:1;background:#0C1220;border-top:2px solid {CYAN};border-radius:4px;padding:9px 10px;">
+          <div style="font-size:9px;color:#6A8090;text-transform:uppercase;">MT1</div>
+          <div style="font-family:Oswald,sans-serif;font-size:19px;font-weight:700;color:#fff;">{_fmt_secs_to_mmss(report['temps_mt1'])}</div>
+        </div>
+        <div style="flex:1;background:#0C1220;border-top:2px solid {CYAN};border-radius:4px;padding:9px 10px;">
+          <div style="font-size:9px;color:#6A8090;text-transform:uppercase;">MT2</div>
+          <div style="font-family:Oswald,sans-serif;font-size:19px;font-weight:700;color:#fff;">{_fmt_secs_to_mmss(report['temps_mt2'])}</div>
+        </div>
+      </div>
+
+      <div class="section-title">📊 Statistiques comparées<div class="line"></div></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+        <span style="font-family:Oswald,sans-serif;font-weight:700;color:{CYAN};font-size:12px;text-transform:uppercase;">{pfc_name}</span>
+        <span style="font-family:Oswald,sans-serif;font-weight:700;color:{CORAIL};font-size:12px;text-transform:uppercase;">{adv_name}</span>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between;">
+        {rows_html}
+      </div>
+    </div>
+
+    <!-- Colonne 2 : répartitions -->
+    <div style="display:flex;flex-direction:column;">
+      <div class="section-title">🎯 Répartitions {pfc_name}<div class="line"></div></div>
+      <div style="font-size:11.5px;font-weight:600;color:#C8D8E8;margin-bottom:6px;">Type d'animation offensive</div>
+      {animation_html}
+      <div style="font-size:11.5px;font-weight:600;color:#C8D8E8;margin:14px 0 6px;">Élimination des lignes adverses</div>
+      {circulation_html}
+    </div>
+
+    <!-- Colonne 3 : terrain flèches + heatmaps -->
+    <div style="display:flex;gap:8px;align-items:stretch;justify-content:space-evenly;min-width:0;">
+      <img src="{b64_entree}" style="height:100%;width:auto;max-width:33%;object-fit:contain;"/>
+      <img src="{b64_recup}" style="height:100%;width:auto;max-width:33%;object-fit:contain;"/>
+      <img src="{b64_perte}" style="height:100%;width:auto;max-width:33%;object-fit:contain;"/>
+    </div>
+
+  </div>
+
+  <div style="border-top:1px solid #1E2D40;margin-top:6px;padding-top:4px;font-size:8px;color:#3A4A5A;text-align:right;">
+    Paris FC — Centre de Formation Féminin · Rapport collectif
+  </div>
+
+</div></body></html>"""
 
 
 def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
