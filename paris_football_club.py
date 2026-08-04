@@ -5081,15 +5081,13 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
         # Ligne 2 : bornes de dates
         col_d1, col_d2, col_d3 = st.columns([1, 1, 1])
 
-        # Initialiser ou recadrer les dates dans session_state
-        _ss_debut = st.session_state.get("eval_date_debut", _min_date)
-        _ss_fin   = st.session_state.get("eval_date_fin",   _max_date)
-        if _ss_debut < _min_date or _ss_debut > _max_date:
-            _ss_debut = _min_date
-        if _ss_fin < _min_date or _ss_fin > _max_date:
-            _ss_fin = _max_date
-        st.session_state["eval_date_debut"] = _ss_debut
-        st.session_state["eval_date_fin"]   = _ss_fin
+        # Initialiser les dates dans session_state (une seule fois, sans conflit avec les widgets)
+        st.session_state.setdefault("eval_date_debut", _min_date)
+        st.session_state.setdefault("eval_date_fin", _max_date)
+        if st.session_state["eval_date_debut"] < _min_date or st.session_state["eval_date_debut"] > _max_date:
+            st.session_state["eval_date_debut"] = _min_date
+        if st.session_state["eval_date_fin"] < _min_date or st.session_state["eval_date_fin"] > _max_date:
+            st.session_state["eval_date_fin"] = _max_date
 
         with col_d3:
             st.markdown("&nbsp;", unsafe_allow_html=True)
@@ -5101,14 +5099,12 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
         with col_d1:
             date_debut = st.date_input(
                 "Date début",
-                value=st.session_state["eval_date_debut"],
                 min_value=_min_date, max_value=_max_date,
                 key="eval_date_debut"
             )
         with col_d2:
             date_fin = st.date_input(
                 "Date fin",
-                value=st.session_state["eval_date_fin"],
                 min_value=_min_date, max_value=_max_date,
                 key="eval_date_fin"
             )
