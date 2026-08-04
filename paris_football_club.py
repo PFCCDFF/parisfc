@@ -6010,7 +6010,22 @@ def render_collective_report(report: dict):
           </div>
         </div>""", unsafe_allow_html=True)
 
-    _rc1, _rc2, _rc3 = st.columns(3)
+    def _draw_pitch(ax):
+        """Dessine un terrain vertical simplifié (attaque vers le haut) sur l'axe donné."""
+        ax.set_facecolor("#08090D")
+        ax.set_xlim(0, 68); ax.set_ylim(0, 100)
+        line_c = "#1E2D40"
+        ax.add_patch(plt.Rectangle((0, 0), 68, 100, fill=False, edgecolor=line_c, linewidth=1.2))
+        ax.axhline(50, color=line_c, linewidth=1)
+        ax.add_patch(plt.Circle((34, 50), 9, fill=False, edgecolor=line_c, linewidth=1))
+        # surfaces de réparation (bas = notre camp, haut = camp adverse)
+        ax.add_patch(plt.Rectangle((14, 0), 40, 16, fill=False, edgecolor=line_c, linewidth=1))
+        ax.add_patch(plt.Rectangle((14, 84), 40, 16, fill=False, edgecolor=line_c, linewidth=1))
+        ax.set_xticks([]); ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+    _rc1, _rc2, _rc3 = st.columns([1, 1, 1])
     with _rc1:
         st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Type d'animation offensive</div>", unsafe_allow_html=True)
         for lbl, val in report["animation"].items():
@@ -6021,46 +6036,90 @@ def render_collective_report(report: dict):
             _fill_bar(lbl, val, "#7B84FF")
     with _rc3:
         st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Entrée dernier 1/3 (couloir)</div>", unsafe_allow_html=True)
-        for lbl, val in report["entree_tiers"].items():
-            _fill_bar(lbl, val, "#FFA06E")
 
-    # ── Zones de récupération / perte du ballon ─────────────────────────
+        _et = report["entree_tiers"]
+        _pg = _et.get("Couloir Gauche", 0.0)
+        _pc = _et.get("Couloir Central", 0.0)
+        _pd = _et.get("Couloir Droit", 0.0)
+        _pmax = max(_pg, _pc, _pd, 0.0001)
+
+        fig_e, ax_e = plt.subplots(figsize=(3.4, 4.4), dpi=90)
+        fig_e.patch.set_facecolor("#08090D")
+        _draw_pitch(ax_e)
+
+        _arrows = [
+            (12, _pg, "#FFA06E"),
+            (34, _pc, "#FFA06E"),
+            (56, _pd, "#FFA06E"),
+        ]
+        for x, pct, color in _arrows:
+            lw = 1.5 + (pct / _pmax) * 7.5
+            alpha = 0.35 + (pct / _pmax) * 0.65
+            ax_e.annotate(
+                "", xy=(x, 96), xytext=(x, 55),
+                arrowprops=dict(arrowstyle="-|>", color=color, lw=lw, alpha=alpha,
+                                mutation_scale=18 + (pct / _pmax) * 12),
+            )
+            ax_e.text(x, 50, f"{pct:.1f} %", ha="center", va="top",
+                      color=color, fontsize=10, fontweight="bold")
+
+        ax_e.set_title("Couloir d'entrée dans le dernier 1/3", color="#C8D8E8", fontsize=9.5)
+        fig_e.tight_layout()
+        st.pyplot(fig_e, use_container_width=True)
+        plt.close(fig_e)
+
+    # ── Zones de récupération / perte du ballon — heatmaps sur terrain ──
     _section_title("🗺️", f"Zones de récupération / perte du ballon — {pfc_name}")
     st.caption(
         "Zones calculées à partir de la Zone de départ d'action, croisée avec le Lancement de possession "
-        "(récupération) et l'Issue d'action (perte). Grille : lignes = profondeur (Défense / Milieu défensif / "
-        "Milieu offensif / Attaque), colonnes = largeur (Gauche / Centre / Droite)."
+        "(récupération) et l'Issue d'action (perte). Le terrain est orienté attaque vers le haut."
     )
 
     _zg1, _zg2 = st.columns(2)
 
-    def _plot_zone_grid(grid, rows_lbl, cols_lbl, title, cmap_color):
-        fig, ax = plt.subplots(figsize=(4, 4), dpi=90)
+    def _plot_zone_heatmap(grid, rows_lbl, cols_lbl, title, cmap_name):
+        """Superpose la grille de zones (% ) sous forme de heatmap sur un terrain vertical.
+        rows_lbl = profondeur (Def→Off, bas→haut), cols_lbl = largeur (G→D, gauche→droite)."""
+        import matplotlib.cm as cm
+        import matplotlib.colors as mcolors
+
+        fig, ax = plt.subplots(figsize=(4, 5.6), dpi=90)
         fig.patch.set_facecolor("#08090D")
-        ax.set_facecolor("#08090D")
+        _draw_pitch(ax)
+
         arr = np.array(grid)
-        im = ax.imshow(arr, cmap=cmap_color, vmin=0, vmax=max(arr.max(), 1))
-        ax.set_xticks(range(len(cols_lbl))); ax.set_xticklabels(cols_lbl, color="#C8D8E8", fontsize=9)
-        ax.set_yticks(range(len(rows_lbl))); ax.set_yticklabels(rows_lbl, color="#C8D8E8", fontsize=9)
-        for i in range(arr.shape[0]):
-            for j in range(arr.shape[1]):
-                ax.text(j, i, f"{arr[i,j]:.1f}", ha="center", va="center",
-                        color="#08090D" if arr[i, j] > arr.max() * 0.5 else "#C8D8E8",
-                        fontsize=10, fontweight="bold")
-        ax.set_title(title, color="#C8D8E8", fontsize=11, fontfamily="sans-serif")
-        for spine in ax.spines.values():
-            spine.set_visible(False)
+        n_rows, n_cols = arr.shape
+        vmax = max(arr.max(), 1)
+        cmap = cm.get_cmap(cmap_name)
+        norm = mcolors.Normalize(vmin=0, vmax=vmax)
+
+        cell_h = 100 / n_rows
+        cell_w = 68 / n_cols
+
+        for i, r_lbl in enumerate(rows_lbl):
+            y0 = i * cell_h
+            for j, c_lbl in enumerate(cols_lbl):
+                x0 = j * cell_w
+                val = arr[i, j]
+                color = cmap(norm(val))
+                ax.add_patch(plt.Rectangle((x0, y0), cell_w, cell_h,
+                                            facecolor=color, alpha=0.75, edgecolor="#08090D", linewidth=1.5))
+                txt_color = "#08090D" if val > vmax * 0.55 else "#FFFFFF"
+                ax.text(x0 + cell_w / 2, y0 + cell_h / 2, f"{val:.1f}%",
+                        ha="center", va="center", color=txt_color, fontsize=9.5, fontweight="bold")
+
+        ax.set_title(title, color="#C8D8E8", fontsize=11)
         fig.tight_layout()
         return fig
 
     with _zg1:
-        fig_r = _plot_zone_grid(report["grid_recup"], report["zone_rows"], report["zone_cols"],
-                                 "Récupération (%)", "Blues")
+        fig_r = _plot_zone_heatmap(report["grid_recup"], report["zone_rows"], report["zone_cols"],
+                                    "Récupération (%)", "Blues")
         st.pyplot(fig_r, use_container_width=True)
         plt.close(fig_r)
     with _zg2:
-        fig_p = _plot_zone_grid(report["grid_perte"], report["zone_rows"], report["zone_cols"],
-                                 "Perte (%)", "Reds")
+        fig_p = _plot_zone_heatmap(report["grid_perte"], report["zone_rows"], report["zone_cols"],
+                                    "Perte (%)", "Reds")
         st.pyplot(fig_p, use_container_width=True)
         plt.close(fig_p)
 
