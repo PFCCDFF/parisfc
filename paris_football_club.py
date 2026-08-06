@@ -5996,7 +5996,7 @@ def build_zone_heatmap_figure(grid, rows_lbl, cols_lbl, title, cmap_name, figsiz
     return fig
 
 
-def render_collective_report(report: dict):
+def render_collective_report(report: dict, gps_stats: dict = None):
     """Affiche le rapport collectif — logos, cartes, barres comparatives miroir (2 colonnes)
     et barres de répartition, cohérent avec la charte graphique Paris FC."""
     if not report:
@@ -6043,7 +6043,7 @@ def render_collective_report(report: dict):
     # ── Bouton d'export PDF (A4 paysage) ─────────────────────────────────
     try:
         import streamlit.components.v1 as _comp_coll
-        _html_export = build_collective_report_html(report)
+        _html_export = build_collective_report_html(report, gps_stats=gps_stats)
         _print_js = (
             '<script>function prColl(){var w=window.open("","_blank","width=1200,height=850");'
             'w.document.write(`' + _html_export.replace("`", "\\`") + '`);'
@@ -6176,6 +6176,28 @@ def render_collective_report(report: dict):
         st.pyplot(fig_e, use_container_width=True)
         plt.close(fig_e)
 
+    # ── GPS Collectif — agrégat de toutes les joueuses trackées sur le match ──
+    if gps_stats:
+        _section_title("🏃", "GPS Collectif")
+        _g1, _g2, _g3, _g4 = st.columns(4)
+        _g1.metric("Joueuses trackées", gps_stats.get("n_joueuses") or "—")
+        _dt = gps_stats.get("distance_totale")
+        _g2.metric("Distance totale équipe", f"{_dt:,.0f} m".replace(",", " ") if _dt is not None else "—")
+        _dm = gps_stats.get("distance_moyenne")
+        _g3.metric("Distance moy. / joueuse", f"{_dm:,.0f} m".replace(",", " ") if _dm is not None else "—")
+        _vm = gps_stats.get("vmax_equipe")
+        _g4.metric("Vitesse max équipe", f"{_vm:.1f} km/h" if _vm is not None else "—")
+
+        _g5, _g6, _g7, _g8 = st.columns(4)
+        _h13 = gps_stats.get("hid13_totale")
+        _g5.metric("HID >13 km/h (total)", f"{_h13:,.0f} m".replace(",", " ") if _h13 is not None else "—")
+        _h19 = gps_stats.get("hid19_totale")
+        _g6.metric("HID >19 km/h (total)", f"{_h19:,.0f} m".replace(",", " ") if _h19 is not None else "—")
+        _s23 = gps_stats.get("sprints23_totaux")
+        _g7.metric("Sprints >23 (total)", f"{_s23:,.0f}".replace(",", " ") if _s23 is not None else "—")
+        _ad = gps_stats.get("accdec_totaux")
+        _g8.metric("Acc/Déc (total)", f"{_ad:,.0f}".replace(",", " ") if _ad is not None else "—")
+
     # ── Zones de récupération / perte du ballon — heatmaps sur terrain ──
     _section_title("🗺️", f"Zones de récupération / perte du ballon — {pfc_name}")
     st.caption(
@@ -6196,7 +6218,7 @@ def render_collective_report(report: dict):
         plt.close(fig_p)
 
 
-def build_collective_report_html(report: dict) -> str:
+def build_collective_report_html(report: dict, gps_stats: dict = None) -> str:
     """Génère le rapport collectif en HTML imprimable, prévu pour tenir sur UNE page A4 PAYSAGE.
     Réutilise les mêmes visuels (terrain à flèches, heatmaps lissées) que la vue Streamlit."""
     if not report:
@@ -6283,6 +6305,38 @@ def build_collective_report_html(report: dict) -> str:
     animation_html = "".join(_fill_bar_html(l, v, CYAN) for l, v in report["animation"].items())
     circulation_html = "".join(_fill_bar_html(l, v, "#7B84FF") for l, v in report["circulation"].items())
 
+    def _gps_card_html(label, val):
+        return f"""
+        <div style="flex:1;background:#0C1220;border-top:2px solid #7FD3A8;border-radius:4px;padding:6px 8px;min-width:0;">
+          <div style="font-size:7.5px;color:#6A8090;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{label}</div>
+          <div style="font-family:Oswald,sans-serif;font-size:13px;font-weight:700;color:#fff;">{val}</div>
+        </div>"""
+
+    gps_html = ""
+    if gps_stats:
+        _dt = gps_stats.get("distance_totale"); _dm = gps_stats.get("distance_moyenne")
+        _vm = gps_stats.get("vmax_equipe"); _h13 = gps_stats.get("hid13_totale")
+        _h19 = gps_stats.get("hid19_totale"); _s23 = gps_stats.get("sprints23_totaux")
+        _ad = gps_stats.get("accdec_totaux"); _nj = gps_stats.get("n_joueuses")
+        gps_html = f"""
+        <div class="section-title">🏃 GPS Collectif<div class="line"></div></div>
+        <div style="display:flex;gap:6px;margin-bottom:6px;">
+          {_gps_card_html("Joueuses trackées", _nj if _nj is not None else "—")}
+          {_gps_card_html("Distance totale", f"{_dt:,.0f} m".replace(",", " ") if _dt is not None else "—")}
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:6px;">
+          {_gps_card_html("Dist. moy./joueuse", f"{_dm:,.0f} m".replace(",", " ") if _dm is not None else "—")}
+          {_gps_card_html("Vitesse max équipe", f"{_vm:.1f} km/h" if _vm is not None else "—")}
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:6px;">
+          {_gps_card_html("HID >13 (total)", f"{_h13:,.0f} m".replace(",", " ") if _h13 is not None else "—")}
+          {_gps_card_html("HID >19 (total)", f"{_h19:,.0f} m".replace(",", " ") if _h19 is not None else "—")}
+        </div>
+        <div style="display:flex;gap:6px;">
+          {_gps_card_html("Sprints >23 (total)", f"{_s23:,.0f}".replace(",", " ") if _s23 is not None else "—")}
+          {_gps_card_html("Acc/Déc (total)", f"{_ad:,.0f}".replace(",", " ") if _ad is not None else "—")}
+        </div>"""
+
     return f"""<!DOCTYPE html>
 <html lang="fr"><head><meta charset="UTF-8"/>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=Inter:wght@400;500&display=swap" rel="stylesheet"/>
@@ -6319,7 +6373,7 @@ html,body{{background:#050B12;-webkit-print-color-adjust:exact;print-color-adjus
         {rows_html}
       </td>
 
-      <!-- Colonne 2 : temps de jeu + répartitions -->
+      <!-- Colonne 2 : temps de jeu + répartitions + GPS collectif -->
       <td style="width:27%;vertical-align:top;padding-right:14px;">
         <div class="section-title">⏱ Temps de jeu<div class="line"></div></div>
         <div style="display:flex;gap:6px;margin-bottom:14px;">
@@ -6342,6 +6396,8 @@ html,body{{background:#050B12;-webkit-print-color-adjust:exact;print-color-adjus
         {animation_html}
         <div style="font-size:10.5px;font-weight:600;color:#C8D8E8;margin:10px 0 5px;">Élimination des lignes adverses</div>
         {circulation_html}
+
+        {gps_html}
       </td>
 
       <!-- Colonne 3 : couloir d'entrée + heatmaps récup/perte -->
@@ -6364,6 +6420,77 @@ html,body{{background:#050B12;-webkit-print-color-adjust:exact;print-color-adjus
 
 </div>
 </body></html>"""
+
+
+def compute_collective_gps_stats(gps_match_df, match_date=None, adversaire=None, journee=None):
+    """Agrège les données GPS de TOUTES les joueuses PFC pour un match donné (vue collective).
+    Retourne un dict de stats d'équipe, ou {} si aucune donnée GPS ne correspond au match."""
+    if gps_match_df is None or getattr(gps_match_df, "empty", True):
+        return {}
+
+    df = ensure_date_column(gps_match_df.copy())
+    if "NOM" in df.columns:
+        df = df[df["NOM"].notna() & (df["NOM"].astype(str).str.strip() != "")
+                & (df["NOM"].astype(str).str.strip().str.lower() != "nan")]
+
+    df_work = pd.DataFrame()
+    md = pd.Timestamp(match_date).normalize() if match_date is not None and pd.notna(match_date) else None
+
+    if md is not None and "DATE" in df.columns:
+        exact = df[df["DATE"].dt.normalize() == md]
+        if not exact.empty:
+            df_work = exact
+        else:
+            pm1 = df[(df["DATE"].dt.normalize() >= md - pd.Timedelta(days=1)) &
+                     (df["DATE"].dt.normalize() <= md + pd.Timedelta(days=1))]
+            if not pm1.empty:
+                df_work = pm1
+
+    if df_work.empty and (adversaire or journee):
+        mask = pd.Series(True, index=df.index)
+        if journee and "__journee" in df.columns:
+            _j = re.sub(r"[^0-9]", "", str(journee)).zfill(2)
+            mask &= df["__journee"].astype(str).apply(lambda x: re.sub(r"[^0-9]", "", str(x)).zfill(2) == _j)
+        if adversaire and "__adversaire" in df.columns:
+            _adv_norm = normalize_str(adversaire)
+            mask &= df["__adversaire"].astype(str).apply(
+                lambda a: _adv_norm in normalize_str(a) or normalize_str(a) in _adv_norm)
+        cand = df[mask]
+        if not cand.empty:
+            df_work = cand
+
+    if df_work.empty:
+        return {}
+
+    if "Player" in df_work.columns and "Distance (m)" in df_work.columns:
+        df_work = (df_work.sort_values("Distance (m)", ascending=False)
+                          .drop_duplicates(subset=["Player"], keep="first"))
+
+    def _sum(col):
+        return float(pd.to_numeric(df_work[col], errors="coerce").sum()) if col in df_work.columns else None
+
+    def _mean(col):
+        v = pd.to_numeric(df_work[col], errors="coerce").mean() if col in df_work.columns else None
+        return float(v) if v is not None and pd.notna(v) else None
+
+    def _max(col):
+        v = pd.to_numeric(df_work[col], errors="coerce").max() if col in df_work.columns else None
+        return float(v) if v is not None and pd.notna(v) else None
+
+    n_joueuses = int(df_work["Player"].nunique()) if "Player" in df_work.columns else len(df_work)
+
+    return {
+        "n_joueuses": n_joueuses,
+        "distance_totale": _sum("Distance (m)"),
+        "distance_moyenne": _mean("Distance (m)"),
+        "hid13_totale": _sum("Distance HID (>13 km/h)"),
+        "hid19_totale": _sum("Distance HID (>19 km/h)"),
+        "sprints23_totaux": _sum("Sprints_23"),
+        "sprints25_totaux": _sum("Sprints_25"),
+        "vmax_equipe": _max("Vitesse max (km/h)"),
+        "accdec_totaux": _sum("#accel/decel"),
+        "temps_jeu_moyen": _mean("Durée_min"),
+    }
 
 
 def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
@@ -9858,7 +9985,13 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                     st.divider()
                     _collectif_report = compute_collective_report(_dft_c)
-                    render_collective_report(_collectif_report)
+                    _collectif_gps_stats = compute_collective_gps_stats(
+                        _gps_match_df,
+                        match_date=_sr_c["tac_obj"].get("date"),
+                        adversaire=_sr_c.get("adversaire"),
+                        journee=_sr_c.get("journee"),
+                    )
+                    render_collective_report(_collectif_report, gps_stats=_collectif_gps_stats)
 
         with _mat_individuel:
             if _df_player.empty:
