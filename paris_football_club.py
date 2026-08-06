@@ -6177,8 +6177,13 @@ def render_collective_report(report: dict, gps_stats: dict = None):
         plt.close(fig_e)
 
     # ── GPS Collectif — agrégat de toutes les joueuses trackées sur le match ──
-    if gps_stats:
-        _section_title("🏃", "GPS Collectif")
+    _section_title("🏃", "GPS Collectif")
+    if not gps_stats:
+        st.caption(
+            "⚠️ Aucune donnée GPS trouvée pour ce match (aucune correspondance de date/adversaire/journée "
+            "entre le fichier tactique et les fichiers GPS match chargés)."
+        )
+    else:
         _g1, _g2, _g3, _g4 = st.columns(4)
         _g1.metric("Joueuses trackées", gps_stats.get("n_joueuses") or "—")
         _dt = gps_stats.get("distance_totale")
