@@ -6502,9 +6502,16 @@ def compute_collective_gps_stats(gps_match_df, match_date=None, adversaire=None,
         debug["reason"] = "aucune ligne GPS ne correspond aux critères ci-dessus"
         return {"_debug": debug}
 
-    if "Player" in df_work.columns and "Distance (m)" in df_work.columns:
-        df_work = (df_work.sort_values("Distance (m)", ascending=False)
-                          .drop_duplicates(subset=["Player"], keep="first"))
+    # Dédoublonnage robuste : basé sur le NOM brut normalisé (pas sur "Player" canonique,
+    # qui peut différer légèrement entre deux exports du même fichier et faire échouer
+    # un dédoublonnage naïf sur "Player" — cause de doublons de joueuses observée).
+    if "Distance (m)" in df_work.columns:
+        _name_col = "NOM" if "NOM" in df_work.columns else ("Player" if "Player" in df_work.columns else None)
+        if _name_col is not None:
+            df_work = df_work.copy()
+            df_work["_dedup_key"] = df_work[_name_col].astype(str).apply(normalize_name_raw)
+            df_work = (df_work.sort_values("Distance (m)", ascending=False)
+                              .drop_duplicates(subset=["_dedup_key"], keep="first"))
 
     def _sum(col):
         return float(pd.to_numeric(df_work[col], errors="coerce").sum()) if col in df_work.columns else None
@@ -6517,7 +6524,8 @@ def compute_collective_gps_stats(gps_match_df, match_date=None, adversaire=None,
         v = pd.to_numeric(df_work[col], errors="coerce").max() if col in df_work.columns else None
         return float(v) if v is not None and pd.notna(v) else None
 
-    n_joueuses = int(df_work["Player"].nunique()) if "Player" in df_work.columns else len(df_work)
+    n_joueuses = int(df_work["_dedup_key"].nunique()) if "_dedup_key" in df_work.columns else (
+        int(df_work["Player"].nunique()) if "Player" in df_work.columns else len(df_work))
 
     return {
         "n_joueuses": n_joueuses,
