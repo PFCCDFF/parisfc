@@ -6468,47 +6468,38 @@ def compute_collective_gps_stats(gps_match_df, match_date=None, adversaire=None,
     df_work = pd.DataFrame()
     md = pd.Timestamp(match_date).normalize() if match_date is not None and pd.notna(match_date) else None
 
+    # ── Correspondance STRICTE par date (Activity Date du GPS vs date du fichier tactique) ──
+    # C'est le critère prioritaire et le plus fiable : un adversaire peut apparaître deux fois
+    # dans la saison (match aller / retour), donc matcher sur l'adversaire seul mélangerait les deux.
     if md is not None and "DATE" in df.columns:
         exact = df[df["DATE"].dt.normalize() == md]
         if not exact.empty:
             df_work = exact
         else:
+            # Tolérance ±1 jour (décalage d'export), MAIS on exige en plus que l'adversaire
+            # corresponde si on l'a, pour ne jamais mélanger aller/retour même à ±1 jour.
             pm1 = df[(df["DATE"].dt.normalize() >= md - pd.Timedelta(days=1)) &
                      (df["DATE"].dt.normalize() <= md + pd.Timedelta(days=1))]
+            if adversaire and "__adversaire" in pm1.columns:
+                _adv_norm = normalize_str(adversaire)
+                pm1 = pm1[pm1["__adversaire"].astype(str).apply(
+                    lambda a: _adv_norm in normalize_str(a) or normalize_str(a) in _adv_norm)]
             if not pm1.empty:
                 df_work = pm1
 
-    if df_work.empty and (adversaire or journee):
+    # ── Fallback UNIQUEMENT si aucune date n'est disponible du tout ──
+    # Dans ce cas seulement : exiger adversaire ET journée ENSEMBLE (jamais l'un sans l'autre,
+    # sinon on remélange aller/retour puisqu'ils partagent le même adversaire).
+    if df_work.empty and md is None and adversaire and journee:
         mask = pd.Series(True, index=df.index)
-        if journee and "__journee" in df.columns:
+        if "__journee" in df.columns:
             _j = re.sub(r"[^0-9]", "", str(journee)).zfill(2)
             mask &= df["__journee"].astype(str).apply(lambda x: re.sub(r"[^0-9]", "", str(x)).zfill(2) == _j)
-        if adversaire and "__adversaire" in df.columns:
+        if "__adversaire" in df.columns:
             _adv_norm = normalize_str(adversaire)
             mask &= df["__adversaire"].astype(str).apply(
                 lambda a: _adv_norm in normalize_str(a) or normalize_str(a) in _adv_norm)
         cand = df[mask]
-        if not cand.empty:
-            df_work = cand
-
-    # Fallback supplémentaire : adversaire OU journée seul (sans exiger les deux),
-    # + recherche via __match_label (même logique que get_gps_match_summary_for_player)
-    if df_work.empty and adversaire and "__adversaire" in df.columns:
-        _adv_norm = normalize_str(adversaire)
-        cand = df[df["__adversaire"].astype(str).apply(
-            lambda a: _adv_norm in normalize_str(a) or normalize_str(a) in _adv_norm)]
-        if not cand.empty:
-            df_work = cand
-
-    if df_work.empty and journee and "__journee" in df.columns:
-        _j = re.sub(r"[^0-9]", "", str(journee)).zfill(2)
-        cand = df[df["__journee"].astype(str).apply(lambda x: re.sub(r"[^0-9]", "", str(x)).zfill(2) == _j)]
-        if not cand.empty:
-            df_work = cand
-
-    if df_work.empty and adversaire and "__match_label" in df.columns:
-        _adv_norm = normalize_str(adversaire)
-        cand = df[df["__match_label"].astype(str).apply(lambda lbl: _adv_norm in normalize_str(lbl))]
         if not cand.empty:
             df_work = cand
 
