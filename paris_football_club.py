@@ -5971,33 +5971,25 @@ def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 2.6), dpi=90):
 
 
 def build_zone_heatmap_figure(grid, rows_lbl, cols_lbl, title, cmap_name, figsize=(4, 5.6), dpi=90):
-    """Heatmap de zones (%) superposée à un terrain vertical (attaque vers le haut)."""
-    import matplotlib.cm as cm
-    import matplotlib.colors as mcolors
-
+    """Vraie carte de chaleur (dégradé lissé, sans grille de carrés) superposée à un terrain vertical."""
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     fig.patch.set_facecolor("#08090D")
-    _draw_collective_pitch(ax)
+    ax.set_facecolor("#08090D")
 
-    arr = np.array(grid)
-    n_rows, n_cols = arr.shape
+    arr = np.array(grid, dtype=float)
     vmax = max(arr.max(), 1)
-    cmap = cm.get_cmap(cmap_name)
-    norm = mcolors.Normalize(vmin=0, vmax=vmax)
-    cell_h = 100 / n_rows
-    cell_w = 68 / n_cols
 
-    for i in range(n_rows):
-        y0 = i * cell_h
-        for j in range(n_cols):
-            x0 = j * cell_w
-            val = arr[i, j]
-            color = cmap(norm(val))
-            ax.add_patch(plt.Rectangle((x0, y0), cell_w, cell_h,
-                                        facecolor=color, alpha=0.75, edgecolor="#08090D", linewidth=1.5))
-            txt_color = "#08090D" if val > vmax * 0.55 else "#FFFFFF"
-            ax.text(x0 + cell_w / 2, y0 + cell_h / 2, f"{val:.1f}%",
-                    ha="center", va="center", color=txt_color, fontsize=9.5, fontweight="bold")
+    # Dégradé lissé (interpolation native matplotlib, sans dépendance externe type scipy)
+    ax.imshow(
+        arr, extent=(0, 68, 0, 100), origin="lower", cmap=cmap_name,
+        vmin=0, vmax=vmax, interpolation="gaussian", alpha=0.9,
+        aspect="auto", zorder=1,
+    )
+
+    # Lignes de terrain PAR-DESSUS le dégradé (sinon elles seraient recouvertes)
+    _draw_collective_pitch(ax)
+    for artist in ax.patches + ax.lines:
+        artist.set_zorder(3)
 
     ax.set_title(title, color="#C8D8E8", fontsize=11)
     fig.tight_layout()
@@ -6206,7 +6198,7 @@ def render_collective_report(report: dict):
 
 def build_collective_report_html(report: dict) -> str:
     """Génère le rapport collectif en HTML imprimable, prévu pour tenir sur UNE page A4 PAYSAGE.
-    Réutilise les mêmes visuels (terrain à flèches, heatmaps) que la vue Streamlit, via fig_to_b64."""
+    Réutilise les mêmes visuels (terrain à flèches, heatmaps lissées) que la vue Streamlit."""
     if not report:
         return "<html><body style='background:#08090D;color:#fff;'>Données insuffisantes.</body></html>"
 
@@ -6214,17 +6206,17 @@ def build_collective_report_html(report: dict) -> str:
     s_pfc, s_adv = report["stats"][pfc_name], report["stats"][adv_name]
     CYAN, CORAIL = "#00A3E0", "#FF6B6B"
 
-    fig_e = build_entree_tiers_figure(report["entree_tiers"], figsize=(3.2, 3.6), dpi=110)
+    fig_e = build_entree_tiers_figure(report["entree_tiers"], figsize=(5.2, 3.1), dpi=115)
     b64_entree = fig_to_b64(fig_e); plt.close(fig_e)
     fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
-                                       "Récupération (%)", "Blues", figsize=(2.6, 4.6), dpi=110)
+                                       "Récupération (%)", "Blues", figsize=(2.7, 4.0), dpi=115)
     b64_recup = fig_to_b64(fig_r); plt.close(fig_r)
     fig_p = build_zone_heatmap_figure(report["grid_perte"], report["zone_rows"], report["zone_cols"],
-                                       "Perte (%)", "Reds", figsize=(2.6, 4.6), dpi=110)
+                                       "Perte (%)", "Reds", figsize=(2.7, 4.0), dpi=115)
     b64_perte = fig_to_b64(fig_p); plt.close(fig_p)
 
-    _pfc_logo_html = _team_logo_html(pfc_name, is_pfc=True, size=46)
-    _adv_logo_html = _team_logo_html(adv_name, size=46)
+    _pfc_logo_html = _team_logo_html(pfc_name, is_pfc=True, size=48)
+    _adv_logo_html = _team_logo_html(adv_name, size=48)
 
     def _mirror_row_html(label, v1, v2, unit="", is_pct=False):
         try:
@@ -6240,18 +6232,18 @@ def build_collective_report_html(report: dict) -> str:
         elif unit:
             d1 = f"{d1} {unit}" if d1 != "—" else "—"; d2 = f"{d2} {unit}" if d2 != "—" else "—"
         return f"""
-        <div style="margin-bottom:9px;">
-          <div style="text-align:center;font-size:9.5px;color:#6A8090;text-transform:uppercase;letter-spacing:.05em;">{label}</div>
-          <div style="display:flex;align-items:center;gap:6px;">
-            <div style="width:40px;text-align:right;font-weight:700;color:{CYAN};font-size:12px;">{d1}</div>
+        <div style="margin-bottom:6px;">
+          <div style="text-align:center;font-size:8.5px;color:#6A8090;text-transform:uppercase;letter-spacing:.05em;">{label}</div>
+          <div style="display:flex;align-items:center;gap:5px;">
+            <div style="width:38px;text-align:right;font-weight:700;color:{CYAN};font-size:11px;">{d1}</div>
             <div style="flex:1;display:flex;justify-content:flex-end;">
-              <div style="height:8px;width:{p1}%;background:{CYAN};border-radius:3px 0 0 3px;"></div>
+              <div style="height:6px;width:{p1}%;background:{CYAN};border-radius:3px 0 0 3px;"></div>
             </div>
-            <div style="width:1px;height:14px;background:rgba(255,255,255,0.15);"></div>
+            <div style="width:1px;height:12px;background:rgba(255,255,255,0.15);"></div>
             <div style="flex:1;display:flex;justify-content:flex-start;">
-              <div style="height:8px;width:{p2}%;background:{CORAIL};border-radius:0 3px 3px 0;"></div>
+              <div style="height:6px;width:{p2}%;background:{CORAIL};border-radius:0 3px 3px 0;"></div>
             </div>
-            <div style="width:40px;text-align:left;font-weight:700;color:{CORAIL};font-size:12px;">{d2}</div>
+            <div style="width:38px;text-align:left;font-weight:700;color:{CORAIL};font-size:11px;">{d2}</div>
           </div>
         </div>"""
 
@@ -6278,12 +6270,12 @@ def build_collective_report_html(report: dict) -> str:
     def _fill_bar_html(label, val, color):
         pct = max(0.0, min(float(val), 100.0))
         return f"""
-        <div style="margin-bottom:11px;">
-          <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
-            <span style="font-size:11px;color:#C8D8E8;">{label}</span>
-            <span style="font-size:11px;font-weight:700;color:{color};">{val} %</span>
+        <div style="margin-bottom:7px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+            <span style="font-size:10px;color:#C8D8E8;">{label}</span>
+            <span style="font-size:10px;font-weight:700;color:{color};">{val} %</span>
           </div>
-          <div style="height:7px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;">
+          <div style="height:5px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;">
             <div style="height:100%;width:{pct}%;background:{color};border-radius:3px;"></div>
           </div>
         </div>"""
@@ -6296,77 +6288,82 @@ def build_collective_report_html(report: dict) -> str:
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=Inter:wght@400;500&display=swap" rel="stylesheet"/>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;}}
-body{{background:#050B12;-webkit-print-color-adjust:exact;print-color-adjust:exact;font-family:Inter,sans-serif;}}
-.page{{width:297mm;height:210mm;background:#08090D;padding:8mm 10mm;display:flex;flex-direction:column;}}
-@media print{{ body{{background:#050B12 !important;}} @page{{size:A4 landscape;margin:0;}} }}
-.section-title{{font-family:Oswald,sans-serif;font-size:12px;font-weight:600;letter-spacing:.08em;
+html,body{{background:#050B12;-webkit-print-color-adjust:exact;print-color-adjust:exact;font-family:Inter,sans-serif;}}
+.page{{width:297mm;min-height:210mm;background:#08090D;padding:8mm 10mm;}}
+@media print{{ html,body{{background:#050B12 !important;}} @page{{size:A4 landscape;margin:0;}} }}
+.section-title{{font-family:Oswald,sans-serif;font-size:11.5px;font-weight:600;letter-spacing:.08em;
   text-transform:uppercase;color:#fff;display:flex;align-items:center;gap:6px;margin-bottom:6px;}}
 .section-title .line{{flex:1;height:1px;background:rgba(0,163,224,0.25);margin-left:6px;}}
 </style></head>
-<body><div class="page">
+<body>
+<div class="page">
 
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;border-bottom:2px solid {CYAN};padding-bottom:6px;">
-    <div style="display:flex;align-items:center;gap:10px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;border-bottom:2px solid {CYAN};padding-bottom:7px;">
+    <div style="display:flex;align-items:center;gap:12px;">
       {_pfc_logo_html}
-      <div style="font-family:Oswald,sans-serif;font-size:20px;font-weight:700;color:#fff;text-transform:uppercase;">{pfc_name} vs {adv_name}</div>
+      <div style="font-family:Oswald,sans-serif;font-size:22px;font-weight:700;color:#fff;text-transform:uppercase;">{pfc_name} vs {adv_name}</div>
       {_adv_logo_html}
     </div>
-    <div style="font-family:Oswald,sans-serif;font-size:14px;color:#6A8090;text-transform:uppercase;letter-spacing:.08em;">Rapport collectif</div>
+    <div style="font-family:Oswald,sans-serif;font-size:13px;color:#6A8090;text-transform:uppercase;letter-spacing:.1em;">Rapport collectif</div>
   </div>
 
-  <div style="display:grid;grid-template-columns:0.95fr 0.75fr 1.6fr;gap:18px;flex:1;min-height:0;align-items:stretch;">
-
-    <!-- Colonne 1 : temps de jeu + stats comparées -->
-    <div style="display:flex;flex-direction:column;">
-      <div class="section-title">⏱ Temps de jeu<div class="line"></div></div>
-      <div style="display:flex;gap:8px;margin-bottom:16px;">
-        <div style="flex:1;background:#0C1220;border-top:2px solid {CYAN};border-radius:4px;padding:9px 10px;">
-          <div style="font-size:9px;color:#6A8090;text-transform:uppercase;">Total</div>
-          <div style="font-family:Oswald,sans-serif;font-size:19px;font-weight:700;color:#fff;">{_fmt_secs_to_mmss(report['temps_total'])}</div>
+  <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
+    <tr>
+      <!-- Colonne 1 : statistiques comparées (colonne unique, pleine hauteur) -->
+      <td style="width:27%;vertical-align:top;padding-right:14px;">
+        <div class="section-title">📊 Statistiques comparées<div class="line"></div></div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
+          <span style="font-family:Oswald,sans-serif;font-weight:700;color:{CYAN};font-size:11px;text-transform:uppercase;">{pfc_name}</span>
+          <span style="font-family:Oswald,sans-serif;font-weight:700;color:{CORAIL};font-size:11px;text-transform:uppercase;">{adv_name}</span>
         </div>
-        <div style="flex:1;background:#0C1220;border-top:2px solid {CYAN};border-radius:4px;padding:9px 10px;">
-          <div style="font-size:9px;color:#6A8090;text-transform:uppercase;">MT1</div>
-          <div style="font-family:Oswald,sans-serif;font-size:19px;font-weight:700;color:#fff;">{_fmt_secs_to_mmss(report['temps_mt1'])}</div>
-        </div>
-        <div style="flex:1;background:#0C1220;border-top:2px solid {CYAN};border-radius:4px;padding:9px 10px;">
-          <div style="font-size:9px;color:#6A8090;text-transform:uppercase;">MT2</div>
-          <div style="font-family:Oswald,sans-serif;font-size:19px;font-weight:700;color:#fff;">{_fmt_secs_to_mmss(report['temps_mt2'])}</div>
-        </div>
-      </div>
-
-      <div class="section-title">📊 Statistiques comparées<div class="line"></div></div>
-      <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-        <span style="font-family:Oswald,sans-serif;font-weight:700;color:{CYAN};font-size:12px;text-transform:uppercase;">{pfc_name}</span>
-        <span style="font-family:Oswald,sans-serif;font-weight:700;color:{CORAIL};font-size:12px;text-transform:uppercase;">{adv_name}</span>
-      </div>
-      <div style="flex:1;display:flex;flex-direction:column;justify-content:space-between;">
         {rows_html}
-      </div>
-    </div>
+      </td>
 
-    <!-- Colonne 2 : répartitions -->
-    <div style="display:flex;flex-direction:column;">
-      <div class="section-title">🎯 Répartitions {pfc_name}<div class="line"></div></div>
-      <div style="font-size:11.5px;font-weight:600;color:#C8D8E8;margin-bottom:6px;">Type d'animation offensive</div>
-      {animation_html}
-      <div style="font-size:11.5px;font-weight:600;color:#C8D8E8;margin:14px 0 6px;">Élimination des lignes adverses</div>
-      {circulation_html}
-    </div>
+      <!-- Colonne 2 : temps de jeu + répartitions -->
+      <td style="width:27%;vertical-align:top;padding-right:14px;">
+        <div class="section-title">⏱ Temps de jeu<div class="line"></div></div>
+        <div style="display:flex;gap:6px;margin-bottom:14px;">
+          <div style="flex:1;background:#0C1220;border-top:2px solid {CYAN};border-radius:4px;padding:8px 9px;">
+            <div style="font-size:8px;color:#6A8090;text-transform:uppercase;">Total</div>
+            <div style="font-family:Oswald,sans-serif;font-size:16px;font-weight:700;color:#fff;">{_fmt_secs_to_mmss(report['temps_total'])}</div>
+          </div>
+          <div style="flex:1;background:#0C1220;border-top:2px solid {CYAN};border-radius:4px;padding:8px 9px;">
+            <div style="font-size:8px;color:#6A8090;text-transform:uppercase;">MT1</div>
+            <div style="font-family:Oswald,sans-serif;font-size:16px;font-weight:700;color:#fff;">{_fmt_secs_to_mmss(report['temps_mt1'])}</div>
+          </div>
+          <div style="flex:1;background:#0C1220;border-top:2px solid {CYAN};border-radius:4px;padding:8px 9px;">
+            <div style="font-size:8px;color:#6A8090;text-transform:uppercase;">MT2</div>
+            <div style="font-family:Oswald,sans-serif;font-size:16px;font-weight:700;color:#fff;">{_fmt_secs_to_mmss(report['temps_mt2'])}</div>
+          </div>
+        </div>
 
-    <!-- Colonne 3 : terrain flèches + heatmaps -->
-    <div style="display:flex;gap:8px;align-items:stretch;justify-content:space-evenly;min-width:0;">
-      <img src="{b64_entree}" style="height:100%;width:auto;max-width:33%;object-fit:contain;"/>
-      <img src="{b64_recup}" style="height:100%;width:auto;max-width:33%;object-fit:contain;"/>
-      <img src="{b64_perte}" style="height:100%;width:auto;max-width:33%;object-fit:contain;"/>
-    </div>
+        <div class="section-title">🎯 Répartitions {pfc_name}<div class="line"></div></div>
+        <div style="font-size:10.5px;font-weight:600;color:#C8D8E8;margin-bottom:5px;">Type d'animation offensive</div>
+        {animation_html}
+        <div style="font-size:10.5px;font-weight:600;color:#C8D8E8;margin:10px 0 5px;">Élimination des lignes adverses</div>
+        {circulation_html}
+      </td>
 
-  </div>
+      <!-- Colonne 3 : couloir d'entrée + heatmaps récup/perte -->
+      <td style="width:46%;vertical-align:top;">
+        <div class="section-title">🧭 Couloir d'entrée dans le dernier 1/3<div class="line"></div></div>
+        <img src="{b64_entree}" style="width:100%;display:block;margin-bottom:12px;"/>
 
-  <div style="border-top:1px solid #1E2D40;margin-top:6px;padding-top:4px;font-size:8px;color:#3A4A5A;text-align:right;">
+        <div class="section-title">🗺️ Zones de récupération / perte — {pfc_name}<div class="line"></div></div>
+        <div style="display:flex;gap:10px;">
+          <img src="{b64_recup}" style="width:50%;object-fit:contain;"/>
+          <img src="{b64_perte}" style="width:50%;object-fit:contain;"/>
+        </div>
+      </td>
+    </tr>
+  </table>
+
+  <div style="border-top:1px solid #1E2D40;margin-top:10px;padding-top:5px;font-size:8px;color:#3A4A5A;text-align:right;">
     Paris FC — Centre de Formation Féminin · Rapport collectif
   </div>
 
-</div></body></html>"""
+</div>
+</body></html>"""
 
 
 def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
