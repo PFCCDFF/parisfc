@@ -5894,23 +5894,57 @@ def _fmt_secs_to_mmss(v):
     return f"{m}:{s:04.1f}"
 
 
-def _draw_collective_pitch(ax):
-    """Dessine un terrain vertical simplifié (attaque vers le haut) sur l'axe donné."""
+PFC_LOGO_URL = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
+
+
+def _team_logo_html(team_name: str, is_pfc: bool = False, size: int = 44) -> str:
+    """Retourne le HTML <img>/fallback pour le logo d'une équipe, réutilisant l'index Drive des logos."""
+    if is_pfc:
+        return f'<img src="{PFC_LOGO_URL}" style="width:{size}px;height:{size}px;object-fit:contain;"/>'
+    logo_url = ""
+    try:
+        _logos_idx = sync_logos_from_drive()
+        _logo_path = find_logo_for_club(team_name, _logos_idx)
+        if _logo_path:
+            logo_url = logo_path_to_b64(_logo_path)
+    except Exception:
+        pass
+    init = (team_name or "ADV")[:3].upper()
+    if logo_url:
+        return (
+            f'<img src="{logo_url}" style="width:{size}px;height:{size}px;object-fit:contain;" '
+            f'onerror="this.outerHTML=\'<div style=&quot;width:{size}px;height:{size}px;border-radius:50%;'
+            f'background:#0A1520;border:1px solid #1A2E44;display:flex;align-items:center;'
+            f'justify-content:center;font-size:11px;font-weight:700;color:#2A4060;'
+            f'font-family:Barlow Condensed,sans-serif;&quot;>{init}</div>\'"/ >'
+        )
+    return (
+        f'<div style="width:{size}px;height:{size}px;border-radius:50%;background:#0A1520;'
+        f'border:1px solid #1A2E44;display:flex;align-items:center;justify-content:center;'
+        f'font-family:Barlow Condensed,sans-serif;font-size:11px;font-weight:700;color:#2A4060;">{init}</div>'
+    )
+
+
+def _draw_collective_pitch(ax, half=False):
+    """Dessine un terrain vertical simplifié (attaque vers le haut) sur l'axe donné.
+    Si half=True, ne dessine que la moitié offensive (du rond central à la ligne de but adverse)."""
     ax.set_facecolor("#08090D")
-    ax.set_xlim(0, 68); ax.set_ylim(0, 100)
     line_c = "#1E2D40"
-    ax.add_patch(plt.Rectangle((0, 0), 68, 100, fill=False, edgecolor=line_c, linewidth=1.2))
+    y_min = 50 if half else 0
+    ax.set_xlim(0, 68); ax.set_ylim(y_min, 100)
+    ax.add_patch(plt.Rectangle((0, y_min), 68, 100 - y_min, fill=False, edgecolor=line_c, linewidth=1.2))
     ax.axhline(50, color=line_c, linewidth=1)
     ax.add_patch(plt.Circle((34, 50), 9, fill=False, edgecolor=line_c, linewidth=1))
-    ax.add_patch(plt.Rectangle((14, 0), 40, 16, fill=False, edgecolor=line_c, linewidth=1))
+    if not half:
+        ax.add_patch(plt.Rectangle((14, 0), 40, 16, fill=False, edgecolor=line_c, linewidth=1))
     ax.add_patch(plt.Rectangle((14, 84), 40, 16, fill=False, edgecolor=line_c, linewidth=1))
     ax.set_xticks([]); ax.set_yticks([])
     for spine in ax.spines.values():
         spine.set_visible(False)
 
 
-def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 4.4), dpi=90):
-    """Terrain vertical avec 3 flèches (Gauche/Central/Droit), épaisseur/opacité ∝ %."""
+def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 2.6), dpi=90):
+    """Demi-terrain (moitié offensive) avec 3 flèches (Gauche/Central/Droit), épaisseur/opacité ∝ %."""
     _pg = entree_tiers.get("Couloir Gauche", 0.0)
     _pc = entree_tiers.get("Couloir Central", 0.0)
     _pd = entree_tiers.get("Couloir Droit", 0.0)
@@ -5918,7 +5952,7 @@ def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 4.4), dpi=90):
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     fig.patch.set_facecolor("#08090D")
-    _draw_collective_pitch(ax)
+    _draw_collective_pitch(ax, half=True)
 
     for x, pct in [(12, _pg), (34, _pc), (56, _pd)]:
         lw = 1.5 + (pct / _pmax) * 7.5
@@ -5928,7 +5962,7 @@ def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 4.4), dpi=90):
             arrowprops=dict(arrowstyle="-|>", color="#FFA06E", lw=lw, alpha=alpha,
                             mutation_scale=18 + (pct / _pmax) * 12),
         )
-        ax.text(x, 50, f"{pct:.1f} %", ha="center", va="top",
+        ax.text(x, 51.5, f"{pct:.1f} %", ha="center", va="bottom",
                 color="#FFA06E", fontsize=10, fontweight="bold")
 
     ax.set_title("Couloir d'entrée dans le dernier 1/3", color="#C8D8E8", fontsize=9.5)
@@ -5971,8 +6005,8 @@ def build_zone_heatmap_figure(grid, rows_lbl, cols_lbl, title, cmap_name, figsiz
 
 
 def render_collective_report(report: dict):
-    """Affiche le rapport collectif — cartes + barres comparatives miroir + barres de répartition,
-    cohérent avec la charte graphique Paris FC (fond sombre, accents cyan/corail)."""
+    """Affiche le rapport collectif — logos, cartes, barres comparatives miroir (2 colonnes)
+    et barres de répartition, cohérent avec la charte graphique Paris FC."""
     if not report:
         st.info("Données insuffisantes pour générer le rapport collectif sur ce match.")
         return
@@ -5987,12 +6021,32 @@ def render_collective_report(report: dict):
 
     def _section_title(icon, txt):
         st.markdown(
-            f"<div style='display:flex;align-items:center;gap:8px;margin:18px 0 10px;'>"
-            f"<span style='font-size:18px;'>{icon}</span>"
-            f"<span style='font-family:Oswald,sans-serif;font-size:16px;font-weight:600;"
+            f"<div style='display:flex;align-items:center;gap:8px;margin:14px 0 8px;'>"
+            f"<span style='font-size:16px;'>{icon}</span>"
+            f"<span style='font-family:Oswald,sans-serif;font-size:14px;font-weight:600;"
             f"letter-spacing:0.08em;text-transform:uppercase;color:#FFFFFF;'>{txt}</span>"
             f"<div style='flex:1;height:1px;background:rgba(0,163,224,0.25);margin-left:8px;'></div>"
             f"</div>", unsafe_allow_html=True)
+
+    # ── En-tête logos ─────────────────────────────────────────────────────
+    _lg1, _lg2, _lg3 = st.columns([1, 1, 1])
+    with _lg1:
+        st.markdown(
+            f"<div style='display:flex;align-items:center;gap:10px;'>"
+            f"{_team_logo_html(pfc_name, is_pfc=True, size=42)}"
+            f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CYAN};font-size:15px;"
+            f"text-transform:uppercase;'>{pfc_name}</span></div>", unsafe_allow_html=True)
+    with _lg2:
+        st.markdown(
+            "<div style='text-align:center;font-family:Oswald,sans-serif;color:#6A8090;"
+            "font-size:13px;text-transform:uppercase;letter-spacing:.1em;padding-top:8px;'>VS</div>",
+            unsafe_allow_html=True)
+    with _lg3:
+        st.markdown(
+            f"<div style='display:flex;align-items:center;justify-content:flex-end;gap:10px;'>"
+            f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CORAIL};font-size:15px;"
+            f"text-transform:uppercase;'>{adv_name}</span>{_team_logo_html(adv_name, size=42)}</div>",
+            unsafe_allow_html=True)
 
     # ── Bouton d'export PDF (A4 paysage) ─────────────────────────────────
     try:
@@ -6004,10 +6058,10 @@ def render_collective_report(report: dict):
             'w.document.close();setTimeout(()=>w.print(),800);}</script>'
             '<button onclick="prColl()" style="background:#00A3E0;color:#060F1A;border:none;'
             'border-radius:4px;padding:8px 18px;font-family:Oswald,sans-serif;'
-            'font-size:13px;font-weight:700;cursor:pointer;margin-bottom:6px;">'
+            'font-size:13px;font-weight:700;cursor:pointer;margin:8px 0;">'
             '🖨️ Exporter en PDF (A4 paysage)</button>'
         )
-        _comp_coll.html(_print_js, height=50)
+        _comp_coll.html(_print_js, height=55)
     except Exception:
         pass
 
@@ -6018,16 +6072,8 @@ def render_collective_report(report: dict):
     _t2.metric("MT1", _fmt_secs_to_mmss(report["temps_mt1"]))
     _t3.metric("MT2", _fmt_secs_to_mmss(report["temps_mt2"]))
 
-    # ── Statistiques comparées — barres miroir ──────────────────────────
+    # ── Statistiques comparées — barres miroir, en 2 colonnes compactes ──
     _section_title("📊", "Statistiques comparées")
-
-    st.markdown(
-        f"<div style='display:flex;justify-content:space-between;padding:0 4px 10px;'>"
-        f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CYAN};font-size:14px;"
-        f"text-transform:uppercase;letter-spacing:.05em;'>{pfc_name}</span>"
-        f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CORAIL};font-size:14px;"
-        f"text-transform:uppercase;letter-spacing:.05em;'>{adv_name}</span>"
-        f"</div>", unsafe_allow_html=True)
 
     def _mirror_row(label, val_pfc, val_adv, unit="", is_pct=False):
         try:
@@ -6048,44 +6094,64 @@ def render_collective_report(report: dict):
             disp2 = f"{disp2} {unit}" if disp2 != "—" else "—"
 
         html = f"""
-        <div style="margin-bottom:11px;">
-          <div style="text-align:center;font-size:11.5px;color:{MUTED};font-family:Oswald,sans-serif;
-                      letter-spacing:0.06em;text-transform:uppercase;margin-bottom:3px;">{label}</div>
-          <div style="display:flex;align-items:center;gap:8px;">
-            <div style="width:56px;text-align:right;font-weight:700;color:{CYAN};font-size:13.5px;">{disp1}</div>
+        <div style="margin-bottom:6px;">
+          <div style="text-align:center;font-size:9.5px;color:{MUTED};font-family:Oswald,sans-serif;
+                      letter-spacing:0.05em;text-transform:uppercase;margin-bottom:2px;">{label}</div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <div style="width:46px;text-align:right;font-weight:700;color:{CYAN};font-size:11.5px;">{disp1}</div>
             <div style="flex:1;display:flex;justify-content:flex-end;">
-              <div style="height:9px;width:{pct1}%;background:{CYAN};border-radius:4px 0 0 4px;
-                          box-shadow:0 0 6px rgba(0,163,224,0.5);"></div>
+              <div style="height:6px;width:{pct1}%;background:{CYAN};border-radius:3px 0 0 3px;"></div>
             </div>
-            <div style="width:2px;height:16px;background:rgba(255,255,255,0.15);"></div>
+            <div style="width:1px;height:12px;background:rgba(255,255,255,0.15);"></div>
             <div style="flex:1;display:flex;justify-content:flex-start;">
-              <div style="height:9px;width:{pct2}%;background:{CORAIL};border-radius:0 4px 4px 0;
-                          box-shadow:0 0 6px rgba(255,107,107,0.5);"></div>
+              <div style="height:6px;width:{pct2}%;background:{CORAIL};border-radius:0 3px 3px 0;"></div>
             </div>
-            <div style="width:56px;text-align:left;font-weight:700;color:{CORAIL};font-size:13.5px;">{disp2}</div>
+            <div style="width:46px;text-align:left;font-weight:700;color:{CORAIL};font-size:11.5px;">{disp2}</div>
           </div>
         </div>"""
         st.markdown(html, unsafe_allow_html=True)
 
-    _mirror_row("% Possession", report["poss_total"][pfc_name], report["poss_total"][adv_name], is_pct=True)
-    _mirror_row("% Possession MT1", report["poss_mt1"][pfc_name], report["poss_mt1"][adv_name], is_pct=True)
-    _mirror_row("% Possession MT2", report["poss_mt2"][pfc_name], report["poss_mt2"][adv_name], is_pct=True)
-    _mirror_row("Nombre de possessions", s_pfc["possessions"], s_adv["possessions"])
-    _mirror_row("Durée moyenne possession", round(s_pfc["duree_moyenne"], 1), round(s_adv["duree_moyenne"], 1), unit="s")
-    _mirror_row("Nombre de tirs", s_pfc["tirs"], s_adv["tirs"])
-    _mirror_row("Nombre de tirs cadrés", s_pfc["tirs_cadres"], s_adv["tirs_cadres"])
-    _mirror_row("% tirs cadrés", s_pfc["pct_tirs_cadres"], s_adv["pct_tirs_cadres"], is_pct=True)
-    _mirror_row("Nombre de tirs non cadrés", s_pfc["tirs_non_cadres"], s_adv["tirs_non_cadres"])
-    _mirror_row("Nombre de buts", s_pfc["buts"], s_adv["buts"])
-    _mirror_row("Nombre de fautes", s_pfc["fautes"], s_adv["fautes"])
-    _mirror_row("Nombre de hors-jeu", s_pfc["hors_jeu"], s_adv["hors_jeu"])
-    _mirror_row("Nombre de pertes de balle", s_pfc["pertes"], s_adv["pertes"])
-    _mirror_row("% pertes de balle", s_pfc["pct_pertes"], s_adv["pct_pertes"], is_pct=True)
-    _mirror_row("Entrées dans le dernier 1/3", s_pfc["entrees_1_3"], s_adv["entrees_1_3"])
-    _mirror_row("Possessions nécessaires / entrée dernier 1/3",
-                s_pfc["poss_par_entree"], s_adv["poss_par_entree"])
-    _mirror_row("Entrées dernier 1/3 nécessaires / tir",
-                s_pfc["entrees_par_tir"], s_adv["entrees_par_tir"])
+    _stat_rows = [
+        ("% Possession", report["poss_total"][pfc_name], report["poss_total"][adv_name], "", True),
+        ("% Possession MT1", report["poss_mt1"][pfc_name], report["poss_mt1"][adv_name], "", True),
+        ("% Possession MT2", report["poss_mt2"][pfc_name], report["poss_mt2"][adv_name], "", True),
+        ("Nombre de possessions", s_pfc["possessions"], s_adv["possessions"], "", False),
+        ("Durée moyenne possession", round(s_pfc["duree_moyenne"], 1), round(s_adv["duree_moyenne"], 1), "s", False),
+        ("Nombre de tirs", s_pfc["tirs"], s_adv["tirs"], "", False),
+        ("Nombre de tirs cadrés", s_pfc["tirs_cadres"], s_adv["tirs_cadres"], "", False),
+        ("% tirs cadrés", s_pfc["pct_tirs_cadres"], s_adv["pct_tirs_cadres"], "", True),
+        ("Nombre de buts", s_pfc["buts"], s_adv["buts"], "", False),
+    ]
+    _stat_rows2 = [
+        ("Nombre de tirs non cadrés", s_pfc["tirs_non_cadres"], s_adv["tirs_non_cadres"], "", False),
+        ("Nombre de fautes", s_pfc["fautes"], s_adv["fautes"], "", False),
+        ("Nombre de hors-jeu", s_pfc["hors_jeu"], s_adv["hors_jeu"], "", False),
+        ("Nombre de pertes de balle", s_pfc["pertes"], s_adv["pertes"], "", False),
+        ("% pertes de balle", s_pfc["pct_pertes"], s_adv["pct_pertes"], "", True),
+        ("Entrées dans le dernier 1/3", s_pfc["entrees_1_3"], s_adv["entrees_1_3"], "", False),
+        ("Possessions nécessaires / entrée 1/3", s_pfc["poss_par_entree"], s_adv["poss_par_entree"], "", False),
+        ("Entrées 1/3 nécessaires / tir", s_pfc["entrees_par_tir"], s_adv["entrees_par_tir"], "", False),
+    ]
+
+    _sc1, _sc2 = st.columns(2)
+    with _sc1:
+        st.markdown(
+            f"<div style='display:flex;justify-content:space-between;margin-bottom:4px;'>"
+            f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CYAN};font-size:11px;"
+            f"text-transform:uppercase;'>{pfc_name}</span>"
+            f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CORAIL};font-size:11px;"
+            f"text-transform:uppercase;'>{adv_name}</span></div>", unsafe_allow_html=True)
+        for label, v1, v2, unit, is_pct in _stat_rows:
+            _mirror_row(label, v1, v2, unit=unit, is_pct=is_pct)
+    with _sc2:
+        st.markdown(
+            f"<div style='display:flex;justify-content:space-between;margin-bottom:4px;'>"
+            f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CYAN};font-size:11px;"
+            f"text-transform:uppercase;'>{pfc_name}</span>"
+            f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CORAIL};font-size:11px;"
+            f"text-transform:uppercase;'>{adv_name}</span></div>", unsafe_allow_html=True)
+        for label, v1, v2, unit, is_pct in _stat_rows2:
+            _mirror_row(label, v1, v2, unit=unit, is_pct=is_pct)
 
     # ── Répartitions PFC — barres de répartition colorées ───────────────
     _section_title("🎯", f"Répartitions {pfc_name} (jeu offensif)")
@@ -6128,13 +6194,13 @@ def render_collective_report(report: dict):
     _zg1, _zg2 = st.columns(2)
     with _zg1:
         fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
-                                           "Récupération (%)", "Blues")
-        st.pyplot(fig_r, use_container_width=True)
+                                           "Récupération (%)", "Blues", figsize=(2.6, 3.6), dpi=90)
+        st.pyplot(fig_r, use_container_width=False)
         plt.close(fig_r)
     with _zg2:
         fig_p = build_zone_heatmap_figure(report["grid_perte"], report["zone_rows"], report["zone_cols"],
-                                           "Perte (%)", "Reds")
-        st.pyplot(fig_p, use_container_width=True)
+                                           "Perte (%)", "Reds", figsize=(2.6, 3.6), dpi=90)
+        st.pyplot(fig_p, use_container_width=False)
         plt.close(fig_p)
 
 
@@ -6148,14 +6214,17 @@ def build_collective_report_html(report: dict) -> str:
     s_pfc, s_adv = report["stats"][pfc_name], report["stats"][adv_name]
     CYAN, CORAIL = "#00A3E0", "#FF6B6B"
 
-    fig_e = build_entree_tiers_figure(report["entree_tiers"], figsize=(2.9, 6.6), dpi=110)
+    fig_e = build_entree_tiers_figure(report["entree_tiers"], figsize=(3.2, 3.6), dpi=110)
     b64_entree = fig_to_b64(fig_e); plt.close(fig_e)
     fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
-                                       "Récupération (%)", "Blues", figsize=(3.1, 6.6), dpi=110)
+                                       "Récupération (%)", "Blues", figsize=(2.6, 4.6), dpi=110)
     b64_recup = fig_to_b64(fig_r); plt.close(fig_r)
     fig_p = build_zone_heatmap_figure(report["grid_perte"], report["zone_rows"], report["zone_cols"],
-                                       "Perte (%)", "Reds", figsize=(3.1, 6.6), dpi=110)
+                                       "Perte (%)", "Reds", figsize=(2.6, 4.6), dpi=110)
     b64_perte = fig_to_b64(fig_p); plt.close(fig_p)
+
+    _pfc_logo_html = _team_logo_html(pfc_name, is_pfc=True, size=46)
+    _adv_logo_html = _team_logo_html(adv_name, size=46)
 
     def _mirror_row_html(label, v1, v2, unit="", is_pct=False):
         try:
@@ -6237,7 +6306,11 @@ body{{background:#050B12;-webkit-print-color-adjust:exact;print-color-adjust:exa
 <body><div class="page">
 
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;border-bottom:2px solid {CYAN};padding-bottom:6px;">
-    <div style="font-family:Oswald,sans-serif;font-size:20px;font-weight:700;color:#fff;text-transform:uppercase;">{pfc_name} vs {adv_name}</div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      {_pfc_logo_html}
+      <div style="font-family:Oswald,sans-serif;font-size:20px;font-weight:700;color:#fff;text-transform:uppercase;">{pfc_name} vs {adv_name}</div>
+      {_adv_logo_html}
+    </div>
     <div style="font-family:Oswald,sans-serif;font-size:14px;color:#6A8090;text-transform:uppercase;letter-spacing:.08em;">Rapport collectif</div>
   </div>
 
