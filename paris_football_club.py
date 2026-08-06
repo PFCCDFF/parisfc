@@ -6207,6 +6207,20 @@ def render_collective_report(report: dict, gps_stats: dict = None):
         _ad = gps_stats.get("accdec_totaux")
         _g8.metric("Acc/Déc (total)", f"{_ad:,.0f}".replace(",", " ") if _ad is not None else "—")
 
+        _dbg = gps_stats.get("_debug", {})
+        with st.expander("🔍 Détail du diagnostic GPS (nombre de lignes, fichiers sources)"):
+            st.write(f"Lignes brutes trouvées avant dédoublonnage : **{_dbg.get('n_lignes_brutes', '—')}**")
+            st.write(f"Lignes après dédoublonnage (= joueuses) : **{_dbg.get('n_apres_dedup', '—')}**")
+            _fs = _dbg.get("fichiers_sources", [])
+            if _fs:
+                st.write(f"Fichier(s) source(s) ({len(_fs)}) :")
+                for _f in _fs:
+                    st.caption(f"• {_f}")
+            _nb = _dbg.get("noms_bruts", [])
+            if _nb:
+                st.write(f"Noms bruts distincts trouvés ({len(_nb)}) :")
+                st.caption(", ".join(_nb))
+
     # ── Zones de récupération / perte du ballon — heatmaps sur terrain ──
     _section_title("🗺️", f"Zones de récupération / perte du ballon — {pfc_name}")
     st.caption(
@@ -6502,16 +6516,27 @@ def compute_collective_gps_stats(gps_match_df, match_date=None, adversaire=None,
         debug["reason"] = "aucune ligne GPS ne correspond aux critères ci-dessus"
         return {"_debug": debug}
 
-    # Dédoublonnage robuste : basé sur le NOM brut normalisé (pas sur "Player" canonique,
-    # qui peut différer légèrement entre deux exports du même fichier et faire échouer
-    # un dédoublonnage naïf sur "Player" — cause de doublons de joueuses observée).
+    # Infos de diagnostic AVANT dédoublonnage (aide à distinguer un vrai doublon
+    # d'une correspondance trop large qui aurait ramené un autre match/session)
+    debug["n_lignes_brutes"] = int(len(df_work))
+    if "__source_file" in df_work.columns:
+        debug["fichiers_sources"] = sorted(set(df_work["__source_file"].dropna().astype(str).tolist()))
+    if "NOM" in df_work.columns:
+        debug["noms_bruts"] = sorted(set(df_work["NOM"].dropna().astype(str).str.strip().tolist()))
+
+    # Dédoublonnage robuste : clé = tokens du nom triés (insensible à l'ordre "Nom Prénom"
+    # vs "Prénom Nom", aux accents et à la casse) — plus fiable qu'une simple normalisation
+    # texte qui aurait échoué si l'ordre des mots diffère entre deux exports du même fichier.
     if "Distance (m)" in df_work.columns:
         _name_col = "NOM" if "NOM" in df_work.columns else ("Player" if "Player" in df_work.columns else None)
         if _name_col is not None:
             df_work = df_work.copy()
-            df_work["_dedup_key"] = df_work[_name_col].astype(str).apply(normalize_name_raw)
+            df_work["_dedup_key"] = df_work[_name_col].astype(str).apply(
+                lambda v: " ".join(sorted(nom_tokens(v))))
             df_work = (df_work.sort_values("Distance (m)", ascending=False)
                               .drop_duplicates(subset=["_dedup_key"], keep="first"))
+
+    debug["n_apres_dedup"] = int(len(df_work))
 
     def _sum(col):
         return float(pd.to_numeric(df_work[col], errors="coerce").sum()) if col in df_work.columns else None
