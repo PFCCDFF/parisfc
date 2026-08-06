@@ -6178,10 +6178,14 @@ def render_collective_report(report: dict, gps_stats: dict = None):
 
     # ── GPS Collectif — agrégat de toutes les joueuses trackées sur le match ──
     _section_title("🏃", "GPS Collectif")
-    if not gps_stats:
+    if not gps_stats or gps_stats.get("n_joueuses") is None:
+        _dbg = (gps_stats or {}).get("_debug", {})
         st.caption(
-            "⚠️ Aucune donnée GPS trouvée pour ce match (aucune correspondance de date/adversaire/journée "
-            "entre le fichier tactique et les fichiers GPS match chargés)."
+            "⚠️ Aucune donnée GPS trouvée pour ce match.  \n"
+            f"Recherché : date = **{_dbg.get('searched_date') or '—'}**, "
+            f"adversaire = **{_dbg.get('searched_adversaire') or '—'}**, "
+            f"journée = **{_dbg.get('searched_journee') or '—'}**.  \n"
+            f"({_dbg.get('reason', '')})"
         )
     else:
         _g1, _g2, _g3, _g4 = st.columns(4)
@@ -6318,7 +6322,7 @@ def build_collective_report_html(report: dict, gps_stats: dict = None) -> str:
         </div>"""
 
     gps_html = ""
-    if gps_stats:
+    if gps_stats and gps_stats.get("n_joueuses") is not None:
         _dt = gps_stats.get("distance_totale"); _dm = gps_stats.get("distance_moyenne")
         _vm = gps_stats.get("vmax_equipe"); _h13 = gps_stats.get("hid13_totale")
         _h19 = gps_stats.get("hid19_totale"); _s23 = gps_stats.get("sprints23_totaux")
@@ -6429,9 +6433,18 @@ html,body{{background:#050B12;-webkit-print-color-adjust:exact;print-color-adjus
 
 def compute_collective_gps_stats(gps_match_df, match_date=None, adversaire=None, journee=None):
     """Agrège les données GPS de TOUTES les joueuses PFC pour un match donné (vue collective).
-    Retourne un dict de stats d'équipe, ou {} si aucune donnée GPS ne correspond au match."""
+    Retourne un dict de stats d'équipe (+ clé '_debug' avec les critères recherchés),
+    ou {'_debug': {...}} seul si aucune donnée GPS ne correspond au match."""
+    debug = {
+        "searched_date": pd.Timestamp(match_date).strftime("%d/%m/%Y")
+                          if match_date is not None and pd.notna(match_date) else None,
+        "searched_adversaire": adversaire or None,
+        "searched_journee": journee or None,
+    }
+
     if gps_match_df is None or getattr(gps_match_df, "empty", True):
-        return {}
+        debug["reason"] = "gps_match_df vide (aucune donnée GPS match chargée)"
+        return {"_debug": debug}
 
     df = ensure_date_column(gps_match_df.copy())
     if "NOM" in df.columns:
@@ -6464,8 +6477,30 @@ def compute_collective_gps_stats(gps_match_df, match_date=None, adversaire=None,
         if not cand.empty:
             df_work = cand
 
+    # Fallback supplémentaire : adversaire OU journée seul (sans exiger les deux),
+    # + recherche via __match_label (même logique que get_gps_match_summary_for_player)
+    if df_work.empty and adversaire and "__adversaire" in df.columns:
+        _adv_norm = normalize_str(adversaire)
+        cand = df[df["__adversaire"].astype(str).apply(
+            lambda a: _adv_norm in normalize_str(a) or normalize_str(a) in _adv_norm)]
+        if not cand.empty:
+            df_work = cand
+
+    if df_work.empty and journee and "__journee" in df.columns:
+        _j = re.sub(r"[^0-9]", "", str(journee)).zfill(2)
+        cand = df[df["__journee"].astype(str).apply(lambda x: re.sub(r"[^0-9]", "", str(x)).zfill(2) == _j)]
+        if not cand.empty:
+            df_work = cand
+
+    if df_work.empty and adversaire and "__match_label" in df.columns:
+        _adv_norm = normalize_str(adversaire)
+        cand = df[df["__match_label"].astype(str).apply(lambda lbl: _adv_norm in normalize_str(lbl))]
+        if not cand.empty:
+            df_work = cand
+
     if df_work.empty:
-        return {}
+        debug["reason"] = "aucune ligne GPS ne correspond aux critères ci-dessus"
+        return {"_debug": debug}
 
     if "Player" in df_work.columns and "Distance (m)" in df_work.columns:
         df_work = (df_work.sort_values("Distance (m)", ascending=False)
@@ -6495,6 +6530,7 @@ def compute_collective_gps_stats(gps_match_df, match_date=None, adversaire=None,
         "vmax_equipe": _max("Vitesse max (km/h)"),
         "accdec_totaux": _sum("#accel/decel"),
         "temps_jeu_moyen": _mean("Durée_min"),
+        "_debug": debug,
     }
 
 
