@@ -446,13 +446,16 @@ def extract_any_date_from_string(s: str):
 
     patterns = [
         # dd-mm-yyyy / dd.mm.yyyy / dd/mm/yyyy
-        r'(?P<d>\b\d{1,2})[\-\./](?P<m>\d{1,2})[\-\./](?P<y>\d{4})\b',
+        # NB : (?<!\d)/(?!\d) remplacent \b — \b échoue quand la date est précédée
+        # d'un "_" (underscore = caractère de mot en regex, donc pas de frontière
+        # entre "_" et un chiffre). Très fréquent dans nos noms de fichiers.
+        r'(?<!\d)(?P<d>\d{1,2})[\-\./](?P<m>\d{1,2})[\-\./](?P<y>\d{4})(?!\d)',
         # yyyy-mm-dd / yyyy.mm.dd / yyyy/mm/dd
-        r'\b(?P<y>\d{4})[\-\./](?P<m>\d{1,2})[\-\./](?P<d>\d{1,2})\b',
+        r'(?<!\d)(?P<y>\d{4})[\-\./](?P<m>\d{1,2})[\-\./](?P<d>\d{1,2})(?!\d)',
         # dd-mm-yy / dd.mm.yy / dd/mm/yy
-        r'(?P<d>\b\d{1,2})[\-\./](?P<m>\d{1,2})[\-\./](?P<y>\d{2})\b',
+        r'(?<!\d)(?P<d>\d{1,2})[\-\./](?P<m>\d{1,2})[\-\./](?P<y>\d{2})(?!\d)',
         # yyyymmdd
-        r'\b(?P<y>\d{4})(?P<m>\d{2})(?P<d>\d{2})\b',
+        r'(?<!\d)(?P<y>\d{4})(?P<m>\d{2})(?P<d>\d{2})(?!\d)',
     ]
 
     for pat in patterns:
