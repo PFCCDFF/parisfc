@@ -102,15 +102,20 @@ def _parquet_cache_is_valid() -> bool:
             if not os.path.exists(p):
                 return False
         # Vérifier que la date de génération est postérieure au dernier CSV modifié
+        # (on parcourt aussi les sous-dossiers GPS/GPS_MATCH, sinon un nouveau
+        # fichier GPS de match n'invalide jamais le cache Parquet)
         cache_ts = meta.get("generated_at", 0)
         if not os.path.exists(DATA_FOLDER):
             return False
-        latest_src = max(
-            (os.path.getmtime(os.path.join(DATA_FOLDER, f))
-             for f in os.listdir(DATA_FOLDER)
-             if f.endswith((".csv", ".xlsx", ".xls")) and not f.startswith("_cache")),
-            default=0
-        )
+        mtimes = []
+        for root_dir in (DATA_FOLDER, GPS_FOLDER, GPS_MATCH_FOLDER):
+            if not os.path.exists(root_dir):
+                continue
+            for root, _, files in os.walk(root_dir):
+                for f in files:
+                    if f.endswith((".csv", ".xlsx", ".xls")) and not f.startswith("_cache"):
+                        mtimes.append(os.path.getmtime(os.path.join(root, f)))
+        latest_src = max(mtimes, default=0)
         return cache_ts >= latest_src
     except Exception:
         return False
