@@ -4338,7 +4338,9 @@ def is_gps_match_file(filename: str) -> bool:
     """Détecte un fichier GPS de match : U19_, U17_, J0x_, vs _, - _, etc."""
     fn = normalize_str(filename)
     match_patterns = ["u19", "u17", "u16", "u15", "_j0", "_j1", "_j2", " vs ", "match", "contre"]
-    seance_patterns = ["gf1", "seance", "séance", "entrainement", "entraînement"]
+    # NB : "gf1" retiré des indices de séance — c'est le préfixe générique de TOUS
+    # les exports GPS bruts (matchs compris), pas un signal spécifique séance.
+    seance_patterns = ["seance", "séance", "entrainement", "entraînement"]
     has_match = any(p in fn for p in match_patterns)
     has_seance = any(p in fn for p in seance_patterns)
     return has_match and not has_seance
