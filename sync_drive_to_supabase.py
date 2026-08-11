@@ -8,8 +8,8 @@ Job autonome (lancé par systemd timer) qui :
 3. Upsert les données normalisées dans Supabase
 
 Identifiants Supabase attendus dans un fichier .env à côté de ce script :
-    SUPABASE_URL=https://xxxxx.supabase.co
-    SUPABASE_SERVICE_KEY=eyJ...        <- clé service_role (jamais la clé anon ici)
+    SUPABASE_URL=https://pzguyqhwcofmjdqvjnmj.supabase.co
+    SUPABASE_SERVICE_KEY=sb_secret_v-965dY30pFXE61o2....
 
 Installation :
     pip install supabase python-dotenv
