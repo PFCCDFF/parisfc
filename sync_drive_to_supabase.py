@@ -34,7 +34,9 @@ from parsing_utils import (
     row_to_gps_metrics,
     row_to_zones_vitesse,
     row_to_evenement_and_tags,
+    deduce_categorie_from_filename,
 )
+from drive_utils import fetch_new_csv_files
 
 logging.basicConfig(
     level=logging.INFO,
@@ -267,28 +269,20 @@ def sync_fichier_match(sb: Client, filepath: str, categorie: str) -> None:
 def main():
     sb = get_client()
 
-    # TODO : remplacer par la logique de détection des nouveaux fichiers
-    # Drive déjà en place dans l'app (incrémental, cache local, etc.)
-    # Exemple attendu : une liste de chemins locaux déjà téléchargés par
-    # la sync Drive existante (download_drive_csv_to_local, etc.)
-    nouveaux_fichiers_gps: list[str] = []
-    nouveaux_fichiers_match: list[str] = []
+    logger.info("Recherche des nouveaux fichiers sur Drive...")
+    nouveaux_fichiers = fetch_new_csv_files()
+    logger.info("%d nouveau(x) fichier(s) trouvé(s) sur Drive.", len(nouveaux_fichiers))
 
-    # TODO : déduire la catégorie (ex. "U19F") du chemin/dossier Drive
-    # plutôt que de la coder en dur ici.
-    categorie = "U19F"
-
-    for f in nouveaux_fichiers_gps:
+    for f in nouveaux_fichiers:
+        filename = os.path.basename(f)
+        categorie = deduce_categorie_from_filename(filename)
         try:
-            sync_fichier_gps(sb, f, categorie)
+            if is_tactical_file(filename):
+                sync_fichier_match(sb, f, categorie)
+            else:
+                sync_fichier_gps(sb, f, categorie)
         except Exception:
-            logger.exception("Échec sync GPS pour %s", f)
-
-    for f in nouveaux_fichiers_match:
-        try:
-            sync_fichier_match(sb, f, categorie)
-        except Exception:
-            logger.exception("Échec sync match pour %s", f)
+            logger.exception("Échec sync pour %s", f)
 
     logger.info("Sync terminée.")
 
