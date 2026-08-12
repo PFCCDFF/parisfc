@@ -7071,6 +7071,125 @@ def compute_acwr(gps_raw: pd.DataFrame, player_name: str) -> pd.DataFrame:
 
 
 # =========================
+# MÉTHODOLOGIE DE SUIVI DE LA CHARGE (classification GPS par catégorie)
+# Reprise de la méthodologie de l'app d'Emma (paris-fc-charge/utils/metrics.py) :
+# 4 catégories de métriques + heatmap de charge colorée par zone d'intensité.
+# Adaptée aux colonnes GPS propres à cette app (format GF1 / Distance HID /
+# plages de vitesse V_x_y). L'ACWR (Gabbett RA / Murray EWMA) ci-dessus reste
+# le référentiel aigu/chronique de cette app et n'est pas remplacé.
+# =========================
+
+MONITORING_METRICS = {
+    "Faible intensité & Volume": {
+        "Distance (m)":               "Distance (m)",
+        "Distance relative (m/min)":  "Volume (m/min)",
+        "V_0_7":                      "Dist. 0-7 km/h (m)",
+        "V_7_13":                     "Dist. 7-13 km/h (m)",
+    },
+    "Haute intensité": {
+        "V_13_15":    "Dist. 13-15 km/h (m)",
+        "V_15_19":    "Dist. 15-19 km/h (m)",
+        "V_19_23":    "Dist. 19-23 km/h (m)",
+        "Sprints_23": "Sprints >23 (nb)",
+    },
+    "Intensité max": {
+        "Vitesse max (km/h)":            "Vit. max (km/h)",
+        "V_23_25":                       "Dist. 23-25 km/h (m)",
+        "V_sup25":                       "Dist. >25 km/h (m)",
+        "Accélération maximale (m/s²)":  "Accél. max (m/s²)",
+    },
+    "Accélérations / Décélérations": {
+        "Acc_2": "Acc. >2 m/s² (nb)",
+        "Acc_3": "Acc. >3 m/s² (nb)",
+        "Dec_2": "Déc. >2 m/s² (nb)",
+        "Dec_3": "Déc. >3 m/s² (nb)",
+    },
+}
+
+MONITORING_ALL_COLS   = [c for cat in MONITORING_METRICS.values() for c in cat.keys()]
+MONITORING_ALL_LABELS = {c: lbl for cat in MONITORING_METRICS.values() for c, lbl in cat.items()}
+
+MONITORING_CATEGORY_COLORS = {
+    "Intensité max":                 "#BD3032",
+    "Accélérations / Décélérations": "#F2A900",
+    "Haute intensité":               "#0680BE",
+    "Faible intensité & Volume":     "#007A7A",
+}
+MONITORING_METRIC_CATEGORY_COLOR = {
+    c: MONITORING_CATEGORY_COLORS[cat]
+    for cat, metrics in MONITORING_METRICS.items()
+    for c in metrics
+}
+
+# Décimales à 1 chiffre pour les métriques de vitesse/accélération, 0 pour le reste.
+_MONITORING_DECIMAL_COLS = {
+    "Vitesse max (km/h)", "Accélération maximale (m/s²)", "Distance relative (m/min)",
+}
+
+
+def monitoring_metric_fmt(col_key: str) -> str:
+    return ".1f" if col_key in _MONITORING_DECIMAL_COLS else ".0f"
+
+
+# Couleur de base par zone (même palette que la méthodologie d'Emma) :
+# violet = distance globale, vert→jaune→orange→rouge = intensité croissante,
+# bleu Paris FC = tout le reste (vitesse max, accél/décél).
+_MONITORING_HEAT_STD  = (6, 128, 190)
+_MONITORING_HEAT_ZONE = {
+    "Distance (m)":              (126, 87, 194),
+    "Distance relative (m/min)": (126, 87, 194),
+    "V_0_7":                     (18, 161, 80),
+    "V_7_13":                    (18, 161, 80),
+    "V_13_15":                   (232, 181, 0),
+    "V_15_19":                   (232, 181, 0),
+    "V_19_23":                   (234, 115, 23),
+    "V_23_25":                   (189, 48, 50),
+    "V_sup25":                   (189, 48, 50),
+    "Sprints_23":                (189, 48, 50),
+}
+_MONITORING_HEAT_RGB = {
+    MONITORING_ALL_LABELS[c]: _MONITORING_HEAT_ZONE.get(c, _MONITORING_HEAT_STD)
+    for c in MONITORING_ALL_COLS
+}
+
+
+def monitoring_heatmap_styles(column):
+    """Styles Pandas d'une colonne de heatmap de charge : couleur de base selon
+    la zone d'intensité de la métrique, intensité de couleur = valeur (min→max
+    de la colonne affichée), texte blanc/noir choisi pour rester lisible.
+    Même logique que heatmap_styles() côté app d'Emma."""
+    values = pd.to_numeric(column, errors="coerce")
+    vmin, vmax = values.min(), values.max()
+    r, g, b = _MONITORING_HEAT_RGB.get(column.name, _MONITORING_HEAT_STD)
+    out = []
+    for v in values:
+        if pd.isna(v) or pd.isna(vmin) or pd.isna(vmax) or vmin == vmax:
+            out.append("")
+            continue
+        ratio = (v - vmin) / (vmax - vmin)
+        a = 0.12 + 0.80 * ratio
+        lum = (0.2126 * (r * a + 255 * (1 - a))
+               + 0.7152 * (g * a + 255 * (1 - a))
+               + 0.0722 * (b * a + 255 * (1 - a)))
+        fg = "white" if lum < 140 else "black"
+        out.append(f"background-color: rgba({r},{g},{b},{a:.3f}); color: {fg}")
+    return out
+
+
+MONITORING_HEATMAP_LEGEND = (
+    "<div style='display:flex;align-items:center;gap:14px;flex-wrap:wrap;"
+    "margin:2px 0 6px 0;font-size:12px;color:#6A8090'>"
+    "<span>Intensité couleur = valeur (clair → foncé)</span>"
+    "<span><span style='color:#7E57C2'>■</span> distance/volume</span>"
+    "<span><span style='color:#12A150'>■</span> 0-13 km/h</span>"
+    "<span><span style='color:#E8B500'>■</span> 13-19 km/h</span>"
+    "<span><span style='color:#EA7317'>■</span> 19-23 km/h</span>"
+    "<span><span style='color:#BD3032'>■</span> sprint</span>"
+    "<span><span style='color:#0680BE'>■</span> autres (vitesse max, accél/décél)</span></div>"
+)
+
+
+# =========================
 # GPS UI HELPERS
 # =========================
 def ensure_date_column(df: pd.DataFrame) -> pd.DataFrame:
@@ -11076,6 +11195,76 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 "L'ACWR EWMA pondère les charges récentes plus fortement, le rendant plus sensible aux pics de charge "
                                 "et donc plus adapté aux calendriers irréguliers."
                             )
+
+                            st.divider()
+
+                            # ── Répartition de la charge par catégorie (méthodologie GPS) ──
+                            st.markdown("##### 📊 Répartition de la charge par catégorie")
+                            st.caption(
+                                "Classification des métriques GPS en 4 catégories : "
+                                "🟢 Faible intensité & Volume · 🔵 Haute intensité · "
+                                "🔴 Intensité max · 🟠 Accélérations / Décélérations."
+                            )
+
+                            _dr_cat = _gr[_gr["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)].copy()
+                            _dr_cat = ensure_date_column(_dr_cat)
+                            _dr_cat = _dr_cat[_dr_cat["DATE"].notna()].sort_values("DATE")
+
+                            if _dr_cat.empty:
+                                st.info("Pas de données de séance exploitables pour la répartition par catégorie.")
+                            else:
+                                _n_seances_cat = st.slider(
+                                    "Nombre de séances affichées",
+                                    3, max(3, len(_dr_cat)), min(8, len(_dr_cat)),
+                                    key="perf_charge_cat_n_seances"
+                                )
+                                _dr_cat_disp  = _dr_cat.tail(_n_seances_cat).copy()
+                                _last_row_cat = _dr_cat_disp.iloc[-1]
+
+                                # ── Cartes par catégorie (dernière séance) ─────────────
+                                st.markdown(f"**Dernière séance : {_last_row_cat['DATE'].strftime('%d/%m/%Y')}**")
+                                _cat_cols_ui = st.columns(len(MONITORING_METRICS))
+                                for _col_ui, (_cat_name, _cat_metrics) in zip(_cat_cols_ui, MONITORING_METRICS.items()):
+                                    with _col_ui:
+                                        st.markdown(
+                                            f"<div style='color:{MONITORING_CATEGORY_COLORS[_cat_name]};"
+                                            f"font-weight:600;font-size:13px;margin-bottom:4px'>{_cat_name}</div>",
+                                            unsafe_allow_html=True
+                                        )
+                                        for _col_key, _col_label in _cat_metrics.items():
+                                            if _col_key not in _last_row_cat.index:
+                                                continue
+                                            _v_cat = pd.to_numeric(_last_row_cat.get(_col_key), errors="coerce")
+                                            _dec_cat = 1 if _col_key in _MONITORING_DECIMAL_COLS else 0
+                                            st.metric(
+                                                _col_label,
+                                                f"{_v_cat:.{_dec_cat}f}" if pd.notna(_v_cat) else "—",
+                                            )
+
+                                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+                                # ── Carte de comparaison des séances (heatmap) ─────────
+                                st.markdown("**Carte de comparaison des séances**")
+                                _hm_cols = [c for c in MONITORING_ALL_COLS if c in _dr_cat_disp.columns]
+                                if not _hm_cols:
+                                    st.info("Aucune des colonnes GPS attendues n'est présente pour cette joueuse.")
+                                else:
+                                    _hm_labels   = {c: MONITORING_ALL_LABELS[c] for c in _hm_cols}
+                                    _hm_df       = _dr_cat_disp[["DATE"] + _hm_cols].copy()
+                                    _hm_df["DATE"] = _hm_df["DATE"].dt.strftime("%d/%m/%Y")
+                                    _hm_df       = _hm_df.rename(columns={"DATE": "Séance", **_hm_labels})
+                                    _hm_num_cols = list(_hm_labels.values())
+                                    _hm_fmt      = {
+                                        _hm_labels[c]: "{:" + monitoring_metric_fmt(c) + "}"
+                                        for c in _hm_cols
+                                    }
+                                    _styled_hm = (
+                                        _hm_df.style
+                                        .format(_hm_fmt)
+                                        .apply(monitoring_heatmap_styles, subset=_hm_num_cols)
+                                    )
+                                    st.dataframe(_styled_hm, use_container_width=True, hide_index=True)
+                                    st.markdown(MONITORING_HEATMAP_LEGEND, unsafe_allow_html=True)
 
                 with _st_params:
                     _tpc = []
