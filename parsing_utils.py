@@ -494,6 +494,21 @@ _EVENEMENT_CORE_COLS = {
 }
 
 
+def deduce_categorie_from_filename(filename: str, default: str = "U19F") -> str:
+    """Déduit la catégorie (ex. U19F) depuis un nom de fichier Drive.
+
+    Cherche un motif Uxx suivi optionnellement de F/M. À défaut, retourne
+    `default` — à ajuster le jour où plusieurs catégories cohabitent
+    vraiment dans le même dossier Drive.
+    """
+    m = re.search(r'\bU(1[5-9]|2[0-3])\s*([FM])?\b', filename, re.IGNORECASE)
+    if not m:
+        return default
+    age = m.group(1)
+    sexe = (m.group(2) or "F").upper()
+    return f"U{age}{sexe}"
+
+
 def row_to_evenement_and_tags(row: pd.Series) -> tuple[dict, dict]:
     """Convertit une ligne brute du CSV tactique en (evenement, tags).
 
