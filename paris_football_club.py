@@ -10027,93 +10027,25 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     st.header("🏆 Performance")
     _saison_sel = st.session_state.get("selected_saison", "Toutes les saisons")
 
-    # ── Contrôles globaux ──────────────────────────────────────────────────
-    _col_j, _col_p, _col_c = st.columns([2, 2, 2])
-    with _col_j:
-        if player_name:
-            _perf_player = player_name
-            st.markdown(f"**Joueuse :** {player_name}")
-        else:
-            _all_p = sorted(pfc_kpi["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
-                     if pfc_kpi is not None and not pfc_kpi.empty else []
-            # Appliquer filtres et aliases depuis les réglages persistants
-            _ps_perf = st.session_state.get("_player_settings") or load_player_settings()
-            st.session_state["_player_settings"] = _ps_perf
-            _all_p = apply_player_settings(_all_p, _ps_perf)
-            _perf_player = st.selectbox("Joueuse", _all_p, key="perf_player_sel") if _all_p else None
-        # Stocker en session_state pour propagation
-        if _perf_player:
-            st.session_state["_perf_player_selected"] = _perf_player
-    with _col_p:
-        _perf_period = st.selectbox("Période / Match",
-            ["Toute la saison", "Sélectionner des matchs", "Plage de dates"],
-            key="perf_period_sel")
-    with _col_c:
-        _compare_options = [
-            "— aucune —",
-            "vs Référentiel EDF U19 (poste)", "vs Référentiel APL (poste)",
-            "vs Référentiel Niveau International (poste)"
-        ]
-        if role != ROLE_JOUEUSE:
-            _compare_options.insert(1, "vs une autre joueuse")
-        _perf_compare = st.selectbox("Comparer avec", _compare_options, key="perf_compare_sel")
-
-    # ── Filtre période ─────────────────────────────────────────────────────
-    _perf_matches_sel = None
-    if _perf_period == "Sélectionner des matchs" and pfc_kpi is not None and not pfc_kpi.empty and _perf_player:
-        _pm_all = []
-        if "Adversaire" in pfc_kpi.columns:
-            _pdf2 = pfc_kpi[pfc_kpi["Player"].apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(_perf_player)]
-            _pm_all = sorted(_pdf2["Adversaire"].dropna().unique().tolist())
-        _perf_matches_sel = st.multiselect("Matchs", _pm_all, key="perf_matches_sel")
-    elif _perf_period == "Plage de dates":
-        _dc1, _dc2 = st.columns(2)
-        with _dc1: _date_deb = st.date_input("Du", key="perf_date_deb")
-        with _dc2: _date_fin = st.date_input("Au", key="perf_date_fin")
-
-    st.divider()
-
     # ── Données partagées (une seule fois) ─────────────────────────────────
     _gps_match_df = st.session_state.get("gps_match_df", pd.DataFrame())
     _gps_raw_df   = st.session_state.get("gps_raw_df",   pd.DataFrame())
     _gps_weekly   = st.session_state.get("gps_weekly_df", pd.DataFrame())
     _tac_files    = filter_tactical_by_saison(get_tactical_files(), _saison_sel)
 
-    # ── Résoudre le nom GPS correspondant à _perf_player ──────────────────
-    # Le nom dans pfc_kpi peut différer du nom dans les données GPS.
-    # On cherche la meilleure correspondance par tokens.
+    # ── Contrôles joueuse / période / comparaison ──────────────────────────
+    # Ces contrôles ne sont affichés que dans Matchs → Performance Individuelle
+    # (voir plus bas). On initialise ici des valeurs par défaut pour que le
+    # reste de la page (Monitoring, etc.) puisse s'appuyer dessus sans erreur
+    # tant que l'onglet Performance Individuelle n'a pas été visité.
+    _perf_player = player_name if player_name else None
+    _perf_period = "Toute la saison"
+    _perf_compare = "— aucune —"
+    _perf_matches_sel = None
+    _date_deb = _date_fin = None
     _pgps_name = _perf_player
-    if _perf_player and _gps_raw_df is not None and not _gps_raw_df.empty and "Player" in _gps_raw_df.columns:
-        _gps_players = _gps_raw_df["Player"].dropna().astype(str).unique()
-        _p_tokens = nom_tokens(_perf_player)
-        _best_gps = None
-        _best_score = 0
-        for _gp in _gps_players:
-            _gp_tokens = nom_tokens(_gp)
-            _common = len(_p_tokens & _gp_tokens)
-            if _common > _best_score:
-                _best_score = _common
-                _best_gps = _gp
-        if _best_gps and _best_score >= 1:
-            _pgps_name = _best_gps
-
-    # Données joueuse filtrées
-    # Résoudre l'alias vers le nom original pour les requêtes de données
-    _perf_player_orig = resolve_alias_to_original(_perf_player, _ps_perf) if _perf_player else None
     _df_player = pd.DataFrame()
-    if pfc_kpi is not None and not pfc_kpi.empty and _perf_player_orig:
-        _df_player = pfc_kpi[pfc_kpi["Player"].apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(_perf_player_orig)].copy()
-        if _perf_matches_sel:
-            _df_player = _df_player[_df_player["Adversaire"].isin(_perf_matches_sel)].copy()
-        elif _perf_period == "Plage de dates" and "Date" in _df_player.columns:
-            try:
-                _df_player["_dt"] = pd.to_datetime(_df_player["Date"], errors="coerce")
-                _df_player = _df_player[
-                    (_df_player["_dt"] >= pd.Timestamp(_date_deb)) &
-                    (_df_player["_dt"] <= pd.Timestamp(_date_fin))
-                ].copy()
-            except Exception:
-                pass
+
     # ── 4 onglets internes ─────────────────────────────────────────────────
     _tab_matchs, _tab_entrainement, _tab_monitoring, _tab_suivi = st.tabs([
         "⚽ Matchs",
@@ -10188,6 +10120,91 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     render_collective_report(_collectif_report, gps_stats=_collectif_gps_stats)
 
         with _mat_individuel:
+            # ── Contrôles (joueuse / période / comparaison) ─────────────────
+            # Ces contrôles ne sont pertinents qu'en Performance Individuelle,
+            # ils ne s'affichent donc que dans ce sous-onglet.
+            _ps_perf = st.session_state.get("_player_settings") or load_player_settings()
+            st.session_state["_player_settings"] = _ps_perf
+
+            _col_j, _col_p, _col_c = st.columns([2, 2, 2])
+            with _col_j:
+                if player_name:
+                    _perf_player = player_name
+                    st.markdown(f"**Joueuse :** {player_name}")
+                else:
+                    _all_p = sorted(pfc_kpi["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
+                             if pfc_kpi is not None and not pfc_kpi.empty else []
+                    # Appliquer filtres et aliases depuis les réglages persistants
+                    _all_p = apply_player_settings(_all_p, _ps_perf)
+                    _perf_player = st.selectbox("Joueuse", _all_p, key="perf_player_sel") if _all_p else None
+                # Stocker en session_state pour propagation
+                if _perf_player:
+                    st.session_state["_perf_player_selected"] = _perf_player
+            with _col_p:
+                _perf_period = st.selectbox("Période / Match",
+                    ["Toute la saison", "Sélectionner des matchs", "Plage de dates"],
+                    key="perf_period_sel")
+            with _col_c:
+                _compare_options = [
+                    "— aucune —",
+                    "vs Référentiel EDF U19 (poste)", "vs Référentiel APL (poste)",
+                    "vs Référentiel Niveau International (poste)"
+                ]
+                if role != ROLE_JOUEUSE:
+                    _compare_options.insert(1, "vs une autre joueuse")
+                _perf_compare = st.selectbox("Comparer avec", _compare_options, key="perf_compare_sel")
+
+            # ── Filtre période ───────────────────────────────────────────────
+            _perf_matches_sel = None
+            if _perf_period == "Sélectionner des matchs" and pfc_kpi is not None and not pfc_kpi.empty and _perf_player:
+                _pm_all = []
+                if "Adversaire" in pfc_kpi.columns:
+                    _pdf2 = pfc_kpi[pfc_kpi["Player"].apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(_perf_player)]
+                    _pm_all = sorted(_pdf2["Adversaire"].dropna().unique().tolist())
+                _perf_matches_sel = st.multiselect("Matchs", _pm_all, key="perf_matches_sel")
+            elif _perf_period == "Plage de dates":
+                _dc1, _dc2 = st.columns(2)
+                with _dc1: _date_deb = st.date_input("Du", key="perf_date_deb")
+                with _dc2: _date_fin = st.date_input("Au", key="perf_date_fin")
+
+            # ── Résoudre le nom GPS correspondant à _perf_player ────────────
+            # Le nom dans pfc_kpi peut différer du nom dans les données GPS.
+            # On cherche la meilleure correspondance par tokens.
+            _pgps_name = _perf_player
+            if _perf_player and _gps_raw_df is not None and not _gps_raw_df.empty and "Player" in _gps_raw_df.columns:
+                _gps_players = _gps_raw_df["Player"].dropna().astype(str).unique()
+                _p_tokens = nom_tokens(_perf_player)
+                _best_gps = None
+                _best_score = 0
+                for _gp in _gps_players:
+                    _gp_tokens = nom_tokens(_gp)
+                    _common = len(_p_tokens & _gp_tokens)
+                    if _common > _best_score:
+                        _best_score = _common
+                        _best_gps = _gp
+                if _best_gps and _best_score >= 1:
+                    _pgps_name = _best_gps
+
+            # Données joueuse filtrées
+            # Résoudre l'alias vers le nom original pour les requêtes de données
+            _perf_player_orig = resolve_alias_to_original(_perf_player, _ps_perf) if _perf_player else None
+            _df_player = pd.DataFrame()
+            if pfc_kpi is not None and not pfc_kpi.empty and _perf_player_orig:
+                _df_player = pfc_kpi[pfc_kpi["Player"].apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(_perf_player_orig)].copy()
+                if _perf_matches_sel:
+                    _df_player = _df_player[_df_player["Adversaire"].isin(_perf_matches_sel)].copy()
+                elif _perf_period == "Plage de dates" and "Date" in _df_player.columns:
+                    try:
+                        _df_player["_dt"] = pd.to_datetime(_df_player["Date"], errors="coerce")
+                        _df_player = _df_player[
+                            (_df_player["_dt"] >= pd.Timestamp(_date_deb)) &
+                            (_df_player["_dt"] <= pd.Timestamp(_date_fin))
+                        ].copy()
+                    except Exception:
+                        pass
+
+            st.divider()
+
             if _df_player.empty:
                 st.info("Aucune donnée technico-tactique pour cette sélection.")
             else:
@@ -11281,7 +11298,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
         st.divider()
         st.markdown("#### 📋 Fiche Bilan")
         if not _perf_player:
-            st.info("Sélectionne une joueuse dans les contrôles ci-dessus.")
+            st.info("Sélectionne une joueuse dans l'onglet **Matchs → 🎯 Performance Individuelle**.")
         else:
             st.markdown(f"**Fiche bilan — {_perf_player}**")
             st.caption("Données agrégées sur la période et les matchs sélectionnés.")
