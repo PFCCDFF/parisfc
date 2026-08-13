@@ -23,6 +23,7 @@ matplotlib.use("Agg", force=True)  # Backend non-interactif, thread-safe — év
 import matplotlib.pyplot as plt
 from streamlit_option_menu import option_menu
 from mplsoccer import PyPizza, Radar, FontManager, grid
+import plotly.graph_objects as go
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -7189,6 +7190,67 @@ MONITORING_HEATMAP_LEGEND = (
 )
 
 
+def monitoring_team_reference(gr_all: pd.DataFrame, ref_date) -> pd.Series:
+    """Moyenne équipe (toutes joueuses) pour une date donnée — référence du
+    profil, équivalent de team_df côté app d'Emma mais calculée localement
+    sur les données GPS déjà chargées (pas de notion de poste côté GPS)."""
+    if gr_all is None or gr_all.empty or "DATE" not in gr_all.columns or pd.isna(ref_date):
+        return pd.Series(dtype=float)
+    _same_day = gr_all[gr_all["DATE"].dt.normalize() == pd.Timestamp(ref_date).normalize()]
+    if _same_day.empty:
+        return pd.Series(dtype=float)
+    return _same_day[[c for c in MONITORING_ALL_COLS if c in _same_day.columns]].mean(numeric_only=True)
+
+
+def monitoring_profile_bars(row: pd.Series, ref: pd.Series, ref_label: str):
+    """Graphique Plotly en barres : une barre par métrique GPS = % de la
+    référence (moyenne équipe), colorée par catégorie, ligne à 100%, valeur
+    brute affichée sur la barre. Port direct de _profile_bars() côté app
+    d'Emma (paris-fc-charge/pages/1_Vue_individuelle.py), adapté aux colonnes
+    MONITORING_ALL_COLS de cette app."""
+    rows = []
+    for col in MONITORING_ALL_COLS:
+        pv  = pd.to_numeric(row.get(col, float("nan")), errors="coerce") if hasattr(row, "get") else float("nan")
+        avg = pd.to_numeric(ref.get(col, float("nan")), errors="coerce") if hasattr(ref, "get") else float("nan")
+        if pd.isna(pv) or pd.isna(avg) or avg == 0:
+            continue
+        pct = float(pv) / float(avg) * 100
+        rows.append({
+            "label": MONITORING_ALL_LABELS[col], "pct": round(pct, 1),
+            "raw": f"{pv:{monitoring_metric_fmt(col)}}",
+            "color": MONITORING_METRIC_CATEGORY_COLOR.get(col, "#0680BE"),
+        })
+    if not rows:
+        return None
+    d = pd.DataFrame(rows)
+    fig = go.Figure(go.Bar(
+        x=d["label"], y=d["pct"], text=d["raw"],
+        textposition="inside", insidetextanchor="end",
+        textfont=dict(size=14, color="white"),
+        marker_color=d["color"],
+        hovertemplate="%{x}<br>%{y:.1f}% de la référence<extra></extra>",
+    ))
+    fig.add_shape(
+        type="line", x0=0, x1=1, xref="paper", y0=100, y1=100, yref="y",
+        line=dict(color="rgba(200,216,232,0.5)", dash="dash", width=1.5),
+    )
+    fig.add_annotation(
+        y=100, x=1.01, xref="paper", yref="y", text=ref_label,
+        showarrow=False, xanchor="left", yanchor="middle",
+        font=dict(size=11, color="rgba(200,216,232,0.8)"),
+    )
+    fig.update_layout(
+        margin=dict(t=30, b=20, l=50, r=90),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#C8D8E8"),
+        xaxis=dict(showgrid=False, tickangle=-30),
+        yaxis=dict(gridcolor="rgba(200,216,232,0.12)", zeroline=False, ticksuffix="%",
+                   range=[0, max(float(d["pct"].max()) * 1.05, 115)]),
+        showlegend=False, height=380,
+    )
+    return fig
+
+
 # =========================
 # GPS UI HELPERS
 # =========================
@@ -10535,97 +10597,113 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 )
 
             if _pgps:
-                _st_entr, _st_match, _st_params = st.tabs([
-                    "🏃 Entraînement", "⚽ Match & Charge", "⚙️ Paramètres"])
+                _st_seances, _st_match, _st_charge, _st_params = st.tabs([
+                    "🏃 Séances", "⚽ Match", "⚖️ Charge", "⚙️ Paramètres"])
 
-                # Remap anciens onglets vers les nouveaux
-                _st1 = _st_entr   # Brutes → Entraînement
-                _st2 = _st_entr   # Global → Entraînement
-                _st3 = _st_entr   # Microcycle → Entraînement
-                _st4 = _st_match  # Match → Match & Charge
-                _st5 = _st_match  # Charge → Match & Charge
-                _st6 = _st_params # Concordance → Paramètres
-
-                with _st_entr:
-                    _entr_sub1, _entr_sub2, _entr_sub3 = st.tabs(["🧾 Brutes", "📅 Global", "📈 Microcycle"])
-
-                with _entr_sub1:
+                # ── Séances (méthodologie Emma : cartes par catégorie +
+                # profil en barres vs moyenne équipe) — remplace les anciens
+                # onglets Brutes/Global/Microcycle.
+                with _st_seances:
                     _dr = _gr[_gr["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)].copy()
                     _dr = ensure_date_column(_dr)
+                    _dr = _dr[_dr["DATE"].notna()].sort_values("DATE")
+
                     if _dr.empty:
-                        st.info("Aucune ligne GPS.")
+                        st.info("Aucune séance GPS pour cette joueuse.")
                     else:
-                        _ca, _cb = st.columns(2)
-                        with _ca:
-                            _rng = st.date_input("Période",
-                                value=(_dr["DATE"].min().date(), _dr["DATE"].max().date()),
-                                min_value=_dr["DATE"].min().date(),
-                                max_value=_dr["DATE"].max().date(), key="perf_raw_rng")
-                        with _cb:
-                            if "__source_file" in _dr.columns:
-                                _srcs2 = ["Tous"] + sorted(_dr["__source_file"].dropna().astype(str).unique())
-                                _src2 = st.selectbox("Source", _srcs2, key="perf_raw_src")
-                            else: _src2 = "Tous"
-                        if isinstance(_rng, tuple) and len(_rng)==2:
-                            _dr = _dr[(_dr["DATE"]>=pd.Timestamp(_rng[0])) & (_dr["DATE"]<=pd.Timestamp(_rng[1]))]
-                        if _src2!="Tous" and "__source_file" in _dr.columns:
-                            _dr = _dr[_dr["__source_file"].astype(str)==_src2]
-                        _sc_raw = [c for c in ["DATE","Distance (m)","Distance HID (>13 km/h)",
-                            "Sprints_23","Vitesse max (km/h)","CHARGE","RPE"] if c in _dr.columns]
-                        st.dataframe(_dr[_sc_raw], use_container_width=True)
+                        _seance_dates = sorted(_dr["DATE"].dt.normalize().unique())
+                        _norm_dates = [pd.Timestamp(d).date() for d in _seance_dates]
 
-                with _entr_sub2:
-                    if _gps_weekly is not None and not _gps_weekly.empty and "Player" in _gps_weekly.columns:
-                        _dw2 = _gps_weekly[_gps_weekly["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)]
-                        if not _dw2.empty:
-                            st.dataframe(_dw2, use_container_width=True)
-                        else:
-                            st.info("Aucune donnée hebdomadaire pour cette joueuse.")
-                    else:
-                        st.info("Données hebdomadaires non disponibles.")
+                        if st.session_state.get("_seances_last_player") != _pgps:
+                            st.session_state["_seances_idx"] = len(_seance_dates) - 1
+                            st.session_state["_seances_last_player"] = _pgps
+                        _s_idx = max(0, min(len(_seance_dates) - 1,
+                                             st.session_state.get("_seances_idx", len(_seance_dates) - 1)))
 
-                with _entr_sub3:
-                    _dg = _gr[_gr["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)].copy()
-                    _dg = ensure_date_column(_dg)
-                    _dg = _dg[_dg["DATE"].notna()].copy()
-                    if _dg.empty:
-                        st.info("Pas de dates exploitables pour cette joueuse.")
-                    else:
-                        _max_date = _dg["DATE"].max().normalize()
-                        _min_date = _dg["DATE"].min().normalize()
-                        _end_date = st.date_input(
-                            "Date de référence (MD)",
-                            value=_max_date.date(),
-                            min_value=_min_date.date(),
-                            max_value=_max_date.date(),
-                            key="perf_md_ref_date",
-                        )
-                        _smd = build_md_window_summary(_dg, pd.Timestamp(_end_date), days=7)
-                        if _smd is None or _smd.empty:
-                            st.info("Aucune donnée sur cette fenêtre de 7 jours.")
+                        _cdate_s, _cprev_s, _cnext_s = st.columns([3, 1, 1])
+                        with _cdate_s:
+                            _sel_date_s = st.date_input(
+                                "Date de la séance",
+                                value=_norm_dates[_s_idx],
+                                min_value=_norm_dates[0],
+                                max_value=_norm_dates[-1],
+                                key="perf_seances_date",
+                            )
+                        if _sel_date_s in _norm_dates:
+                            st.session_state["_seances_idx"] = _norm_dates.index(_sel_date_s)
+                            _s_idx = st.session_state["_seances_idx"]
+                        with _cprev_s:
+                            st.markdown("<div style='height:1.75em'></div>", unsafe_allow_html=True)
+                            if st.button("← Préc.", disabled=_s_idx == 0, key="seances_prev"):
+                                st.session_state["_seances_idx"] = _s_idx - 1
+                                st.rerun()
+                        with _cnext_s:
+                            st.markdown("<div style='height:1.75em'></div>", unsafe_allow_html=True)
+                            if st.button("Suiv. →", disabled=_s_idx >= len(_seance_dates) - 1, key="seances_next"):
+                                st.session_state["_seances_idx"] = _s_idx + 1
+                                st.rerun()
+
+                        _ref_date_s = pd.Timestamp(_seance_dates[_s_idx])
+                        _day_rows_s = _dr[_dr["DATE"].dt.normalize() == _ref_date_s]
+
+                        if len(_day_rows_s) > 1 and "__source_file" in _day_rows_s.columns:
+                            _srcs_s = sorted(_day_rows_s["__source_file"].dropna().astype(str).unique())
+                            _src_choice_s = st.selectbox(
+                                "Séance (plusieurs le même jour)", _srcs_s, key="perf_seances_src"
+                            )
+                            _day_rows_s = _day_rows_s[_day_rows_s["__source_file"].astype(str) == _src_choice_s]
+
+                        _row_s = _day_rows_s.iloc[0] if not _day_rows_s.empty else pd.Series(dtype=float)
+
+                        st.markdown(f"**Séance du {_ref_date_s.strftime('%d/%m/%Y')}**")
+                        _team_ref_s = monitoring_team_reference(_gr, _ref_date_s)
+
+                        _cat_cols_s = st.columns(len(MONITORING_METRICS))
+                        for _col_ui_s, (_cat_name_s, _cat_metrics_s) in zip(_cat_cols_s, MONITORING_METRICS.items()):
+                            with _col_ui_s:
+                                st.markdown(
+                                    f"<div style='color:{MONITORING_CATEGORY_COLORS[_cat_name_s]};"
+                                    f"font-weight:600;font-size:13px;margin-bottom:4px'>{_cat_name_s}</div>",
+                                    unsafe_allow_html=True
+                                )
+                                for _col_key_s, _col_label_s in _cat_metrics_s.items():
+                                    if _col_key_s not in _row_s.index:
+                                        continue
+                                    _v_s = pd.to_numeric(_row_s.get(_col_key_s), errors="coerce")
+                                    _dec_s = 1 if _col_key_s in _MONITORING_DECIMAL_COLS else 0
+                                    _ref_v_s = (_team_ref_s.get(_col_key_s)
+                                                if not _team_ref_s.empty else None)
+                                    _delta_s = None
+                                    if _ref_v_s is not None and pd.notna(_ref_v_s) and pd.notna(_v_s):
+                                        _delta_s = round(float(_v_s) - float(_ref_v_s), 1)
+                                        if _delta_s == 0:
+                                            _delta_s = None
+                                    st.metric(
+                                        _col_label_s,
+                                        f"{_v_s:.{_dec_s}f}" if pd.notna(_v_s) else "—",
+                                        delta=_delta_s,
+                                        help=(f"Moy. équipe : {_ref_v_s:.{_dec_s}f}"
+                                              if _ref_v_s is not None and pd.notna(_ref_v_s) else None),
+                                    )
+
+                        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                        st.markdown("**Profil vs moyenne équipe**")
+                        if not _team_ref_s.empty:
+                            _fig_profile_s = monitoring_profile_bars(_row_s, _team_ref_s, "moyenne équipe")
+                            if _fig_profile_s:
+                                st.plotly_chart(_fig_profile_s, use_container_width=True)
+                                st.caption("Base 100 = moyenne équipe du jour | valeur brute sur chaque barre")
+                            else:
+                                st.info("Pas assez de données pour calculer le profil vs équipe.")
                         else:
-                            st.dataframe(_smd, use_container_width=True)
-                            _mc = [c for c in _smd.columns if c != "MD"]
-                            _dl = [c for c in [
-                                "Moyenne de Distance HID (>13 km/h)",
-                                "Moyenne de Distance 13-19 (m)",
-                                "Moyenne de Distance 19-23 (m)",
-                                "Moyenne de Distance >23 (m)",
-                                "Moyenne de # Acc/Dec",
-                                "Moyenne de Distance relative (m/min)",
-                            ] if c in _mc]
-                            _sl = st.multiselect("Indicateurs (axe droit)", _mc, default=_dl, key="perf_md_lines")
-                            fig_md = plot_gps_md_graph(_smd, selected_lines=_sl)
-                            if fig_md:
-                                st.pyplot(fig_md, use_container_width=True)
-                                plt.close(fig_md)
+                            st.info("Aucune donnée équipe disponible pour cette date (référence).")
+
+                        with st.expander("Voir les données détaillées"):
+                            _sc_raw = [c for c in ["DATE", "Distance (m)", "Distance HID (>13 km/h)",
+                                "Sprints_23", "Vitesse max (km/h)", "CHARGE", "RPE"] if c in _dr.columns]
+                            st.dataframe(_dr[_sc_raw], use_container_width=True)
 
                 with _st_match:
-                    _match_sub1, _match_sub2 = st.tabs(["⚽ Match", "⚖️ Charge"])
-                    _st4 = _match_sub1
-                    _st5 = _match_sub2
-
-                with _match_sub1:
                     # ── Données GPS match pour la joueuse ─────────────────
                     _gm_df = _gps_match_df.copy() if _gps_match_df is not None and not _gps_match_df.empty else pd.DataFrame()
 
@@ -11045,7 +11123,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                         st.pyplot(_fig_c, use_container_width=True)
                                         _plt_c.close(_fig_c)
 
-                with _match_sub2:
+                with _st_charge:
                     if _gr is None or _gr.empty:
                         st.info("Aucune donnée GPS brute disponible.")
                     else:
