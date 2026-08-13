@@ -10036,7 +10036,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     # ── Contrôles joueuse / période / comparaison ──────────────────────────
     # Ces contrôles ne sont affichés que dans Matchs → Performance Individuelle
     # (voir plus bas). On initialise ici des valeurs par défaut pour que le
-    # reste de la page (Entraînement, etc.) puisse s'appuyer dessus sans erreur
+    # reste de la page (Monitoring, etc.) puisse s'appuyer dessus sans erreur
     # tant que l'onglet Performance Individuelle n'a pas été visité.
     _perf_player = player_name if player_name else None
     _perf_period = "Toute la saison"
@@ -10047,11 +10047,18 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     _df_player = pd.DataFrame()
 
     # ── 4 onglets internes ─────────────────────────────────────────────────
-    _tab_matchs, _tab_entrainement, _tab_suivi = st.tabs([
+    _tab_matchs, _tab_entrainement, _tab_monitoring, _tab_suivi = st.tabs([
         "⚽ Matchs",
         "🏋️ Entraînement",
+        "📡 Monitoring",
         "📊 Suivi de la performance",
     ])
+
+    # ══════════════════════════════════
+    # TAB — ENTRAÎNEMENT (placeholder)
+    # ══════════════════════════════════
+    with _tab_entrainement:
+        st.info("Section en construction — contenu à venir.")
 
     # ══════════════════════════════════
     # TAB 1 — MATCHS
@@ -10500,9 +10507,12 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
             render_evaluation_page(user_profile, permissions, _saison_sel)
 
     # ══════════════════════════════════
-    # TAB — ENTRAÎNEMENT (Monitoring GPS — Entraînement + Match & Charge)
+    # TAB 3 — PHYSIQUE GPS
     # ══════════════════════════════════
-    with _tab_entrainement:
+    # ══════════════════════════════════
+    # TAB 3 — MONITORING (partie 1 : GPS — Entraînement + Match & Charge)
+    # ══════════════════════════════════
+    with _tab_monitoring:
         if _gps_raw_df is None or _gps_raw_df.empty:
             st.warning("Aucune donnée GPS brute trouvée.")
         else:
@@ -11282,9 +11292,9 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     render_gps_concordance_ui(_gps_match_df, sorted(set(_tpc)))
 
     # ══════════════════════════════════════
-    # TAB — ENTRAÎNEMENT (Fiche Bilan)
+    # TAB 3 — MONITORING (partie 2 : Fiche Bilan)
     # ══════════════════════════════════════
-    with _tab_entrainement:
+    with _tab_monitoring:
         st.divider()
         st.markdown("#### 📋 Fiche Bilan")
         if not _perf_player:
