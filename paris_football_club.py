@@ -10556,24 +10556,15 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         _comp_perf.html(_html, height=1120, scrolling=False)
 
     # ══════════════════════════════════
-    # TAB — SUIVI DE LA PERFORMANCE (Monitoring & Charge + Évaluations)
+    # TAB — SUIVI DE LA PERFORMANCE — onglets à plat (Séances, Match,
+    # Charge, Paramètres, Fiche Bilan, Évaluations) : un seul niveau de
+    # clic depuis cet onglet, sélecteur de joueuse commun affiché une
+    # fois au-dessus (au lieu d'un onglet "Monitoring & Charge" imbriqué).
     # ══════════════════════════════════
     with _tab_suivi:
-        _suivi_monitoring, _suivi_eval = st.tabs(["📡 Monitoring & Charge", "📝 Évaluations"])
-
-    with _suivi_eval:
-        if role == ROLE_JOUEUSE:
-            st.info("Accès réservé au staff.")
-        else:
-            render_evaluation_page(user_profile, permissions, _saison_sel)
-
-    # ══════════════════════════════════
-    # TAB — SUIVI (Monitoring & Charge : GPS — Entraînement + Match & Charge)
-    # ══════════════════════════════════
-    with _suivi_monitoring:
-        if _gps_raw_df is None or _gps_raw_df.empty:
-            st.warning("Aucune donnée GPS brute trouvée.")
-        else:
+        _gr = pd.DataFrame()
+        _pgps = None
+        if _gps_raw_df is not None and not _gps_raw_df.empty:
             _gr = ensure_date_column(_gps_raw_df)
             _all_gps_p = sorted(_gr["Player"].dropna().astype(str).unique())
 
@@ -10589,21 +10580,29 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
             if role == ROLE_JOUEUSE and _pgps_default:
                 _pgps = _pgps_default
                 st.caption(f"Joueuse : **{_pgps}**")
-            else:
+            elif _all_gps_p:
                 _pgps = st.selectbox(
                     "Joueuse", _all_gps_p,
                     index=_def_idx,
                     key="perf_gps_player_sel"
                 )
 
-            if _pgps:
-                _st_seances, _st_match, _st_charge, _st_params = st.tabs([
-                    "🏃 Séances", "⚽ Match", "⚖️ Charge", "⚙️ Paramètres"])
+        _st_seances, _st_match, _st_charge, _st_params, _st_fiche, _suivi_eval = st.tabs([
+            "🏃 Séances", "⚽ Match", "⚖️ Charge", "⚙️ Paramètres", "📋 Fiche Bilan", "📝 Évaluations"
+        ])
 
-                # ── Séances (méthodologie Emma : cartes par catégorie +
-                # profil en barres vs moyenne équipe) — remplace les anciens
-                # onglets Brutes/Global/Microcycle.
-                with _st_seances:
+    with _suivi_eval:
+        if role == ROLE_JOUEUSE:
+            st.info("Accès réservé au staff.")
+        else:
+            render_evaluation_page(user_profile, permissions, _saison_sel)
+
+    # ── Séances (méthodologie Emma : cartes par catégorie + profil en
+    # barres vs moyenne équipe) — remplace les anciens onglets
+    # Brutes/Global/Microcycle. Si _pgps est vide (pas de données GPS ou
+    # pas de joueuse résolue), les checks internes affichent déjà les
+    # messages "aucune donnée" appropriés.
+    with _st_seances:
                     _dr = _gr[_gr["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)].copy()
                     _dr = ensure_date_column(_dr)
                     _dr = _dr[_dr["DATE"].notna()].sort_values("DATE")
@@ -10703,7 +10702,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 "Sprints_23", "Vitesse max (km/h)", "CHARGE", "RPE"] if c in _dr.columns]
                             st.dataframe(_dr[_sc_raw], use_container_width=True)
 
-                with _st_match:
+    with _st_match:
                     # ── Données GPS match pour la joueuse ─────────────────
                     _gm_df = _gps_match_df.copy() if _gps_match_df is not None and not _gps_match_df.empty else pd.DataFrame()
 
@@ -11123,7 +11122,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                         st.pyplot(_fig_c, use_container_width=True)
                                         _plt_c.close(_fig_c)
 
-                with _st_charge:
+    with _st_charge:
                     if _gr is None or _gr.empty:
                         st.info("Aucune donnée GPS brute disponible.")
                     else:
@@ -11357,7 +11356,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                     st.dataframe(_styled_hm, use_container_width=True, hide_index=True)
                                     st.markdown(MONITORING_HEATMAP_LEGEND, unsafe_allow_html=True)
 
-                with _st_params:
+    with _st_params:
                     _tpc = []
                     for _sk in ["kpi_df","pfc_kpi_df"]:
                         _kdf = st.session_state.get(_sk)
@@ -11366,10 +11365,9 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     render_gps_concordance_ui(_gps_match_df, sorted(set(_tpc)))
 
     # ══════════════════════════════════════
-    # TAB — SUIVI (Monitoring & Charge : Fiche Bilan)
+    # TAB — SUIVI (Fiche Bilan, onglet à plat dédié)
     # ══════════════════════════════════════
-    with _suivi_monitoring:
-        st.divider()
+    with _st_fiche:
         st.markdown("#### 📋 Fiche Bilan")
         if not _perf_player:
             st.info("Sélectionne une joueuse dans l'onglet **Matchs → 🎯 Performance Individuelle**.")
