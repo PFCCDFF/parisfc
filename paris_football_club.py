@@ -211,6 +211,41 @@ def resolve_alias_to_original(name: str, settings: dict) -> str:
     return reverse.get(name, name)
 
 
+# ── Fiche Bilan : catalogue d'indicateurs + templates nommés persistants ──
+FICHE_BILAN_INDICATORS = {
+    "Tactique":   ["Rigueur", "Récupération", "Distribution", "Percussion", "Finition", "Créativité"],
+    "Technique":  ["Passes réussies", "Dribbles réussis", "Tirs cadrés", "Buts",
+                   "Passes déc.", "Passe 1/3", "Passes courtes", "Passes longues"],
+    "Défensif":   ["Duels défensifs / match", "Duels gagnés %", "Timing (sans faute %)",
+                   "Interceptions / match", "Fautes / match"],
+    "Athlétique": ["Endurance (m)", "Intensité (m)", "Sprint (nb)", "Vitesse max (km/h)", "Fréquence (m/min)"],
+}
+FICHE_BILAN_ALL_INDICATORS = [i for cat in FICHE_BILAN_INDICATORS.values() for i in cat]
+FICHE_TEMPLATES_PATH = os.path.join("data", "fiche_bilan_templates.json")
+
+
+def load_fiche_templates() -> dict:
+    """Charge les templates d'indicateurs (Fiche Bilan) depuis le fichier JSON persistant."""
+    if os.path.exists(FICHE_TEMPLATES_PATH):
+        try:
+            with open(FICHE_TEMPLATES_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_fiche_templates(templates: dict) -> bool:
+    """Sauvegarde les templates d'indicateurs (Fiche Bilan) dans le fichier JSON persistant."""
+    try:
+        os.makedirs(os.path.dirname(FICHE_TEMPLATES_PATH), exist_ok=True)
+        with open(FICHE_TEMPLATES_PATH, "w", encoding="utf-8") as f:
+            json.dump(templates, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
 # =========================
 # UTILS
 # =========================
@@ -9140,7 +9175,8 @@ def build_fiche_bilan_html(player_name: str,
                            pfc_kpi_all: pd.DataFrame,
                            gps_match_df: pd.DataFrame,
                            photo_b64: str = None,
-                           player_info: dict = None) -> str:
+                           player_info: dict = None,
+                           selected_indicators: set = None) -> str:
     """Génère la fiche bilan périodique HTML d'une joueuse.
     Reproduit la structure de la fiche papier :
     - En-tête identité + photo
@@ -9154,6 +9190,10 @@ def build_fiche_bilan_html(player_name: str,
     matplotlib.use("Agg")
     import matplotlib.pyplot as _plt_f
     from mplsoccer import Radar
+
+    # None = tout afficher (rétrocompatible) ; sinon set des libellés
+    # d'indicateurs à inclure (FICHE_BILAN_ALL_INDICATORS).
+    _sel = set(FICHE_BILAN_ALL_INDICATORS) if selected_indicators is None else set(selected_indicators)
 
     def _n(v):
         try:
@@ -9245,31 +9285,35 @@ def build_fiche_bilan_html(player_name: str,
     freq_moy    = round(dist_moy / tps_gps, 1) if (dist_moy and tps_gps and tps_gps > 0) else None
 
     # ── Radar matplotlib → base64 ─────────────────────────────────────────
-    _radar_vals = [rigueur or 0, recuper or 0, distribut or 0,
-                   percussion or 0, finition or 0, creativite or 0]
-    _radar_labels = ["Rigueur", "Récupération", "Distribution",
-                     "Percussion", "Finition", "Créativité"]
+    _radar_all_labels = ["Rigueur", "Récupération", "Distribution",
+                         "Percussion", "Finition", "Créativité"]
+    _radar_all_vals = [rigueur or 0, recuper or 0, distribut or 0,
+                       percussion or 0, finition or 0, creativite or 0]
+    _radar_labels = [l for l in _radar_all_labels if l in _sel]
+    _radar_vals   = [v for l, v in zip(_radar_all_labels, _radar_all_vals) if l in _sel]
     radar_b64 = ""
-    try:
-        _rdr = Radar(_radar_labels, [0]*6, [100]*6, num_rings=4,
-                     ring_width=1, center_circle_radius=1)
-        _fig_r, _ax_r = _rdr.setup_axis(figsize=(4, 4))
-        _fig_r.patch.set_facecolor("#060F1A")
-        _ax_r.set_facecolor("#060F1A")
-        _rdr.draw_circles(_ax_r, facecolor="#0C1A28", edgecolor="#1E2D40")
-        _rdr.draw_radar(_radar_vals, _ax_r,
-                        kwargs_radar={"facecolor":"#00A3E0","alpha":0.4},
-                        kwargs_rings={"facecolor":"#00A3E0","alpha":0.2})
-        _rdr.draw_range_labels(_ax_r, fontsize=6, color="#6A8090")
-        _rdr.draw_param_labels(_ax_r, fontsize=8, color="#C8D8E8")
-        _buf_r = _io.BytesIO()
-        _fig_r.savefig(_buf_r, format="png", dpi=130, bbox_inches="tight",
-                       facecolor="#060F1A")
-        _buf_r.seek(0)
-        radar_b64 = "data:image/png;base64," + _b64f.b64encode(_buf_r.read()).decode()
-        _plt_f.close(_fig_r)
-    except Exception as _e:
-        pass
+    if _radar_labels:
+        try:
+            _n_ax = len(_radar_labels)
+            _rdr = Radar(_radar_labels, [0]*_n_ax, [100]*_n_ax, num_rings=4,
+                         ring_width=1, center_circle_radius=1)
+            _fig_r, _ax_r = _rdr.setup_axis(figsize=(4, 4))
+            _fig_r.patch.set_facecolor("#060F1A")
+            _ax_r.set_facecolor("#060F1A")
+            _rdr.draw_circles(_ax_r, facecolor="#0C1A28", edgecolor="#1E2D40")
+            _rdr.draw_radar(_radar_vals, _ax_r,
+                            kwargs_radar={"facecolor":"#00A3E0","alpha":0.4},
+                            kwargs_rings={"facecolor":"#00A3E0","alpha":0.2})
+            _rdr.draw_range_labels(_ax_r, fontsize=6, color="#6A8090")
+            _rdr.draw_param_labels(_ax_r, fontsize=8, color="#C8D8E8")
+            _buf_r = _io.BytesIO()
+            _fig_r.savefig(_buf_r, format="png", dpi=130, bbox_inches="tight",
+                           facecolor="#060F1A")
+            _buf_r.seek(0)
+            radar_b64 = "data:image/png;base64," + _b64f.b64encode(_buf_r.read()).decode()
+            _plt_f.close(_fig_r)
+        except Exception as _e:
+            pass
 
     # ── Helpers HTML ──────────────────────────────────────────────────────
     def _kpi_circle(val, label, color="#00A3E0", size=70):
@@ -9479,7 +9523,7 @@ html,body {{
       {_section("Indicateurs Tactiques")}
       {"<img src='"+radar_b64+"' style='width:100%;border-radius:4px'>" if radar_b64 else "<div style='height:160px;display:flex;align-items:center;justify-content:center;color:#4A6070'>Données insuffisantes</div>"}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:6px">
-        {"".join(f"<div style='display:flex;justify-content:space-between;font-size:9px'><span style='color:#8A9BB0'>{l}</span><span style='color:#00A3E0;font-weight:700'>{_fmt(v,0)}</span></div>" for l,v in [("Rigueur",rigueur),("Récupération",recuper),("Distribution",distribut),("Percussion",percussion),("Finition",finition),("Créativité",creativite)])}
+        {"".join(f"<div style='display:flex;justify-content:space-between;font-size:9px'><span style='color:#8A9BB0'>{l}</span><span style='color:#00A3E0;font-weight:700'>{_fmt(v,0)}</span></div>" for l,v in zip(_radar_all_labels, _radar_all_vals) if l in _sel)}
       </div>
     </div>
   </div>
@@ -9490,27 +9534,27 @@ html,body {{
     <div class="panel">
       {_section("Indicateurs Techniques")}
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">
-        {_kpi_circle(passes_ok_pct, "Passes réussies", "#00A3E0")}
-        {_kpi_circle(dribbles_ok_pct, "Dribbles réussis", "#7F77DD")}
-        {_kpi_circle(tirs_cadres_pct, "Tirs cadrés", "#EF9F27")}
+        {_kpi_circle(passes_ok_pct, "Passes réussies", "#00A3E0") if "Passes réussies" in _sel else ""}
+        {_kpi_circle(dribbles_ok_pct, "Dribbles réussis", "#7F77DD") if "Dribbles réussis" in _sel else ""}
+        {_kpi_circle(tirs_cadres_pct, "Tirs cadrés", "#EF9F27") if "Tirs cadrés" in _sel else ""}
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;text-align:center;margin-bottom:8px">
-        <div><div class="val-big" style="font-size:20px;color:#22C55E">{int(buts_tot)}</div><div class="label-sm">Buts</div></div>
-        <div><div class="val-big" style="font-size:20px;color:#5DCAA5">{int(passes_dec)}</div><div class="label-sm">Passes déc.</div></div>
-        <div><div class="val-big" style="font-size:20px;color:#378ADD">{int(passes_1t)}</div><div class="label-sm">Passe 1/3</div></div>
+        {f'<div><div class="val-big" style="font-size:20px;color:#22C55E">{int(buts_tot)}</div><div class="label-sm">Buts</div></div>' if "Buts" in _sel else ""}
+        {f'<div><div class="val-big" style="font-size:20px;color:#5DCAA5">{int(passes_dec)}</div><div class="label-sm">Passes déc.</div></div>' if "Passes déc." in _sel else ""}
+        {f'<div><div class="val-big" style="font-size:20px;color:#378ADD">{int(passes_1t)}</div><div class="label-sm">Passe 1/3</div></div>' if "Passe 1/3" in _sel else ""}
       </div>
       <div style="font-size:9px;color:#6A8090;margin-bottom:4px">% passes réussies par type</div>
-      {_stat_row("Passes courtes", _n(_mean("Technique 2")), "%", "#378ADD", 100)}
-      {_stat_row("Passes longues", _n(_mean("Technique 3")), "%", "#7F77DD", 100)}
+      {_stat_row("Passes courtes", _n(_mean("Technique 2")), "%", "#378ADD", 100) if "Passes courtes" in _sel else ""}
+      {_stat_row("Passes longues", _n(_mean("Technique 3")), "%", "#7F77DD", 100) if "Passes longues" in _sel else ""}
     </div>
 
     <div class="panel">
       {_section("Indicateurs Défensifs", "#EF9F27")}
-      {_minmaxmoy("Duels défensifs / match", d_min, d_moy, d_max, "#EF9F27")}
-      {_stat_row("Duels gagnés %", (duels_ok_pct or 0), "%", "#EF9F27", 100)}
-      {_stat_row("Timing (sans faute %)", (timing_val or 0), "%", "#E24B4A", 100)}
-      {_minmaxmoy("Interceptions / match", i_min, i_moy, i_max, "#5DCAA5")}
-      {""+_stat_row("Fautes / match", fautes_moy, "", "#FF6B6B", 5) if fautes_moy is not None else ""}
+      {_minmaxmoy("Duels défensifs / match", d_min, d_moy, d_max, "#EF9F27") if "Duels défensifs / match" in _sel else ""}
+      {_stat_row("Duels gagnés %", (duels_ok_pct or 0), "%", "#EF9F27", 100) if "Duels gagnés %" in _sel else ""}
+      {_stat_row("Timing (sans faute %)", (timing_val or 0), "%", "#E24B4A", 100) if "Timing (sans faute %)" in _sel else ""}
+      {_minmaxmoy("Interceptions / match", i_min, i_moy, i_max, "#5DCAA5") if "Interceptions / match" in _sel else ""}
+      {_stat_row("Fautes / match", fautes_moy, "", "#FF6B6B", 5) if (fautes_moy is not None and "Fautes / match" in _sel) else ""}
     </div>
 
   </div>
@@ -9520,29 +9564,29 @@ html,body {{
     <div class="panel" style="flex:1">
       {_section("Indicateurs Athlétiques", "#1D9E75")}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
-        <div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
           <div class="val-big" style="font-size:18px;color:#1D9E75">{_fmt(dist_moy,0)}</div>
           <div class="label-sm">Endurance (m)</div>
-        </div>
-        <div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+        </div>''' if "Endurance (m)" in _sel else ""}
+        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
           <div class="val-big" style="font-size:18px;color:#5DCAA5">{_fmt(hid_moy,0)}</div>
           <div class="label-sm">Intensité (m)</div>
-        </div>
-        <div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+        </div>''' if "Intensité (m)" in _sel else ""}
+        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
           <div class="val-big" style="font-size:18px;color:#EF9F27">{_fmt(spr_moy,0)}</div>
           <div class="label-sm">Sprint (nb)</div>
-        </div>
-        <div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+        </div>''' if "Sprint (nb)" in _sel else ""}
+        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
           <div class="val-big" style="font-size:18px;color:#E24B4A">{_fmt(vmax_max,1)}</div>
           <div class="label-sm">Vitesse max (km/h)</div>
-        </div>
-        <div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center;grid-column:span 2">
+        </div>''' if "Vitesse max (km/h)" in _sel else ""}
+        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center;grid-column:span 2">
           <div class="val-big" style="font-size:18px;color:#378ADD">{_fmt(freq_moy,1)}</div>
           <div class="label-sm">Fréquence (m/min)</div>
-        </div>
+        </div>''' if "Fréquence (m/min)" in _sel else ""}
       </div>
-      {_section("Objectifs au poste", "#378ADD")}
-      {"".join(_stat_row(lbl, val, "", "#378ADD", obj) for lbl,(obj,val) in _gps_objectives.items())}
+      {_section("Objectifs au poste", "#378ADD") if any(lbl in _sel for lbl in _gps_objectives) else ""}
+      {"".join(_stat_row(lbl, val, "", "#378ADD", obj) for lbl,(obj,val) in _gps_objectives.items() if lbl in _sel)}
     </div>
   </div>
 </div>
@@ -11252,17 +11296,95 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     # ══════════════════════════════════════
     with _st_fiche:
         st.markdown("#### 📋 Fiche Bilan")
-        if not _perf_player:
-            st.info("Sélectionne une joueuse dans l'onglet **Matchs → 🎯 Performance Individuelle**.")
+
+        # ── Sélecteur de joueuse dédié (indépendant de Matchs → Performance
+        # Individuelle) — pré-sélectionne _perf_player par confort si dispo.
+        if player_name:
+            _fiche_player = player_name
+            st.caption(f"**Joueuse :** {player_name}")
         else:
-            st.markdown(f"**Fiche bilan — {_perf_player}**")
+            _ps_fiche = st.session_state.get("_player_settings") or load_player_settings()
+            _all_p_fiche = sorted(pfc_kpi_all["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
+                           if pfc_kpi_all is not None and not pfc_kpi_all.empty else []
+            _all_p_fiche = apply_player_settings(_all_p_fiche, _ps_fiche)
+            _default_idx_fiche = _all_p_fiche.index(_perf_player) if _perf_player in _all_p_fiche else 0
+            _fiche_player = st.selectbox(
+                "Joueuse", _all_p_fiche,
+                index=_default_idx_fiche if _all_p_fiche else None,
+                key="fiche_player_sel"
+            ) if _all_p_fiche else None
+
+        if not _fiche_player:
+            st.info("Aucune joueuse disponible.")
+        else:
+            st.markdown(f"**Fiche bilan — {_fiche_player}**")
             st.caption("Données agrégées sur la période et les matchs sélectionnés.")
+
+            # ── Indicateurs à afficher + templates nommés (persistants) ─────
+            _fiche_templates = load_fiche_templates()
+            if "_fiche_indic_sel" not in st.session_state:
+                st.session_state["_fiche_indic_sel"] = list(FICHE_BILAN_ALL_INDICATORS)
+
+            with st.expander("🎛️ Indicateurs & templates"):
+                _tpl_options = ["— Personnalisé —"] + sorted(_fiche_templates.keys())
+                _tpl_choice = st.selectbox("Template", _tpl_options, key="fiche_tpl_sel")
+                if _tpl_choice != "— Personnalisé —" and st.session_state.get("_fiche_tpl_applied") != _tpl_choice:
+                    _tpl_sel = list(_fiche_templates.get(_tpl_choice, []))
+                    st.session_state["_fiche_indic_sel"] = _tpl_sel
+                    # Les widgets multiselect gardent leur propre état une fois
+                    # créés — `default=` est ignoré sur les reruns suivants.
+                    # Il faut donc aussi écraser directement leur session_state
+                    # pour qu'ils reflètent vraiment le template chargé.
+                    for _cat, _items in FICHE_BILAN_INDICATORS.items():
+                        st.session_state[f"fiche_indic_{_cat}"] = [i for i in _items if i in _tpl_sel]
+                    st.session_state["_fiche_tpl_applied"] = _tpl_choice
+                    st.rerun()
+
+                _cur_sel = set(st.session_state["_fiche_indic_sel"])
+                _new_sel = []
+                _cat_cols_fiche = st.columns(len(FICHE_BILAN_INDICATORS))
+                for _cc, (_cat, _items) in zip(_cat_cols_fiche, FICHE_BILAN_INDICATORS.items()):
+                    with _cc:
+                        _picked = st.multiselect(
+                            _cat, _items,
+                            default=[i for i in _items if i in _cur_sel],
+                            key=f"fiche_indic_{_cat}"
+                        )
+                        _new_sel.extend(_picked)
+                st.session_state["_fiche_indic_sel"] = _new_sel
+
+                st.divider()
+                _tc1, _tc2 = st.columns([3, 1])
+                with _tc1:
+                    _tpl_name_input = st.text_input("Nom du template", key="fiche_tpl_name")
+                with _tc2:
+                    st.markdown("<div style='height:1.75em'></div>", unsafe_allow_html=True)
+                    if st.button("💾 Enregistrer", key="fiche_tpl_save", use_container_width=True):
+                        if _tpl_name_input.strip():
+                            _fiche_templates[_tpl_name_input.strip()] = _new_sel
+                            if save_fiche_templates(_fiche_templates):
+                                st.success(f"Template « {_tpl_name_input.strip()} » enregistré.")
+                                st.rerun()
+                            else:
+                                st.error("Échec de l'enregistrement.")
+                        else:
+                            st.warning("Donne un nom au template avant d'enregistrer.")
+
+                if _tpl_choice != "— Personnalisé —":
+                    if st.button(f"🗑️ Supprimer « {_tpl_choice} »", key="fiche_tpl_delete"):
+                        _fiche_templates.pop(_tpl_choice, None)
+                        save_fiche_templates(_fiche_templates)
+                        st.session_state.pop("_fiche_tpl_applied", None)
+                        st.rerun()
+
+            _selected_indicators = set(st.session_state["_fiche_indic_sel"])
+            _fiche_cache_key = (_fiche_player, frozenset(_selected_indicators))
 
             _col_btn1, _col_btn2 = st.columns([1, 1])
             with _col_btn1:
                 _gen_fiche = st.button("⚙️ Générer la fiche", key="btn_fiche_bilan", type="primary")
-            
-            if _gen_fiche or st.session_state.get("_fiche_html_cache_player") == _perf_player:
+
+            if _gen_fiche or st.session_state.get("_fiche_html_cache_key") == _fiche_cache_key:
                 with st.spinner("Génération en cours..."):
                     try:
                         _gm_all = st.session_state.get("gps_match_df", pd.DataFrame())
@@ -11275,7 +11397,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 _nom = nettoyer_nom_joueuse(
                                     str(_entry.get("Nom","")) + " " + str(_entry.get("Prénom",""))
                                 )
-                                if _nom == nettoyer_nom_joueuse(_perf_player):
+                                if _nom == nettoyer_nom_joueuse(_fiche_player):
                                     _info = {
                                         "ddn":        _entry.get("Date de naissance", "—"),
                                         "taille":     _entry.get("Taille", "—"),
@@ -11290,28 +11412,29 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             pass
 
                         _fiche_html = build_fiche_bilan_html(
-                            player_name=_perf_player,
+                            player_name=_fiche_player,
                             pfc_kpi_all=pfc_kpi_all,
                             gps_match_df=_gm_all,
                             player_info=_info,
+                            selected_indicators=_selected_indicators,
                         )
                         st.session_state["_fiche_html_cache"] = _fiche_html
-                        st.session_state["_fiche_html_cache_player"] = _perf_player
+                        st.session_state["_fiche_html_cache_key"] = _fiche_cache_key
                     except Exception as _fe:
                         st.error(f"Erreur génération : {_fe}")
                         import traceback; st.code(traceback.format_exc())
                         _fiche_html = None
 
             _fiche_cached = st.session_state.get("_fiche_html_cache")
-            _fiche_player = st.session_state.get("_fiche_html_cache_player")
+            _fiche_cached_key = st.session_state.get("_fiche_html_cache_key")
 
-            if _fiche_cached and _fiche_player == _perf_player:
+            if _fiche_cached and _fiche_cached_key == _fiche_cache_key:
                 # Bouton téléchargement HTML (ouvrir dans navigateur → Ctrl+P)
                 with _col_btn2:
                     st.download_button(
                         label="⬇️ Télécharger (HTML → imprimer en PDF)",
                         data=_fiche_cached.encode("utf-8"),
-                        file_name=f"fiche_{_perf_player.replace(' ','_')}.html",
+                        file_name=f"fiche_{_fiche_player.replace(' ','_')}.html",
                         mime="text/html",
                         key="dl_fiche_html"
                     )
