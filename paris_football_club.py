@@ -13,7 +13,7 @@ import unicodedata
 import warnings
 from typing import Any, Dict, List, Optional, Set, Tuple
 from difflib import get_close_matches, SequenceMatcher
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import calendar as _calmod
 
 import numpy as np
@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 from streamlit_option_menu import option_menu
 from mplsoccer import PyPizza, Radar, FontManager, grid
 import plotly.graph_objects as go
+import plotly.express as px
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -244,6 +245,47 @@ def save_fiche_templates(templates: dict) -> bool:
         return True
     except Exception:
         return False
+
+
+# ── Programme talent : liste des joueuses suivies (JSON local, gestion manuelle) ──
+PROGRAMME_TALENT_PATH = os.path.join("data", "programme_talent_players.json")
+
+
+def load_programme_talent_players() -> list:
+    """Charge la liste des joueuses du programme talent depuis le fichier JSON persistant."""
+    if os.path.exists(PROGRAMME_TALENT_PATH):
+        try:
+            with open(PROGRAMME_TALENT_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def save_programme_talent_players(players: list) -> bool:
+    """Sauvegarde la liste des joueuses du programme talent dans le fichier JSON persistant."""
+    try:
+        os.makedirs(os.path.dirname(PROGRAMME_TALENT_PATH), exist_ok=True)
+        with open(PROGRAMME_TALENT_PATH, "w", encoding="utf-8") as f:
+            json.dump(players, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+@st.cache_resource(show_spinner=False)
+def get_supabase_client():
+    """Client Supabase (même projet que sync_drive_to_supabase.py, service_role —
+    bypass RLS, aucune policy anon/authenticated à écrire côté base).
+    Retourne None si les secrets ne sont pas configurés (ex. en local sans
+    .streamlit/secrets.toml renseigné) plutôt que de lever une exception."""
+    try:
+        from supabase import create_client
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_SERVICE_KEY"]
+        return create_client(url, key)
+    except Exception:
+        return None
 
 
 # =========================
@@ -11594,7 +11636,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         if not check_permission(user_profile, "all", permissions):
             st.warning("⛔ Accès réservé aux administrateurs.")
         else:
-            tab_ref, tab_perms, tab_jouеuses, tab_admin = st.tabs(["📋 Référentiel joueuses", "🔐 Profils & permissions", "👥 Joueuses", "🛠️ Administration"])
+            tab_ref, tab_perms, tab_jouеuses, tab_admin, tab_passerelles = st.tabs(["📋 Référentiel joueuses", "🔐 Profils & permissions", "👥 Joueuses", "🛠️ Administration", "📋 Passerelles"])
 
             # ── Référentiel joueuses ──────────────────────────────────────
             with tab_ref:
@@ -11849,547 +11891,808 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         key="download_export_xlsx_gestion",
                     )
 
-    elif page == "Programme talent":
-        st.header("🔄 Joueuses Passerelles")
-        passerelle_data = load_passerelle_data()
-        if not passerelle_data:
-            st.warning("Aucune donnée passerelle.")
-            return
 
-        pfc_source = pfc_kpi_all if isinstance(pfc_kpi_all, pd.DataFrame) and not pfc_kpi_all.empty else pfc_kpi
-        edf_source = edf_kpi_all if isinstance(edf_kpi_all, pd.DataFrame) and not edf_kpi_all.empty else edf_kpi
+            # ── Passerelles (déplacé depuis l'ancien onglet Programme talent) ──
+            with tab_passerelles:
+                st.header("🔄 Joueuses Passerelles")
+                passerelle_data = load_passerelle_data()
+                if not passerelle_data:
+                    st.warning("Aucune donnée passerelle.")
+                else:
 
-        # Filtre saison sur pfc_source
-        _saison_sel_p = st.session_state.get("selected_saison", "Toutes les saisons")
-        if _saison_sel_p != "Toutes les saisons" and "Saison" in pfc_source.columns:
-            pfc_source = pfc_source[pfc_source["Saison"].astype(str) == _saison_sel_p].copy()
+                    pfc_source = pfc_kpi_all if isinstance(pfc_kpi_all, pd.DataFrame) and not pfc_kpi_all.empty else pfc_kpi
+                    edf_source = edf_kpi_all if isinstance(edf_kpi_all, pd.DataFrame) and not edf_kpi_all.empty else edf_kpi
 
-        selected = st.selectbox("Sélectionnez une joueuse", list(passerelle_data.keys()), key="passerelle_player_sel")
+                    # Filtre saison sur pfc_source
+                    _saison_sel_p = st.session_state.get("selected_saison", "Toutes les saisons")
+                    if _saison_sel_p != "Toutes les saisons" and "Saison" in pfc_source.columns:
+                        pfc_source = pfc_source[pfc_source["Saison"].astype(str) == _saison_sel_p].copy()
 
-        # Récupérer index + concordance depuis la session (construits dans collect_data)
-        photos_index = st.session_state.get("photos_index") or build_photos_index_local()
-        concordance  = st.session_state.get("photo_concordance") or get_photo_concordance()
+                    selected = st.selectbox("Sélectionnez une joueuse", list(passerelle_data.keys()), key="passerelle_player_sel")
 
-        # Chercher la photo (mapping manuel en priorité absolue, puis concordance, puis fuzzy)
-        photo_path = find_photo_for_player(selected, concordance=concordance, photos_index=photos_index)
-        canon_selected = normalize_name_raw(selected)
+                    # Récupérer index + concordance depuis la session (construits dans collect_data)
+                    photos_index = st.session_state.get("photos_index") or build_photos_index_local()
+                    concordance  = st.session_state.get("photo_concordance") or get_photo_concordance()
 
-        selected_clean = nettoyer_nom_joueuse(selected)
-        info = passerelle_data[selected]
+                    # Chercher la photo (mapping manuel en priorité absolue, puis concordance, puis fuzzy)
+                    photo_path = find_photo_for_player(selected, concordance=concordance, photos_index=photos_index)
+                    canon_selected = normalize_name_raw(selected)
 
-        def _resolve_best_player_name(pass_key: str, pass_info: dict, candidates: list) -> str:
-            if not candidates:
-                return pass_key
+                    selected_clean = nettoyer_nom_joueuse(selected)
+                    info = passerelle_data[selected]
 
-            nom = str(pass_info.get("Nom", "") or pass_key).strip()
-            prenom = str(pass_info.get("Prénom", "")).strip()
-            full = f"{nom} {prenom}".strip()
+                    def _resolve_best_player_name(pass_key: str, pass_info: dict, candidates: list) -> str:
+                        if not candidates:
+                            return pass_key
 
-            try:
-                base = normalize_str(full) if full else normalize_str(pass_key)
-            except Exception:
-                base = (full or pass_key).lower()
+                        nom = str(pass_info.get("Nom", "") or pass_key).strip()
+                        prenom = str(pass_info.get("Prénom", "")).strip()
+                        full = f"{nom} {prenom}".strip()
 
-            norm_map = {}
-            for c in candidates:
-                try:
-                    norm_map[c] = normalize_str(str(c))
-                except Exception:
-                    norm_map[c] = str(c).lower()
+                        try:
+                            base = normalize_str(full) if full else normalize_str(pass_key)
+                        except Exception:
+                            base = (full or pass_key).lower()
 
-            for c, cn in norm_map.items():
-                if cn == base:
-                    return c
+                        norm_map = {}
+                        for c in candidates:
+                            try:
+                                norm_map[c] = normalize_str(str(c))
+                            except Exception:
+                                norm_map[c] = str(c).lower()
 
-            for c, cn in norm_map.items():
-                if base and base in cn:
-                    return c
+                        for c, cn in norm_map.items():
+                            if cn == base:
+                                return c
 
-            best_norm = get_close_matches(base, list(norm_map.values()), n=1, cutoff=0.55)
-            if best_norm:
-                inv = {v: k for k, v in norm_map.items()}
-                return inv.get(best_norm[0], pass_key)
+                        for c, cn in norm_map.items():
+                            if base and base in cn:
+                                return c
 
-            return pass_key
+                        best_norm = get_close_matches(base, list(norm_map.values()), n=1, cutoff=0.55)
+                        if best_norm:
+                            inv = {v: k for k, v in norm_map.items()}
+                            return inv.get(best_norm[0], pass_key)
 
-        stats_candidates = []
-        if isinstance(pfc_source, pd.DataFrame) and not pfc_source.empty:
-            for col in ["Joueuse", "Player", "Nom", "NOM", "Joueur"]:
-                if col in pfc_source.columns:
-                    stats_candidates = sorted(pfc_source[col].dropna().astype(str).unique().tolist())
-                    break
+                        return pass_key
 
-        gps_candidates = []
-        gps_raw_all = st.session_state.get("gps_raw_df", pd.DataFrame())
-        if isinstance(gps_raw_all, pd.DataFrame) and not gps_raw_all.empty and "Player" in gps_raw_all.columns:
-            gps_candidates = sorted(gps_raw_all["Player"].dropna().astype(str).unique().tolist())
+                    stats_candidates = []
+                    if isinstance(pfc_source, pd.DataFrame) and not pfc_source.empty:
+                        for col in ["Joueuse", "Player", "Nom", "NOM", "Joueur"]:
+                            if col in pfc_source.columns:
+                                stats_candidates = sorted(pfc_source[col].dropna().astype(str).unique().tolist())
+                                break
 
-        candidates = sorted(set(stats_candidates + gps_candidates))
-        resolved_player = _resolve_best_player_name(selected, info, candidates)
+                    gps_candidates = []
+                    gps_raw_all = st.session_state.get("gps_raw_df", pd.DataFrame())
+                    if isinstance(gps_raw_all, pd.DataFrame) and not gps_raw_all.empty and "Player" in gps_raw_all.columns:
+                        gps_candidates = sorted(gps_raw_all["Player"].dropna().astype(str).unique().tolist())
 
-        # ── Carte Identité — design fiche joueur ────────────────────────
-        # Préparer les données d'affichage
-        prenom_val  = info.get("Prénom", "") or ""
-        nom_val     = info.get("Nom", selected) or selected
-        poste1_val  = info.get("Poste 1", "") or ""
-        poste2_val  = info.get("Poste 2", "") or ""
-        pied_val    = info.get("Pied Fort", "") or ""
-        taille_val  = info.get("Taille", "") or ""
-        ddn_val = info.get("Date de naissance", "") or ""  # déjà nettoyé dans load_passerelle_data
+                    candidates = sorted(set(stats_candidates + gps_candidates))
+                    resolved_player = _resolve_best_player_name(selected, info, candidates)
 
-        if str(taille_val).lower() in ("nan", "none", ""): taille_val = ""
-        if str(poste1_val).lower() in ("nan", "none", ""): poste1_val = ""
-        if str(poste2_val).lower() in ("nan", "none", ""): poste2_val = ""
-        if str(pied_val).lower()   in ("nan", "none", ""): pied_val   = ""
+                    # ── Carte Identité — design fiche joueur ────────────────────────
+                    # Préparer les données d'affichage
+                    prenom_val  = info.get("Prénom", "") or ""
+                    nom_val     = info.get("Nom", selected) or selected
+                    poste1_val  = info.get("Poste 1", "") or ""
+                    poste2_val  = info.get("Poste 2", "") or ""
+                    pied_val    = info.get("Pied Fort", "") or ""
+                    taille_val  = info.get("Taille", "") or ""
+                    ddn_val = info.get("Date de naissance", "") or ""  # déjà nettoyé dans load_passerelle_data
 
-        # Photo bytes pour base64
-        photo_b64 = ""
-        photo_src = photo_path if (photo_path and os.path.exists(photo_path)) else None
-        if photo_src is None and info.get("Photo"):
-            photo_src = info["Photo"]
-        if photo_src and os.path.exists(str(photo_src)):
-            _cache_key = f"_photo_b64_{photo_src}"
-            if _cache_key in st.session_state:
-                photo_b64 = st.session_state[_cache_key]
-            else:
-                _pb = load_photo_bytes(photo_src)
-                if _pb:
-                    import base64 as _b64
-                    photo_b64 = "data:image/jpeg;base64," + _b64.b64encode(_pb).decode()
-                    st.session_state[_cache_key] = photo_b64
+                    if str(taille_val).lower() in ("nan", "none", ""): taille_val = ""
+                    if str(poste1_val).lower() in ("nan", "none", ""): poste1_val = ""
+                    if str(poste2_val).lower() in ("nan", "none", ""): poste2_val = ""
+                    if str(pied_val).lower()   in ("nan", "none", ""): pied_val   = ""
 
-        # Badges postes
-        def _badge(txt, color="#00A3E0"):
-            return f"<span style='background:transparent;color:{color};padding:3px 10px;border-radius:2px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;margin-right:8px;border:1px solid {color};font-family:Oswald,sans-serif;'>{txt}</span>"
+                    # Photo bytes pour base64
+                    photo_b64 = ""
+                    photo_src = photo_path if (photo_path and os.path.exists(photo_path)) else None
+                    if photo_src is None and info.get("Photo"):
+                        photo_src = info["Photo"]
+                    if photo_src and os.path.exists(str(photo_src)):
+                        _cache_key = f"_photo_b64_{photo_src}"
+                        if _cache_key in st.session_state:
+                            photo_b64 = st.session_state[_cache_key]
+                        else:
+                            _pb = load_photo_bytes(photo_src)
+                            if _pb:
+                                import base64 as _b64
+                                photo_b64 = "data:image/jpeg;base64," + _b64.b64encode(_pb).decode()
+                                st.session_state[_cache_key] = photo_b64
 
-        postes_html = ""
-        if poste1_val: postes_html += _badge(poste1_val, "#00A3E0")
-        if poste2_val: postes_html += _badge(poste2_val, "#6ECFEF")
+                    # Badges postes
+                    def _badge(txt, color="#00A3E0"):
+                        return f"<span style='background:transparent;color:{color};padding:3px 10px;border-radius:2px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;margin-right:8px;border:1px solid {color};font-family:Oswald,sans-serif;'>{txt}</span>"
 
-        pied_icon  = "🦶 " + pied_val if pied_val else ""
-        taille_str = f"📏 {taille_val}" if taille_val else ""
-        ddn_str    = f"🎂 {ddn_val}"  if ddn_val    else ""
+                    postes_html = ""
+                    if poste1_val: postes_html += _badge(poste1_val, "#00A3E0")
+                    if poste2_val: postes_html += _badge(poste2_val, "#6ECFEF")
 
-        details_lines = [x for x in [ddn_str, taille_str, pied_icon] if x]
-        details_html = "".join(
-            f"<div style='color:#6A8090;font-size:13px;margin-top:7px;font-family:Inter,sans-serif;letter-spacing:0.04em;'>{d}</div>"
-            for d in details_lines
-        )
+                    pied_icon  = "🦶 " + pied_val if pied_val else ""
+                    taille_str = f"📏 {taille_val}" if taille_val else ""
+                    ddn_str    = f"🎂 {ddn_val}"  if ddn_val    else ""
 
-        photo_html = (
-            f"<img src='{photo_b64}' style='width:160px;height:200px;object-fit:cover;object-position:top;"
-            f"border-radius:4px;box-shadow:0 0 0 1px rgba(0,163,224,0.3),0 8px 32px rgba(0,0,0,0.6);display:block;'/>"
-            if photo_b64 else
-            "<div style='width:160px;height:200px;background:#0C1220;border-radius:4px;"
-            "display:flex;align-items:center;justify-content:center;"
-            "font-size:56px;border:1px solid rgba(0,163,224,0.2);'>👤</div>"
-        )
-
-        card_html = f"""
-        <div style='
-            background: #0C1220;
-            border: 1px solid rgba(0,163,224,0.2);
-            border-top: 2px solid #00A3E0;
-            border-radius: 4px;
-            padding: 28px 32px;
-            display: flex;
-            gap: 32px;
-            align-items: flex-start;
-            margin-bottom: 8px;
-            box-shadow: 0 4px 24px rgba(0,0,0,0.5);
-        '>
-            <!-- Photo -->
-            <div style='flex-shrink:0;'>
-                {photo_html}
-            </div>
-            <!-- Infos -->
-            <div style='flex:1;min-width:0;'>
-                <div style='color:#00A3E0;font-family:Oswald,sans-serif;font-size:10px;font-weight:500;letter-spacing:0.20em;text-transform:uppercase;margin-bottom:10px;'>Paris FC — Joueuse Passerelle</div>
-                <div style='color:#C8D8E8;font-family:Inter,sans-serif;font-size:26px;font-weight:300;line-height:1;margin-bottom:2px;'>{prenom_val}</div>
-                <div style='color:#FFFFFF;font-family:Oswald,sans-serif;font-size:36px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;line-height:1;margin-bottom:18px;'>{nom_val.upper()}</div>
-                <div style='margin-bottom:18px;'>{postes_html}</div>
-                <div style='width:32px;height:1px;background:#00A3E0;margin-bottom:14px;opacity:0.5;'></div>
-                {details_html}
-            </div>
-        </div>
-        """
-        st.markdown(card_html, unsafe_allow_html=True)
-
-        # Bouton changer / associer la photo sous la carte
-        btn_label = "🔄 Changer la photo" if photo_src else "📷 Associer une photo"
-        with st.expander(btn_label, expanded=(photo_src is None)):
-            _render_photo_picker(selected, canon_selected, photos_index)
-
-        if resolved_player and resolved_player != selected:
-            st.caption(f"↳ Données liées à : **{resolved_player}**")
-
-
-        st.divider()
-
-        tab_stats, tab_obj, tab_edf, tab_gps, tab_medical = st.tabs(["📈 Statistiques", "🎯 Objectifs", "🆚 Comparaison EDF", "🏃 Données physiques (GPS)", "🏥 Médical"])
-
-        with tab_obj:
-            # ── Récupération des objectifs depuis le fichier passerelle ──
-            _obj1 = (info.get("Objectif 1", "") or "") if info else ""
-            _obj2 = (info.get("Objectif 2", "") or "") if info else ""
-            _obj3 = (info.get("Objectif 3", "") or "") if info else ""
-            _objectifs = [(f"Objectif {i+1}", o) for i, o in enumerate([_obj1, _obj2, _obj3]) if o.strip()]
-
-            if not _objectifs:
-                st.info("Aucun objectif défini pour cette joueuse. Ajoutez les colonnes **Objectif 1**, **Objectif 2**, **Objectif 3** dans le fichier Excel passerelle.")
-            else:
-                # ── Affichage des objectifs texte ──
-                for _onum, _otxt in _objectifs:
-                    st.markdown(
-                        f"<div style='background:#0C1220; border-left:2px solid #00A3E0; "
-                        f"border-radius:2px; padding:12px 16px; margin-bottom:8px; color:#C8D8E8; font-size:15px;'>"
-                        f"<span style='color:#00A3E0; font-family:Oswald,sans-serif; font-weight:600; font-size:11px; text-transform:uppercase; "
-                        f"letter-spacing:0.12em;'>{_onum}</span><br/><span style='font-size:15px;font-family:Inter,sans-serif;'>{_otxt}</span></div>",
-                        unsafe_allow_html=True
+                    details_lines = [x for x in [ddn_str, taille_str, pied_icon] if x]
+                    details_html = "".join(
+                        f"<div style='color:#6A8090;font-size:13px;margin-top:7px;font-family:Inter,sans-serif;letter-spacing:0.04em;'>{d}</div>"
+                        for d in details_lines
                     )
 
-                # ── Évaluations depuis le CSV Google Forms ──
-                st.markdown("---")
-                st.markdown("**Évaluations du staff**")
-                _evals_df = load_objectifs_evaluations()
+                    photo_html = (
+                        f"<img src='{photo_b64}' style='width:160px;height:200px;object-fit:cover;object-position:top;"
+                        f"border-radius:4px;box-shadow:0 0 0 1px rgba(0,163,224,0.3),0 8px 32px rgba(0,0,0,0.6);display:block;'/>"
+                        if photo_b64 else
+                        "<div style='width:160px;height:200px;background:#0C1220;border-radius:4px;"
+                        "display:flex;align-items:center;justify-content:center;"
+                        "font-size:56px;border:1px solid rgba(0,163,224,0.2);'>👤</div>"
+                    )
 
-                if _evals_df.empty:
-                    st.caption("📋 Aucune évaluation disponible. Une fois le Google Forms créé, synchronisez le CSV via le bouton ci-dessous.")
-                else:
-                    _joueur_col = "Joueuse" if "Joueuse" in _evals_df.columns else None
-                    _obj_col    = "Objectif évalué" if "Objectif évalué" in _evals_df.columns else None
-                    _note_col   = "Note" if "Note" in _evals_df.columns else None
+                    card_html = f"""
+                    <div style='
+                        background: #0C1220;
+                        border: 1px solid rgba(0,163,224,0.2);
+                        border-top: 2px solid #00A3E0;
+                        border-radius: 4px;
+                        padding: 28px 32px;
+                        display: flex;
+                        gap: 32px;
+                        align-items: flex-start;
+                        margin-bottom: 8px;
+                        box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+                    '>
+                        <!-- Photo -->
+                        <div style='flex-shrink:0;'>
+                            {photo_html}
+                        </div>
+                        <!-- Infos -->
+                        <div style='flex:1;min-width:0;'>
+                            <div style='color:#00A3E0;font-family:Oswald,sans-serif;font-size:10px;font-weight:500;letter-spacing:0.20em;text-transform:uppercase;margin-bottom:10px;'>Paris FC — Joueuse Passerelle</div>
+                            <div style='color:#C8D8E8;font-family:Inter,sans-serif;font-size:26px;font-weight:300;line-height:1;margin-bottom:2px;'>{prenom_val}</div>
+                            <div style='color:#FFFFFF;font-family:Oswald,sans-serif;font-size:36px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;line-height:1;margin-bottom:18px;'>{nom_val.upper()}</div>
+                            <div style='margin-bottom:18px;'>{postes_html}</div>
+                            <div style='width:32px;height:1px;background:#00A3E0;margin-bottom:14px;opacity:0.5;'></div>
+                            {details_html}
+                        </div>
+                    </div>
+                    """
+                    st.markdown(card_html, unsafe_allow_html=True)
 
-                    if _joueur_col and _obj_col and _note_col:
-                        _sel_norm = normalize_str(selected) if selected else ""
-                        _mask = _evals_df[_joueur_col].apply(
-                            lambda x: _sel_norm in normalize_str(str(x)) or normalize_str(str(x)) in _sel_norm
-                        )
-                        _player_evals = _evals_df[_mask].copy()
+                    # Bouton changer / associer la photo sous la carte
+                    btn_label = "🔄 Changer la photo" if photo_src else "📷 Associer une photo"
+                    with st.expander(btn_label, expanded=(photo_src is None)):
+                        _render_photo_picker(selected, canon_selected, photos_index)
 
-                        if _player_evals.empty:
-                            st.caption(f"Aucune évaluation enregistrée pour **{selected}**.")
+                    if resolved_player and resolved_player != selected:
+                        st.caption(f"↳ Données liées à : **{resolved_player}**")
+
+
+                    st.divider()
+
+                    tab_stats, tab_obj, tab_edf, tab_gps, tab_medical = st.tabs(["📈 Statistiques", "🎯 Objectifs", "🆚 Comparaison EDF", "🏃 Données physiques (GPS)", "🏥 Médical"])
+
+                    with tab_obj:
+                        # ── Récupération des objectifs depuis le fichier passerelle ──
+                        _obj1 = (info.get("Objectif 1", "") or "") if info else ""
+                        _obj2 = (info.get("Objectif 2", "") or "") if info else ""
+                        _obj3 = (info.get("Objectif 3", "") or "") if info else ""
+                        _objectifs = [(f"Objectif {i+1}", o) for i, o in enumerate([_obj1, _obj2, _obj3]) if o.strip()]
+
+                        if not _objectifs:
+                            st.info("Aucun objectif défini pour cette joueuse. Ajoutez les colonnes **Objectif 1**, **Objectif 2**, **Objectif 3** dans le fichier Excel passerelle.")
                         else:
-                            _cols_diag = st.columns(min(len(_objectifs), 3))
-                            for _ci, (_onum, _otxt) in enumerate(_objectifs):
-                                _obj_mask = _player_evals[_obj_col].apply(
-                                    lambda x: normalize_str(str(x)) in normalize_str(_otxt)
-                                             or normalize_str(_otxt) in normalize_str(str(x))
+                            # ── Affichage des objectifs texte ──
+                            for _onum, _otxt in _objectifs:
+                                st.markdown(
+                                    f"<div style='background:#0C1220; border-left:2px solid #00A3E0; "
+                                    f"border-radius:2px; padding:12px 16px; margin-bottom:8px; color:#C8D8E8; font-size:15px;'>"
+                                    f"<span style='color:#00A3E0; font-family:Oswald,sans-serif; font-weight:600; font-size:11px; text-transform:uppercase; "
+                                    f"letter-spacing:0.12em;'>{_onum}</span><br/><span style='font-size:15px;font-family:Inter,sans-serif;'>{_otxt}</span></div>",
+                                    unsafe_allow_html=True
                                 )
-                                _obj_evals = _player_evals[_obj_mask][_note_col].dropna()
-                                with _cols_diag[_ci % 3]:
-                                    if _obj_evals.empty:
-                                        st.caption(f"Pas encore d'évaluation pour **{_onum}**.")
+
+                            # ── Évaluations depuis le CSV Google Forms ──
+                            st.markdown("---")
+                            st.markdown("**Évaluations du staff**")
+                            _evals_df = load_objectifs_evaluations()
+
+                            if _evals_df.empty:
+                                st.caption("📋 Aucune évaluation disponible. Une fois le Google Forms créé, synchronisez le CSV via le bouton ci-dessous.")
+                            else:
+                                _joueur_col = "Joueuse" if "Joueuse" in _evals_df.columns else None
+                                _obj_col    = "Objectif évalué" if "Objectif évalué" in _evals_df.columns else None
+                                _note_col   = "Note" if "Note" in _evals_df.columns else None
+
+                                if _joueur_col and _obj_col and _note_col:
+                                    _sel_norm = normalize_str(selected) if selected else ""
+                                    _mask = _evals_df[_joueur_col].apply(
+                                        lambda x: _sel_norm in normalize_str(str(x)) or normalize_str(str(x)) in _sel_norm
+                                    )
+                                    _player_evals = _evals_df[_mask].copy()
+
+                                    if _player_evals.empty:
+                                        st.caption(f"Aucune évaluation enregistrée pour **{selected}**.")
                                     else:
-                                        _moy = _obj_evals.mean()
-                                        _n_evals = len(_obj_evals)
-                                        # Jauge matplotlib (demi-cercle)
-                                        import numpy as _np
-                                        _gfig, _gax = plt.subplots(figsize=(3.5, 2.2), subplot_kw=dict(aspect="equal"))
-                                        _gfig.patch.set_facecolor("#08090D")
-                                        _gax.set_facecolor("#08090D")
-                                        _gfig.set_dpi(90)
-                                        # Zones de couleur
-                                        for _start, _end, _col in [(0,2,"#3A1010"),(2,3.5,"#3A2A00"),(3.5,5,"#003A50")]:
-                                            _th = _np.linspace(_np.pi, _np.pi*(1 - _start/5), 50)
-                                            _th2 = _np.linspace(_np.pi*(1 - _start/5), _np.pi*(1 - _end/5), 50)
-                                            _th_zone = _np.linspace(_np.pi*(1 - _start/5), _np.pi*(1 - _end/5), 50)
-                                            _gax.barh(0, (_end-_start)/5*_np.pi, left=_np.pi*(1-_end/5), height=0.5,
-                                                      color=_col, align="center")
-                                        # Arc de fond
-                                        _theta_bg = _np.linspace(_np.pi, 0, 200)
-                                        _gax.plot(_np.cos(_theta_bg)*0.85, _np.sin(_theta_bg)*0.85, color="#1A2A3A", lw=8)
-                                        # Arc valeur
-                                        _theta_v = _np.linspace(_np.pi, _np.pi*(1 - _moy/5), 200)
-                                        _gax.plot(_np.cos(_theta_v)*0.85, _np.sin(_theta_v)*0.85, color="#00A3E0", lw=8)
-                                        # Aiguille
-                                        _angle = _np.pi*(1 - _moy/5)
-                                        _gax.annotate("", xy=(_np.cos(_angle)*0.7, _np.sin(_angle)*0.7),
-                                                      xytext=(0,0), arrowprops=dict(arrowstyle="-|>", color="#00A3E0", lw=2))
-                                        # Texte valeur
-                                        _gax.text(0, -0.15, f"{_moy:.2f}/5", ha="center", va="center",
-                                                  fontsize=16, fontweight="bold", color="#00A3E0")
-                                        _gax.text(0, -0.45, f"{_onum}", ha="center", va="center",
-                                                  fontsize=9, color="#C8D8E8", fontfamily="monospace")
-                                        _short_txt = _otxt[:35]+"…" if len(_otxt)>35 else _otxt
-                                        _gax.text(0, -0.65, _short_txt, ha="center", va="center",
-                                                  fontsize=7, color="#6A8090")
-                                        _gax.set_xlim(-1.1, 1.1)
-                                        _gax.set_ylim(-0.8, 1.1)
-                                        _gax.axis("off")
-                                        _gfig.subplots_adjust(top=1, bottom=0, left=0, right=1)
-                                        st.pyplot(_gfig, use_container_width=True)
-                                        plt.close(_gfig)
-                                        st.caption(f"Moyenne sur {_n_evals} évaluation{'s' if _n_evals > 1 else ''}")
-                    else:
-                        st.caption("⚠️ Format du CSV inattendu — colonnes attendues : Joueuse, Objectif évalué, Note.")
+                                        _cols_diag = st.columns(min(len(_objectifs), 3))
+                                        for _ci, (_onum, _otxt) in enumerate(_objectifs):
+                                            _obj_mask = _player_evals[_obj_col].apply(
+                                                lambda x: normalize_str(str(x)) in normalize_str(_otxt)
+                                                         or normalize_str(_otxt) in normalize_str(str(x))
+                                            )
+                                            _obj_evals = _player_evals[_obj_mask][_note_col].dropna()
+                                            with _cols_diag[_ci % 3]:
+                                                if _obj_evals.empty:
+                                                    st.caption(f"Pas encore d'évaluation pour **{_onum}**.")
+                                                else:
+                                                    _moy = _obj_evals.mean()
+                                                    _n_evals = len(_obj_evals)
+                                                    # Jauge matplotlib (demi-cercle)
+                                                    import numpy as _np
+                                                    _gfig, _gax = plt.subplots(figsize=(3.5, 2.2), subplot_kw=dict(aspect="equal"))
+                                                    _gfig.patch.set_facecolor("#08090D")
+                                                    _gax.set_facecolor("#08090D")
+                                                    _gfig.set_dpi(90)
+                                                    # Zones de couleur
+                                                    for _start, _end, _col in [(0,2,"#3A1010"),(2,3.5,"#3A2A00"),(3.5,5,"#003A50")]:
+                                                        _th = _np.linspace(_np.pi, _np.pi*(1 - _start/5), 50)
+                                                        _th2 = _np.linspace(_np.pi*(1 - _start/5), _np.pi*(1 - _end/5), 50)
+                                                        _th_zone = _np.linspace(_np.pi*(1 - _start/5), _np.pi*(1 - _end/5), 50)
+                                                        _gax.barh(0, (_end-_start)/5*_np.pi, left=_np.pi*(1-_end/5), height=0.5,
+                                                                  color=_col, align="center")
+                                                    # Arc de fond
+                                                    _theta_bg = _np.linspace(_np.pi, 0, 200)
+                                                    _gax.plot(_np.cos(_theta_bg)*0.85, _np.sin(_theta_bg)*0.85, color="#1A2A3A", lw=8)
+                                                    # Arc valeur
+                                                    _theta_v = _np.linspace(_np.pi, _np.pi*(1 - _moy/5), 200)
+                                                    _gax.plot(_np.cos(_theta_v)*0.85, _np.sin(_theta_v)*0.85, color="#00A3E0", lw=8)
+                                                    # Aiguille
+                                                    _angle = _np.pi*(1 - _moy/5)
+                                                    _gax.annotate("", xy=(_np.cos(_angle)*0.7, _np.sin(_angle)*0.7),
+                                                                  xytext=(0,0), arrowprops=dict(arrowstyle="-|>", color="#00A3E0", lw=2))
+                                                    # Texte valeur
+                                                    _gax.text(0, -0.15, f"{_moy:.2f}/5", ha="center", va="center",
+                                                              fontsize=16, fontweight="bold", color="#00A3E0")
+                                                    _gax.text(0, -0.45, f"{_onum}", ha="center", va="center",
+                                                              fontsize=9, color="#C8D8E8", fontfamily="monospace")
+                                                    _short_txt = _otxt[:35]+"…" if len(_otxt)>35 else _otxt
+                                                    _gax.text(0, -0.65, _short_txt, ha="center", va="center",
+                                                              fontsize=7, color="#6A8090")
+                                                    _gax.set_xlim(-1.1, 1.1)
+                                                    _gax.set_ylim(-0.8, 1.1)
+                                                    _gax.axis("off")
+                                                    _gfig.subplots_adjust(top=1, bottom=0, left=0, right=1)
+                                                    st.pyplot(_gfig, use_container_width=True)
+                                                    plt.close(_gfig)
+                                                    st.caption(f"Moyenne sur {_n_evals} évaluation{'s' if _n_evals > 1 else ''}")
+                                else:
+                                    st.caption("⚠️ Format du CSV inattendu — colonnes attendues : Joueuse, Objectif évalué, Note.")
 
-                # Bouton sync admin
-                if check_permission(user_profile, "all", permissions):
-                    st.markdown("---")
-                    if st.button("🔄 Sync évaluations objectifs", key="sync_obj_evals"):
-                        _ok, _err = sync_objectifs_from_drive()
-                        if _ok:
-                            st.success(f"{_ok} fichier(s) synchronisé(s).")
-                            st.rerun()
-                        elif not DRIVE_OBJECTIFS_FOLDER_ID:
-                            st.info("Renseignez **DRIVE_OBJECTIFS_FOLDER_ID** dans le code (ligne ~60) pour activer la synchronisation Drive.")
+                            # Bouton sync admin
+                            if check_permission(user_profile, "all", permissions):
+                                st.markdown("---")
+                                if st.button("🔄 Sync évaluations objectifs", key="sync_obj_evals"):
+                                    _ok, _err = sync_objectifs_from_drive()
+                                    if _ok:
+                                        st.success(f"{_ok} fichier(s) synchronisé(s).")
+                                        st.rerun()
+                                    elif not DRIVE_OBJECTIFS_FOLDER_ID:
+                                        st.info("Renseignez **DRIVE_OBJECTIFS_FOLDER_ID** dans le code (ligne ~60) pour activer la synchronisation Drive.")
+                                    else:
+                                        st.error("Aucun fichier récupéré. Vérifiez l'ID du dossier Drive.")
+
+                    with tab_stats:
+                        st.subheader("Statistiques joueuse")
+
+                        if not isinstance(pfc_source, pd.DataFrame) or pfc_source.empty:
+                            st.warning("Aucune donnée statistiques PFC disponible.")
                         else:
-                            st.error("Aucun fichier récupéré. Vérifiez l'ID du dossier Drive.")
+                            player_col = None
+                            for col in ["Joueuse", "Player", "Nom", "NOM", "Joueur"]:
+                                if col in pfc_source.columns:
+                                    player_col = col
+                                    break
 
-        with tab_stats:
-            st.subheader("Statistiques joueuse")
+                            if player_col is None:
+                                st.warning("Impossible d'identifier la colonne 'joueuse' dans les statistiques PFC.")
+                            else:
+                                pfc_player_df = pfc_source[pfc_source[player_col].astype(str) == str(resolved_player)].copy()
+                                if pfc_player_df.empty:
+                                    try:
+                                        base = normalize_str(str(resolved_player))
+                                        pfc_player_df = pfc_source[pfc_source[player_col].astype(str).map(lambda x: normalize_str(str(x)) == base)].copy()
+                                    except Exception:
+                                        pass
 
-            if not isinstance(pfc_source, pd.DataFrame) or pfc_source.empty:
-                st.warning("Aucune donnée statistiques PFC disponible.")
-            else:
-                player_col = None
-                for col in ["Joueuse", "Player", "Nom", "NOM", "Joueur"]:
-                    if col in pfc_source.columns:
-                        player_col = col
-                        break
+                                if pfc_player_df.empty:
+                                    st.info("Aucune ligne statistique trouvée pour cette joueuse.")
+                                else:
+                                    try:
+                                        aggregated = aggregate_player_stats(pfc_player_df)
+                                    except Exception:
+                                        num_cols = pfc_player_df.select_dtypes(include="number").columns.tolist()
+                                        aggregated = pfc_player_df[num_cols].mean(numeric_only=True).to_frame().T
+                                        aggregated.insert(0, "Joueuse", resolved_player)
 
-                if player_col is None:
-                    st.warning("Impossible d'identifier la colonne 'joueuse' dans les statistiques PFC.")
-                else:
-                    pfc_player_df = pfc_source[pfc_source[player_col].astype(str) == str(resolved_player)].copy()
-                    if pfc_player_df.empty:
-                        try:
-                            base = normalize_str(str(resolved_player))
-                            pfc_player_df = pfc_source[pfc_source[player_col].astype(str).map(lambda x: normalize_str(str(x)) == base)].copy()
-                        except Exception:
-                            pass
+                                    try:
+                                        _radar_result = create_individual_radar(aggregated)
+                                        if _radar_result is not None:
+                                            fig = _radar_result[0] if isinstance(_radar_result, tuple) else _radar_result
+                                            st.pyplot(fig, use_container_width=True)
+                                            plt.close(fig)
+                                    except Exception as e:
+                                        st.warning(f"Radar indisponible : {e}")
 
-                    if pfc_player_df.empty:
-                        st.info("Aucune ligne statistique trouvée pour cette joueuse.")
-                    else:
-                        try:
-                            aggregated = aggregate_player_stats(pfc_player_df)
-                        except Exception:
-                            num_cols = pfc_player_df.select_dtypes(include="number").columns.tolist()
-                            aggregated = pfc_player_df[num_cols].mean(numeric_only=True).to_frame().T
-                            aggregated.insert(0, "Joueuse", resolved_player)
+                                    with st.expander("Voir les données agrégées"):
+                                        st.dataframe(aggregated, use_container_width=True)
 
-                        try:
-                            _radar_result = create_individual_radar(aggregated)
-                            if _radar_result is not None:
-                                fig = _radar_result[0] if isinstance(_radar_result, tuple) else _radar_result
-                                st.pyplot(fig, use_container_width=True)
-                                plt.close(fig)
-                        except Exception as e:
-                            st.warning(f"Radar indisponible : {e}")
+                    with tab_edf:
+                        st.subheader("Comparaison avec le référentiel EDF")
 
-                        with st.expander("Voir les données agrégées"):
-                            st.dataframe(aggregated, use_container_width=True)
-
-        with tab_edf:
-            st.subheader("Comparaison avec le référentiel EDF")
-
-            if not isinstance(edf_source, pd.DataFrame) or edf_source.empty:
-                st.warning("Aucune donnée EDF disponible.")
-            else:
-                poste_default = str(info.get("Poste 1", "")).strip()
-                postes = []
-                poste_col = None
-                for col in ["Poste", "POSTE", "Position", "POS"]:
-                    if col in edf_source.columns:
-                        postes = sorted(edf_source[col].dropna().astype(str).unique().tolist())
-                        poste_col = col
-                        break
-
-                if poste_col is None or not postes:
-                    st.warning("Impossible d'identifier la colonne 'Poste' dans le référentiel EDF.")
-                else:
-                    idx_default = 0
-                    if poste_default:
-                        try:
-                            m = get_close_matches(poste_default, postes, n=1, cutoff=0.4)
-                            if m:
-                                idx_default = postes.index(m[0])
-                        except Exception:
-                            pass
-
-                    poste_sel = st.selectbox("Poste EDF de référence", postes, index=idx_default, key="passerelle_poste_edf_sel")
-
-                    player_df = prepare_comparison_data(pfc_source, resolved_player, selected_matches=None)
-
-                    edf_line = edf_source[edf_source["Poste"] == poste_sel].copy()
-                    if player_df is None or player_df.empty:
-                        st.info("Pas assez de données match pour cette joueuse.")
-                    elif edf_line.empty:
-                        st.info("Référentiel EDF indisponible pour ce poste.")
-                    else:
-                        edf_label = str(poste_sel)
-                        edf_line = edf_line.copy()
-                        edf_line["Player"] = edf_label
-                        if "Poste" in edf_line.columns:
-                            edf_line = edf_line.drop(columns=["Poste"])
-                        players_data = pd.concat([player_df, edf_line], ignore_index=True, sort=False)
-
-                        fig = create_comparison_radar(
-                            players_data,
-                            player1_name=str(resolved_player),
-                            player2_name=edf_label,
-                            exclude_creativity=True,
-                        )
-                        if fig is not None:
-                            st.pyplot(fig, use_container_width=True)
-                            plt.close(fig)  # libère la mémoire
+                        if not isinstance(edf_source, pd.DataFrame) or edf_source.empty:
+                            st.warning("Aucune donnée EDF disponible.")
                         else:
-                            st.info("Impossible de générer le radar de comparaison.")
+                            poste_default = str(info.get("Poste 1", "")).strip()
+                            postes = []
+                            poste_col = None
+                            for col in ["Poste", "POSTE", "Position", "POS"]:
+                                if col in edf_source.columns:
+                                    postes = sorted(edf_source[col].dropna().astype(str).unique().tolist())
+                                    poste_col = col
+                                    break
 
-        with tab_gps:
-            st.subheader("Données physiques (GPS)")
-
-            gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
-            gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
-
-            if gps_raw is None or gps_raw.empty:
-                st.warning("Aucune donnée GPS brute trouvée.")
-            else:
-                gps_raw = ensure_date_column(gps_raw)
-
-                dgps = gps_raw[gps_raw.get("Player", pd.Series(dtype=str)).astype(str) == str(resolved_player)].copy()
-                if dgps.empty:
-                    try:
-                        base = normalize_str(str(resolved_player))
-                        dgps = gps_raw[gps_raw.get("Player", pd.Series(dtype=str)).astype(str).map(lambda x: normalize_str(str(x)) == base)].copy()
-                    except Exception:
-                        pass
-
-                if dgps.empty:
-                    st.info("Aucune ligne GPS pour cette joueuse.")
-                else:
-                    tab_raw_g, tab_week_g, tab_graph_g = st.tabs(
-                        ["🧾 Brutes", "📅 Global", "📈 Microcycle MD-6 → MD"]
-                    )
-
-                    with tab_raw_g:
-                        d = ensure_date_column(dgps.copy())
-
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            if d["DATE"].notna().sum() == 0:
-                                st.info("Aucune date exploitable.")
-                                date_range = None
+                            if poste_col is None or not postes:
+                                st.warning("Impossible d'identifier la colonne 'Poste' dans le référentiel EDF.")
                             else:
-                                min_date = d["DATE"].min()
-                                max_date = d["DATE"].max()
-                                default_range = (min_date.date(), max_date.date())
-                                date_range = st.date_input("Période", value=default_range, key="passerelle_gps_raw_date_range")
+                                idx_default = 0
+                                if poste_default:
+                                    try:
+                                        m = get_close_matches(poste_default, postes, n=1, cutoff=0.4)
+                                        if m:
+                                            idx_default = postes.index(m[0])
+                                    except Exception:
+                                        pass
 
-                        with c2:
-                            if "__source_file" in d.columns:
-                                srcs = ["Tous"] + sorted(d["__source_file"].dropna().astype(str).unique().tolist())
-                                src_sel = st.selectbox("Fichier source (optionnel)", srcs, key="passerelle_gps_raw_src_sel")
-                            else:
-                                src_sel = "Tous"
+                                poste_sel = st.selectbox("Poste EDF de référence", postes, index=idx_default, key="passerelle_poste_edf_sel")
 
-                        if isinstance(date_range, tuple) and len(date_range) == 2 and date_range[0] and date_range[1]:
-                            d = d[(d["DATE"] >= pd.Timestamp(date_range[0])) & (d["DATE"] <= pd.Timestamp(date_range[1]))].copy()
-                        if src_sel != "Tous" and "__source_file" in d.columns:
-                            d = d[d["__source_file"].astype(str) == str(src_sel)].copy()
+                                player_df = prepare_comparison_data(pfc_source, resolved_player, selected_matches=None)
 
-                        show_cols = [c for c in [
-                            "DATE", "SEMAINE", "Player", "NOM",
-                            "Durée", "Durée_min",
-                            "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
-                            "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
-                            "CHARGE", "RPE",
-                            "Sprints_23", "Sprints_25",
-                            "Vitesse max (km/h)",
-                            "__name_status", "__source_file"
-                        ] if c in d.columns]
+                                edf_line = edf_source[edf_source["Poste"] == poste_sel].copy()
+                                if player_df is None or player_df.empty:
+                                    st.info("Pas assez de données match pour cette joueuse.")
+                                elif edf_line.empty:
+                                    st.info("Référentiel EDF indisponible pour ce poste.")
+                                else:
+                                    edf_label = str(poste_sel)
+                                    edf_line = edf_line.copy()
+                                    edf_line["Player"] = edf_label
+                                    if "Poste" in edf_line.columns:
+                                        edf_line = edf_line.drop(columns=["Poste"])
+                                    players_data = pd.concat([player_df, edf_line], ignore_index=True, sort=False)
 
-                        st.dataframe(d.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
+                                    fig = create_comparison_radar(
+                                        players_data,
+                                        player1_name=str(resolved_player),
+                                        player2_name=edf_label,
+                                        exclude_creativity=True,
+                                    )
+                                    if fig is not None:
+                                        st.pyplot(fig, use_container_width=True)
+                                        plt.close(fig)  # libère la mémoire
+                                    else:
+                                        st.info("Impossible de générer le radar de comparaison.")
 
-                    with tab_week_g:
-                        tmp = dgps.copy()
-                        tmp = tmp[tmp["DATE"].notna()].copy()
-                        if tmp.empty:
-                            st.info("Pas de dates exploitables pour cette joueuse.")
+                    with tab_gps:
+                        st.subheader("Données physiques (GPS)")
+
+                        gps_raw = st.session_state.get("gps_raw_df", pd.DataFrame())
+                        gps_weekly = st.session_state.get("gps_weekly_df", pd.DataFrame())
+
+                        if gps_raw is None or gps_raw.empty:
+                            st.warning("Aucune donnée GPS brute trouvée.")
                         else:
-                            tmp["DATE"] = pd.to_datetime(tmp["DATE"], errors="coerce")
-                            min_d = tmp["DATE"].min().date()
-                            max_d = tmp["DATE"].max().date()
+                            gps_raw = ensure_date_column(gps_raw)
 
-                            end_date_ui = st.date_input(
-                                "Date de fin (fenêtre = 7 jours précédents inclus)",
-                                value=max_d,
-                                min_value=min_d,
-                                max_value=max_d,
-                                key="passerelle_gps_end_date_7d",
-                            )
+                            dgps = gps_raw[gps_raw.get("Player", pd.Series(dtype=str)).astype(str) == str(resolved_player)].copy()
+                            if dgps.empty:
+                                try:
+                                    base = normalize_str(str(resolved_player))
+                                    dgps = gps_raw[gps_raw.get("Player", pd.Series(dtype=str)).astype(str).map(lambda x: normalize_str(str(x)) == base)].copy()
+                                except Exception:
+                                    pass
 
-                            df_7j, summary = gps_last_7_days_summary(gps_raw, resolved_player, end_date=pd.Timestamp(end_date_ui))
-
-                            if summary is None or summary.empty:
-                                st.info("Aucune donnée sur cette fenêtre de 7 jours.")
+                            if dgps.empty:
+                                st.info("Aucune ligne GPS pour cette joueuse.")
                             else:
-                                st.dataframe(summary, use_container_width=True)
+                                tab_raw_g, tab_week_g, tab_graph_g = st.tabs(
+                                    ["🧾 Brutes", "📅 Global", "📈 Microcycle MD-6 → MD"]
+                                )
 
-                                with st.expander("Voir le détail (lignes brutes sur la période 7 jours)"):
+                                with tab_raw_g:
+                                    d = ensure_date_column(dgps.copy())
+
+                                    c1, c2 = st.columns(2)
+                                    with c1:
+                                        if d["DATE"].notna().sum() == 0:
+                                            st.info("Aucune date exploitable.")
+                                            date_range = None
+                                        else:
+                                            min_date = d["DATE"].min()
+                                            max_date = d["DATE"].max()
+                                            default_range = (min_date.date(), max_date.date())
+                                            date_range = st.date_input("Période", value=default_range, key="passerelle_gps_raw_date_range")
+
+                                    with c2:
+                                        if "__source_file" in d.columns:
+                                            srcs = ["Tous"] + sorted(d["__source_file"].dropna().astype(str).unique().tolist())
+                                            src_sel = st.selectbox("Fichier source (optionnel)", srcs, key="passerelle_gps_raw_src_sel")
+                                        else:
+                                            src_sel = "Tous"
+
+                                    if isinstance(date_range, tuple) and len(date_range) == 2 and date_range[0] and date_range[1]:
+                                        d = d[(d["DATE"] >= pd.Timestamp(date_range[0])) & (d["DATE"] <= pd.Timestamp(date_range[1]))].copy()
+                                    if src_sel != "Tous" and "__source_file" in d.columns:
+                                        d = d[d["__source_file"].astype(str) == str(src_sel)].copy()
+
                                     show_cols = [c for c in [
                                         "DATE", "SEMAINE", "Player", "NOM",
                                         "Durée", "Durée_min",
                                         "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
                                         "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
                                         "CHARGE", "RPE",
+                                        "Sprints_23", "Sprints_25",
+                                        "Vitesse max (km/h)",
                                         "__name_status", "__source_file"
-                                    ] if c in df_7j.columns]
-                                    st.dataframe(df_7j.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
+                                    ] if c in d.columns]
 
-                                if gps_weekly is not None and not gps_weekly.empty and "SEMAINE" in gps_weekly.columns:
-                                    st.divider()
-                                    st.caption("Vue hebdomadaire (somme par semaine ISO)")
-                                    dw = gps_weekly[gps_weekly["Player"].astype(str) == str(resolved_player)].copy()
-                                    if not dw.empty:
-                                        st.dataframe(dw.sort_values("SEMAINE"), use_container_width=True)
+                                    st.dataframe(d.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
 
-                    with tab_graph_g:
-                        dg = dgps.copy()
-                        dg = dg[dg["DATE"].notna()].copy()
+                                with tab_week_g:
+                                    tmp = dgps.copy()
+                                    tmp = tmp[tmp["DATE"].notna()].copy()
+                                    if tmp.empty:
+                                        st.info("Pas de dates exploitables pour cette joueuse.")
+                                    else:
+                                        tmp["DATE"] = pd.to_datetime(tmp["DATE"], errors="coerce")
+                                        min_d = tmp["DATE"].min().date()
+                                        max_d = tmp["DATE"].max().date()
 
-                        if dg.empty:
-                            st.info("Pas de dates exploitables pour cette joueuse.")
-                        else:
-                            max_date = dg["DATE"].max().normalize()
-                            min_date = dg["DATE"].min().normalize()
+                                        end_date_ui = st.date_input(
+                                            "Date de fin (fenêtre = 7 jours précédents inclus)",
+                                            value=max_d,
+                                            min_value=min_d,
+                                            max_value=max_d,
+                                            key="passerelle_gps_end_date_7d",
+                                        )
 
-                            end_date = st.date_input(
-                                "Date de référence (MD)",
-                                value=max_date.date(),
-                                min_value=min_date.date(),
-                                max_value=max_date.date(),
-                                key="passerelle_gps_md_ref_date",
+                                        df_7j, summary = gps_last_7_days_summary(gps_raw, resolved_player, end_date=pd.Timestamp(end_date_ui))
+
+                                        if summary is None or summary.empty:
+                                            st.info("Aucune donnée sur cette fenêtre de 7 jours.")
+                                        else:
+                                            st.dataframe(summary, use_container_width=True)
+
+                                            with st.expander("Voir le détail (lignes brutes sur la période 7 jours)"):
+                                                show_cols = [c for c in [
+                                                    "DATE", "SEMAINE", "Player", "NOM",
+                                                    "Durée", "Durée_min",
+                                                    "Distance (m)", "Distance HID (>13 km/h)", "Distance HID (>19 km/h)",
+                                                    "Distance 13-19 (m)", "Distance 19-23 (m)", "Distance >23 (m)",
+                                                    "CHARGE", "RPE",
+                                                    "__name_status", "__source_file"
+                                                ] if c in df_7j.columns]
+                                                st.dataframe(df_7j.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
+
+                                            if gps_weekly is not None and not gps_weekly.empty and "SEMAINE" in gps_weekly.columns:
+                                                st.divider()
+                                                st.caption("Vue hebdomadaire (somme par semaine ISO)")
+                                                dw = gps_weekly[gps_weekly["Player"].astype(str) == str(resolved_player)].copy()
+                                                if not dw.empty:
+                                                    st.dataframe(dw.sort_values("SEMAINE"), use_container_width=True)
+
+                                with tab_graph_g:
+                                    dg = dgps.copy()
+                                    dg = dg[dg["DATE"].notna()].copy()
+
+                                    if dg.empty:
+                                        st.info("Pas de dates exploitables pour cette joueuse.")
+                                    else:
+                                        max_date = dg["DATE"].max().normalize()
+                                        min_date = dg["DATE"].min().normalize()
+
+                                        end_date = st.date_input(
+                                            "Date de référence (MD)",
+                                            value=max_date.date(),
+                                            min_value=min_date.date(),
+                                            max_value=max_date.date(),
+                                            key="passerelle_gps_md_ref_date",
+                                        )
+
+                                        summary_md = build_md_window_summary(dg, pd.Timestamp(end_date), days=7)
+
+                                        if summary_md is None or summary_md.empty:
+                                            st.info("Aucune donnée sur cette fenêtre de 7 jours.")
+                                        else:
+                                            st.dataframe(summary_md, use_container_width=True)
+                                            try:
+                                                default_lines = [c for c in [
+                                                    "Moyenne de Distance (m)",
+                                                    "Moyenne de Distance HID (>13 km/h)",
+                                                    "Moyenne de Distance 13-19 (m)",
+                                                    "Moyenne de Distance 19-23 (m)",
+                                                    "Moyenne de Distance >23 (m)",
+                                                ] if c in summary_md.columns]
+                                                selected_lines = st.multiselect(
+                                                    "Courbes affichées (axe droit)",
+                                                    [c for c in summary_md.columns if c not in ["MD", "MD_num"]],
+                                                    default=default_lines,
+                                                    key="passerelle_gps_selected_lines"
+                                                )
+                                                fig = plot_gps_md_graph(summary_md, selected_lines=selected_lines)
+                                                if fig is not None:
+                                                    st.pyplot(fig, use_container_width=True)
+                                                    plt.close(fig)  # libère la mémoire
+                                            except Exception as e:
+                                                st.warning(f"Graphique indisponible : {e}")
+
+    elif page == "Programme talent":
+        st.header("✨ Programme talent")
+        st.caption("Suivi des rendez-vous (médical/physique, psy, développement) des joueuses du programme talent.")
+
+        _pt_players = load_programme_talent_players()
+
+        with st.expander("⚙️ Gérer les joueuses du programme talent"):
+            _pt_all_players = sorted(pfc_kpi_all["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
+                               if pfc_kpi_all is not None and not pfc_kpi_all.empty else []
+            _pt_picked = st.multiselect(
+                "Joueuses suivies", _pt_all_players,
+                default=[p for p in _pt_players if p in _pt_all_players],
+                key="pt_players_multiselect"
+            )
+            if st.button("💾 Enregistrer la liste", key="pt_players_save"):
+                if save_programme_talent_players(_pt_picked):
+                    st.success("Liste mise à jour.")
+                    st.rerun()
+                else:
+                    st.error("Échec de l'enregistrement.")
+
+        if not _pt_players:
+            st.info("Aucune joueuse dans le programme talent pour l'instant. Utilise le panneau ci-dessus pour en ajouter.")
+        else:
+            _pt_sb = get_supabase_client()
+            if _pt_sb is None:
+                st.warning("Connexion Supabase non configurée (SUPABASE_URL / SUPABASE_SERVICE_KEY manquants dans les secrets).")
+            else:
+                _pt_categories = {
+                    "Médical / physique": ["Kiné", "Médecin", "Prépa physique", "Ostéo", "Soin", "Autre"],
+                    "Psy":                ["Psychologue", "Entretien", "Autre"],
+                    "Développement":      ["Scolarité", "Media training", "Langues", "Nutrition", "Autre"],
+                }
+                _pt_couleurs_cat = {
+                    "Médical / physique": "#e74c3c",
+                    "Psy":                "#9b59b6",
+                    "Développement":      "#3498db",
+                }
+                _pt_jours_fr = {0: "Lun", 1: "Mar", 2: "Mer", 3: "Jeu", 4: "Ven", 5: "Sam", 6: "Dim"}
+                _pt_toute_equipe = "Toute l'équipe"
+
+                @st.cache_data(ttl=60)
+                def _pt_load_rdv(_players_key: tuple) -> pd.DataFrame:
+                    _res = _pt_sb.table("talent_rdv").select("*").in_("joueuse", list(_players_key)).order("date", desc=True).execute()
+                    _df = pd.DataFrame(_res.data)
+                    if not _df.empty:
+                        _df["date"] = pd.to_datetime(_df["date"])
+                    return _df
+
+                def _pt_invalidate():
+                    _pt_load_rdv.clear()
+
+                def _pt_saison_de(d) -> int:
+                    return d.year if d.month >= 7 else d.year - 1
+
+                def _pt_label_saison(s: int) -> str:
+                    return f"{str(s)[-2:]}/{str(s + 1)[-2:]}"
+
+                _pt_palette = ["#e6194B", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
+                               "#42d4f4", "#f032e6", "#469990", "#9A6324", "#808000"]
+                _pt_couleurs_j = {nom: _pt_palette[i % len(_pt_palette)] for i, nom in enumerate(_pt_players)}
+
+                try:
+                    _df_rdv = _pt_load_rdv(tuple(sorted(_pt_players)))
+                except Exception as _pt_e:
+                    st.error(
+                        f"Impossible de charger les RDV depuis Supabase (la table `talent_rdv` "
+                        f"existe-t-elle ?) → {_pt_e}"
+                    )
+                    st.stop()
+
+                _pt_tab_semaine, _pt_tab_saison, _pt_tab_gestion = st.tabs(
+                    ["📅 Semaine", "📊 Saison", "🛠️ Gestion des RDV"]
+                )
+
+                # ── Semaine ──────────────────────────────────────────────────
+                with _pt_tab_semaine:
+                    _pt_f_sem = st.selectbox("Joueuse", [_pt_toute_equipe] + _pt_players, key="pt_sem_filtre")
+                    _pt_d_view = _df_rdv if (_df_rdv.empty or _pt_f_sem == _pt_toute_equipe) else _df_rdv[_df_rdv["joueuse"] == _pt_f_sem]
+
+                    if "pt_lundi_input" not in st.session_state:
+                        _pt_t = date.today()
+                        st.session_state["pt_lundi_input"] = _pt_t - timedelta(days=_pt_t.weekday())
+
+                    def _pt_decale_semaine(n):
+                        # Callback on_click : s'exécute AVANT le rerun, donc AVANT que le
+                        # widget date_input(key="pt_lundi_input") ne soit réinstancié —
+                        # modifier st.session_state ici est valide (contrairement à un
+                        # simple `if bouton:` qui tenterait de le faire après coup).
+                        _cur = st.session_state["pt_lundi_input"]
+                        _cur = _cur - timedelta(days=_cur.weekday())
+                        st.session_state["pt_lundi_input"] = _cur + timedelta(days=7 * n)
+
+                    _pt_saut = st.date_input("Semaine du", format="DD/MM/YYYY", key="pt_lundi_input")
+                    _pt_b1, _pt_b2 = st.columns(2)
+                    _pt_b1.button("◀ Semaine précédente", key="pt_wk_prev", use_container_width=True,
+                                  on_click=_pt_decale_semaine, args=(-1,))
+                    _pt_b2.button("Semaine suivante ▶", key="pt_wk_next", use_container_width=True,
+                                  on_click=_pt_decale_semaine, args=(1,))
+
+                    _pt_lundi = _pt_saut - timedelta(days=_pt_saut.weekday())
+                    _pt_dimanche = _pt_lundi + timedelta(days=6)
+                    st.markdown(f"**Semaine du {_pt_lundi.strftime('%d/%m')} au {_pt_dimanche.strftime('%d/%m/%y')}**")
+
+                    _pt_cols = st.columns(7)
+                    for _pt_c, _pt_jour in zip(_pt_cols, [_pt_lundi + timedelta(days=i) for i in range(7)]):
+                        with _pt_c:
+                            st.markdown(f"**{_pt_jours_fr[_pt_jour.weekday()]} {_pt_jour.strftime('%d/%m')}**")
+                            _pt_rdv_jour = (
+                                _pt_d_view[_pt_d_view["date"].dt.date == _pt_jour].sort_values("joueuse")
+                                if not _pt_d_view.empty else _pt_d_view
                             )
+                            if _pt_rdv_jour.empty:
+                                st.caption("—")
+                            for _, _pt_r in _pt_rdv_jour.iterrows():
+                                _pt_c_hex = _pt_couleurs_j.get(_pt_r["joueuse"], "#888")
+                                _pt_nom = "" if _pt_f_sem != _pt_toute_equipe else f"<b>{_pt_r['joueuse']}</b><br>"
+                                _pt_com = f"<br><span style='opacity:.7'>{_pt_r['commentaire']}</span>" if pd.notna(_pt_r["commentaire"]) else ""
+                                st.markdown(
+                                    f"<div style='background:{_pt_c_hex}22;border-left:3px solid {_pt_c_hex};"
+                                    f"padding:4px 6px;margin-bottom:5px;border-radius:4px;"
+                                    f"font-size:0.8em;line-height:1.25'>{_pt_nom}"
+                                    f"{_pt_r['type'] or _pt_r['categorie']}"
+                                    f"<br><span style='opacity:.6;font-size:.9em'>{_pt_r['categorie']}</span>"
+                                    f"{_pt_com}</div>",
+                                    unsafe_allow_html=True,
+                                )
 
-                            summary_md = build_md_window_summary(dg, pd.Timestamp(end_date), days=7)
+                # ── Saison ───────────────────────────────────────────────────
+                with _pt_tab_saison:
+                    if _df_rdv.empty:
+                        st.info("Aucun RDV enregistré pour l'instant.")
+                    else:
+                        _pt_df_s = _df_rdv.copy()
+                        _pt_df_s["saison"] = _pt_df_s["date"].apply(lambda d: _pt_saison_de(d.date()))
+                        _pt_saisons = sorted(_pt_df_s["saison"].unique(), reverse=True)
 
-                            if summary_md is None or summary_md.empty:
-                                st.info("Aucune donnée sur cette fenêtre de 7 jours.")
-                            else:
-                                st.dataframe(summary_md, use_container_width=True)
-                                try:
-                                    default_lines = [c for c in [
-                                        "Moyenne de Distance (m)",
-                                        "Moyenne de Distance HID (>13 km/h)",
-                                        "Moyenne de Distance 13-19 (m)",
-                                        "Moyenne de Distance 19-23 (m)",
-                                        "Moyenne de Distance >23 (m)",
-                                    ] if c in summary_md.columns]
-                                    selected_lines = st.multiselect(
-                                        "Courbes affichées (axe droit)",
-                                        [c for c in summary_md.columns if c not in ["MD", "MD_num"]],
-                                        default=default_lines,
-                                        key="passerelle_gps_selected_lines"
-                                    )
-                                    fig = plot_gps_md_graph(summary_md, selected_lines=selected_lines)
-                                    if fig is not None:
-                                        st.pyplot(fig, use_container_width=True)
-                                        plt.close(fig)  # libère la mémoire
-                                except Exception as e:
-                                    st.warning(f"Graphique indisponible : {e}")
+                        _pt_sc1, _pt_sc2 = st.columns(2)
+                        _pt_sais = _pt_sc1.selectbox("Saison", _pt_saisons, format_func=_pt_label_saison, key="pt_saison_sel")
+                        _pt_f2 = _pt_sc2.selectbox("Joueuse", [_pt_toute_equipe] + _pt_players, key="pt_sais_filtre")
+
+                        _pt_d_sais = _pt_df_s[_pt_df_s["saison"] == _pt_sais]
+                        if _pt_f2 != _pt_toute_equipe:
+                            _pt_d_sais = _pt_d_sais[_pt_d_sais["joueuse"] == _pt_f2]
+
+                        if _pt_d_sais.empty:
+                            st.info("Aucun RDV pour cette sélection.")
+                        else:
+                            st.markdown("#### Timeline des rendez-vous")
+                            _pt_fig = px.scatter(
+                                _pt_d_sais, x="date", y="joueuse", color="categorie",
+                                color_discrete_map=_pt_couleurs_cat,
+                                category_orders={"categorie": list(_pt_categories.keys()), "joueuse": _pt_players},
+                                hover_data={"type": True, "commentaire": True,
+                                            "date": "|%d/%m/%Y", "joueuse": False},
+                                labels={"categorie": "Catégorie", "joueuse": "", "date": "Date"},
+                            )
+                            _pt_fig.update_traces(marker=dict(size=13, line=dict(width=1, color="white")))
+                            _pt_fig.update_layout(
+                                height=max(280, 60 * _pt_d_sais["joueuse"].nunique()),
+                                legend_title_text="Catégorie", margin=dict(l=0, r=0, t=10, b=0),
+                                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                                font=dict(color="#C8D8E8"),
+                            )
+                            _pt_fig.update_xaxes(tickformat="%d/%m")
+                            st.plotly_chart(_pt_fig, use_container_width=True)
+
+                            st.markdown("#### Récapitulatif de la saison")
+                            _pt_recap = (
+                                _pt_d_sais.pivot_table(
+                                    index="joueuse", columns="categorie",
+                                    values="id", aggfunc="count", fill_value=0,
+                                )
+                                .reindex(columns=list(_pt_categories.keys()), fill_value=0)
+                            )
+                            _pt_recap["Total"] = _pt_recap.sum(axis=1)
+                            _pt_recap = _pt_recap.reset_index().rename(columns={"joueuse": "Joueuse"})
+                            st.dataframe(_pt_recap, use_container_width=True, hide_index=True)
+
+                # ── Gestion des RDV ──────────────────────────────────────────
+                with _pt_tab_gestion:
+                    st.markdown("#### Ajouter un rendez-vous")
+                    _pt_a1, _pt_a2 = st.columns(2)
+                    _pt_j_nom = _pt_a1.selectbox("Joueuse", _pt_players, key="pt_add_joueuse")
+                    _pt_a_date = _pt_a2.date_input("Date", value=date.today(), format="DD/MM/YYYY", key="pt_add_date")
+                    _pt_cats = list(_pt_categories.keys())
+                    _pt_a_cat = _pt_a1.selectbox("Catégorie", _pt_cats, key="pt_add_cat")
+                    _pt_a_types = _pt_categories[_pt_a_cat]
+                    _pt_a_type = _pt_a2.selectbox("Type", _pt_a_types, key="pt_add_type")
+                    if _pt_a_type == "Autre":
+                        _pt_a_type = st.text_input("Préciser le type", key="pt_add_type_libre")
+                    _pt_a_com = st.text_area("Commentaire (facultatif)", key="pt_add_com")
+
+                    if st.button("➕ Ajouter le RDV", type="primary", key="pt_add_btn"):
+                        if _pt_a_type == "Autre" or not str(_pt_a_type).strip():
+                            st.warning("Précise un type de rendez-vous.")
+                        else:
+                            _pt_sb.table("talent_rdv").insert({
+                                "joueuse": _pt_j_nom,
+                                "date": _pt_a_date.isoformat(),
+                                "categorie": _pt_a_cat,
+                                "type": str(_pt_a_type).strip(),
+                                "commentaire": _pt_a_com.strip() or None,
+                            }).execute()
+                            _pt_invalidate()
+                            st.success(f"RDV ajouté pour {_pt_j_nom} le {_pt_a_date.strftime('%d/%m/%Y')}.")
+                            st.rerun()
+
+                    st.divider()
+                    st.markdown("#### Modifier ou supprimer un rendez-vous")
+                    if _df_rdv.empty:
+                        st.info("Aucun RDV à modifier.")
+                    else:
+                        def _pt_row_label(r):
+                            return (f"{r['date'].strftime('%d/%m/%y')} — {r['joueuse']} — "
+                                    f"{r['type'] or r['categorie']}")
+                        _pt_options = {_pt_row_label(r): int(r["id"]) for _, r in _df_rdv.iterrows()}
+                        _pt_choix = st.selectbox("RDV", list(_pt_options.keys()), key="pt_edit_pick")
+                        _pt_rid = _pt_options[_pt_choix]
+                        _pt_ligne = _df_rdv[_df_rdv["id"] == _pt_rid].iloc[0]
+
+                        _pt_e1, _pt_e2 = st.columns(2)
+                        _pt_new_date = _pt_e1.date_input("Date", value=_pt_ligne["date"].date(),
+                                                          format="DD/MM/YYYY", key=f"pt_ed_date_{_pt_rid}")
+                        _pt_new_cat = _pt_e2.selectbox(
+                            "Catégorie", _pt_cats,
+                            index=_pt_cats.index(_pt_ligne["categorie"]) if _pt_ligne["categorie"] in _pt_cats else 0,
+                            key=f"pt_ed_cat_{_pt_rid}",
+                        )
+                        _pt_types = _pt_categories[_pt_new_cat]
+                        _pt_new_type = st.selectbox(
+                            "Type", _pt_types,
+                            index=_pt_types.index(_pt_ligne["type"]) if _pt_ligne["type"] in _pt_types else len(_pt_types) - 1,
+                            key=f"pt_ed_type_{_pt_rid}",
+                        )
+                        if _pt_new_type == "Autre":
+                            _pt_new_type = st.text_input("Préciser le type", value=_pt_ligne["type"] or "",
+                                                          key=f"pt_ed_typelibre_{_pt_rid}")
+                        _pt_new_com = st.text_area("Commentaire",
+                                                    value=_pt_ligne["commentaire"] if pd.notna(_pt_ligne["commentaire"]) else "",
+                                                    key=f"pt_ed_com_{_pt_rid}")
+
+                        _pt_eb1, _pt_eb2 = st.columns(2)
+                        if _pt_eb1.button("💾 Enregistrer", type="primary", key=f"pt_ed_save_{_pt_rid}"):
+                            _pt_sb.table("talent_rdv").update({
+                                "date": _pt_new_date.isoformat(),
+                                "categorie": _pt_new_cat,
+                                "type": _pt_new_type or None,
+                                "commentaire": _pt_new_com.strip() or None,
+                            }).eq("id", _pt_rid).execute()
+                            _pt_invalidate()
+                            st.success("RDV mis à jour.")
+                            st.rerun()
+                        if _pt_eb2.button("🗑️ Supprimer", key=f"pt_ed_del_{_pt_rid}"):
+                            _pt_sb.table("talent_rdv").delete().eq("id", _pt_rid).execute()
+                            _pt_invalidate()
+                            st.success("RDV supprimé.")
+                            st.rerun()
 
     # ══════════════════════════════════════════════════════
     # PAGE STAFF PRO
