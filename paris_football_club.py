@@ -247,6 +247,41 @@ def save_fiche_templates(templates: dict) -> bool:
         return False
 
 
+# ── Rapport de match : catalogue d'indicateurs + templates nommés persistants ──
+MATCH_REPORT_INDICATORS = {
+    "Technico-Tactique": ["Passes réussies", "Dribbles réussis", "Duels défensifs gagnés",
+                          "Tirs cadrés", "Récupérations", "Pertes balle", "Créations déséquilibre"],
+    "Physique GPS":      ["Distance", "HID >13", "HID >19", "Vitesse max", "Sprints >23",
+                          "Acc/Déc total", "Accélérations", "Décélérations", "Répartition vitesse"],
+    "Visuels":           ["Heatmap zone d'action", "Rose des directions de passe",
+                          "Destinations de passes", "Radar du match"],
+}
+MATCH_REPORT_ALL_INDICATORS = [i for cat in MATCH_REPORT_INDICATORS.values() for i in cat]
+MATCH_REPORT_TEMPLATES_PATH = os.path.join("data", "match_report_templates.json")
+
+
+def load_match_report_templates() -> dict:
+    """Charge les templates d'indicateurs (Rapport de match) depuis le fichier JSON persistant."""
+    if os.path.exists(MATCH_REPORT_TEMPLATES_PATH):
+        try:
+            with open(MATCH_REPORT_TEMPLATES_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_match_report_templates(templates: dict) -> bool:
+    """Sauvegarde les templates d'indicateurs (Rapport de match) dans le fichier JSON persistant."""
+    try:
+        os.makedirs(os.path.dirname(MATCH_REPORT_TEMPLATES_PATH), exist_ok=True)
+        with open(MATCH_REPORT_TEMPLATES_PATH, "w", encoding="utf-8") as f:
+            json.dump(templates, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
 # ── Programme talent : liste des joueuses suivies (JSON local, gestion manuelle) ──
 PROGRAMME_TALENT_PATH = os.path.join("data", "programme_talent_players.json")
 
@@ -8115,9 +8150,14 @@ def build_tactical_report_html(
     pfc_kpi_row=None,
     radar_b64: str = "",
     gps_match_df=None,
+    selected_indicators: set = None,
 ) -> str:
     """Rapport match A4 HTML v4 — photo à côté du nom, polices grandes, layout lisible."""
     import json as _json, math as _math
+
+    # None = tout afficher (rétrocompatible) ; sinon set des libellés
+    # d'indicateurs à inclure (MATCH_REPORT_ALL_INDICATORS).
+    _msel = set(MATCH_REPORT_ALL_INDICATORS) if selected_indicators is None else set(selected_indicators)
 
     player_label = str(player_canon or "").strip()
     mi = match_info or {}
@@ -8355,6 +8395,8 @@ def build_tactical_report_html(
                 f'color:#E0EDF5;text-align:right;font-weight:600;">{cnt}</span>'
                 f'</div>'
             )
+    if not dest_html:
+        dest_html = '<div style="font-size:11px;color:#1A2E44;font-style:italic;">Non disponible</div>'
 
     # Pitch SVG
     PITCH=(
@@ -8494,43 +8536,43 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
     <div style="padding:9px 11px;border-bottom:1px solid #0F1E2E;flex:1;overflow:hidden;">
       {stitle("Technico-Tactique")}
       {srow("Passes réussies", p_pct, "#22C55E",
-        f"{p_ok} réussies · {p_ko} ratées" + (f" · {passes_dt} dern.tiers" if passes_dt else "") + (f" · {passes_en1} en 1 tch." if passes_en1 else ""))}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:7px;">
+        f"{p_ok} réussies · {p_ko} ratées" + (f" · {passes_dt} dern.tiers" if passes_dt else "") + (f" · {passes_en1} en 1 tch." if passes_en1 else "")) if "Passes réussies" in _msel else ""}
+      {f'''<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:7px;">
         {mcard("Courtes", f"{c_ok}/{c_tot}", f"Réussite {c_pct}%", "#22C55E")}
         {mcard("Longues", f"{l_ok}/{l_tot}", f"Réussite {l_pct}%", "#E8B30A")}
-      </div>
-      {srow("Dribbles réussis", d_pct, "#00A3E0", f"{d_ok} réussi{'s' if d_ok!=1 else ''} · {d_ko} raté{'s' if d_ko!=1 else ''}")}
-      {srow("Duels défensifs gagnés", du_pct, "#F4830A", f"{du_ok} gagnés · {du_ko} perdus")}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:7px;">
+      </div>''' if "Passes réussies" in _msel else ""}
+      {srow("Dribbles réussis", d_pct, "#00A3E0", f"{d_ok} réussi{'s' if d_ok!=1 else ''} · {d_ko} raté{'s' if d_ko!=1 else ''}") if "Dribbles réussis" in _msel else ""}
+      {srow("Duels défensifs gagnés", du_pct, "#F4830A", f"{du_ok} gagnés · {du_ko} perdus") if "Duels défensifs gagnés" in _msel else ""}
+      {f'''<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:7px;">
         {mcard("Sol", f"{sol_ok}G / {sol_tot}", f"{sol_pct}% réussite", "#F4830A")}
         {mcard("Aérien", f"{aer_ok}G / {aer_tot}" if aer_tot else "—", "duels aériens" if aer_tot else "aucun", "#3A5570" if not aer_tot else "#F4830A")}
-      </div>
+      </div>''' if "Duels défensifs gagnés" in _msel else ""}
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:7px;">
-        {mcard("Tirs cadrés", f"{t_cad}/{t_tot}", t_but_str, "#22C55E")}
-        {mcard("Récupérations", str(recup), "interceptions", "#22C55E")}
-        {mcard("Pertes balle", str(pertes), f"/{ballons} ballons", "#EF4444")}
+        {mcard("Tirs cadrés", f"{t_cad}/{t_tot}", t_but_str, "#22C55E") if "Tirs cadrés" in _msel else ""}
+        {mcard("Récupérations", str(recup), "interceptions", "#22C55E") if "Récupérations" in _msel else ""}
+        {mcard("Pertes balle", str(pertes), f"/{ballons} ballons", "#EF4444") if "Pertes balle" in _msel else ""}
       </div>
-      {srow("Créations déséquilibre", deseq_pct, "#38BDF8", f"{creation_deseq} actions") if creation_deseq else ""}
+      {srow("Créations déséquilibre", deseq_pct, "#38BDF8", f"{creation_deseq} actions") if (creation_deseq and "Créations déséquilibre" in _msel) else ""}
 
       <div style="height:1px;background:#0F1E2E;margin:6px 0 7px;"></div>
       {stitle("Physique Match GPS")}
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:5px;">
-        {mcard("Distance", _g("distance_m","{:,.0f}"), "m", "#38BDF8")}
-        {mcard("HID >13", _g("hid13_m","{:,.0f}"), "m", "#38BDF8")}
-        {mcard("HID >19", _g("hid19_m","{:,.0f}"), "m", "#38BDF8")}
-        {mcard("V. max", _g("vmax_kmh","{:.1f}"), "km/h", "#38BDF8")}
-        {mcard("Sprints >23", _g("sprints_23","{:.0f}"), "nb", "#38BDF8")}
-        {mcard("Acc/Déc tot.", _g("acc_dec","{:.0f}"), "nb", "#38BDF8")}
+        {mcard("Distance", _g("distance_m","{:,.0f}"), "m", "#38BDF8") if "Distance" in _msel else ""}
+        {mcard("HID >13", _g("hid13_m","{:,.0f}"), "m", "#38BDF8") if "HID >13" in _msel else ""}
+        {mcard("HID >19", _g("hid19_m","{:,.0f}"), "m", "#38BDF8") if "HID >19" in _msel else ""}
+        {mcard("V. max", _g("vmax_kmh","{:.1f}"), "km/h", "#38BDF8") if "Vitesse max" in _msel else ""}
+        {mcard("Sprints >23", _g("sprints_23","{:.0f}"), "nb", "#38BDF8") if "Sprints >23" in _msel else ""}
+        {mcard("Acc/Déc tot.", _g("acc_dec","{:.0f}"), "nb", "#38BDF8") if "Acc/Déc total" in _msel else ""}
       </div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:3px;margin-bottom:5px;">
-        {mcard("Acc >2", _g("acc2","{:.0f}"), "nb", "#5A7A98")}
-        {mcard("Acc >3", _g("acc3","{:.0f}"), "nb", "#5A7A98")}
-        {mcard("Déc >2", _g("dec2","{:.0f}"), "nb", "#5A7A98")}
-        {mcard("Déc >3", _g("dec3","{:.0f}"), "nb", "#5A7A98")}
+        {mcard("Acc >2", _g("acc2","{:.0f}"), "nb", "#5A7A98") if "Accélérations" in _msel else ""}
+        {mcard("Acc >3", _g("acc3","{:.0f}"), "nb", "#5A7A98") if "Accélérations" in _msel else ""}
+        {mcard("Déc >2", _g("dec2","{:.0f}"), "nb", "#5A7A98") if "Décélérations" in _msel else ""}
+        {mcard("Déc >3", _g("dec3","{:.0f}"), "nb", "#5A7A98") if "Décélérations" in _msel else ""}
       </div>
-      <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:700;
+      {f'''<div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:700;
         letter-spacing:1.2px;text-transform:uppercase;color:#6A8898;margin-bottom:4px;">Répartition vitesse</div>
-      {spd_bars}
+      {spd_bars}''' if "Répartition vitesse" in _msel else ""}
     </div>
 
   </div><!-- /col gauche -->
@@ -8550,6 +8592,7 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
     ''' if radar_b64 else ''}
 
     <!-- HEATMAP -->
+    {f'''
     <div style="padding:9px 10px;border-bottom:1px solid #0F1E2E;flex-shrink:0;">
       {stitle("Heatmap — Zone d'action")}
       <svg viewBox="0 0 100 68" width="100%" style="border-radius:5px;display:block;"
@@ -8568,8 +8611,10 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
         <g id="heat-g" clip-path="url(#cph)"></g>
       </svg>
     </div>
+    ''' if "Heatmap zone d'action" in _msel else ''}
 
     <!-- PASSES + ROSE -->
+    {f'''
     <div style="padding:9px 10px;border-bottom:1px solid #0F1E2E;flex-shrink:0;">
       {stitle("Rose des directions de passe")}
       <svg id="svg-pass" viewBox="0 0 100 68" width="100%" style="border-radius:5px;display:block;"
@@ -8590,12 +8635,15 @@ body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exa
         <span style="font-size:9px;color:#4A6A88;">↑ AV=vers but adverse · ↓ AR=arrière</span>
       </div>
     </div>
+    ''' if "Rose des directions de passe" in _msel else ''}
 
     <!-- DESTINATIONS -->
+    {f'''
     <div style="padding:9px 10px;flex:1;overflow:hidden;">
       {stitle("Destinations de passes")}
-      {dest_html if dest_html else '<div style="font-size:11px;color:#1A2E44;font-style:italic;">Non disponible</div>'}
+      {dest_html}
     </div>
+    ''' if "Destinations de passes" in _msel else ''}
 
   </div><!-- /col droite -->
 </div><!-- /body -->
@@ -8762,6 +8810,73 @@ var PC={_player_centroid_json};
 }})();
 // ── FIN ──
 </script></body></html>"""
+
+
+# Clés numériques d'un résumé GPS match (get_gps_match_summary_for_player) —
+# toutes sommées à l'agrégation multi-match, sauf vmax_kmh (pic, donc max).
+_GPS_MATCH_SUMMARY_MAX_KEYS = {"vmax_kmh"}
+
+
+def _aggregate_match_reports(selected_rows: list, player: str, gps_match_df) -> tuple:
+    """Prépare les inputs d'un rapport combiné sur un ou plusieurs matchs
+    (mêmes lignes que celles construites dans la section Rapport de match,
+    un dict par match sélectionné avec au moins 'tac_obj'/'date'/'adversaire'/'journee').
+    Retourne (df_tactic_concat, gps_summary_agg, match_info).
+    Sur un seul match sélectionné : comportement strictement identique à avant
+    (contexte du match tel quel, pas de logique de compilation)."""
+    _dfs = [r["tac_obj"].get("df") for r in selected_rows if r.get("tac_obj", {}).get("df") is not None]
+    df_tactic_concat = pd.concat(_dfs, ignore_index=True) if _dfs else pd.DataFrame()
+
+    _gps_summaries = []
+    for r in selected_rows:
+        _gs = get_gps_match_summary_for_player(
+            gps_match_df, player,
+            match_date=pd.to_datetime(r.get("date"), errors="coerce"),
+            match_label=r.get("gps_label") or r.get("display", ""),
+        )
+        if _gs:
+            _gps_summaries.append(_gs)
+
+    gps_summary_agg = None
+    if _gps_summaries:
+        gps_summary_agg = {}
+        _all_keys = set().union(*[g.keys() for g in _gps_summaries])
+        for k in _all_keys:
+            _vals = [g[k] for g in _gps_summaries if k in g and pd.notna(g[k])]
+            if not _vals:
+                continue
+            gps_summary_agg[k] = max(_vals) if k in _GPS_MATCH_SUMMARY_MAX_KEYS else sum(_vals)
+
+    if len(selected_rows) == 1:
+        _r = selected_rows[0]
+        _ctx = _get_match_context(_r["tac_obj"].get("df"))
+        match_info = {
+            "adversaire": _r.get("adversaire") or _ctx.get("adversaire", ""),
+            "journee": _r.get("journee") or _ctx.get("journee", ""),
+            "saison": _r.get("saison", ""),
+            "score": f"{_ctx.get('score_pfc', '?')} – {_ctx.get('score_adv', '?')}",
+            "lieu": _ctx.get("lieu", ""),
+            "competition": _ctx.get("competition", ""),
+            "date": _r.get("date"),
+            "label": _r.get("display", ""),
+        }
+    else:
+        _parts = []
+        for r in selected_rows:
+            _j = r.get("journee", "")
+            _adv = r.get("adversaire", "")
+            _d = pd.to_datetime(r.get("date"), errors="coerce")
+            _d_str = _d.strftime("%d/%m") if pd.notna(_d) else ""
+            _parts.append(" ".join(p for p in [f"J{_j}" if _j else "", _adv, _d_str] if p))
+        match_info = {
+            "adversaire": f"{len(selected_rows)} matchs",
+            "journee": "", "score": "", "lieu": "",
+            "competition": "Compilation",
+            "date": None,
+            "label": " | ".join(_parts),
+        }
+
+    return df_tactic_concat, gps_summary_agg, match_info
 
 
 def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissions: dict, user_profile: str, tactical_files: list = None):
@@ -10454,7 +10569,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     _j = _tac.get("journee",""); _a = _tac.get("adversaire",""); _cp = _tac.get("competition","")
                     _pts = [p for p in [_sc, _cp, f"J{_j}" if _j else "", _a] if p]
                     _mrows.append({"display":" · ".join(_pts) if _pts else _tac.get("filename",""),
-                                   "date":_tac.get("date"),"adversaire":_a,"journee":_j,
+                                   "date":_tac.get("date"),"adversaire":_a,"journee":_j,"saison":_s,
                                    "tac_obj":_tac,"gps_label":""})
                 _mrows.sort(key=lambda m:(
                     (m.get("tac_obj") or {}).get("competition","").lower(),
@@ -10463,13 +10578,17 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                 _cm, _cpj = st.columns([3,2])
                 with _cm:
-                    _sd = st.selectbox("Match", [m["display"] for m in _mrows], key="perf_match_sel")
-                _sr = next((m for m in _mrows if m["display"]==_sd), _mrows[0])
-                _dft = _sr["tac_obj"].get("df")
+                    _sds = st.multiselect(
+                        "Matchs", [m["display"] for m in _mrows],
+                        default=[_mrows[-1]["display"]] if _mrows else [],
+                        key="perf_match_sel"
+                    )
+                _srs = [m for m in _mrows if m["display"] in _sds]
+                _dft = _srs[0]["tac_obj"].get("df") if _srs else None
 
                 if _dft is not None:
                     _skip = {"START","PFC",""}
-                    _adv_n = _sr.get("adversaire","")
+                    _adv_n = _srs[0].get("adversaire","")
                     if _adv_n: _skip.add(_adv_n)
                     _tplayers = [r for r in _dft["Row"].dropna().unique()
                                  if r not in _skip and not any(k in str(r) for k in ["Transition","Carton","def "])]                             if "Row" in _dft.columns else []
@@ -10489,16 +10608,63 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         else:
                             _sp = st.selectbox("Joueuse", _tplayers, index=_di, key="perf_player_tac") if _tplayers else None
 
+                    # ── Indicateurs à afficher + templates nommés (persistants) ──
+                    _mr_templates = load_match_report_templates()
+                    if "_match_report_indic_sel" not in st.session_state:
+                        st.session_state["_match_report_indic_sel"] = list(MATCH_REPORT_ALL_INDICATORS)
+
+                    with st.expander("🎛️ Indicateurs & templates"):
+                        _mr_tpl_options = ["— Personnalisé —"] + sorted(_mr_templates.keys())
+                        _mr_tpl_choice = st.selectbox("Template", _mr_tpl_options, key="match_report_tpl_sel")
+                        if _mr_tpl_choice != "— Personnalisé —" and st.session_state.get("_match_report_tpl_applied") != _mr_tpl_choice:
+                            _mr_tpl_sel = list(_mr_templates.get(_mr_tpl_choice, []))
+                            st.session_state["_match_report_indic_sel"] = _mr_tpl_sel
+                            for _mr_cat, _mr_items in MATCH_REPORT_INDICATORS.items():
+                                st.session_state[f"match_report_indic_{_mr_cat}"] = [i for i in _mr_items if i in _mr_tpl_sel]
+                            st.session_state["_match_report_tpl_applied"] = _mr_tpl_choice
+                            st.rerun()
+
+                        _mr_cur_sel = set(st.session_state["_match_report_indic_sel"])
+                        _mr_new_sel = []
+                        _mr_cat_cols = st.columns(len(MATCH_REPORT_INDICATORS))
+                        for _mr_cc, (_mr_cat, _mr_items) in zip(_mr_cat_cols, MATCH_REPORT_INDICATORS.items()):
+                            with _mr_cc:
+                                _mr_picked = st.multiselect(
+                                    _mr_cat, _mr_items,
+                                    default=[i for i in _mr_items if i in _mr_cur_sel],
+                                    key=f"match_report_indic_{_mr_cat}"
+                                )
+                                _mr_new_sel.extend(_mr_picked)
+                        st.session_state["_match_report_indic_sel"] = _mr_new_sel
+
+                        st.divider()
+                        _mr_tc1, _mr_tc2 = st.columns([3, 1])
+                        with _mr_tc1:
+                            _mr_tpl_name = st.text_input("Nom du template", key="match_report_tpl_name")
+                        with _mr_tc2:
+                            st.markdown("<div style='height:1.75em'></div>", unsafe_allow_html=True)
+                            if st.button("💾 Enregistrer", key="match_report_tpl_save", use_container_width=True):
+                                if _mr_tpl_name.strip():
+                                    _mr_templates[_mr_tpl_name.strip()] = _mr_new_sel
+                                    if save_match_report_templates(_mr_templates):
+                                        st.success(f"Template « {_mr_tpl_name.strip()} » enregistré.")
+                                        st.rerun()
+                                    else:
+                                        st.error("Échec de l'enregistrement.")
+                                else:
+                                    st.warning("Donne un nom au template avant d'enregistrer.")
+
+                        if _mr_tpl_choice != "— Personnalisé —":
+                            if st.button(f"🗑️ Supprimer « {_mr_tpl_choice} »", key="match_report_tpl_delete"):
+                                _mr_templates.pop(_mr_tpl_choice, None)
+                                save_match_report_templates(_mr_templates)
+                                st.session_state.pop("_match_report_tpl_applied", None)
+                                st.rerun()
+
+                    _mr_selected_indicators = set(st.session_state["_match_report_indic_sel"])
+
                     if _sp:
-                        _gs = get_gps_match_summary_for_player(_gps_match_df, _sp,
-                            match_date=pd.to_datetime(_sr.get("date"), errors="coerce"),
-                            match_label=_sr.get("gps_label") or _sr.get("display",""))
-                        _ctx = _get_match_context(_dft)
-                        _mi = {"adversaire":_sr.get("adversaire") or _ctx.get("adversaire",""),
-                               "journee":_sr.get("journee") or _ctx.get("journee",""),
-                               "saison":_sr.get("saison",""),
-                               "score":f"{_ctx.get('score_pfc','?')} – {_ctx.get('score_adv','?')}",
-                               "lieu":_ctx.get("lieu",""), "competition":_ctx.get("competition","")}
+                        _dft_agg, _gs, _mi = _aggregate_match_reports(_srs, _sp, _gps_match_df)
                         _pb64 = ""
                         try:
                             _pp2 = find_photo_for_player(_sp,
@@ -10510,8 +10676,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 if _rawb: _pb64 = "data:image/jpeg;base64," + _b64x.b64encode(_rawb).decode()
                         except Exception:
                             pass
-                        _html = build_tactical_report_html(_dft, _sp, gps_summary=_gs,
-                            photo_b64=_pb64, match_info=_mi)
+                        _html = build_tactical_report_html(_dft_agg, _sp, gps_summary=_gs,
+                            photo_b64=_pb64, match_info=_mi, selected_indicators=_mr_selected_indicators)
                         _pjs = ('<script>function pr(){var w=window.open("","_blank","width=900,height=1200");'
                                 'w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">'
                                 '<style>@page{size:A4 portrait;margin:0}body{margin:0;background:#060F1A}</style>'
