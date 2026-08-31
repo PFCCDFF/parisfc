@@ -19,6 +19,9 @@ class _FakeQuery:
     def is_(self, *_args, **_kwargs):
         return self
 
+    def order(self, *_args, **_kwargs):
+        return self
+
     def range(self, start, end):
         self._range = (start, end)
         return self

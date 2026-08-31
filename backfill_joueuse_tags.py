@@ -32,6 +32,7 @@ def _fetch_evenements_a_backfiller(sb) -> list:
             sb.table("evenements_match")
             .select("id, match_id")
             .is_("tags", "null")
+            .order("id")
             .range(start, start + page_size - 1)
             .execute()
         )
