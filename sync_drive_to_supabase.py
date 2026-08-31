@@ -54,6 +54,13 @@ CAPTEUR_GF1_NOM = "GF1"  # à ajuster/étendre le jour où un 2e capteur arrive
 _ROW_LABELS_EQUIPE = {"pfc", "start", ""}
 
 
+def _extract_row_brut(row_val) -> str:
+    """Convertit la valeur brute de la colonne Row (peut être NaN pandas sur
+    une cellule vide) en chaîne. str(NaN) vaudrait "nan" et créerait une
+    fausse joueuse "NAN" côté get_or_create_joueuse — d'où le pd.isna."""
+    return "" if pd.isna(row_val) else str(row_val).strip()
+
+
 def _is_row_joueuse(row_brut: str, adversaire: str) -> bool:
     """True si row_brut désigne une joueuse PFC (pas un marqueur d'équipe
     ni l'adversaire)."""
@@ -275,7 +282,7 @@ def sync_fichier_match(sb: Client, filepath: str, categorie: str) -> None:
         evenement, tags = row_to_evenement_and_tags(row)
         if not evenement.get("action"):
             continue  # ligne vide / sans action exploitable
-        row_brut = str(row.get("Row", "")).strip()
+        row_brut = _extract_row_brut(row.get("Row"))
         evenement["row_brut"] = row_brut
         if _is_row_joueuse(row_brut, adversaire):
             evenement["joueuse_id"] = get_or_create_joueuse(sb, row_brut, categorie)
