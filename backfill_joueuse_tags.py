@@ -20,18 +20,35 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("backfill_joueuse_tags")
 
 
+def _fetch_evenements_a_backfiller(sb) -> list:
+    # PostgREST plafonne les réponses à 1000 lignes par défaut : paginer par
+    # blocs de 1000 jusqu'à une page vide, sinon seuls les 1000 premiers
+    # événements sont traités et le reste silencieusement ignoré.
+    rows: list = []
+    start = 0
+    page_size = 1000
+    while True:
+        page = (
+            sb.table("evenements_match")
+            .select("id, match_id")
+            .is_("tags", "null")
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+        rows.extend(page.data)
+        if len(page.data) < page_size:
+            break
+        start += page_size
+    return rows
+
+
 def backfill(sb) -> None:
-    evs = (
-        sb.table("evenements_match")
-        .select("id, match_id")
-        .is_("tags", "null")
-        .execute()
-    )
-    logger.info("%d événements à backfiller", len(evs.data))
+    evs_data = _fetch_evenements_a_backfiller(sb)
+    logger.info("%d événements à backfiller", len(evs_data))
 
     match_cache: dict = {}
     n_ok, n_err = 0, 0
-    for ev in evs.data:
+    for ev in evs_data:
         try:
             tags_rows = (
                 sb.table("evenement_tags")
