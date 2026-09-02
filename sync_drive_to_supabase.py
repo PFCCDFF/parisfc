@@ -31,6 +31,7 @@ from parsing_utils import (
     is_tactical_file,
     parse_tactical_filename,
     nettoyer_nom_joueuse,
+    normalize_str,
     row_to_gps_metrics,
     row_to_zones_vitesse,
     row_to_evenement_and_tags,
@@ -45,6 +46,30 @@ logging.basicConfig(
 logger = logging.getLogger("sync_drive_to_supabase")
 
 CAPTEUR_GF1_NOM = "GF1"  # à ajuster/étendre le jour où un 2e capteur arrive
+
+# Labels de ligne qui ne désignent pas une joueuse (marqueurs d'équipe/début
+# de période) — mêmes valeurs que celles exclues par _adv_rows côté
+# paris_football_club.py:5365. L'adversaire du match s'ajoute dynamiquement
+# (nom variable d'un match à l'autre).
+_ROW_LABELS_EQUIPE = {"pfc", "start", ""}
+
+
+def _extract_row_brut(row_val) -> str:
+    """Convertit la valeur brute de la colonne Row (peut être NaN pandas sur
+    une cellule vide) en chaîne. str(NaN) vaudrait "nan" et créerait une
+    fausse joueuse "NAN" côté get_or_create_joueuse — d'où le pd.isna."""
+    return "" if pd.isna(row_val) else str(row_val).strip()
+
+
+def _is_row_joueuse(row_brut: str, adversaire: str) -> bool:
+    """True si row_brut désigne une joueuse PFC (pas un marqueur d'équipe
+    ni l'adversaire)."""
+    norm = normalize_str(row_brut or "")
+    if norm in _ROW_LABELS_EQUIPE:
+        return False
+    if norm == normalize_str(adversaire or ""):
+        return False
+    return True
 
 
 def get_client() -> Client:
@@ -162,11 +187,11 @@ def upsert_session_gps(sb: Client, joueuse_id: str, capteur_id: str,
 # ------------------------------------------------------------
 
 def upsert_evenement_match(sb: Client, match_id: str, evenement: dict, tags: dict) -> str:
-    payload = {"match_id": match_id, **evenement}
+    payload = {"match_id": match_id, "tags": tags, **evenement}
     result = sb.table("evenements_match").insert(payload).execute()
     evenement_id = result.data[0]["id"]
 
-    if tags:
+    if tags:  # inchangé : écriture EAV conservée en parallèle de la colonne tags
         rows = [
             {"evenement_id": evenement_id, "cle": cle, "valeur": str(valeur)}
             for cle, valeur in tags.items()
@@ -250,12 +275,17 @@ def sync_fichier_match(sb: Client, filepath: str, categorie: str) -> None:
         categorie=categorie,
         journee=minfo["journee"],
     )
+    adversaire = minfo["adversaire"] or "Inconnu"
 
     count = 0
     for _, row in df.iterrows():
         evenement, tags = row_to_evenement_and_tags(row)
         if not evenement.get("action"):
             continue  # ligne vide / sans action exploitable
+        row_brut = _extract_row_brut(row.get("Row"))
+        evenement["row_brut"] = row_brut
+        if _is_row_joueuse(row_brut, adversaire):
+            evenement["joueuse_id"] = get_or_create_joueuse(sb, row_brut, categorie)
         upsert_evenement_match(sb, match_id, evenement, tags)
         count += 1
 

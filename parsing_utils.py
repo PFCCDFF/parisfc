@@ -512,9 +512,13 @@ def deduce_categorie_from_filename(filename: str, default: str = "U19F") -> str:
 def row_to_evenement_and_tags(row: pd.Series) -> tuple[dict, dict]:
     """Convertit une ligne brute du CSV tactique en (evenement, tags).
 
-    NB : la colonne 'Row' (ex. 'MC 1', 'DCD', 'GB') identifie un profil de
-    poste, pas une joueuse nommée dans ce format d'export — elle est donc
-    stockée comme tag 'Row', pas comme joueuse_id.
+    NB : la colonne 'Row' contient le nom de la joueuse pour les lignes
+    individuelles PFC (vérifié sur export réel, 2026-08-28), avec un petit
+    ensemble de labels d'équipe/marqueurs à part ('PFC', 'START', nom de
+    l'adversaire, cellule vide). L'identité (joueuse_id) est résolue par
+    l'appelant (sync_drive_to_supabase.py::sync_fichier_match), pas ici —
+    cette fonction reste une simple séparation colonnes stables / reste de
+    la ligne.
     """
     evenement = {}
     for src_col, dest_key in _EVENEMENT_CORE_COLS.items():
