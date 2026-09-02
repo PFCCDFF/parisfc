@@ -222,7 +222,7 @@ FICHE_BILAN_INDICATORS = {
                    "Interceptions / match", "Fautes / match"],
     "Athlétique": ["Endurance (m)", "Intensité (m)", "Sprint (nb)", "Vitesse max (km/h)", "Fréquence (m/min)"],
     "Assiduité":  ["Taux de présence"],
-    "Médical":    ["Bilan médical"],
+    "Santé":      ["Espace Santé"],
 }
 FICHE_BILAN_ALL_INDICATORS = [i for cat in FICHE_BILAN_INDICATORS.values() for i in cat]
 FICHE_TEMPLATES_PATH = os.path.join("data", "fiche_bilan_templates.json")
@@ -702,6 +702,143 @@ def render_medical_donut_png(prof_counts: tuple) -> str:
     _fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight", facecolor=_fig.get_facecolor())
     _pltd.close(_fig)
     _b64 = _b64d.b64encode(_buf.getvalue()).decode()
+    return f"data:image/png;base64,{_b64}"
+
+
+@st.cache_data(ttl=60)
+def load_mesures_corporelles() -> pd.DataFrame:
+    """Toutes les mesures corporelles (poids, % masse grasse), triées par date. Une seule
+    requête — les vues par joueuse en dérivent en pandas. DataFrame vide si Supabase n'est
+    pas configuré ou si la table n'existe pas encore."""
+    _sb = get_supabase_client()
+    if _sb is None:
+        return pd.DataFrame()
+    try:
+        _res = _sb.table("mesures_corporelles").select("*").order("date", desc=False).execute()
+        _df = pd.DataFrame(_res.data)
+        if not _df.empty:
+            _df["date"] = pd.to_datetime(_df["date"])
+        return _df
+    except Exception:
+        return pd.DataFrame()
+
+
+def _mesures_invalidate():
+    load_mesures_corporelles.clear()
+
+
+def insert_mesure_corporelle(joueuse: str, date_iso: str, poids_kg, masse_grasse_pct) -> bool:
+    _sb = get_supabase_client()
+    if _sb is None:
+        return False
+    try:
+        _sb.table("mesures_corporelles").insert({
+            "joueuse": joueuse,
+            "date": date_iso,
+            "poids_kg": poids_kg,
+            "masse_grasse_pct": masse_grasse_pct,
+        }).execute()
+        _mesures_invalidate()
+        return True
+    except Exception:
+        return False
+
+
+def update_mesure_corporelle(mesure_id: int, **fields) -> bool:
+    _sb = get_supabase_client()
+    if _sb is None:
+        return False
+    try:
+        _sb.table("mesures_corporelles").update(fields).eq("id", mesure_id).execute()
+        _mesures_invalidate()
+        return True
+    except Exception:
+        return False
+
+
+def delete_mesure_corporelle(mesure_id: int) -> bool:
+    _sb = get_supabase_client()
+    if _sb is None:
+        return False
+    try:
+        _sb.table("mesures_corporelles").delete().eq("id", mesure_id).execute()
+        _mesures_invalidate()
+        return True
+    except Exception:
+        return False
+
+
+def mesures_for_player(df: pd.DataFrame, joueuse: str) -> pd.DataFrame:
+    """Mesures d'une joueuse, triées par date croissante (pour affichage/courbe)."""
+    if df is None or df.empty or not joueuse:
+        return pd.DataFrame()
+    _out = df[df["joueuse"] == joueuse]
+    return _out.sort_values("date") if not _out.empty else _out
+
+
+@st.cache_data(ttl=300)
+def render_health_curves_png(measures: tuple) -> str:
+    """Courbe d'évolution poids (axe gauche, kg) / % masse grasse (axe droit) dans le temps.
+    measures : tuple(sorted((date_iso, poids_kg, masse_grasse_pct) for ...)) — clé hashable
+    pour le cache. Retourne une data URI base64 PNG, ou None si aucune mesure."""
+    if not measures:
+        return None
+
+    import base64 as _b64h, io as _ioh
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _plth
+    import matplotlib.dates as _mdates
+
+    _dates, _poids, _grasse = [], [], []
+    for _d_iso, _p, _g in measures:
+        _dates.append(pd.Timestamp(_d_iso))
+        _poids.append(_p)
+        _grasse.append(_g)
+
+    _has_poids = any(v is not None for v in _poids)
+    _has_grasse = any(v is not None for v in _grasse)
+    if not _has_poids and not _has_grasse:
+        return None
+
+    _fig, _ax1 = _plth.subplots(figsize=(7.5, 3.6))
+    _fig.patch.set_facecolor("#0C1A28")
+    _ax1.set_facecolor("#0C1A28")
+
+    _color_poids, _color_grasse = "#3987e5", "#d95926"
+    _lines, _labels = [], []
+
+    if _has_poids:
+        _l1, = _ax1.plot(_dates, _poids, marker="o", color=_color_poids, linewidth=2, label="Poids (kg)")
+        _ax1.set_ylabel("Poids (kg)", color=_color_poids, fontsize=10)
+        _ax1.tick_params(axis="y", colors=_color_poids)
+        _lines.append(_l1); _labels.append("Poids (kg)")
+
+    if _has_grasse:
+        _ax2 = _ax1.twinx()
+        _ax2.set_facecolor("none")
+        _l2, = _ax2.plot(_dates, _grasse, marker="s", color=_color_grasse, linewidth=2, label="% Masse grasse")
+        _ax2.set_ylabel("% Masse grasse", color=_color_grasse, fontsize=10)
+        _ax2.tick_params(axis="y", colors=_color_grasse)
+        _ax2.spines["top"].set_visible(False)
+        _lines.append(_l2); _labels.append("% Masse grasse")
+
+    _ax1.spines["top"].set_visible(False)
+    _ax1.spines["right"].set_visible(_has_poids and not _has_grasse)
+    _ax1.tick_params(axis="x", colors="#C8D8E8", labelsize=8, rotation=30)
+    _ax1.xaxis.set_major_formatter(_mdates.DateFormatter("%d/%m/%y"))
+    _ax1.grid(axis="y", color="#1E2D40", linewidth=0.6)
+    for _spine in ("bottom", "left"):
+        _ax1.spines[_spine].set_color("#1E2D40")
+
+    _ax1.legend(_lines, _labels, loc="upper left", frameon=False, labelcolor="#C8D8E8", fontsize=9)
+    _ax1.set_title("Évolution poids / % masse grasse", color="#C8D8E8", fontsize=11)
+
+    _fig.tight_layout()
+    _buf = _ioh.BytesIO()
+    _fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight", facecolor=_fig.get_facecolor())
+    _plth.close(_fig)
+    _b64 = _b64h.b64encode(_buf.getvalue()).decode()
     return f"data:image/png;base64,{_b64}"
 
 
@@ -9719,7 +9856,8 @@ def build_fiche_bilan_html(player_name: str,
                            taux_presence: float = None,
                            medical_visits_total: int = 0,
                            medical_prof_counts: tuple = (),
-                           medical_zone_counts: tuple = ()) -> str:
+                           medical_zone_counts: tuple = (),
+                           health_measures: tuple = ()) -> str:
     """Génère la fiche bilan périodique HTML d'une joueuse.
     Reproduit la structure de la fiche papier :
     - En-tête identité + photo
@@ -9989,25 +10127,29 @@ def build_fiche_bilan_html(player_name: str,
     nom = name_parts[0] if name_parts else ""
     prenom = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
 
-    # ── Bilan médical (camembert professionnels + heatmap corps) — pré-calculé en
-    # variable simple pour éviter toute collision de guillemets imbriqués dans le
-    # gros f-string HTML ci-dessous.
+    # ── Espace Santé (visites médicales : camembert + heatmap ; mesures : courbe
+    # poids/masse grasse) — pré-calculé en variable simple pour éviter toute collision
+    # de guillemets imbriqués dans le gros f-string HTML ci-dessous.
     _med_html = ""
-    if "Bilan médical" in _sel:
-        if not medical_visits_total:
+    if "Espace Santé" in _sel:
+        _med_donut_b64 = render_medical_donut_png(medical_prof_counts) if (medical_visits_total and medical_prof_counts) else None
+        _med_heatmap_b64 = render_medical_heatmap_png(medical_zone_counts) if (medical_visits_total and medical_zone_counts) else None
+        _health_curve_b64 = render_health_curves_png(health_measures) if health_measures else None
+
+        if not medical_visits_total and not _health_curve_b64:
             _med_html = f'''<div class="panel">
-      {_section("Bilan médical", "#E24B4A")}
-      <div style="color:#6A8090;font-size:11px">Aucune visite médicale enregistrée.</div>
+      {_section("Espace Santé", "#E24B4A")}
+      <div style="color:#6A8090;font-size:11px">Aucune donnée de santé enregistrée.</div>
     </div>'''
         else:
-            _med_donut_b64 = render_medical_donut_png(medical_prof_counts) if medical_prof_counts else None
-            _med_heatmap_b64 = render_medical_heatmap_png(medical_zone_counts) if medical_zone_counts else None
             _med_donut_img = f'<img src="{_med_donut_b64}" style="max-width:100%;display:block;margin:0 auto">' if _med_donut_b64 else ""
             _med_heat_img = f'<img src="{_med_heatmap_b64}" style="max-width:100%;display:block;margin:8px auto 0">' if _med_heatmap_b64 else ""
+            _health_curve_img = f'<img src="{_health_curve_b64}" style="max-width:100%;display:block;margin:8px auto 0">' if _health_curve_b64 else ""
             _med_html = f'''<div class="panel">
-      {_section("Bilan médical", "#E24B4A")}
+      {_section("Espace Santé", "#E24B4A")}
       {_med_donut_img}
       {_med_heat_img}
+      {_health_curve_img}
     </div>'''
 
     html = f"""<!DOCTYPE html>
@@ -12251,6 +12393,23 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             pass
 
                         _med_summary_fiche = medical_player_summary(load_visites_medicales(), _fiche_player)
+
+                        # Mesures corporelles pour la période sélectionnée (réutilise le
+                        # sélecteur Période/Match de Performance Individuelle — seul le mode
+                        # "Plage de dates" filtre réellement, comme pour le résumé GPS).
+                        _df_mesures_fiche = load_mesures_corporelles()
+                        if not _df_mesures_fiche.empty:
+                            _df_mesures_fiche = _df_mesures_fiche[_df_mesures_fiche["joueuse"] == _fiche_player]
+                        if not _df_mesures_fiche.empty and _perf_period == "Plage de dates" and _date_deb and _date_fin:
+                            _df_mesures_fiche = _df_mesures_fiche[
+                                (_df_mesures_fiche["date"] >= pd.Timestamp(_date_deb)) &
+                                (_df_mesures_fiche["date"] <= pd.Timestamp(_date_fin))
+                            ]
+                        _health_measures_key = tuple(sorted(
+                            (r["date"].date().isoformat(), r["poids_kg"], r["masse_grasse_pct"])
+                            for _, r in _df_mesures_fiche.iterrows()
+                        )) if not _df_mesures_fiche.empty else ()
+
                         _fiche_html = build_fiche_bilan_html(
                             player_name=_fiche_player,
                             pfc_kpi_all=pfc_kpi_all,
@@ -12261,6 +12420,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             medical_visits_total=_med_summary_fiche["nb_visites"],
                             medical_prof_counts=tuple(sorted(_med_summary_fiche["prof_counts"].items())),
                             medical_zone_counts=tuple(sorted(_med_summary_fiche["zones"].items())),
+                            health_measures=_health_measures_key,
                         )
                         st.session_state["_fiche_html_cache"] = _fiche_html
                         st.session_state["_fiche_html_cache_key"] = _fiche_cache_key
@@ -13520,7 +13680,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
             _MED_JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
 
             _med_df = load_visites_medicales()
-            _med_tab_cal, _med_tab_bilan = st.tabs(["📅 Calendrier", "📊 Bilan"])
+            _med_tab_cal, _med_tab_mesures, _med_tab_bilan = st.tabs(["📅 Calendrier", "📏 Mesures", "📊 Bilan"])
 
             # ── Calendrier ──────────────────────────────────────────────────
             with _med_tab_cal:
@@ -13697,6 +13857,91 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             st.rerun()
 
                     _medical_dialog()
+
+            # ── Mesures ──────────────────────────────────────────────────────
+            with _med_tab_mesures:
+                _med_mes_roster = _med_get_roster()
+                if not _med_mes_roster:
+                    st.info("Aucune joueuse disponible.")
+                else:
+                    _med_df_mesures = load_mesures_corporelles()
+                    _med_mes_player = st.selectbox("Joueuse", _med_mes_roster, key="med_mesures_player_sel")
+                    _med_mes_hist = mesures_for_player(_med_df_mesures, _med_mes_player)
+
+                    st.markdown("#### Ajouter une mesure")
+                    _mm1, _mm2, _mm3 = st.columns(3)
+                    _mm_date = _mm1.date_input("Date", value=date.today(), format="DD/MM/YYYY", key="med_mes_date")
+                    _mm_poids = _mm2.number_input("Poids (kg)", min_value=0.0, value=None, step=0.1, key="med_mes_poids")
+                    _mm_grasse = _mm3.number_input("% Masse grasse", min_value=0.0, value=None, step=0.1, key="med_mes_grasse")
+                    if st.button("➕ Ajouter", type="primary", key="med_mes_add_btn"):
+                        if _mm_poids is None and _mm_grasse is None:
+                            st.warning("Renseigne au moins le poids ou le % de masse grasse.")
+                        else:
+                            if insert_mesure_corporelle(_med_mes_player, _mm_date.isoformat(), _mm_poids, _mm_grasse):
+                                st.success(f"Mesure ajoutée pour {_med_mes_player}.")
+                                st.rerun()
+                            else:
+                                st.error("Échec de l'enregistrement (Supabase indisponible ?).")
+
+                    st.divider()
+                    if _med_mes_hist.empty:
+                        st.info("Aucune mesure enregistrée pour cette joueuse.")
+                    else:
+                        st.markdown("#### Historique")
+                        _mes_display = _med_mes_hist[["date", "poids_kg", "masse_grasse_pct"]].rename(
+                            columns={"date": "Date", "poids_kg": "Poids (kg)", "masse_grasse_pct": "% Masse grasse"}
+                        )
+                        st.dataframe(_mes_display, use_container_width=True, hide_index=True)
+
+                        _mes_key = tuple(sorted(
+                            (r["date"].date().isoformat(), r["poids_kg"], r["masse_grasse_pct"])
+                            for _, r in _med_mes_hist.iterrows()
+                        ))
+                        _mes_png = render_health_curves_png(_mes_key)
+                        if _mes_png:
+                            st.image(_mes_png)
+
+                        st.divider()
+                        st.markdown("#### Modifier ou supprimer une mesure")
+
+                        def _mes_row_label(r):
+                            _p = f"{r['poids_kg']:.1f} kg" if pd.notna(r["poids_kg"]) else "—"
+                            _g = f"{r['masse_grasse_pct']:.1f} %" if pd.notna(r["masse_grasse_pct"]) else "—"
+                            return f"{r['date'].strftime('%d/%m/%y')} — {_p} / {_g}"
+
+                        _mes_options = {_mes_row_label(r): int(r["id"]) for _, r in _med_mes_hist.iterrows()}
+                        _mes_choix = st.selectbox("Mesure", list(_mes_options.keys()), key="med_mes_edit_pick")
+                        _mes_id = _mes_options[_mes_choix]
+                        _mes_ligne = _med_mes_hist[_med_mes_hist["id"] == _mes_id].iloc[0]
+
+                        _me1, _me2, _me3 = st.columns(3)
+                        _me_date = _me1.date_input("Date", value=_mes_ligne["date"].date(),
+                                                    format="DD/MM/YYYY", key=f"med_mes_ed_date_{_mes_id}")
+                        _me_poids = _me2.number_input(
+                            "Poids (kg)", min_value=0.0,
+                            value=float(_mes_ligne["poids_kg"]) if pd.notna(_mes_ligne["poids_kg"]) else None,
+                            step=0.1, key=f"med_mes_ed_poids_{_mes_id}",
+                        )
+                        _me_grasse = _me3.number_input(
+                            "% Masse grasse", min_value=0.0,
+                            value=float(_mes_ligne["masse_grasse_pct"]) if pd.notna(_mes_ligne["masse_grasse_pct"]) else None,
+                            step=0.1, key=f"med_mes_ed_grasse_{_mes_id}",
+                        )
+
+                        _meb1, _meb2 = st.columns(2)
+                        if _meb1.button("💾 Enregistrer", type="primary", key=f"med_mes_ed_save_{_mes_id}", use_container_width=True):
+                            if update_mesure_corporelle(_mes_id, date=_me_date.isoformat(),
+                                                         poids_kg=_me_poids, masse_grasse_pct=_me_grasse):
+                                st.success("Mesure mise à jour.")
+                                st.rerun()
+                            else:
+                                st.error("Échec de la mise à jour.")
+                        if _meb2.button("🗑️ Supprimer", key=f"med_mes_ed_del_{_mes_id}", use_container_width=True):
+                            if delete_mesure_corporelle(_mes_id):
+                                st.success("Mesure supprimée.")
+                                st.rerun()
+                            else:
+                                st.error("Échec de la suppression.")
 
             # ── Bilan ────────────────────────────────────────────────────────
             with _med_tab_bilan:
