@@ -12,6 +12,7 @@ import re
 import unicodedata
 import warnings
 from typing import Any, Dict, List, Optional, Set, Tuple
+from collections import Counter
 from difflib import get_close_matches, SequenceMatcher
 from datetime import datetime, date, timedelta
 import calendar as _calmod
@@ -221,6 +222,7 @@ FICHE_BILAN_INDICATORS = {
                    "Interceptions / match", "Fautes / match"],
     "Athlétique": ["Endurance (m)", "Intensité (m)", "Sprint (nb)", "Vitesse max (km/h)", "Fréquence (m/min)"],
     "Assiduité":  ["Taux de présence"],
+    "Médical":    ["Bilan médical"],
 }
 FICHE_BILAN_ALL_INDICATORS = [i for cat in FICHE_BILAN_INDICATORS.values() for i in cat]
 FICHE_TEMPLATES_PATH = os.path.join("data", "fiche_bilan_templates.json")
@@ -418,6 +420,289 @@ def save_presence(date_iso: str, statuts: dict) -> bool:
         return True
     except Exception:
         return False
+
+
+MEDICAL_PROFESSIONNELS = ["Médecin", "Kiné", "Ostéopathe", "Psychologue",
+                           "Nutritionniste", "Préparateur physique", "Autre"]
+MEDICAL_TYPES_SOIN = ["Consultation/bilan", "Soin de kinésithérapie", "Rééducation",
+                       "Infiltration/injection", "Imagerie (radio/écho/IRM)",
+                       "Suivi psychologique", "Autre"]
+MEDICAL_ZONES_CORPS = ["Tête", "Cou", "Épaule", "Bras/Coude", "Poignet/Main", "Dos",
+                        "Thorax/Abdomen", "Hanche/Aine", "Cuisse", "Genou",
+                        "Mollet/Tibia", "Cheville/Pied"]
+# Ordre fixe — la couleur suit le métier, pas son rang (stable d'une joueuse/fiche à l'autre).
+MEDICAL_PROF_COLORS = {
+    "Médecin": "#3987e5", "Kiné": "#d95926", "Ostéopathe": "#199e70",
+    "Psychologue": "#c98500", "Nutritionniste": "#d55181",
+    "Préparateur physique": "#008300", "Autre": "#9085e9",
+}
+
+
+@st.cache_data(ttl=60)
+def load_visites_medicales() -> pd.DataFrame:
+    """Toutes les visites médicales, triées par date décroissante. Une seule requête —
+    le calendrier, le bilan joueuse et le bilan équipe en dérivent tous en pandas plutôt
+    que de refaire des requêtes Supabase séparées. DataFrame vide si Supabase n'est pas
+    configuré ou si la table n'existe pas encore."""
+    _sb = get_supabase_client()
+    if _sb is None:
+        return pd.DataFrame()
+    try:
+        _res = _sb.table("visites_medicales").select("*").order("date", desc=True).execute()
+        _df = pd.DataFrame(_res.data)
+        if not _df.empty:
+            _df["date"] = pd.to_datetime(_df["date"])
+        return _df
+    except Exception:
+        return pd.DataFrame()
+
+
+def _medical_invalidate():
+    load_visites_medicales.clear()
+
+
+def insert_visite_medicale(joueuse: str, date_iso: str, professionnel: str, type_soin: str,
+                            partie_corps: str, duree_arret_jours: int, commentaire: str) -> bool:
+    _sb = get_supabase_client()
+    if _sb is None:
+        return False
+    try:
+        _sb.table("visites_medicales").insert({
+            "joueuse": joueuse,
+            "date": date_iso,
+            "professionnel": professionnel,
+            "type_soin": type_soin,
+            "partie_corps": partie_corps,
+            "duree_arret_jours": int(duree_arret_jours or 0),
+            "commentaire": (commentaire or "").strip() or None,
+        }).execute()
+        _medical_invalidate()
+        return True
+    except Exception:
+        return False
+
+
+def update_visite_medicale(visite_id: int, **fields) -> bool:
+    _sb = get_supabase_client()
+    if _sb is None:
+        return False
+    try:
+        _sb.table("visites_medicales").update(fields).eq("id", visite_id).execute()
+        _medical_invalidate()
+        return True
+    except Exception:
+        return False
+
+
+def delete_visite_medicale(visite_id: int) -> bool:
+    _sb = get_supabase_client()
+    if _sb is None:
+        return False
+    try:
+        _sb.table("visites_medicales").delete().eq("id", visite_id).execute()
+        _medical_invalidate()
+        return True
+    except Exception:
+        return False
+
+
+def medical_visit_dates(df: pd.DataFrame) -> set:
+    """Dates (set d'objets date) ayant au moins une visite — pour marquer le calendrier."""
+    if df is None or df.empty:
+        return set()
+    return {d.date() for d in df["date"]}
+
+
+def medical_visits_for_date(df: pd.DataFrame, d) -> pd.DataFrame:
+    """Visites d'une date donnée (objet date), triées par joueuse."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    _out = df[df["date"].dt.date == d]
+    return _out.sort_values("joueuse") if not _out.empty else _out
+
+
+def medical_player_summary(df: pd.DataFrame, joueuse: str) -> dict:
+    """{'nb_visites', 'jours_arret', 'zones': Counter, 'prof_counts': Counter} pour une joueuse."""
+    _empty = {"nb_visites": 0, "jours_arret": 0, "zones": Counter(), "prof_counts": Counter()}
+    if df is None or df.empty or not joueuse:
+        return _empty
+    _dfp = df[df["joueuse"] == joueuse]
+    if _dfp.empty:
+        return _empty
+    return {
+        "nb_visites": int(len(_dfp)),
+        "jours_arret": int(pd.to_numeric(_dfp["duree_arret_jours"], errors="coerce").fillna(0).sum()),
+        "zones": Counter(_dfp["partie_corps"].dropna().tolist()),
+        "prof_counts": Counter(_dfp["professionnel"].dropna().tolist()),
+    }
+
+
+def medical_team_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Une ligne par joueuse : Joueuse / Nb visites / Jours d'arrêt total, triée par Nb visites desc."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Joueuse", "Nb visites", "Jours d'arrêt"])
+    _g = df.groupby("joueuse").agg(
+        **{"Nb visites": ("id", "count"),
+           "Jours d'arrêt": ("duree_arret_jours", lambda s: int(pd.to_numeric(s, errors="coerce").fillna(0).sum()))}
+    ).reset_index().rename(columns={"joueuse": "Joueuse"})
+    return _g.sort_values("Nb visites", ascending=False).reset_index(drop=True)
+
+
+@st.cache_data(ttl=300)
+def render_medical_heatmap_png(zone_counts: tuple) -> str:
+    """Silhouette corporelle schématique colorée par nombre de visites/zone.
+    zone_counts : tuple(sorted((zone, count) for ...)) — clé hashable pour le cache.
+    Retourne une data URI base64 PNG, ou None si aucune donnée."""
+    _counts = dict(zone_counts)
+    if not _counts or not any(_counts.values()):
+        return None
+
+    import base64 as _b64m, io as _iom
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _pltm
+    from matplotlib.patches import Circle, FancyBboxPatch
+    import matplotlib.patheffects as _pem
+
+    _max_count = max(_counts.values()) if _counts.values() else 0
+    _neutral = "#1E2D40"
+    _ramp_dark, _ramp_light = (24, 79, 149), (205, 226, 251)  # #184f95 -> #cde2fb
+
+    def _zone_color(zone):
+        _c = _counts.get(zone, 0)
+        if _c <= 0:
+            return _neutral
+        _t = _c / _max_count if _max_count else 0
+        _r = int(_ramp_dark[0] + (_ramp_light[0] - _ramp_dark[0]) * _t)
+        _g = int(_ramp_dark[1] + (_ramp_light[1] - _ramp_dark[1]) * _t)
+        _b = int(_ramp_dark[2] + (_ramp_light[2] - _ramp_dark[2]) * _t)
+        return f"#{_r:02x}{_g:02x}{_b:02x}"
+
+    _fig, _ax = _pltm.subplots(figsize=(4.6, 8.2))
+    _fig.patch.set_facecolor("#0C1A28")
+    _ax.set_facecolor("#0C1A28")
+    _ax.set_xlim(-2.4, 2.4)
+    _ax.set_ylim(0, 10)
+    _ax.set_aspect("equal")
+    _ax.axis("off")
+
+    def _label(x, y, zone):
+        _c = _counts.get(zone, 0)
+        if _c > 0:
+            _t = _ax.text(x, y, str(_c), ha="center", va="center", fontsize=8,
+                           color="white", fontweight="bold", zorder=5)
+            _t.set_path_effects([_pem.withStroke(linewidth=2, foreground="#0C1A28")])
+
+    def _patch_common(zone):
+        return dict(facecolor=_zone_color(zone), edgecolor="#1E2D40", linewidth=1, zorder=2)
+
+    # Tête
+    _ax.add_patch(Circle((0, 9.3), 0.55, **_patch_common("Tête")))
+    _label(0, 9.3, "Tête")
+    # Cou
+    _ax.add_patch(FancyBboxPatch((-0.18, 8.55), 0.36, 0.4,
+                                  boxstyle="round,pad=0,rounding_size=0.1", **_patch_common("Cou")))
+    _label(0, 8.75, "Cou")
+    # Épaules (x2, même zone) — décalées hors du torse pour ne pas le chevaucher
+    for _sx in (-1.05, 1.05):
+        _ax.add_patch(Circle((_sx, 8.35), 0.32, **_patch_common("Épaule")))
+    _label(-1.05, 8.35, "Épaule"); _label(1.05, 8.35, "Épaule")
+    # Bras/Coude (x2) — alignés sous les épaules, hors du torse
+    for _sx in (-1.05, 1.05):
+        _ax.add_patch(FancyBboxPatch((_sx - 0.2, 6.75), 0.4, 1.4,
+                                      boxstyle="round,pad=0,rounding_size=0.15", **_patch_common("Bras/Coude")))
+    _label(-1.05, 7.45, "Bras"); _label(1.05, 7.45, "Bras")
+    # Poignet/Main (x2)
+    for _sx in (-1.05, 1.05):
+        _ax.add_patch(Circle((_sx, 6.45), 0.3, **_patch_common("Poignet/Main")))
+    _label(-1.05, 6.45, "Poignet/Main"); _label(1.05, 6.45, "Poignet/Main")
+    # Thorax/Abdomen (1 pièce centrale)
+    _ax.add_patch(FancyBboxPatch((-0.85, 5.7), 1.7, 2.6,
+                                  boxstyle="round,pad=0,rounding_size=0.2", **_patch_common("Thorax/Abdomen")))
+    _label(0, 7.0, "Thorax/Abdomen")
+    # Hanche/Aine (1 pièce)
+    _ax.add_patch(FancyBboxPatch((-0.78, 5.08), 1.55, 0.6,
+                                  boxstyle="round,pad=0,rounding_size=0.15", **_patch_common("Hanche/Aine")))
+    _label(0, 5.38, "Hanche/Aine")
+    # Cuisse (x2)
+    for _sx in (-0.5, 0.5):
+        _ax.add_patch(FancyBboxPatch((_sx - 0.31, 3.5), 0.62, 1.65,
+                                      boxstyle="round,pad=0,rounding_size=0.15", **_patch_common("Cuisse")))
+    _label(-0.5, 4.325, "Cuisse"); _label(0.5, 4.325, "Cuisse")
+    # Genou (x2)
+    for _sx in (-0.5, 0.5):
+        _ax.add_patch(Circle((_sx, 3.3), 0.3, **_patch_common("Genou")))
+    _label(-0.5, 3.3, "Genou"); _label(0.5, 3.3, "Genou")
+    # Mollet/Tibia (x2)
+    for _sx in (-0.5, 0.5):
+        _ax.add_patch(FancyBboxPatch((_sx - 0.275, 1.55), 0.55, 1.5,
+                                      boxstyle="round,pad=0,rounding_size=0.15", **_patch_common("Mollet/Tibia")))
+    _label(-0.5, 2.3, "Mollet"); _label(0.5, 2.3, "Mollet")
+    # Cheville/Pied (x2)
+    for _sx in (-0.5, 0.5):
+        _ax.add_patch(FancyBboxPatch((_sx - 0.325, 0.95), 0.65, 0.6,
+                                      boxstyle="round,pad=0,rounding_size=0.12", **_patch_common("Cheville/Pied")))
+    _label(-0.5, 1.25, "Cheville"); _label(0.5, 1.25, "Cheville")
+
+    # Dos : pas de silhouette arrière séparée (une seule zone, sans sous-région) —
+    # une tuile à part sous la silhouette.
+    _dos_color = _zone_color("Dos")
+    _ax.add_patch(FancyBboxPatch((-0.85, -0.65), 1.7, 0.45,
+                                  boxstyle="round,pad=0,rounding_size=0.1",
+                                  facecolor=_dos_color, edgecolor="#1E2D40", linewidth=1))
+    _dos_c = _counts.get("Dos", 0)
+    _ax.text(0, -0.425, f"Dos (vue arrière){f' — {_dos_c}' if _dos_c else ''}",
+              ha="center", va="center", fontsize=7.5, color="white", fontweight="bold")
+
+    _ax.set_ylim(-1.1, 10)
+    _fig.suptitle("Zones les plus touchées", color="#C8D8E8", fontsize=11, y=0.98)
+
+    _buf = _iom.BytesIO()
+    _fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight", facecolor=_fig.get_facecolor())
+    _pltm.close(_fig)
+    _b64 = _b64m.b64encode(_buf.getvalue()).decode()
+    return f"data:image/png;base64,{_b64}"
+
+
+@st.cache_data(ttl=300)
+def render_medical_donut_png(prof_counts: tuple) -> str:
+    """Camembert (donut) de répartition des visites par professionnel, total au centre.
+    prof_counts : tuple(sorted((professionnel, count) for ...)) — clé hashable pour le cache.
+    Retourne une data URI base64 PNG, ou None si aucune donnée."""
+    _counts = {k: v for k, v in prof_counts if v}
+    if not _counts:
+        return None
+
+    import base64 as _b64d, io as _iod
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as _pltd
+
+    _total = sum(_counts.values())
+    _cats = [c for c in MEDICAL_PROFESSIONNELS if c in _counts]  # ordre fixe
+    _vals = [_counts[c] for c in _cats]
+    _colors = [MEDICAL_PROF_COLORS.get(c, "#888888") for c in _cats]
+
+    _fig, _ax = _pltd.subplots(figsize=(5.5, 4.2))
+    _fig.patch.set_facecolor("#0C1A28")
+    _wedges, _ = _ax.pie(
+        _vals, colors=_colors, startangle=90,
+        wedgeprops=dict(width=0.42, edgecolor="#0C1A28", linewidth=2),
+    )
+    _ax.text(0, 0, f"{_total}\nvisite{'s' if _total > 1 else ''}", ha="center", va="center",
+              fontsize=20, fontweight="bold", color="#E8F4FF")
+    _ax.legend(
+        _wedges, [f"{c} ({n})" for c, n in zip(_cats, _vals)],
+        loc="center left", bbox_to_anchor=(1.0, 0.5), frameon=False, labelcolor="#C8D8E8",
+        fontsize=9,
+    )
+    _ax.set_title("Répartition par professionnel", color="#C8D8E8", fontsize=11)
+
+    _buf = _iod.BytesIO()
+    _fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight", facecolor=_fig.get_facecolor())
+    _pltd.close(_fig)
+    _b64 = _b64d.b64encode(_buf.getvalue()).decode()
+    return f"data:image/png;base64,{_b64}"
 
 
 # =========================
@@ -9431,7 +9716,10 @@ def build_fiche_bilan_html(player_name: str,
                            photo_b64: str = None,
                            player_info: dict = None,
                            selected_indicators: set = None,
-                           taux_presence: float = None) -> str:
+                           taux_presence: float = None,
+                           medical_visits_total: int = 0,
+                           medical_prof_counts: tuple = (),
+                           medical_zone_counts: tuple = ()) -> str:
     """Génère la fiche bilan périodique HTML d'une joueuse.
     Reproduit la structure de la fiche papier :
     - En-tête identité + photo
@@ -9701,6 +9989,27 @@ def build_fiche_bilan_html(player_name: str,
     nom = name_parts[0] if name_parts else ""
     prenom = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
 
+    # ── Bilan médical (camembert professionnels + heatmap corps) — pré-calculé en
+    # variable simple pour éviter toute collision de guillemets imbriqués dans le
+    # gros f-string HTML ci-dessous.
+    _med_html = ""
+    if "Bilan médical" in _sel:
+        if not medical_visits_total:
+            _med_html = f'''<div class="panel">
+      {_section("Bilan médical", "#E24B4A")}
+      <div style="color:#6A8090;font-size:11px">Aucune visite médicale enregistrée.</div>
+    </div>'''
+        else:
+            _med_donut_b64 = render_medical_donut_png(medical_prof_counts) if medical_prof_counts else None
+            _med_heatmap_b64 = render_medical_heatmap_png(medical_zone_counts) if medical_zone_counts else None
+            _med_donut_img = f'<img src="{_med_donut_b64}" style="max-width:100%;display:block;margin:0 auto">' if _med_donut_b64 else ""
+            _med_heat_img = f'<img src="{_med_heatmap_b64}" style="max-width:100%;display:block;margin:8px auto 0">' if _med_heatmap_b64 else ""
+            _med_html = f'''<div class="panel">
+      {_section("Bilan médical", "#E24B4A")}
+      {_med_donut_img}
+      {_med_heat_img}
+    </div>'''
+
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
@@ -9849,6 +10158,8 @@ html,body {{
     </div>
   </div>
 </div>
+
+{_med_html}
 
 <!-- PIED DE PAGE -->
 <div style="border-top:1px solid #1E2D40;margin-top:6px;padding-top:5px;display:flex;justify-content:space-between;font-size:8px;color:#3A4A5A">
@@ -11939,6 +12250,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         except Exception:
                             pass
 
+                        _med_summary_fiche = medical_player_summary(load_visites_medicales(), _fiche_player)
                         _fiche_html = build_fiche_bilan_html(
                             player_name=_fiche_player,
                             pfc_kpi_all=pfc_kpi_all,
@@ -11946,6 +12258,9 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             player_info=_info,
                             selected_indicators=_selected_indicators,
                             taux_presence=load_presence_rate(_fiche_player),
+                            medical_visits_total=_med_summary_fiche["nb_visites"],
+                            medical_prof_counts=tuple(sorted(_med_summary_fiche["prof_counts"].items())),
+                            medical_zone_counts=tuple(sorted(_med_summary_fiche["zones"].items())),
                         )
                         st.session_state["_fiche_html_cache"] = _fiche_html
                         st.session_state["_fiche_html_cache_key"] = _fiche_cache_key
@@ -13180,6 +13495,237 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             _pt_invalidate()
                             st.success("RDV supprimé.")
                             st.rerun()
+
+    # ══════════════════════════════════════════════════════
+    # PAGE MÉDICAL
+    # ══════════════════════════════════════════════════════
+    elif page == "Médical":
+        st.header("🏥 Médical")
+
+        _med_sb = get_supabase_client()
+        if _med_sb is None:
+            st.warning("Connexion Supabase non configurée (SUPABASE_URL / SUPABASE_SERVICE_KEY manquants dans les secrets).")
+        else:
+            def _med_get_roster():
+                _roster = load_presence_roster()
+                if _roster:
+                    return _roster
+                _ps = st.session_state.get("_player_settings") or load_player_settings()
+                _all_p = sorted(pfc_kpi_all["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
+                         if pfc_kpi_all is not None and not pfc_kpi_all.empty else []
+                return apply_player_settings(_all_p, _ps)
+
+            _MED_MOIS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+                            "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
+            _MED_JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
+
+            _med_df = load_visites_medicales()
+            _med_tab_cal, _med_tab_bilan = st.tabs(["📅 Calendrier", "📊 Bilan"])
+
+            # ── Calendrier ──────────────────────────────────────────────────
+            with _med_tab_cal:
+                _med_dates = medical_visit_dates(_med_df)
+                _med_today = date.today()
+
+                if "_med_cal_year" not in st.session_state:
+                    st.session_state["_med_cal_year"] = _med_today.year
+                if "_med_cal_month" not in st.session_state:
+                    st.session_state["_med_cal_month"] = _med_today.month
+
+                _mnc1, _mnc2, _mnc3, _mnc4 = st.columns([1, 2, 3, 1])
+                with _mnc1:
+                    if st.button("◀", key="med_cal_prev_month", use_container_width=True):
+                        _m, _y = st.session_state["_med_cal_month"] - 1, st.session_state["_med_cal_year"]
+                        if _m < 1:
+                            _m, _y = 12, _y - 1
+                        st.session_state["_med_cal_month"], st.session_state["_med_cal_year"] = _m, _y
+                        st.rerun()
+                with _mnc2:
+                    _med_years_avail = sorted({d.year for d in _med_dates} | {_med_today.year, st.session_state["_med_cal_year"]})
+                    st.session_state["_med_cal_year"] = st.selectbox(
+                        "Année", _med_years_avail,
+                        index=_med_years_avail.index(st.session_state["_med_cal_year"]),
+                        key="med_cal_year_sel", label_visibility="collapsed",
+                    )
+                with _mnc3:
+                    st.markdown(
+                        f"<div style='text-align:center;font-family:Oswald,sans-serif;font-size:18px;"
+                        f"font-weight:600;letter-spacing:0.05em;padding-top:6px;color:#FFFFFF'>"
+                        f"{_MED_MOIS_FR[st.session_state['_med_cal_month'] - 1]} {st.session_state['_med_cal_year']}</div>",
+                        unsafe_allow_html=True
+                    )
+                with _mnc4:
+                    if st.button("▶", key="med_cal_next_month", use_container_width=True):
+                        _m, _y = st.session_state["_med_cal_month"] + 1, st.session_state["_med_cal_year"]
+                        if _m > 12:
+                            _m, _y = 1, _y + 1
+                        st.session_state["_med_cal_month"], st.session_state["_med_cal_year"] = _m, _y
+                        st.rerun()
+
+                _med_year, _med_month = st.session_state["_med_cal_year"], st.session_state["_med_cal_month"]
+
+                _calmod.setfirstweekday(_calmod.MONDAY)
+                _med_weeks = _calmod.monthcalendar(_med_year, _med_month)
+
+                _mhcols = st.columns(7)
+                for _mhc, _mlbl in zip(_mhcols, _MED_JOURS_FR):
+                    _mhc.markdown(
+                        f"<div style='text-align:center;font-size:11px;color:#6A8090;"
+                        f"font-weight:600;text-transform:uppercase'>{_mlbl}</div>",
+                        unsafe_allow_html=True
+                    )
+
+                for _mweek in _med_weeks:
+                    _mwcols = st.columns(7)
+                    for _mwc, _mday in zip(_mwcols, _mweek):
+                        with _mwc:
+                            if _mday == 0:
+                                st.write("")
+                                continue
+                            _md_date = date(_med_year, _med_month, _mday)
+                            _has_data = _md_date in _med_dates
+                            _is_sel = st.session_state.get("_med_dialog_date") == _md_date
+                            if st.button(
+                                f"{'🩺 ' if _has_data else ''}{_mday}", key=f"med_day_{_md_date.isoformat()}",
+                                type="primary" if _is_sel else "secondary",
+                                use_container_width=True,
+                            ):
+                                # Pas de st.rerun() explicite : le clic déclenche déjà un rerun
+                                # naturel, le bloc dialog ci-dessous relit _med_dialog_date dans
+                                # ce même rerun (même raisonnement que pour Présence).
+                                st.session_state["_med_dialog_date"] = _md_date
+
+                st.caption("🩺 Jour avec visite(s) médicale(s) — clique sur une date pour saisir/consulter.")
+
+                _med_dialog_date = st.session_state.get("_med_dialog_date")
+                if _med_dialog_date:
+                    _med_roster = _med_get_roster()
+                    _med_date_iso = _med_dialog_date.isoformat()
+
+                    @st.dialog(f"Visites médicales du {_med_dialog_date.strftime('%d/%m/%Y')}")
+                    def _medical_dialog():
+                        st.markdown("#### Ajouter une visite")
+                        _ma1, _ma2 = st.columns(2)
+                        _ma_joueuse = _ma1.selectbox("Joueuse", _med_roster, key="med_add_joueuse")
+                        _ma_pro = _ma2.selectbox("Professionnel", MEDICAL_PROFESSIONNELS, key="med_add_pro")
+                        _ma_soin = _ma1.selectbox("Type de soin", MEDICAL_TYPES_SOIN, key="med_add_soin")
+                        if _ma_soin == "Autre":
+                            _ma_soin = st.text_input("Préciser le type de soin", key="med_add_soin_libre")
+                        _ma_zone = _ma2.selectbox("Partie du corps", MEDICAL_ZONES_CORPS, key="med_add_zone")
+                        _ma_arret = st.number_input("Durée de l'arrêt complet (jours, 0 si aucun)",
+                                                     min_value=0, value=0, step=1, key="med_add_arret")
+                        _ma_com = st.text_area("Commentaire (facultatif)", key="med_add_com")
+
+                        if st.button("➕ Ajouter", type="primary", key="med_add_btn"):
+                            if _ma_soin == "Autre" or not str(_ma_soin).strip():
+                                st.warning("Précise un type de soin.")
+                            else:
+                                if insert_visite_medicale(
+                                    joueuse=_ma_joueuse, date_iso=_med_date_iso, professionnel=_ma_pro,
+                                    type_soin=str(_ma_soin).strip(), partie_corps=_ma_zone,
+                                    duree_arret_jours=_ma_arret, commentaire=_ma_com,
+                                ):
+                                    st.success(f"Visite ajoutée pour {_ma_joueuse}.")
+                                    st.rerun()
+                                else:
+                                    st.error("Échec de l'enregistrement (Supabase indisponible ?).")
+
+                        st.divider()
+                        st.markdown("#### Visites déjà enregistrées ce jour")
+                        _med_day_visits = medical_visits_for_date(_med_df, _med_dialog_date)
+                        if _med_day_visits.empty:
+                            st.caption("Aucune visite enregistrée.")
+                        else:
+                            def _med_row_label(r):
+                                return f"{r['joueuse']} — {r['professionnel']} — {r['type_soin']}"
+                            _med_options = {_med_row_label(r): int(r["id"]) for _, r in _med_day_visits.iterrows()}
+                            _med_choix = st.selectbox("Visite", list(_med_options.keys()), key="med_edit_pick")
+                            _med_vid = _med_options[_med_choix]
+                            _med_ligne = _med_day_visits[_med_day_visits["id"] == _med_vid].iloc[0]
+
+                            _me1, _me2 = st.columns(2)
+                            _me_joueuse = _me1.selectbox(
+                                "Joueuse", _med_roster,
+                                index=_med_roster.index(_med_ligne["joueuse"]) if _med_ligne["joueuse"] in _med_roster else 0,
+                                key=f"med_ed_joueuse_{_med_vid}",
+                            )
+                            _me_pro = _me2.selectbox(
+                                "Professionnel", MEDICAL_PROFESSIONNELS,
+                                index=MEDICAL_PROFESSIONNELS.index(_med_ligne["professionnel"]) if _med_ligne["professionnel"] in MEDICAL_PROFESSIONNELS else 0,
+                                key=f"med_ed_pro_{_med_vid}",
+                            )
+                            _me_zone = _me1.selectbox(
+                                "Partie du corps", MEDICAL_ZONES_CORPS,
+                                index=MEDICAL_ZONES_CORPS.index(_med_ligne["partie_corps"]) if _med_ligne["partie_corps"] in MEDICAL_ZONES_CORPS else 0,
+                                key=f"med_ed_zone_{_med_vid}",
+                            )
+                            _me_arret = _me2.number_input(
+                                "Durée de l'arrêt (jours)", min_value=0,
+                                value=int(_med_ligne["duree_arret_jours"]) if pd.notna(_med_ligne["duree_arret_jours"]) else 0,
+                                step=1, key=f"med_ed_arret_{_med_vid}",
+                            )
+                            _me_soin = st.text_input("Type de soin", value=_med_ligne["type_soin"] or "",
+                                                      key=f"med_ed_soin_{_med_vid}")
+                            _me_com = st.text_area(
+                                "Commentaire",
+                                value=_med_ligne["commentaire"] if pd.notna(_med_ligne["commentaire"]) else "",
+                                key=f"med_ed_com_{_med_vid}",
+                            )
+
+                            _meb1, _meb2 = st.columns(2)
+                            if _meb1.button("💾 Enregistrer", type="primary", key=f"med_ed_save_{_med_vid}", use_container_width=True):
+                                if update_visite_medicale(
+                                    _med_vid, joueuse=_me_joueuse, professionnel=_me_pro,
+                                    type_soin=(_me_soin or "").strip() or _med_ligne["type_soin"],
+                                    partie_corps=_me_zone, duree_arret_jours=int(_me_arret),
+                                    commentaire=_me_com.strip() or None,
+                                ):
+                                    st.success("Visite mise à jour.")
+                                    st.rerun()
+                                else:
+                                    st.error("Échec de la mise à jour.")
+                            if _meb2.button("🗑️ Supprimer", key=f"med_ed_del_{_med_vid}", use_container_width=True):
+                                if delete_visite_medicale(_med_vid):
+                                    st.success("Visite supprimée.")
+                                    st.rerun()
+                                else:
+                                    st.error("Échec de la suppression.")
+
+                        st.divider()
+                        if st.button("Fermer", key="med_dialog_close"):
+                            st.session_state.pop("_med_dialog_date", None)
+                            st.rerun()
+
+                    _medical_dialog()
+
+            # ── Bilan ────────────────────────────────────────────────────────
+            with _med_tab_bilan:
+                if _med_df.empty:
+                    st.info("Aucune visite médicale enregistrée pour l'instant.")
+                else:
+                    st.markdown("#### Synthèse équipe")
+                    st.dataframe(medical_team_summary(_med_df), use_container_width=True, hide_index=True)
+
+                    st.divider()
+                    st.markdown("#### Détail par joueuse")
+                    _med_roster_bilan = _med_get_roster()
+                    _med_players_with_data = [p for p in _med_roster_bilan if p in set(_med_df["joueuse"])]
+                    if not _med_players_with_data:
+                        st.info("Aucune joueuse de l'effectif n'a de visite enregistrée.")
+                    else:
+                        _med_bilan_player = st.selectbox("Joueuse", _med_players_with_data, key="med_bilan_player_sel")
+                        _med_summary = medical_player_summary(_med_df, _med_bilan_player)
+
+                        _mc1, _mc2 = st.columns(2)
+                        _mc1.metric("Nombre de visites", _med_summary["nb_visites"])
+                        _mc2.metric("Jours d'arrêt total", _med_summary["jours_arret"])
+
+                        _med_zone_key = tuple(sorted(_med_summary["zones"].items()))
+                        _med_heatmap = render_medical_heatmap_png(_med_zone_key)
+                        if _med_heatmap:
+                            st.image(_med_heatmap)
+                        else:
+                            st.caption("Aucune zone du corps enregistrée pour cette joueuse.")
 
     # ══════════════════════════════════════════════════════
     # PAGE STAFF PRO
