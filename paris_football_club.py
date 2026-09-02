@@ -220,6 +220,7 @@ FICHE_BILAN_INDICATORS = {
     "Défensif":   ["Duels défensifs / match", "Duels gagnés %", "Timing (sans faute %)",
                    "Interceptions / match", "Fautes / match"],
     "Athlétique": ["Endurance (m)", "Intensité (m)", "Sprint (nb)", "Vitesse max (km/h)", "Fréquence (m/min)"],
+    "Assiduité":  ["Taux de présence"],
 }
 FICHE_BILAN_ALL_INDICATORS = [i for cat in FICHE_BILAN_INDICATORS.values() for i in cat]
 FICHE_TEMPLATES_PATH = os.path.join("data", "fiche_bilan_templates.json")
@@ -321,6 +322,73 @@ def get_supabase_client():
         return create_client(url, key)
     except Exception:
         return None
+
+
+PRESENCE_STATUTS = ["Présente", "Absente", "En retard", "Absente injustifiée"]
+
+
+@st.cache_data(ttl=60)
+def load_presence_dates() -> set:
+    """Dates (set d'objets date) ayant au moins une ligne de présence enregistrée
+    — sert à marquer le calendrier. Retourne un set vide si Supabase n'est pas
+    configuré ou si la table n'existe pas encore."""
+    _sb = get_supabase_client()
+    if _sb is None:
+        return set()
+    try:
+        _res = _sb.table("presence_entrainement").select("date").execute()
+        return {pd.to_datetime(r["date"]).date() for r in _res.data}
+    except Exception:
+        return set()
+
+
+@st.cache_data(ttl=60)
+def load_presence_for_date(date_iso: str) -> dict:
+    """{joueuse: statut} pour une date donnée (clé ISO 'YYYY-MM-DD')."""
+    _sb = get_supabase_client()
+    if _sb is None:
+        return {}
+    try:
+        _res = _sb.table("presence_entrainement").select("joueuse,statut").eq("date", date_iso).execute()
+        return {r["joueuse"]: r["statut"] for r in _res.data}
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=300)
+def load_presence_rate(joueuse: str):
+    """Taux de présence (%) : (Présente + En retard) / total, ou None si aucune
+    donnée enregistrée pour cette joueuse."""
+    _sb = get_supabase_client()
+    if _sb is None or not joueuse:
+        return None
+    try:
+        _res = _sb.table("presence_entrainement").select("statut").eq("joueuse", joueuse).execute()
+        if not _res.data:
+            return None
+        _total = len(_res.data)
+        _presentes = sum(1 for r in _res.data if r["statut"] in ("Présente", "En retard"))
+        return round(100.0 * _presentes / _total, 1)
+    except Exception:
+        return None
+
+
+def save_presence(date_iso: str, statuts: dict) -> bool:
+    """Upsert une ligne par joueuse pour la date donnée (on_conflict=joueuse,date),
+    puis invalide les caches de lecture ci-dessus."""
+    _sb = get_supabase_client()
+    if _sb is None:
+        return False
+    try:
+        _rows = [{"joueuse": _nom, "date": date_iso, "statut": _statut} for _nom, _statut in statuts.items()]
+        if _rows:
+            _sb.table("presence_entrainement").upsert(_rows, on_conflict="joueuse,date").execute()
+        load_presence_dates.clear()
+        load_presence_for_date.clear()
+        load_presence_rate.clear()
+        return True
+    except Exception:
+        return False
 
 
 # =========================
@@ -9333,7 +9401,8 @@ def build_fiche_bilan_html(player_name: str,
                            gps_match_df: pd.DataFrame,
                            photo_b64: str = None,
                            player_info: dict = None,
-                           selected_indicators: set = None) -> str:
+                           selected_indicators: set = None,
+                           taux_presence: float = None) -> str:
     """Génère la fiche bilan périodique HTML d'une joueuse.
     Reproduit la structure de la fiche papier :
     - En-tête identité + photo
@@ -9737,10 +9806,14 @@ html,body {{
           <div class="val-big" style="font-size:18px;color:#E24B4A">{_fmt(vmax_max,1)}</div>
           <div class="label-sm">Vitesse max (km/h)</div>
         </div>''' if "Vitesse max (km/h)" in _sel else ""}
-        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center;grid-column:span 2">
+        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
           <div class="val-big" style="font-size:18px;color:#378ADD">{_fmt(freq_moy,1)}</div>
           <div class="label-sm">Fréquence (m/min)</div>
         </div>''' if "Fréquence (m/min)" in _sel else ""}
+        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+          <div class="val-big" style="font-size:18px;color:#B57EDC">{_fmt(taux_presence,1,"%")}</div>
+          <div class="label-sm">Taux de présence</div>
+        </div>''' if "Taux de présence" in _sel else ""}
       </div>
       {_section("Objectifs au poste", "#378ADD") if any(lbl in _sel for lbl in _gps_objectives) else ""}
       {"".join(_stat_row(lbl, val, "", "#378ADD", obj) for lbl,(obj,val) in _gps_objectives.items() if lbl in _sel)}
@@ -10098,156 +10171,293 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     # TAB — ENTRAÎNEMENT (calendrier des séances)
     # ══════════════════════════════════
     with _tab_entrainement:
-        _gr_cal = ensure_date_column(_gps_raw_df) if _gps_raw_df is not None and not _gps_raw_df.empty else pd.DataFrame()
-        _gr_cal = _gr_cal[_gr_cal["DATE"].notna()].copy() if not _gr_cal.empty else _gr_cal
+        _CAL_MOIS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+                        "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
+        _CAL_JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
 
-        if _gr_cal.empty:
-            st.info("Aucune séance d'entraînement GPS trouvée.")
-        else:
-            _CAL_MOIS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
-                            "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
-            _CAL_JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
+        _ent_sub_seances, _ent_sub_presence = st.tabs(["📅 Séances", "✅ Présence"])
+        with _ent_sub_seances:
+            _gr_cal = ensure_date_column(_gps_raw_df) if _gps_raw_df is not None and not _gps_raw_df.empty else pd.DataFrame()
+            _gr_cal = _gr_cal[_gr_cal["DATE"].notna()].copy() if not _gr_cal.empty else _gr_cal
 
-            _gr_cal["_day"] = _gr_cal["DATE"].dt.normalize().dt.date
-            _seance_days   = set(_gr_cal["_day"].unique())
-            _seance_counts = _gr_cal.groupby("_day")["Player"].nunique().to_dict()
+            if _gr_cal.empty:
+                st.info("Aucune séance d'entraînement GPS trouvée.")
+            else:
+                _gr_cal["_day"] = _gr_cal["DATE"].dt.normalize().dt.date
+                _seance_days   = set(_gr_cal["_day"].unique())
+                _seance_counts = _gr_cal.groupby("_day")["Player"].nunique().to_dict()
 
-            # ── Navigation année / mois ─────────────────────────────────────
-            _years_avail = sorted({d.year for d in _seance_days})
-            if "_cal_year" not in st.session_state or st.session_state["_cal_year"] not in _years_avail:
-                st.session_state["_cal_year"] = max(_years_avail)
-            if "_cal_month" not in st.session_state:
-                _last_day = max(_seance_days)
-                st.session_state["_cal_month"] = (
-                    _last_day.month if _last_day.year == st.session_state["_cal_year"] else 1
-                )
+                # ── Navigation année / mois ─────────────────────────────────────
+                _years_avail = sorted({d.year for d in _seance_days})
+                if "_cal_year" not in st.session_state or st.session_state["_cal_year"] not in _years_avail:
+                    st.session_state["_cal_year"] = max(_years_avail)
+                if "_cal_month" not in st.session_state:
+                    _last_day = max(_seance_days)
+                    st.session_state["_cal_month"] = (
+                        _last_day.month if _last_day.year == st.session_state["_cal_year"] else 1
+                    )
 
-            _nc1, _nc2, _nc3, _nc4 = st.columns([1, 2, 3, 1])
-            with _nc1:
-                if st.button("◀", key="cal_prev_month", use_container_width=True):
-                    _m, _y = st.session_state["_cal_month"] - 1, st.session_state["_cal_year"]
+                _nc1, _nc2, _nc3, _nc4 = st.columns([1, 2, 3, 1])
+                with _nc1:
+                    if st.button("◀", key="cal_prev_month", use_container_width=True):
+                        _m, _y = st.session_state["_cal_month"] - 1, st.session_state["_cal_year"]
+                        if _m < 1:
+                            _m, _y = 12, _y - 1
+                        st.session_state["_cal_month"], st.session_state["_cal_year"] = _m, _y
+                        st.rerun()
+                with _nc2:
+                    _year_options = sorted(set(_years_avail) | {st.session_state["_cal_year"]})
+                    st.session_state["_cal_year"] = st.selectbox(
+                        "Année", _year_options,
+                        index=_year_options.index(st.session_state["_cal_year"]),
+                        key="cal_year_sel", label_visibility="collapsed",
+                    )
+                with _nc3:
+                    st.markdown(
+                        f"<div style='text-align:center;font-family:Oswald,sans-serif;font-size:18px;"
+                        f"font-weight:600;letter-spacing:0.05em;padding-top:6px;color:#FFFFFF'>"
+                        f"{_CAL_MOIS_FR[st.session_state['_cal_month'] - 1]} {st.session_state['_cal_year']}</div>",
+                        unsafe_allow_html=True
+                    )
+                with _nc4:
+                    if st.button("▶", key="cal_next_month", use_container_width=True):
+                        _m, _y = st.session_state["_cal_month"] + 1, st.session_state["_cal_year"]
+                        if _m > 12:
+                            _m, _y = 1, _y + 1
+                        st.session_state["_cal_month"], st.session_state["_cal_year"] = _m, _y
+                        st.rerun()
+
+                _year, _month = st.session_state["_cal_year"], st.session_state["_cal_month"]
+
+                # ── Grille calendrier ────────────────────────────────────────────
+                _calmod.setfirstweekday(_calmod.MONDAY)
+                _weeks = _calmod.monthcalendar(_year, _month)
+
+                _hcols = st.columns(7)
+                for _hc, _lbl in zip(_hcols, _CAL_JOURS_FR):
+                    _hc.markdown(
+                        f"<div style='text-align:center;font-size:11px;color:#6A8090;"
+                        f"font-weight:600;text-transform:uppercase'>{_lbl}</div>",
+                        unsafe_allow_html=True
+                    )
+
+                for _week in _weeks:
+                    _wcols = st.columns(7)
+                    for _wc, _day in zip(_wcols, _week):
+                        with _wc:
+                            if _day == 0:
+                                st.write("")
+                                continue
+                            _d = date(_year, _month, _day)
+                            if _d in _seance_days:
+                                _is_sel = st.session_state.get("_cal_selected_date") == _d
+                                _n = _seance_counts.get(_d, 0)
+                                if st.button(
+                                    f"🟢 {_day}", key=f"cal_day_{_d.isoformat()}",
+                                    type="primary" if _is_sel else "secondary",
+                                    help=f"{_n} joueuse(s)", use_container_width=True,
+                                ):
+                                    st.session_state["_cal_selected_date"] = _d
+                                    st.rerun()
+                            else:
+                                st.markdown(
+                                    f"<div style='text-align:center;padding:8px 0;"
+                                    f"color:#3A4A5A;font-size:14px'>{_day}</div>",
+                                    unsafe_allow_html=True,
+                                )
+
+                st.caption("🟢 Jour avec séance GPS — clique sur une date pour voir le détail collectif.")
+
+                # ── Zoom sur la séance sélectionnée ──────────────────────────────
+                _sel_date = st.session_state.get("_cal_selected_date")
+                if _sel_date and _sel_date in _seance_days:
+                    st.divider()
+                    st.markdown(f"#### 📋 Séance collective du {_sel_date.strftime('%d/%m/%Y')}")
+
+                    _day_df = _gr_cal[_gr_cal["_day"] == _sel_date].copy()
+                    if _day_df["Player"].duplicated().any():
+                        _sort_col = "Distance (m)" if "Distance (m)" in _day_df.columns else _day_df.columns[0]
+                        _day_df = _day_df.sort_values(_sort_col, ascending=False).drop_duplicates(subset=["Player"])
+
+                    st.caption(f"👥 {_day_df['Player'].nunique()} joueuse(s) présentes")
+
+                    # Global équipe (somme, ou max pour les métriques de pic type
+                    # vitesse/accél. max) + moyenne par joueuse — mêmes métriques
+                    # et mise en forme que la vue individuelle (MONITORING_*).
+                    _agg_rows = {"Total équipe": {}, "Moyenne / joueuse": {}}
+                    for _col in MONITORING_ALL_COLS:
+                        if _col not in _day_df.columns:
+                            continue
+                        _vals = pd.to_numeric(_day_df[_col], errors="coerce").dropna()
+                        if _vals.empty:
+                            continue
+                        _lbl = MONITORING_ALL_LABELS[_col]
+                        if _col in _MONITORING_DECIMAL_COLS:
+                            _agg_rows["Total équipe"][_lbl] = round(float(_vals.max()), 1)
+                        else:
+                            _agg_rows["Total équipe"][_lbl] = round(float(_vals.sum()), 1)
+                        _agg_rows["Moyenne / joueuse"][_lbl] = round(float(_vals.mean()), 1)
+
+                    if not _agg_rows["Total équipe"]:
+                        st.info("Pas assez de données pour agréger cette séance.")
+                    else:
+                        _agg_df = pd.DataFrame(_agg_rows).T.reset_index().rename(columns={"index": "Indicateur"})
+                        _num_cols_agg = [c for c in _agg_df.columns if c != "Indicateur"]
+                        _fmt_agg = {
+                            MONITORING_ALL_LABELS[c]: "{:" + monitoring_metric_fmt(c) + "}"
+                            for c in MONITORING_ALL_COLS if MONITORING_ALL_LABELS.get(c) in _num_cols_agg
+                        }
+                        styled_agg = (
+                            _agg_df.style
+                            .format(_fmt_agg)
+                            .apply(monitoring_heatmap_styles, subset=_num_cols_agg)
+                        )
+                        st.dataframe(styled_agg, use_container_width=True, hide_index=True)
+                        st.markdown(MONITORING_HEATMAP_LEGEND, unsafe_allow_html=True)
+                        st.caption(
+                            "Total équipe = somme des joueuses présentes (max pour vitesse max / accél. max) · "
+                            "Moyenne / joueuse = moyenne sur les joueuses présentes."
+                        )
+
+                    with st.expander("Voir le détail par joueuse"):
+                        _detail_cols = ["Player"] + [c for c in MONITORING_ALL_COLS if c in _day_df.columns]
+                        _detail_df = _day_df[_detail_cols].rename(columns={"Player": "Joueuse", **MONITORING_ALL_LABELS})
+                        st.dataframe(_detail_df, use_container_width=True, hide_index=True)
+
+        with _ent_sub_presence:
+            _pres_dates = load_presence_dates()
+            _pres_today = date.today()
+
+            if "_pres_cal_year" not in st.session_state:
+                st.session_state["_pres_cal_year"] = _pres_today.year
+            if "_pres_cal_month" not in st.session_state:
+                st.session_state["_pres_cal_month"] = _pres_today.month
+
+            _pnc1, _pnc2, _pnc3, _pnc4 = st.columns([1, 2, 3, 1])
+            with _pnc1:
+                if st.button("◀", key="pres_cal_prev_month", use_container_width=True):
+                    _m, _y = st.session_state["_pres_cal_month"] - 1, st.session_state["_pres_cal_year"]
                     if _m < 1:
                         _m, _y = 12, _y - 1
-                    st.session_state["_cal_month"], st.session_state["_cal_year"] = _m, _y
+                    st.session_state["_pres_cal_month"], st.session_state["_pres_cal_year"] = _m, _y
                     st.rerun()
-            with _nc2:
-                _year_options = sorted(set(_years_avail) | {st.session_state["_cal_year"]})
-                st.session_state["_cal_year"] = st.selectbox(
-                    "Année", _year_options,
-                    index=_year_options.index(st.session_state["_cal_year"]),
-                    key="cal_year_sel", label_visibility="collapsed",
+            with _pnc2:
+                _pres_years_avail = sorted({d.year for d in _pres_dates} | {_pres_today.year, st.session_state["_pres_cal_year"]})
+                st.session_state["_pres_cal_year"] = st.selectbox(
+                    "Année", _pres_years_avail,
+                    index=_pres_years_avail.index(st.session_state["_pres_cal_year"]),
+                    key="pres_cal_year_sel", label_visibility="collapsed",
                 )
-            with _nc3:
+            with _pnc3:
                 st.markdown(
                     f"<div style='text-align:center;font-family:Oswald,sans-serif;font-size:18px;"
                     f"font-weight:600;letter-spacing:0.05em;padding-top:6px;color:#FFFFFF'>"
-                    f"{_CAL_MOIS_FR[st.session_state['_cal_month'] - 1]} {st.session_state['_cal_year']}</div>",
+                    f"{_CAL_MOIS_FR[st.session_state['_pres_cal_month'] - 1]} {st.session_state['_pres_cal_year']}</div>",
                     unsafe_allow_html=True
                 )
-            with _nc4:
-                if st.button("▶", key="cal_next_month", use_container_width=True):
-                    _m, _y = st.session_state["_cal_month"] + 1, st.session_state["_cal_year"]
+            with _pnc4:
+                if st.button("▶", key="pres_cal_next_month", use_container_width=True):
+                    _m, _y = st.session_state["_pres_cal_month"] + 1, st.session_state["_pres_cal_year"]
                     if _m > 12:
                         _m, _y = 1, _y + 1
-                    st.session_state["_cal_month"], st.session_state["_cal_year"] = _m, _y
+                    st.session_state["_pres_cal_month"], st.session_state["_pres_cal_year"] = _m, _y
                     st.rerun()
 
-            _year, _month = st.session_state["_cal_year"], st.session_state["_cal_month"]
+            _pres_year, _pres_month = st.session_state["_pres_cal_year"], st.session_state["_pres_cal_month"]
 
-            # ── Grille calendrier ────────────────────────────────────────────
             _calmod.setfirstweekday(_calmod.MONDAY)
-            _weeks = _calmod.monthcalendar(_year, _month)
+            _pres_weeks = _calmod.monthcalendar(_pres_year, _pres_month)
 
-            _hcols = st.columns(7)
-            for _hc, _lbl in zip(_hcols, _CAL_JOURS_FR):
-                _hc.markdown(
+            _phcols = st.columns(7)
+            for _phc, _plbl in zip(_phcols, _CAL_JOURS_FR):
+                _phc.markdown(
                     f"<div style='text-align:center;font-size:11px;color:#6A8090;"
-                    f"font-weight:600;text-transform:uppercase'>{_lbl}</div>",
+                    f"font-weight:600;text-transform:uppercase'>{_plbl}</div>",
                     unsafe_allow_html=True
                 )
 
-            for _week in _weeks:
-                _wcols = st.columns(7)
-                for _wc, _day in zip(_wcols, _week):
-                    with _wc:
-                        if _day == 0:
+            for _pweek in _pres_weeks:
+                _pwcols = st.columns(7)
+                for _pwc, _pday in zip(_pwcols, _pweek):
+                    with _pwc:
+                        if _pday == 0:
                             st.write("")
                             continue
-                        _d = date(_year, _month, _day)
-                        if _d in _seance_days:
-                            _is_sel = st.session_state.get("_cal_selected_date") == _d
-                            _n = _seance_counts.get(_d, 0)
-                            if st.button(
-                                f"🟢 {_day}", key=f"cal_day_{_d.isoformat()}",
-                                type="primary" if _is_sel else "secondary",
-                                help=f"{_n} joueuse(s)", use_container_width=True,
-                            ):
-                                st.session_state["_cal_selected_date"] = _d
+                        _pd_date = date(_pres_year, _pres_month, _pday)
+                        _has_data = _pd_date in _pres_dates
+                        _is_sel = st.session_state.get("_presence_dialog_date") == _pd_date
+                        if st.button(
+                            f"{'🟢 ' if _has_data else ''}{_pday}", key=f"pres_day_{_pd_date.isoformat()}",
+                            type="primary" if _is_sel else "secondary",
+                            use_container_width=True,
+                        ):
+                            st.session_state["_presence_dialog_date"] = _pd_date
+                            st.rerun()
+
+            st.caption("🟢 Jour avec présence saisie — clique sur une date pour saisir/modifier la présence.")
+
+            _pres_dialog_date = st.session_state.get("_presence_dialog_date")
+            if _pres_dialog_date:
+                _ps_pres = st.session_state.get("_player_settings") or load_player_settings()
+                _pres_all_players = sorted(pfc_kpi_all["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
+                                     if pfc_kpi_all is not None and not pfc_kpi_all.empty else []
+                _pres_all_players = apply_player_settings(_pres_all_players, _ps_pres)
+                _pres_date_iso = _pres_dialog_date.isoformat()
+
+                @st.dialog(f"Présence du {_pres_dialog_date.strftime('%d/%m/%Y')}")
+                def _presence_dialog():
+                    _existing = load_presence_for_date(_pres_date_iso)
+                    if st.session_state.get("_presence_extra_names_date") != _pres_date_iso:
+                        st.session_state["_presence_extra_names"] = [
+                            n for n in _existing.keys() if n not in _pres_all_players
+                        ]
+                        st.session_state["_presence_extra_names_date"] = _pres_date_iso
+
+                    _roster = list(_pres_all_players)
+                    for _n in st.session_state["_presence_extra_names"]:
+                        if _n not in _roster:
+                            _roster.append(_n)
+
+                    st.caption(f"{len(_roster)} joueuse(s)")
+                    _statuts = {}
+                    for _nom in _roster:
+                        _default = _existing.get(_nom, "Présente")
+                        _idx = PRESENCE_STATUTS.index(_default) if _default in PRESENCE_STATUTS else 0
+                        _statuts[_nom] = st.selectbox(
+                            _nom, PRESENCE_STATUTS, index=_idx, key=f"pres_statut_{_pres_date_iso}_{_nom}"
+                        )
+
+                    st.divider()
+                    _padd1, _padd2 = st.columns([3, 1])
+                    with _padd1:
+                        _pres_new_name = st.text_input("Ajouter une joueuse", key=f"pres_new_name_{_pres_date_iso}")
+                    with _padd2:
+                        st.markdown("<div style='height:1.75em'></div>", unsafe_allow_html=True)
+                        if st.button("➕ Ajouter", key=f"pres_add_name_{_pres_date_iso}", use_container_width=True):
+                            _clean_name = _pres_new_name.strip()
+                            if _clean_name and _clean_name not in _roster:
+                                st.session_state["_presence_extra_names"].append(_clean_name)
                                 st.rerun()
-                        else:
-                            st.markdown(
-                                f"<div style='text-align:center;padding:8px 0;"
-                                f"color:#3A4A5A;font-size:14px'>{_day}</div>",
-                                unsafe_allow_html=True,
-                            )
 
-            st.caption("🟢 Jour avec séance GPS — clique sur une date pour voir le détail collectif.")
+                    st.divider()
+                    _pb1, _pb2 = st.columns(2)
+                    with _pb1:
+                        if st.button("💾 Enregistrer", type="primary", key=f"pres_save_{_pres_date_iso}", use_container_width=True):
+                            if save_presence(_pres_date_iso, _statuts):
+                                st.session_state.pop("_presence_dialog_date", None)
+                                st.session_state.pop("_presence_extra_names", None)
+                                st.session_state.pop("_presence_extra_names_date", None)
+                                st.rerun()
+                            else:
+                                st.error("Échec de l'enregistrement (Supabase indisponible ?).")
+                    with _pb2:
+                        if st.button("Annuler", key=f"pres_cancel_{_pres_date_iso}", use_container_width=True):
+                            st.session_state.pop("_presence_dialog_date", None)
+                            st.session_state.pop("_presence_extra_names", None)
+                            st.session_state.pop("_presence_extra_names_date", None)
+                            st.rerun()
 
-            # ── Zoom sur la séance sélectionnée ──────────────────────────────
-            _sel_date = st.session_state.get("_cal_selected_date")
-            if _sel_date and _sel_date in _seance_days:
-                st.divider()
-                st.markdown(f"#### 📋 Séance collective du {_sel_date.strftime('%d/%m/%Y')}")
-
-                _day_df = _gr_cal[_gr_cal["_day"] == _sel_date].copy()
-                if _day_df["Player"].duplicated().any():
-                    _sort_col = "Distance (m)" if "Distance (m)" in _day_df.columns else _day_df.columns[0]
-                    _day_df = _day_df.sort_values(_sort_col, ascending=False).drop_duplicates(subset=["Player"])
-
-                st.caption(f"👥 {_day_df['Player'].nunique()} joueuse(s) présentes")
-
-                # Global équipe (somme, ou max pour les métriques de pic type
-                # vitesse/accél. max) + moyenne par joueuse — mêmes métriques
-                # et mise en forme que la vue individuelle (MONITORING_*).
-                _agg_rows = {"Total équipe": {}, "Moyenne / joueuse": {}}
-                for _col in MONITORING_ALL_COLS:
-                    if _col not in _day_df.columns:
-                        continue
-                    _vals = pd.to_numeric(_day_df[_col], errors="coerce").dropna()
-                    if _vals.empty:
-                        continue
-                    _lbl = MONITORING_ALL_LABELS[_col]
-                    if _col in _MONITORING_DECIMAL_COLS:
-                        _agg_rows["Total équipe"][_lbl] = round(float(_vals.max()), 1)
-                    else:
-                        _agg_rows["Total équipe"][_lbl] = round(float(_vals.sum()), 1)
-                    _agg_rows["Moyenne / joueuse"][_lbl] = round(float(_vals.mean()), 1)
-
-                if not _agg_rows["Total équipe"]:
-                    st.info("Pas assez de données pour agréger cette séance.")
-                else:
-                    _agg_df = pd.DataFrame(_agg_rows).T.reset_index().rename(columns={"index": "Indicateur"})
-                    _num_cols_agg = [c for c in _agg_df.columns if c != "Indicateur"]
-                    _fmt_agg = {
-                        MONITORING_ALL_LABELS[c]: "{:" + monitoring_metric_fmt(c) + "}"
-                        for c in MONITORING_ALL_COLS if MONITORING_ALL_LABELS.get(c) in _num_cols_agg
-                    }
-                    styled_agg = (
-                        _agg_df.style
-                        .format(_fmt_agg)
-                        .apply(monitoring_heatmap_styles, subset=_num_cols_agg)
-                    )
-                    st.dataframe(styled_agg, use_container_width=True, hide_index=True)
-                    st.markdown(MONITORING_HEATMAP_LEGEND, unsafe_allow_html=True)
-                    st.caption(
-                        "Total équipe = somme des joueuses présentes (max pour vitesse max / accél. max) · "
-                        "Moyenne / joueuse = moyenne sur les joueuses présentes."
-                    )
-
-                with st.expander("Voir le détail par joueuse"):
-                    _detail_cols = ["Player"] + [c for c in MONITORING_ALL_COLS if c in _day_df.columns]
-                    _detail_df = _day_df[_detail_cols].rename(columns={"Player": "Joueuse", **MONITORING_ALL_LABELS})
-                    st.dataframe(_detail_df, use_container_width=True, hide_index=True)
+                _presence_dialog()
 
     # ══════════════════════════════════
     # TAB 1 — MATCHS
@@ -11625,6 +11835,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             gps_match_df=_gm_all,
                             player_info=_info,
                             selected_indicators=_selected_indicators,
+                            taux_presence=load_presence_rate(_fiche_player),
                         )
                         st.session_state["_fiche_html_cache"] = _fiche_html
                         st.session_state["_fiche_html_cache_key"] = _fiche_cache_key
