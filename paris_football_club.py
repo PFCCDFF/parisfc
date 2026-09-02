@@ -325,6 +325,35 @@ def get_supabase_client():
 
 
 PRESENCE_STATUTS = ["Présente", "Absente", "En retard", "Absente injustifiée"]
+PRESENCE_STATUTS_SHORT = {
+    "Présente": "Présente", "Absente": "Absente",
+    "En retard": "En retard", "Absente injustifiée": "Absente inj.",
+}
+PRESENCE_ROSTER_PATH = os.path.join("data", "presence_roster.json")
+
+
+def load_presence_roster() -> list:
+    """Charge la liste des joueuses pour la Présence depuis le fichier JSON persistant
+    (chargé via upload Excel). Liste vide si aucun fichier n'a encore été chargé —
+    dans ce cas l'appelant retombe sur la liste déduite des données de matchs/GPS."""
+    if os.path.exists(PRESENCE_ROSTER_PATH):
+        try:
+            with open(PRESENCE_ROSTER_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def save_presence_roster(players: list) -> bool:
+    """Sauvegarde la liste des joueuses pour la Présence dans le fichier JSON persistant."""
+    try:
+        os.makedirs(os.path.dirname(PRESENCE_ROSTER_PATH), exist_ok=True)
+        with open(PRESENCE_ROSTER_PATH, "w", encoding="utf-8") as f:
+            json.dump(players, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
 
 
 @st.cache_data(ttl=60)
@@ -10325,6 +10354,52 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         st.dataframe(_detail_df, use_container_width=True, hide_index=True)
 
         with _ent_sub_presence:
+            with st.expander("📋 Effectif (liste des joueuses)"):
+                _pres_roster_cur = load_presence_roster()
+                if _pres_roster_cur:
+                    st.caption(f"{len(_pres_roster_cur)} joueuse(s) enregistrée(s) — utilisée(s) pour la saisie de présence.")
+                    st.write(", ".join(_pres_roster_cur))
+                else:
+                    st.caption(
+                        "Aucune liste chargée pour l'instant — la liste utilisée dans la boîte "
+                        "de dialogue est déduite des données de matchs/GPS existantes. Charge un "
+                        "fichier Excel pour définir explicitement l'effectif (utile pour inclure "
+                        "les nouvelles recrues qui n'ont pas encore de données)."
+                    )
+
+                _pres_xlsx = st.file_uploader(
+                    "Charger un fichier Excel (une colonne avec le nom des joueuses)",
+                    type=["xlsx", "xls"], key="pres_roster_uploader",
+                )
+                if _pres_xlsx is not None:
+                    try:
+                        _df_pres_roster = pd.read_excel(_pres_xlsx)
+                        _pres_name_col = None
+                        for _cand in ["Joueuse", "Joueuses", "Nom", "Nom complet", "Nom Prénom", "Player"]:
+                            for _col in _df_pres_roster.columns:
+                                if str(_col).strip().lower() == _cand.lower():
+                                    _pres_name_col = _col
+                                    break
+                            if _pres_name_col is not None:
+                                break
+                        if _pres_name_col is None:
+                            _pres_name_col = _df_pres_roster.columns[0]
+
+                        _pres_new_roster = sorted({
+                            nettoyer_nom_joueuse(v) for v in _df_pres_roster[_pres_name_col].dropna().astype(str)
+                            if str(v).strip()
+                        })
+                        st.success(f"{len(_pres_new_roster)} joueuse(s) détectée(s) dans la colonne « {_pres_name_col} ».")
+                        st.write(", ".join(_pres_new_roster))
+                        if st.button("💾 Enregistrer cette liste", key="pres_roster_save", type="primary"):
+                            if save_presence_roster(_pres_new_roster):
+                                st.success("Liste enregistrée.")
+                                st.rerun()
+                            else:
+                                st.error("Échec de l'enregistrement.")
+                    except Exception as _pres_re:
+                        st.error(f"Impossible de lire ce fichier : {_pres_re}")
+
             _pres_dates = load_presence_dates()
             _pres_today = date.today()
 
@@ -10391,18 +10466,33 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             type="primary" if _is_sel else "secondary",
                             use_container_width=True,
                         ):
+                            # Pas de st.rerun() ici : le clic déclenche déjà un rerun naturel,
+                            # et le bloc dialog plus bas relit _presence_dialog_date dans CE
+                            # même rerun — un rerun explicite en plus doublerait juste le coût
+                            # (recalcul de toute la page, onglets compris) sans rien apporter.
                             st.session_state["_presence_dialog_date"] = _pd_date
-                            st.rerun()
 
             st.caption("🟢 Jour avec présence saisie — clique sur une date pour saisir/modifier la présence.")
 
             _pres_dialog_date = st.session_state.get("_presence_dialog_date")
             if _pres_dialog_date:
-                _ps_pres = st.session_state.get("_player_settings") or load_player_settings()
-                _pres_all_players = sorted(pfc_kpi_all["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
-                                     if pfc_kpi_all is not None and not pfc_kpi_all.empty else []
-                _pres_all_players = apply_player_settings(_pres_all_players, _ps_pres)
+                _pres_all_players = load_presence_roster()
+                if not _pres_all_players:
+                    # Repli : liste déduite des données de matchs/GPS tant qu'aucun fichier
+                    # Excel n'a été chargé (effectif "📋" ci-dessus).
+                    _ps_pres = st.session_state.get("_player_settings") or load_player_settings()
+                    _pres_all_players = sorted(pfc_kpi_all["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
+                                         if pfc_kpi_all is not None and not pfc_kpi_all.empty else []
+                    _pres_all_players = apply_player_settings(_pres_all_players, _ps_pres)
                 _pres_date_iso = _pres_dialog_date.isoformat()
+
+                def _pres_set_statut(date_iso, nom, statut):
+                    # Callback on_change : s'exécute avant le rerun, donc avant que les
+                    # autres cases de la même ligne ne soient réinstanciées — modifier
+                    # leur session_state ici est valide et impose l'exclusivité mutuelle
+                    # (une seule case cochée par joueuse, comme un bouton radio).
+                    for _s in PRESENCE_STATUTS:
+                        st.session_state[f"pres_cb_{date_iso}_{nom}_{_s}"] = (_s == statut)
 
                 @st.dialog(f"Présence du {_pres_dialog_date.strftime('%d/%m/%Y')}")
                 def _presence_dialog():
@@ -10412,6 +10502,12 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             n for n in _existing.keys() if n not in _pres_all_players
                         ]
                         st.session_state["_presence_extra_names_date"] = _pres_date_iso
+                        # (Ré)initialise les cases à cocher pour cette date à partir des
+                        # données existantes (une seule fois par ouverture de dialog).
+                        for _n in list(_pres_all_players) + st.session_state["_presence_extra_names"]:
+                            _def = _existing.get(_n, "Présente")
+                            for _s in PRESENCE_STATUTS:
+                                st.session_state[f"pres_cb_{_pres_date_iso}_{_n}_{_s}"] = (_s == _def)
 
                     _roster = list(_pres_all_players)
                     for _n in st.session_state["_presence_extra_names"]:
@@ -10421,10 +10517,19 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     st.caption(f"{len(_roster)} joueuse(s)")
                     _statuts = {}
                     for _nom in _roster:
-                        _default = _existing.get(_nom, "Présente")
-                        _idx = PRESENCE_STATUTS.index(_default) if _default in PRESENCE_STATUTS else 0
-                        _statuts[_nom] = st.selectbox(
-                            _nom, PRESENCE_STATUTS, index=_idx, key=f"pres_statut_{_pres_date_iso}_{_nom}"
+                        st.markdown(f"**{_nom}**")
+                        _cb_cols = st.columns(len(PRESENCE_STATUTS))
+                        for _cbc, _s in zip(_cb_cols, PRESENCE_STATUTS):
+                            with _cbc:
+                                st.checkbox(
+                                    PRESENCE_STATUTS_SHORT[_s],
+                                    key=f"pres_cb_{_pres_date_iso}_{_nom}_{_s}",
+                                    on_change=_pres_set_statut, args=(_pres_date_iso, _nom, _s),
+                                )
+                        _statuts[_nom] = next(
+                            (_s for _s in PRESENCE_STATUTS
+                             if st.session_state.get(f"pres_cb_{_pres_date_iso}_{_nom}_{_s}")),
+                            "Présente"
                         )
 
                     st.divider()
@@ -10437,6 +10542,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             _clean_name = _pres_new_name.strip()
                             if _clean_name and _clean_name not in _roster:
                                 st.session_state["_presence_extra_names"].append(_clean_name)
+                                for _s in PRESENCE_STATUTS:
+                                    st.session_state[f"pres_cb_{_pres_date_iso}_{_clean_name}_{_s}"] = (_s == "Présente")
                                 st.rerun()
 
                     st.divider()
@@ -11802,7 +11909,10 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
             with _col_btn1:
                 _gen_fiche = st.button("⚙️ Générer la fiche", key="btn_fiche_bilan", type="primary")
 
-            if _gen_fiche or st.session_state.get("_fiche_html_cache_key") == _fiche_cache_key:
+            if _gen_fiche:
+                # Ne régénère (rendu matplotlib/mplsoccer coûteux) que sur clic explicite —
+                # la fiche déjà en cache reste affichée sur les reruns déclenchés ailleurs
+                # sur la page (st.tabs() exécute le code de tous les onglets à chaque rerun).
                 with st.spinner("Génération en cours..."):
                     try:
                         _gm_all = st.session_state.get("gps_match_df", pd.DataFrame())
