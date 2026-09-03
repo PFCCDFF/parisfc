@@ -348,11 +348,13 @@ def get_supabase_client():
         return None
 
 
-PRESENCE_STATUTS = ["Présente", "Absente", "En retard", "Absente injustifiée"]
+PRESENCE_STATUTS = ["Présente", "Absente", "Sélection", "Réathlé", "Blessée (Kiné)", "Pro"]
 PRESENCE_STATUTS_SHORT = {
-    "Présente": "Présente", "Absente": "Absente",
-    "En retard": "En retard", "Absente injustifiée": "Absente inj.",
+    "Présente": "Présente", "Absente": "Absente", "Sélection": "Sélection",
+    "Réathlé": "Réathlé", "Blessée (Kiné)": "Blessée", "Pro": "Pro",
 }
+# Statuts comptant comme "présente à l'entraînement" pour le calcul du taux de présence.
+PRESENCE_STATUTS_PRESENTE = ("Présente", "Sélection", "Pro")
 PRESENCE_ROSTER_PATH = os.path.join("data", "presence_roster.json")
 
 
@@ -410,7 +412,7 @@ def load_presence_for_date(date_iso: str) -> dict:
 
 @st.cache_data(ttl=300)
 def load_presence_rate(joueuse: str):
-    """Taux de présence (%) : (Présente + En retard) / total, ou None si aucune
+    """Taux de présence (%) : (Présente + Sélection + Pro) / total, ou None si aucune
     donnée enregistrée pour cette joueuse."""
     _sb = get_supabase_client()
     if _sb is None or not joueuse:
@@ -420,7 +422,7 @@ def load_presence_rate(joueuse: str):
         if not _res.data:
             return None
         _total = len(_res.data)
-        _presentes = sum(1 for r in _res.data if r["statut"] in ("Présente", "En retard"))
+        _presentes = sum(1 for r in _res.data if r["statut"] in PRESENCE_STATUTS_PRESENTE)
         return round(100.0 * _presentes / _total, 1)
     except Exception:
         return None
@@ -11006,16 +11008,19 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                     st.caption(f"{len(_roster)} joueuse(s)")
                     _statuts = {}
+                    _PRES_CB_PER_ROW = 3
                     for _nom in _roster:
                         st.markdown(f"**{_nom}**")
-                        _cb_cols = st.columns(len(PRESENCE_STATUTS))
-                        for _cbc, _s in zip(_cb_cols, PRESENCE_STATUTS):
-                            with _cbc:
-                                st.checkbox(
-                                    PRESENCE_STATUTS_SHORT[_s],
-                                    key=f"pres_cb_{_pres_date_iso}_{_nom}_{_s}",
-                                    on_change=_pres_set_statut, args=(_pres_date_iso, _nom, _s),
-                                )
+                        for _row_start in range(0, len(PRESENCE_STATUTS), _PRES_CB_PER_ROW):
+                            _row_statuts = PRESENCE_STATUTS[_row_start:_row_start + _PRES_CB_PER_ROW]
+                            _cb_cols = st.columns(_PRES_CB_PER_ROW)
+                            for _cbc, _s in zip(_cb_cols, _row_statuts):
+                                with _cbc:
+                                    st.checkbox(
+                                        PRESENCE_STATUTS_SHORT[_s],
+                                        key=f"pres_cb_{_pres_date_iso}_{_nom}_{_s}",
+                                        on_change=_pres_set_statut, args=(_pres_date_iso, _nom, _s),
+                                    )
                         _statuts[_nom] = next(
                             (_s for _s in PRESENCE_STATUTS
                              if st.session_state.get(f"pres_cb_{_pres_date_iso}_{_nom}_{_s}")),
