@@ -9,6 +9,8 @@
 import os
 import io
 import re
+import threading
+import functools
 import unicodedata
 import warnings
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -21,8 +23,13 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib
-matplotlib.use("Agg", force=True)  # Backend non-interactif, thread-safe — évite les crashs mémoire (SIGSEGV) en usage concurrent (Streamlit multi-session + thread de sync Drive)
+matplotlib.use("Agg", force=True)  # Backend non-interactif — nécessaire mais PAS suffisant pour la
+# sécurité thread : pyplot garde un état global (figure/axes courantes) qui peut se corrompre si
+# deux threads Streamlit (sessions concurrentes) appellent plt.subplots()/close() en même temps —
+# c'est la cause des crashs SIGSEGV/ABRT ("malloc(): unsorted double linked list corrupted")
+# observés en usage concurrent. MPL_LOCK sérialise tout accès à pyplot pour l'empêcher.
 import matplotlib.pyplot as plt
+
 from streamlit_option_menu import option_menu
 from mplsoccer import PyPizza, Radar, FontManager, grid
 import plotly.graph_objects as go
@@ -36,6 +43,21 @@ import json
 import textwrap
 
 warnings.filterwarnings("ignore")
+
+MPL_LOCK = threading.RLock()  # RLock : certaines fonctions de graphique en appellent d'autres
+
+
+def _mpl_safe(func):
+    """Décorateur sérialisant tout accès matplotlib via MPL_LOCK — pyplot garde un état
+    global (figure/axes courantes) qui n'est pas thread-safe : deux threads Streamlit
+    (sessions concurrentes) appelant plt.subplots()/savefig()/close() en même temps peuvent
+    corrompre le tas C (crash SIGSEGV/ABRT, "malloc(): unsorted double linked list
+    corrupted"). RLock car certaines fonctions décorées en appellent d'autres."""
+    @functools.wraps(func)
+    def _wrapped(*args, **kwargs):
+        with MPL_LOCK:
+            return func(*args, **kwargs)
+    return _wrapped
 
 # =========================
 # CONFIG
@@ -549,6 +571,7 @@ def medical_team_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
+@_mpl_safe
 def render_medical_heatmap_png(zone_counts: tuple) -> str:
     """Silhouette corporelle schématique colorée par nombre de visites/zone.
     zone_counts : tuple(sorted((zone, count) for ...)) — clé hashable pour le cache.
@@ -665,6 +688,7 @@ def render_medical_heatmap_png(zone_counts: tuple) -> str:
 
 
 @st.cache_data(ttl=300)
+@_mpl_safe
 def render_medical_donut_png(prof_counts: tuple) -> str:
     """Camembert (donut) de répartition des visites par professionnel, total au centre.
     prof_counts : tuple(sorted((professionnel, count) for ...)) — clé hashable pour le cache.
@@ -777,6 +801,7 @@ def mesures_for_player(df: pd.DataFrame, joueuse: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
+@_mpl_safe
 def render_health_curves_png(measures: tuple) -> str:
     """Courbe d'évolution poids (axe gauche, kg) / % masse grasse (axe droit) dans le temps.
     measures : tuple(sorted((date_iso, poids_kg, masse_grasse_pct) for ...)) — clé hashable
@@ -5610,6 +5635,7 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
         # Radar comparatif
         col_rad, col_ec = st.columns([1, 1])
         with col_rad:
+          with MPL_LOCK:
             fig_r, ax_r = plt.subplots(figsize=(4.5, 4.5), subplot_kw=dict(polar=True), dpi=90)
             fig_r.patch.set_facecolor("#08090D"); ax_r.set_facecolor("#0C1220")
             N = len(dim_keys)
@@ -5669,6 +5695,7 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
         # Évolution temporelle avec écarts
         matches_c = fc.dropna(subset=dim_keys_c, how="all").sort_values("date") if not fc.empty else pd.DataFrame()
         if len(matches_c) > 0:
+          with MPL_LOCK:
             st.markdown("#### 📈 Évolution des écarts par match")
             fig_ev, axes = plt.subplots(2, 1, figsize=(11, 6), dpi=90,
                                         gridspec_kw={"height_ratios": [2, 1]})
@@ -5791,6 +5818,7 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
             with col_hm:
                 ec_cols = [lbl for k,c,lbl in _EVAL_DIMS if lbl in ecart_mat.columns and not ecart_mat[lbl].isna().all()]
                 if ec_cols:
+                  with MPL_LOCK:
                     st.markdown("**Heatmap des écarts (Coach − Joueuse)**")
                     fig_h, ax_h = plt.subplots(figsize=(5, max(3, len(ecart_mat)*0.45+1)), dpi=90)
                     fig_h.patch.set_facecolor("#08090D"); ax_h.set_facecolor("#08090D")
@@ -6374,6 +6402,7 @@ def _draw_collective_pitch(ax, half=False):
         spine.set_visible(False)
 
 
+@_mpl_safe
 def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 2.6), dpi=90):
     """Demi-terrain (moitié offensive) avec 3 flèches (Gauche/Central/Droit), épaisseur/opacité ∝ %."""
     _pg = entree_tiers.get("Couloir Gauche", 0.0)
@@ -6401,6 +6430,7 @@ def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 2.6), dpi=90):
     return fig
 
 
+@_mpl_safe
 def build_zone_heatmap_figure(grid, rows_lbl, cols_lbl, title, cmap_name, figsize=(4, 5.6), dpi=90):
     """Vraie carte de chaleur (dégradé lissé, sans grille de carrés) superposée à un terrain vertical."""
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
@@ -7772,6 +7802,7 @@ def build_md_window_summary(d_player: pd.DataFrame, end_date, days: int = 7) -> 
     out = out.rename(columns=vars_map)
     return out
 
+@_mpl_safe
 def plot_gps_md_graph(summary: pd.DataFrame, selected_lines=None):
     if summary is None or summary.empty or "MD" not in summary.columns:
         return None
@@ -8341,6 +8372,7 @@ def fig_to_b64(fig) -> str:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+@_mpl_safe
 def create_individual_radar(df: pd.DataFrame):
     if df is None or df.empty or "Player" not in df.columns:
         return None
@@ -8473,6 +8505,7 @@ def create_individual_radar(df: pd.DataFrame):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+@_mpl_safe
 def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_creativity: bool = False):
     if df is None or df.empty or len(df) < 2:
         return None
@@ -8566,6 +8599,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
     return fig
 
 
+@_mpl_safe
 def _make_match_bar_chart(labels, datasets, title, ylabel, figsize=(9,3.5), stacked=False):
     """Crée un graphique matplotlib barres groupées ou empilées."""
     fig, ax = plt.subplots(figsize=figsize, dpi=90)
@@ -9456,6 +9490,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
     # ── Distance par match ─────────────────────────────────────────
     col_l, col_r = st.columns(2)
     with col_l:
+      with MPL_LOCK:
         st.markdown("#### 📏 Distance par match")
 
         dist_vals  = _col("Distance (m)")
@@ -9524,6 +9559,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
 
     # ── Sprints & vitesse max ──────────────────────────────────────
     with col_r:
+      with MPL_LOCK:
         st.markdown("#### ⚡ Sprints & Vitesse max")
         fig2, ax2 = plt.subplots(figsize=(9, 3.5))
         fig2.patch.set_facecolor("#08090D")
@@ -9974,6 +10010,7 @@ def build_fiche_bilan_html(player_name: str,
     _radar_vals   = [v for l, v in zip(_radar_all_labels, _radar_all_vals) if l in _sel]
     radar_b64 = ""
     if _radar_labels:
+      with MPL_LOCK:
         try:
             _n_ax = len(_radar_labels)
             _rdr = Radar(_radar_labels, [0]*_n_ax, [100]*_n_ax, num_rings=4,
@@ -13087,6 +13124,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                                 if _obj_evals.empty:
                                                     st.caption(f"Pas encore d'évaluation pour **{_onum}**.")
                                                 else:
+                                                  with MPL_LOCK:
                                                     _moy = _obj_evals.mean()
                                                     _n_evals = len(_obj_evals)
                                                     # Jauge matplotlib (demi-cercle)
