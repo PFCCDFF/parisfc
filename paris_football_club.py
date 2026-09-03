@@ -217,7 +217,16 @@ def save_player_settings(settings: dict) -> bool:
 
 
 def apply_player_settings(player_list: list, settings: dict) -> list:
-    """Applique filtres et aliases à une liste de noms de joueuses."""
+    """Applique filtres et aliases à une liste de noms de joueuses. Si un effectif
+    Présence (upload Excel, cf. load_presence_roster) est configuré, c'est la
+    référence pour toutes les données utilisables : les joueuses hors de cette liste
+    sont exclues, avant même le filtre "hidden" (qui reste géré indépendamment dans
+    Gestion → Joueuses, qui n'appelle pas cette fonction et voit donc tout l'effectif
+    brut pour permettre son propre pilotage)."""
+    _roster = load_presence_roster()
+    if _roster:
+        _roster_set = set(_roster)
+        player_list = [p for p in player_list if p in _roster_set]
     hidden = set(settings.get("hidden", []))
     aliases = settings.get("aliases", {})
     result = []
