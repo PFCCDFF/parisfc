@@ -6813,6 +6813,7 @@ def render_collective_report(report: dict, gps_stats: dict = None):
         for lbl, val in report["circulation"].items():
             _fill_bar(lbl, val, "#7B84FF")
     with next(_rc_it):
+      with MPL_LOCK:
         st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Entrée dernier 1/3 (couloir)</div>", unsafe_allow_html=True)
         fig_e = build_entree_tiers_figure(report["entree_tiers"])
         st.pyplot(fig_e, use_container_width=True)
@@ -6873,11 +6874,13 @@ def render_collective_report(report: dict, gps_stats: dict = None):
 
     _zg1, _zg2 = st.columns(2)
     with _zg1:
+      with MPL_LOCK:
         fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
                                            "Récupération (%)", "RdYlGn_r", figsize=(2.6, 3.6), dpi=90)
         st.pyplot(fig_r, use_container_width=False)
         plt.close(fig_r)
     with _zg2:
+      with MPL_LOCK:
         fig_p = build_zone_heatmap_figure(report["grid_perte"], report["zone_rows"], report["zone_cols"],
                                            "Perte (%)", "RdYlGn_r", figsize=(2.6, 3.6), dpi=90)
         st.pyplot(fig_p, use_container_width=False)
@@ -6894,14 +6897,15 @@ def build_collective_report_html(report: dict, gps_stats: dict = None) -> str:
     s_pfc, s_adv = report["stats"][pfc_name], report["stats"][adv_name]
     CYAN, CORAIL = "#00A3E0", "#FF6B6B"
 
-    fig_e = build_entree_tiers_figure(report["entree_tiers"], figsize=(5.2, 3.1), dpi=115)
-    b64_entree = fig_to_b64(fig_e); plt.close(fig_e)
-    fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
-                                       "Récupération (%)", "RdYlGn_r", figsize=(2.7, 4.0), dpi=115)
-    b64_recup = fig_to_b64(fig_r); plt.close(fig_r)
-    fig_p = build_zone_heatmap_figure(report["grid_perte"], report["zone_rows"], report["zone_cols"],
-                                       "Perte (%)", "RdYlGn_r", figsize=(2.7, 4.0), dpi=115)
-    b64_perte = fig_to_b64(fig_p); plt.close(fig_p)
+    with MPL_LOCK:
+        fig_e = build_entree_tiers_figure(report["entree_tiers"], figsize=(5.2, 3.1), dpi=115)
+        b64_entree = fig_to_b64(fig_e); plt.close(fig_e)
+        fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
+                                           "Récupération (%)", "RdYlGn_r", figsize=(2.7, 4.0), dpi=115)
+        b64_recup = fig_to_b64(fig_r); plt.close(fig_r)
+        fig_p = build_zone_heatmap_figure(report["grid_perte"], report["zone_rows"], report["zone_cols"],
+                                           "Perte (%)", "RdYlGn_r", figsize=(2.7, 4.0), dpi=115)
+        b64_perte = fig_to_b64(fig_p); plt.close(fig_p)
 
     _pfc_logo_html = _team_logo_html(pfc_name, is_pfc=True, size=48)
     _adv_logo_html = _team_logo_html(adv_name, size=48)
@@ -9809,6 +9813,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
     ]
     avail_speed = [(k,l,c) for k,l,c in speed_data if k in dm.columns]
     if avail_speed:
+      with MPL_LOCK:
         fig3 = _make_match_bar_chart(labels,
             [(_col(k), l, c) for k,l,c in avail_speed],
             "Distance (m)", "m", figsize=(12, 3.5), stacked=True)
@@ -9827,6 +9832,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
     ]
     avail_ad = [(k,l,c) for k,l,c in ad_data if k in dm.columns]
     if avail_ad:
+      with MPL_LOCK:
         fig4 = _make_match_bar_chart(labels,
             [(_col(k), l, c) for k,l,c in avail_ad],
             "Nombre", "nb", figsize=(12, 3.5))
@@ -10041,6 +10047,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                             if not _kdf_r.empty:
                                 _radar_result = create_individual_radar(_kdf_r.iloc[[0]])
                                 if _radar_result is not None:
+                                  with MPL_LOCK:
                                     _fig_r = _radar_result[0] if isinstance(_radar_result, tuple) else _radar_result
                                     _tac_radar_b64 = fig_to_b64(_fig_r)
                                     import matplotlib.pyplot as _plt_r
@@ -10630,24 +10637,25 @@ def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
     _sp_c = [c for _,_,c in _sp]
     _sp_max = max(_sp_v) or 1
 
-    _fig, _ax = _plt_g.subplots(figsize=(8.5, 2.8))
-    _fig.patch.set_facecolor("#0C1A28")
-    _ax.set_facecolor("#0C1A28")
-    _bars = _ax.bar(_sp_l, _sp_v, color=_sp_c, alpha=0.9, width=0.6)
-    for _b, _v in zip(_bars, _sp_v):
-        if _v > 0:
-            _ax.text(_b.get_x()+_b.get_width()/2, _b.get_height()+_sp_max*0.02,
-                     f"{_v:.0f}", ha="center", va="bottom", color="#C8D8E8", fontsize=9, fontweight="bold")
-    _ax.set_ylabel("Distance (m)", color="#8A9BB0", fontsize=9)
-    _ax.set_xlabel("Plage de vitesse (km/h)", color="#8A9BB0", fontsize=9)
-    _ax.tick_params(colors="#C8D8E8", labelsize=9)
-    for spine in _ax.spines.values(): spine.set_edgecolor("#1E2D40")
-    _fig.tight_layout(pad=0.4)
-    _buf = _io.BytesIO()
-    _fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight", facecolor="#0C1A28")
-    _buf.seek(0)
-    _chart = "data:image/png;base64," + _b64g.b64encode(_buf.read()).decode()
-    _plt_g.close(_fig)
+    with MPL_LOCK:
+        _fig, _ax = _plt_g.subplots(figsize=(8.5, 2.8))
+        _fig.patch.set_facecolor("#0C1A28")
+        _ax.set_facecolor("#0C1A28")
+        _bars = _ax.bar(_sp_l, _sp_v, color=_sp_c, alpha=0.9, width=0.6)
+        for _b, _v in zip(_bars, _sp_v):
+            if _v > 0:
+                _ax.text(_b.get_x()+_b.get_width()/2, _b.get_height()+_sp_max*0.02,
+                         f"{_v:.0f}", ha="center", va="bottom", color="#C8D8E8", fontsize=9, fontweight="bold")
+        _ax.set_ylabel("Distance (m)", color="#8A9BB0", fontsize=9)
+        _ax.set_xlabel("Plage de vitesse (km/h)", color="#8A9BB0", fontsize=9)
+        _ax.tick_params(colors="#C8D8E8", labelsize=9)
+        for spine in _ax.spines.values(): spine.set_edgecolor("#1E2D40")
+        _fig.tight_layout(pad=0.4)
+        _buf = _io.BytesIO()
+        _fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight", facecolor="#0C1A28")
+        _buf.seek(0)
+        _chart = "data:image/png;base64," + _b64g.b64encode(_buf.read()).decode()
+        _plt_g.close(_fig)
 
     # ── Barre horizontale 100% CSS (pas de JS) ──────────────────────────────
     def _bar(val, max_val, color):
@@ -11467,6 +11475,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     with st.spinner("Génération du radar…"):
                         _radar_result = create_individual_radar(aggregated)
                         if _radar_result is not None:
+                          with MPL_LOCK:
                             fig_r, _top_txt, _low_txt = _radar_result
                             st.pyplot(fig_r, use_container_width=True)
                             plt.close(fig_r)
@@ -11516,7 +11525,9 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             fig_c = create_comparison_radar(
                                 pd.concat([_player_df_c, _p2_df], ignore_index=True, sort=False),
                                 _perf_player, _p2)
-                            if fig_c: st.pyplot(fig_c, use_container_width=True); plt.close(fig_c)
+                            if fig_c:
+                              with MPL_LOCK:
+                                st.pyplot(fig_c, use_container_width=True); plt.close(fig_c)
 
                     elif "EDF" in _perf_compare:
                         _edf_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("EDF", na=False)] \
@@ -11538,7 +11549,9 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                     fig_e = create_comparison_radar(
                                         _comb_df, _perf_player, f"Moyenne {_ps}",
                                         exclude_creativity=True)
-                                    if fig_e: st.pyplot(fig_e, use_container_width=True); plt.close(fig_e)
+                                    if fig_e:
+                                      with MPL_LOCK:
+                                        st.pyplot(fig_e, use_container_width=True); plt.close(fig_e)
                                 else:
                                     st.info("Colonnes insuffisantes pour la comparaison.")
                         else:
@@ -11569,7 +11582,9 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                     fig_a = create_comparison_radar(
                                         _comb_df, _perf_player, f"Moyenne {_ps}",
                                         exclude_creativity=True)
-                                    if fig_a: st.pyplot(fig_a, use_container_width=True); plt.close(fig_a)
+                                    if fig_a:
+                                      with MPL_LOCK:
+                                        st.pyplot(fig_a, use_container_width=True); plt.close(fig_a)
                                 else:
                                     st.info("Colonnes insuffisantes pour la comparaison.")
                         else:
@@ -12067,6 +12082,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                                    ("V_sup25",">25","#E24B4A")]
                                     _sp_avail = [(c,l,col) for c,l,col in _speed_cols if c in _gm_sel.columns]
                                     if _sp_avail:
+                                      with MPL_LOCK:
                                         import matplotlib.pyplot as _plt_m
                                         _sp_vals = [pd.to_numeric(_row.get(c), errors="coerce") for c,_,_ in _sp_avail]
                                         _sp_max = max([v for v in _sp_vals if pd.notna(v)] or [1])
@@ -12202,6 +12218,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                     )
 
                                     if _sel_kpis:
+                                      with MPL_LOCK:
                                         import matplotlib.pyplot as _plt_c
                                         import numpy as _np_c
 
@@ -12350,62 +12367,63 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             _charges_ch = _weekly_disp["CHARGE_semaine"].tolist()
                             _x_ch       = list(range(len(_labels_ch)))
 
-                            _fig_w = max(9, len(_x_ch) * 1.1)
-                            _fig_ch, _ax1_ch = _plt_acwr.subplots(figsize=(_fig_w, 3.8))
-                            _fig_ch.patch.set_facecolor("#0C1220")
-                            _ax1_ch.set_facecolor("#0C1220")
+                            with MPL_LOCK:
+                                _fig_w = max(9, len(_x_ch) * 1.1)
+                                _fig_ch, _ax1_ch = _plt_acwr.subplots(figsize=(_fig_w, 3.8))
+                                _fig_ch.patch.set_facecolor("#0C1220")
+                                _ax1_ch.set_facecolor("#0C1220")
 
-                            _ax1_ch.bar(_x_ch, _charges_ch, color="#1A3A5C", alpha=0.6,
-                                        label="Charge hebdo", zorder=2, width=0.6)
-                            _ax1_ch.set_ylabel("Charge (UA)", color="#6A8090", fontsize=9)
-                            _ax1_ch.tick_params(axis="y", colors="#6A8090", labelsize=8)
-                            _ax1_ch.tick_params(axis="x", colors="#C8D8E8", labelsize=8)
-                            _ax1_ch.set_xticks(_x_ch)
-                            _ax1_ch.set_xticklabels(_labels_ch, rotation=30, ha="right",
-                                                     fontsize=8.5, color="#C8D8E8")
-                            _ax1_ch.spines[:].set_color("#1A2A3A")
+                                _ax1_ch.bar(_x_ch, _charges_ch, color="#1A3A5C", alpha=0.6,
+                                            label="Charge hebdo", zorder=2, width=0.6)
+                                _ax1_ch.set_ylabel("Charge (UA)", color="#6A8090", fontsize=9)
+                                _ax1_ch.tick_params(axis="y", colors="#6A8090", labelsize=8)
+                                _ax1_ch.tick_params(axis="x", colors="#C8D8E8", labelsize=8)
+                                _ax1_ch.set_xticks(_x_ch)
+                                _ax1_ch.set_xticklabels(_labels_ch, rotation=30, ha="right",
+                                                         fontsize=8.5, color="#C8D8E8")
+                                _ax1_ch.spines[:].set_color("#1A2A3A")
 
-                            _ax2_ch = _ax1_ch.twinx()
-                            _ax2_ch.set_facecolor("#0C1220")
-                            _ax2_ch.set_ylabel("ACWR", color="#C8D8E8", fontsize=9)
-                            _ax2_ch.tick_params(axis="y", colors="#C8D8E8", labelsize=8)
-                            _ax2_ch.spines[:].set_color("#1A2A3A")
+                                _ax2_ch = _ax1_ch.twinx()
+                                _ax2_ch.set_facecolor("#0C1220")
+                                _ax2_ch.set_ylabel("ACWR", color="#C8D8E8", fontsize=9)
+                                _ax2_ch.tick_params(axis="y", colors="#C8D8E8", labelsize=8)
+                                _ax2_ch.spines[:].set_color("#1A2A3A")
 
-                            _ax2_ch.axhspan(0.8, 1.5, color="#22C55E", alpha=0.08, zorder=1)
-                            _ax2_ch.axhline(0.8, color="#22C55E", lw=0.8, ls="--", alpha=0.5)
-                            _ax2_ch.axhline(1.5, color="#EF4444", lw=0.8, ls="--", alpha=0.5)
+                                _ax2_ch.axhspan(0.8, 1.5, color="#22C55E", alpha=0.08, zorder=1)
+                                _ax2_ch.axhline(0.8, color="#22C55E", lw=0.8, ls="--", alpha=0.5)
+                                _ax2_ch.axhline(1.5, color="#EF4444", lw=0.8, ls="--", alpha=0.5)
 
-                            _ax2_ch.plot(_x_ch, _acwr_ra, color="#F4830A", lw=2,
-                                         marker="o", ms=5, label="ACWR RA (Gabbett)", zorder=5)
-                            _ax2_ch.plot(_x_ch, _acwr_ew, color="#00A3E0", lw=2,
-                                         marker="s", ms=5, label="ACWR EWMA (Murray)", zorder=5)
+                                _ax2_ch.plot(_x_ch, _acwr_ra, color="#F4830A", lw=2,
+                                             marker="o", ms=5, label="ACWR RA (Gabbett)", zorder=5)
+                                _ax2_ch.plot(_x_ch, _acwr_ew, color="#00A3E0", lw=2,
+                                             marker="s", ms=5, label="ACWR EWMA (Murray)", zorder=5)
 
-                            for _xi, (_ra, _ew) in enumerate(zip(_acwr_ra, _acwr_ew)):
-                                for _val, _col in [(_ra, "#F4830A"), (_ew, "#00A3E0")]:
-                                    if not pd.isna(_val):
-                                        _fc = "#22C55E" if 0.8 <= _val <= 1.5 else ("#EF4444" if _val > 1.5 else "#3B82F6")
-                                        _ax2_ch.scatter(_xi, _val, color=_fc, edgecolors=_col,
-                                                        s=45, zorder=6, linewidths=1.5)
+                                for _xi, (_ra, _ew) in enumerate(zip(_acwr_ra, _acwr_ew)):
+                                    for _val, _col in [(_ra, "#F4830A"), (_ew, "#00A3E0")]:
+                                        if not pd.isna(_val):
+                                            _fc = "#22C55E" if 0.8 <= _val <= 1.5 else ("#EF4444" if _val > 1.5 else "#3B82F6")
+                                            _ax2_ch.scatter(_xi, _val, color=_fc, edgecolors=_col,
+                                                            s=45, zorder=6, linewidths=1.5)
 
-                            _all_v = [v for v in _acwr_ra + _acwr_ew if not pd.isna(v)]
-                            if _all_v:
-                                _ax2_ch.set_ylim(max(0, min(_all_v) - 0.2),
-                                                 max(max(_all_v) + 0.2, 1.8))
+                                _all_v = [v for v in _acwr_ra + _acwr_ew if not pd.isna(v)]
+                                if _all_v:
+                                    _ax2_ch.set_ylim(max(0, min(_all_v) - 0.2),
+                                                     max(max(_all_v) + 0.2, 1.8))
 
-                            _handles_ch = [
-                                _mpatches_acwr.Patch(color="#1A3A5C", alpha=0.8, label="Charge hebdo"),
-                                _plt_acwr.Line2D([0],[0], color="#F4830A", lw=2, marker="o", ms=5, label="ACWR RA (Gabbett)"),
-                                _plt_acwr.Line2D([0],[0], color="#00A3E0", lw=2, marker="s", ms=5, label="ACWR EWMA (Murray)"),
-                                _mpatches_acwr.Patch(color="#22C55E", alpha=0.15, label="Zone optimale (0.8–1.5)"),
-                            ]
-                            _ax2_ch.legend(handles=_handles_ch, loc="upper center",
-                                           bbox_to_anchor=(0.5, 1.14), ncol=4,
-                                           fontsize=7.5, facecolor="#0C1220",
-                                           edgecolor="#1A2A3A", labelcolor="#C8D8E8")
+                                _handles_ch = [
+                                    _mpatches_acwr.Patch(color="#1A3A5C", alpha=0.8, label="Charge hebdo"),
+                                    _plt_acwr.Line2D([0],[0], color="#F4830A", lw=2, marker="o", ms=5, label="ACWR RA (Gabbett)"),
+                                    _plt_acwr.Line2D([0],[0], color="#00A3E0", lw=2, marker="s", ms=5, label="ACWR EWMA (Murray)"),
+                                    _mpatches_acwr.Patch(color="#22C55E", alpha=0.15, label="Zone optimale (0.8–1.5)"),
+                                ]
+                                _ax2_ch.legend(handles=_handles_ch, loc="upper center",
+                                               bbox_to_anchor=(0.5, 1.14), ncol=4,
+                                               fontsize=7.5, facecolor="#0C1220",
+                                               edgecolor="#1A2A3A", labelcolor="#C8D8E8")
 
-                            _fig_ch.tight_layout(rect=[0, 0, 1, 0.96])
-                            st.pyplot(_fig_ch, use_container_width=True)
-                            _plt_acwr.close(_fig_ch)
+                                _fig_ch.tight_layout(rect=[0, 0, 1, 0.96])
+                                st.pyplot(_fig_ch, use_container_width=True)
+                                _plt_acwr.close(_fig_ch)
 
                             st.caption(
                                 "🔵 Sous-charge (<0.8) · 🟢 Zone optimale (0.8–1.5) · 🔴 Sur-charge / risque blessure (>1.5)  |  "
@@ -13427,6 +13445,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                     try:
                                         _radar_result = create_individual_radar(aggregated)
                                         if _radar_result is not None:
+                                          with MPL_LOCK:
                                             fig = _radar_result[0] if isinstance(_radar_result, tuple) else _radar_result
                                             st.pyplot(fig, use_container_width=True)
                                             plt.close(fig)
@@ -13487,6 +13506,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         exclude_creativity=True,
                                     )
                                     if fig is not None:
+                                      with MPL_LOCK:
                                         st.pyplot(fig, use_container_width=True)
                                         plt.close(fig)  # libère la mémoire
                                     else:
@@ -13640,6 +13660,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                                 )
                                                 fig = plot_gps_md_graph(summary_md, selected_lines=selected_lines)
                                                 if fig is not None:
+                                                  with MPL_LOCK:
                                                     st.pyplot(fig, use_container_width=True)
                                                     plt.close(fig)  # libère la mémoire
                                             except Exception as e:
