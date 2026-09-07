@@ -10,6 +10,7 @@ import os
 import io
 import re
 import csv
+import shutil
 import threading
 import functools
 import unicodedata
@@ -2706,15 +2707,12 @@ def sync_gps_from_drive_autonomous():
         mt = f.get("mimeType") or ""
         if mt == "application/vnd.google-apps.folder":
             return False
-        if not (name.endswith(".csv") or mt == "application/vnd.google-apps.spreadsheet"):
-            return False
-        # Séances d'entraînement (GF1)
-        if ("gf1" in name) or ("seance" in name) or ("séance" in name) or ("gps" in name):
-            return True
-        # Fichiers de match : U19_, U17_, U16_, U15_, _J0x_, etc.
-        if is_gps_match_file(name):
-            return True
-        return False
+        # Dossier entièrement dédié au GPS (DRIVE_GPS_FOLDER_ID) : tout .csv/sheet y est
+        # accepté, même si son nom ne suit aucune convention connue (ex. export brut d'un 2e
+        # capteur/logiciel) -- le format réel est de toute façon revalidé au chargement local
+        # (is_gf1_export_format / is_multisection_gps_v2_file), donc un fichier non-GPS
+        # téléchargé par erreur reste simplement ignoré en aval.
+        return name.endswith(".csv") or mt == "application/vnd.google-apps.spreadsheet"
 
     for folder_id in walk_drive_folders(service, DRIVE_GPS_FOLDER_ID, state):
         try:
@@ -2730,13 +2728,25 @@ def sync_gps_from_drive_autonomous():
                 mt = f.get("mimeType", "")
 
                 try:
-                    # Router les fichiers match vers leur dossier dédié
+                    # Router les fichiers match vers leur dossier dédié. Le nom de fichier ne
+                    # permet pas toujours de savoir s'il s'agit d'un match (ex. export brut
+                    # d'un 2e capteur GPS sans convention de nommage club) -> on télécharge
+                    # d'abord, puis on corrige le dossier si le contenu (marqueur "Type" de
+                    # l'en-tête v2) contredit l'heuristique sur le nom.
                     _dest_folder = GPS_MATCH_FOLDER if is_gps_match_file(name) else GPS_FOLDER
                     os.makedirs(_dest_folder, exist_ok=True)
+                    _local_path = None
                     if mt == "application/vnd.google-apps.spreadsheet":
-                        export_sheet_to_csv_local(service, fid, name, dest_folder=_dest_folder)
+                        _local_path = export_sheet_to_csv_local(service, fid, name, dest_folder=_dest_folder)
                     elif name.lower().endswith(".csv"):
-                        download_drive_csv_to_local(service, fid, name, dest_folder=_dest_folder)
+                        _local_path = download_drive_csv_to_local(service, fid, name, dest_folder=_dest_folder)
+
+                    if _local_path and _dest_folder == GPS_FOLDER and is_multisection_gps_v2_file(_local_path):
+                        _v2_type = str(parse_gps_v2_sections(_local_path).get("header", {}).get("Type", "")).strip().lower()
+                        if "match" in _v2_type:
+                            os.makedirs(GPS_MATCH_FOLDER, exist_ok=True)
+                            _corrected_path = os.path.join(GPS_MATCH_FOLDER, os.path.basename(_local_path))
+                            shutil.move(_local_path, _corrected_path)
                 except Exception as e:
                     st.warning(f"GPS: téléchargement/export CSV impossible {name} -> {e}")
 
