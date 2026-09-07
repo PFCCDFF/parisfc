@@ -26,6 +26,9 @@ from parsing_utils import (
     read_csv_auto,
     is_gf1_export_format,
     standardize_gps_gf1_export,
+    is_multisection_gps_v2_file,
+    standardize_gps_v2_export,
+    parse_gps_v2_sections,
     is_gps_match_file,
     parse_match_info_from_filename,
     is_tactical_file,
@@ -46,6 +49,7 @@ logging.basicConfig(
 logger = logging.getLogger("sync_drive_to_supabase")
 
 CAPTEUR_GF1_NOM = "GF1"  # à ajuster/étendre le jour où un 2e capteur arrive
+CAPTEUR_GPS_V2_NOM = "GPS_V2"  # 2e capteur/logiciel GPS, export multi-sections (Effective Metrics)
 
 # Labels de ligne qui ne désignent pas une joueuse (marqueurs d'équipe/début
 # de période) — mêmes valeurs que celles exclues par _adv_rows côté
@@ -100,11 +104,11 @@ def get_or_create_joueuse(sb: Client, nom_complet: str, categorie: str) -> str:
     return inserted.data[0]["id"]
 
 
-def get_or_create_capteur(sb: Client, nom: str) -> str:
+def get_or_create_capteur(sb: Client, nom: str, format_source: str = "gf1") -> str:
     existing = sb.table("capteurs_gps").select("id").eq("nom", nom).execute()
     if existing.data:
         return existing.data[0]["id"]
-    inserted = sb.table("capteurs_gps").insert({"nom": nom, "format_source": "gf1"}).execute()
+    inserted = sb.table("capteurs_gps").insert({"nom": nom, "format_source": format_source}).execute()
     return inserted.data[0]["id"]
 
 
@@ -209,26 +213,52 @@ def sync_fichier_gps(sb: Client, filepath: str, categorie: str) -> None:
     filename = os.path.basename(filepath)
     logger.info("Traitement GPS : %s", filename)
 
-    df = read_csv_auto(filepath)
-    if not is_gf1_export_format(df):
-        logger.warning("Format GPS non reconnu, ignoré : %s", filename)
-        return
+    is_v2 = is_multisection_gps_v2_file(filepath)
+    if is_v2:
+        df = standardize_gps_v2_export(filepath, filename)
+        if df.empty:
+            logger.warning("Section 'Effective Metrics' introuvable/vide, ignoré : %s", filename)
+            return
+        capteur_nom, capteur_format = CAPTEUR_GPS_V2_NOM, "gps_v2"
+    else:
+        df = read_csv_auto(filepath)
+        if not is_gf1_export_format(df):
+            logger.warning("Format GPS non reconnu, ignoré : %s", filename)
+            return
+        df = standardize_gps_gf1_export(df, filename)
+        capteur_nom, capteur_format = CAPTEUR_GF1_NOM, "gf1"
 
-    df = standardize_gps_gf1_export(df, filename)
     if "NOM" not in df.columns:
         logger.warning("Colonne NOM absente après standardisation : %s", filename)
         return
 
-    capteur_id = get_or_create_capteur(sb, CAPTEUR_GF1_NOM)
+    capteur_id = get_or_create_capteur(sb, capteur_nom, capteur_format)
 
-    est_match = is_gps_match_file(filename)
+    if is_v2:
+        # Le nom de fichier v2 ne suit pas forcément la convention club (ex. export brut du
+        # capteur) — le champ "Type" de l'en-tête du fichier lui-même est plus fiable.
+        v2_type = str(parse_gps_v2_sections(filepath).get("header", {}).get("Type", "")).strip().lower()
+        if "match" in v2_type:
+            est_match = True
+        elif v2_type:
+            est_match = False
+        else:
+            est_match = is_gps_match_file(filename)
+    else:
+        est_match = is_gps_match_file(filename)
     match_id = None
     entrainement_id = None
     if est_match:
         minfo = parse_match_info_from_filename(filename)
+        # v2 : le nom de fichier ne suit pas la convention club, donc pas de date fiable à en
+        # extraire — la DATE standardisée (issue du "Start Date" de l'en-tête du fichier) prime.
+        if is_v2 and pd.notna(df["DATE"].iloc[0]):
+            match_date = df["DATE"].iloc[0]
+        else:
+            match_date = minfo["date"] or df["DATE"].iloc[0]
         match_id = get_or_create_match(
             sb,
-            match_date=minfo["date"] or df["DATE"].iloc[0],
+            match_date=match_date,
             adversaire=minfo["adversaire"] or "Inconnu",
             categorie=categorie,
             journee=minfo["journee"],

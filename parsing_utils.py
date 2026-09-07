@@ -12,6 +12,7 @@ Objectif : une seule source de vérité pour le parsing des noms, dates et
 fichiers GPS/tactiques, pour ne jamais avoir deux logiques qui divergent.
 """
 
+import csv
 import os
 import re
 import unicodedata
@@ -292,6 +293,131 @@ def standardize_gps_gf1_export(df: pd.DataFrame, filename: str) -> pd.DataFrame:
         if col_orig in df.columns:
             d[col_std] = pd.to_numeric(df[col_orig], errors="coerce")
 
+    d["__source_file"] = os.path.basename(filename)
+    return d
+
+
+# ------------------------------------------------------------
+# GPS — détection et standardisation du 2e format (multi-sections, point-virgule)
+# ------------------------------------------------------------
+# Export d'un second capteur/logiciel GPS, structurellement différent de GF1 :
+# fichier multi-sections (Global Metrics / Effective Metrics / Periods Metrics),
+# colonnes en anglais. On ne lit que "Effective Metrics" (temps de jeu effectif,
+# validé avec le club) et on produit le MÊME schéma standardisé que
+# standardize_gps_gf1_export() ci-dessus, pour que tout le reste de l'app et la
+# sync Supabase fonctionnent sans changement supplémentaire.
+
+_GPS_V2_SECTION_MARKERS = {"Periods", "Global Metrics", "Effective Metrics", "Periods Metrics"}
+
+
+def is_multisection_gps_v2_file(path: str) -> bool:
+    """Peek rapide (pas de lecture complète) : détecte le format GPS multi-sections.
+    Doit être appelé AVANT read_csv_auto/is_gf1_export_format — ce format n'est pas un
+    tableau plat à un seul en-tête, read_csv_auto ne saurait pas le lire correctement."""
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="ignore") as f:
+            # Assez de lignes pour couvrir Periods + Global Metrics (jusqu'à ~25 joueuses)
+            # avant d'atteindre le marqueur "Effective Metrics".
+            head = "".join(f.readline() for _ in range(60))
+    except Exception:
+        return False
+    return "Global Metrics" in head and "Effective Metrics" in head
+
+
+def _gps_v2_read_rows(path: str) -> list:
+    with open(path, "r", encoding="utf-8-sig", errors="ignore", newline="") as f:
+        return list(csv.reader(f, delimiter=";"))
+
+
+def parse_gps_v2_sections(path: str) -> dict:
+    """Extrait du fichier multi-sections : l'en-tête match/séance (Name/Type/Start Date/
+    End Date, toujours les 2 premières lignes non vides du fichier) et la table de la
+    section "Effective Metrics" (entre son marqueur et le marqueur de section suivant, ou
+    la fin du fichier). Les sections "Global Metrics"/"Periods Metrics" ne sont pas lues
+    (non utilisées). Retourne {"header": dict, "Effective Metrics": DataFrame (vide si
+    section introuvable)}."""
+    rows = _gps_v2_read_rows(path)
+    out = {"header": {}, "Effective Metrics": pd.DataFrame()}
+
+    def _is_blank(r):
+        return not r or all(not str(c).strip() for c in r)
+
+    _non_blank = [r for r in rows if not _is_blank(r)]
+    if len(_non_blank) >= 2 and len(_non_blank[0]) >= 5:
+        _hdr_cols = [c.strip() for c in _non_blank[0]]
+        _hdr_vals = _non_blank[1]
+        out["header"] = dict(zip(_hdr_cols, _hdr_vals))
+
+    _start = None
+    for i, r in enumerate(rows):
+        if len(r) == 1 and r[0].strip() == "Effective Metrics":
+            _start = i + 1
+            break
+    if _start is None:
+        return out
+
+    _end = len(rows)
+    for i in range(_start, len(rows)):
+        if len(rows[i]) == 1 and rows[i][0].strip() in _GPS_V2_SECTION_MARKERS:
+            _end = i
+            break
+
+    _block = [r for r in rows[_start:_end] if not _is_blank(r)]
+    if len(_block) < 2:
+        return out
+    _cols = [c.strip() for c in _block[0]]
+    _n = len(_cols)
+    _data = [(r[:_n] + [""] * (_n - len(r))) if len(r) < _n else r[:_n] for r in _block[1:]]
+    out["Effective Metrics"] = pd.DataFrame(_data, columns=_cols)
+    return out
+
+
+def standardize_gps_v2_export(path: str, filename: str) -> pd.DataFrame:
+    """Normalise la section 'Effective Metrics' d'un export GPS multi-sections vers le même
+    schéma standardisé que standardize_gps_gf1_export (mêmes noms de colonnes). Seules les
+    colonnes mappables avec certitude sont renseignées (Hid1→HID>13, Hid2→HID>19, seuils
+    confirmés identiques à GF1 ; Sprint count→Sprints_23, seuil confirmé 23 km/h) — le reste
+    (Sprints_25, sous-zones fines V_7_13…V_sup25, Acc_4/Dec_4) reste absent plutôt qu'inventé,
+    déjà géré nativement en aval (mêmes conventions que les fichiers GF1 incomplets).
+    Retourne un DataFrame vide si la section 'Effective Metrics' est introuvable/vide."""
+    sections = parse_gps_v2_sections(path)
+    eff = sections.get("Effective Metrics")
+    if eff is None or eff.empty:
+        return pd.DataFrame()
+
+    d = pd.DataFrame(index=eff.index)
+
+    _first = eff["First Name"].fillna("").astype(str).str.strip() if "First Name" in eff.columns else pd.Series("", index=eff.index)
+    _last = eff["Last Name"].fillna("").astype(str).str.strip() if "Last Name" in eff.columns else pd.Series("", index=eff.index)
+    _first = _first.replace(".", "")  # placeholder observé côté capteur quand le prénom n'est pas saisi
+    _last = _last.replace(".", "")
+    d["NOM"] = (_first + " " + _last).str.strip()
+
+    _start_date = sections.get("header", {}).get("Start Date")
+    _dt = pd.to_datetime(_start_date, errors="coerce", utc=True) if _start_date else pd.NaT
+    if pd.notna(_dt):
+        d["DATE"] = pd.Timestamp(_dt.tz_localize(None).normalize())
+    else:
+        _fallback_dt = parse_date_from_gf1_filename(filename)
+        d["DATE"] = pd.Timestamp(_fallback_dt.date()) if _fallback_dt else pd.NaT
+
+    def _col(name):
+        return pd.to_numeric(eff[name], errors="coerce") if name in eff.columns else np.nan
+
+    d["Durée_min"] = _col("Time (min)")
+    d["Distance (m)"] = _col("Distance (m)")
+    d["Distance HID (>13 km/h)"] = _col("Hid1 distance (m)")
+    d["Distance HID (>19 km/h)"] = _col("Hid2 distance (m)")
+    d["Sprints_23"] = _col("Sprint count")
+    d["Vitesse max (km/h)"] = _col("Speed max (km/h)")
+    d["Accélération maximale (m/s²)"] = _col("Accel max (m/s²)")
+    d["Acc_2"] = _col("Accel > 2 m/s² (nb)")
+    d["Acc_3"] = _col("Accel > 3 m/s² (nb)")
+    d["Dec_2"] = _col("Decel > 2 m/s² (nb)")
+    d["Dec_3"] = _col("Decel > 3 m/s² (nb)")
+    d["V_0_7"] = _col("R<7 distance (m)")
+
+    d["SEMAINE"] = d["DATE"].dt.isocalendar().week.astype("Int64")
     d["__source_file"] = os.path.basename(filename)
     return d
 
