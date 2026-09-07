@@ -6749,12 +6749,12 @@ def render_collective_report(report: dict, gps_stats: dict = None):
     _zg1, _zg2 = st.columns(2)
     with _zg1:
         fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
-                                           "Récupération (%)", "Blues", figsize=(2.6, 3.6), dpi=90)
+                                           "Récupération (%)", "RdYlGn_r", figsize=(2.6, 3.6), dpi=90)
         st.pyplot(fig_r, use_container_width=False)
         plt.close(fig_r)
     with _zg2:
         fig_p = build_zone_heatmap_figure(report["grid_perte"], report["zone_rows"], report["zone_cols"],
-                                           "Perte (%)", "Reds", figsize=(2.6, 3.6), dpi=90)
+                                           "Perte (%)", "RdYlGn_r", figsize=(2.6, 3.6), dpi=90)
         st.pyplot(fig_p, use_container_width=False)
         plt.close(fig_p)
 
@@ -6772,10 +6772,10 @@ def build_collective_report_html(report: dict, gps_stats: dict = None) -> str:
     fig_e = build_entree_tiers_figure(report["entree_tiers"], figsize=(5.2, 3.1), dpi=115)
     b64_entree = fig_to_b64(fig_e); plt.close(fig_e)
     fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
-                                       "Récupération (%)", "Blues", figsize=(2.7, 4.0), dpi=115)
+                                       "Récupération (%)", "RdYlGn_r", figsize=(2.7, 4.0), dpi=115)
     b64_recup = fig_to_b64(fig_r); plt.close(fig_r)
     fig_p = build_zone_heatmap_figure(report["grid_perte"], report["zone_rows"], report["zone_cols"],
-                                       "Perte (%)", "Reds", figsize=(2.7, 4.0), dpi=115)
+                                       "Perte (%)", "RdYlGn_r", figsize=(2.7, 4.0), dpi=115)
     b64_perte = fig_to_b64(fig_p); plt.close(fig_p)
 
     _pfc_logo_html = _team_logo_html(pfc_name, is_pfc=True, size=48)
