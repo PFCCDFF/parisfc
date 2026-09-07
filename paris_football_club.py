@@ -5983,15 +5983,18 @@ def filter_tactical_by_saison(tactical_files: list, selected_saison: str) -> lis
 
 
 def _saison_date_range(selected_saison: str):
-    """Retourne (date_debut, date_fin) pour une saison donnée.
-    2425 → sept 2024 – juin 2025
-    2526 → sept 2025 – juin 2026
-    """
-    if selected_saison == "2425":
-        return pd.Timestamp("2024-07-01"), pd.Timestamp("2025-06-30")
-    elif selected_saison == "2526":
-        return pd.Timestamp("2025-07-01"), pd.Timestamp("2026-06-30")
-    return None, None
+    """Retourne (date_debut, date_fin) pour une saison donnée au format "YYZZ"
+    (ex. "2627" → 1er juillet 2026 – 30 juin 2027). Générique : pas besoin de
+    mettre à jour cette fonction à chaque nouvelle saison."""
+    _m = re.match(r'^(\d{2})(\d{2})$', str(selected_saison or ""))
+    if not _m:
+        return None, None
+    _a1, _a2 = int(_m.group(1)), int(_m.group(2))
+    if _a2 != (_a1 + 1) % 100:
+        return None, None
+    _y1 = 2000 + _a1
+    _y2 = _y1 + 1
+    return pd.Timestamp(f"{_y1}-07-01"), pd.Timestamp(f"{_y2}-06-30")
     """Associe un match GPS à son fichier tactique.
     Priorité : date exacte → (date + adversaire) → (journee + adversaire).
     Retourne le DataFrame tactique ou None.
@@ -12521,7 +12524,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     if player_name:
         st.sidebar.write(f"Joueuse associée : {player_name}")
 
-    saison_options = ["Toutes les saisons", "2425", "2526"]
+    saison_options = ["Toutes les saisons", "2425", "2526", "2627"]
     selected_saison = st.sidebar.selectbox("Saison", saison_options)
     # Rendre la saison accessible globalement dans tous les onglets
     st.session_state["selected_saison"] = selected_saison
@@ -12872,7 +12875,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
                 _exp_season = st.selectbox(
                     "Filtrer l'export par saison",
-                    ["Toutes les saisons", "2425", "2526"],
+                    ["Toutes les saisons", "2425", "2526", "2627"],
                     index=0,
                     key="export_season_select_gestion",
                 )
