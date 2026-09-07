@@ -6320,12 +6320,49 @@ def compute_collective_report(df_tactic):
     zone_rows = ["Def", "MDef", "MOf", "Off"]
     zone_cols = ["G", "C", "D"]
 
+    # Zone de départ d'action : priorité au tag "Zone Départ action" quand il existe
+    # (anciens exports) ; sinon calculée depuis X_localisation/Y_localisation (nouveau
+    # format d'export, qui ne tague plus la zone en texte). Mêmes coordonnées Sportscode
+    # (0-80) et même inversion MT2 que compute_tactical_stats, calibrées empiriquement
+    # sur les rares lignes où zone tag ET x/y coexistaient dans les anciens fichiers.
+    _ZONE_FIELD_MAX = 80.0
+    _mt2_inst_zone = set()
+    if "Instance number" in df_tactic.columns and "Mi-temps" in df_tactic.columns:
+        _pfc_mt_zone = df_tactic[df_tactic["Row"] == pfc_name][["Instance number", "Mi-temps"]]
+        _mt2_inst_zone = set(
+            _pfc_mt_zone[_pfc_mt_zone["Mi-temps"].apply(lambda x: "MT2" in str(x))]["Instance number"].tolist()
+        )
+
+    def _zone_from_xy(r):
+        try:
+            _xraw = float(str(r.get("X_localisation", "")).split(",")[0].strip())
+            _yraw = float(str(r.get("Y_localisation", "")).split(",")[0].strip())
+        except (TypeError, ValueError):
+            return None
+        if pd.isna(_xraw) or pd.isna(_yraw):
+            return None
+        _x = _xraw * 100.0 / _ZONE_FIELD_MAX
+        try:
+            _i = int(str(r.get("Instance number", "")).split(",")[0].strip())
+        except (TypeError, ValueError):
+            _i = None
+        if _i in _mt2_inst_zone:
+            _x = 100.0 - _x
+        _y = 68.0 - _yraw * 68.0 / _ZONE_FIELD_MAX
+        _ri = min(3, max(0, int(_x // 25)))
+        _ci = min(2, max(0, int(_y // (68.0 / 3))))
+        return zone_rows[_ri] + zone_cols[_ci]
+
+    def _row_zone(r):
+        _z = r.get("Zone Départ action_c")
+        return _z if _z else _zone_from_xy(r)
+
     recup_mask = pfc_seq["Lancement de Possession_c"].isin(["Pertes de balle Adv", "Duel gagné"])
-    recup_zones = pfc_seq.loc[recup_mask, "Zone Départ action_c"].value_counts()
+    recup_zones = pfc_seq.loc[recup_mask].apply(_row_zone, axis=1).dropna().value_counts()
     recup_total = recup_zones.sum()
 
     perte_mask = pfc_seq["Issue d'action_c"] == "Perte de balle"
-    perte_zones = pfc_seq.loc[perte_mask, "Zone Départ action_c"].value_counts()
+    perte_zones = pfc_seq.loc[perte_mask].apply(_row_zone, axis=1).dropna().value_counts()
     perte_total = perte_zones.sum()
 
     def zone_grid_pct(zone_counts, total):
@@ -6636,16 +6673,21 @@ def render_collective_report(report: dict, gps_stats: dict = None):
           </div>
         </div>""", unsafe_allow_html=True)
 
-    _rc1, _rc2, _rc3 = st.columns([1, 1, 1])
-    with _rc1:
-        st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Type d'animation offensive</div>", unsafe_allow_html=True)
-        for lbl, val in report["animation"].items():
-            _fill_bar(lbl, val, CYAN)
-    with _rc2:
+    # "Type d'animation offensive" n'est plus tagué dans le nouveau format d'export —
+    # colonne masquée automatiquement plutôt que de montrer des barres à 0 % en continu.
+    _has_animation = any(report["animation"].values())
+    _rep_cols = st.columns([1, 1, 1] if _has_animation else [1, 1])
+    _rc_it = iter(_rep_cols)
+    if _has_animation:
+        with next(_rc_it):
+            st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Type d'animation offensive</div>", unsafe_allow_html=True)
+            for lbl, val in report["animation"].items():
+                _fill_bar(lbl, val, CYAN)
+    with next(_rc_it):
         st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Élimination des lignes adverses</div>", unsafe_allow_html=True)
         for lbl, val in report["circulation"].items():
             _fill_bar(lbl, val, "#7B84FF")
-    with _rc3:
+    with next(_rc_it):
         st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Entrée dernier 1/3 (couloir)</div>", unsafe_allow_html=True)
         fig_e = build_entree_tiers_figure(report["entree_tiers"])
         st.pyplot(fig_e, use_container_width=True)
@@ -6699,8 +6741,9 @@ def render_collective_report(report: dict, gps_stats: dict = None):
     # ── Zones de récupération / perte du ballon — heatmaps sur terrain ──
     _section_title("🗺️", f"Zones de récupération / perte du ballon — {pfc_name}")
     st.caption(
-        "Zones calculées à partir de la Zone de départ d'action, croisée avec le Lancement de possession "
-        "(récupération) et l'Issue d'action (perte). Le terrain est orienté attaque vers le haut."
+        "Zones calculées à partir de la Zone de départ d'action quand elle est taguée, sinon à partir des "
+        "coordonnées X/Y, croisées avec le Lancement de possession (récupération) et l'Issue d'action (perte). "
+        "Le terrain est orienté attaque vers le haut."
     )
 
     _zg1, _zg2 = st.columns(2)
@@ -6800,7 +6843,16 @@ def build_collective_report_html(report: dict, gps_stats: dict = None) -> str:
           </div>
         </div>"""
 
-    animation_html = "".join(_fill_bar_html(l, v, CYAN) for l, v in report["animation"].items())
+    # "Type d'animation offensive" n'est plus tagué dans le nouveau format d'export —
+    # bloc masqué automatiquement plutôt que d'imprimer des barres à 0 % (même logique
+    # que la vue Streamlit interactive dans render_collective_report).
+    animation_block_html = ""
+    if any(report["animation"].values()):
+        _animation_bars_html = "".join(_fill_bar_html(l, v, CYAN) for l, v in report["animation"].items())
+        animation_block_html = (
+            '<div style="font-size:10.5px;font-weight:600;color:#C8D8E8;margin-bottom:5px;">'
+            f'Type d\'animation offensive</div>{_animation_bars_html}'
+        )
     circulation_html = "".join(_fill_bar_html(l, v, "#7B84FF") for l, v in report["circulation"].items())
 
     def _gps_card_html(label, val):
@@ -6890,8 +6942,7 @@ html,body{{background:#050B12;-webkit-print-color-adjust:exact;print-color-adjus
         </div>
 
         <div class="section-title">🎯 Répartitions {pfc_name}<div class="line"></div></div>
-        <div style="font-size:10.5px;font-weight:600;color:#C8D8E8;margin-bottom:5px;">Type d'animation offensive</div>
-        {animation_html}
+        {animation_block_html}
         <div style="font-size:10.5px;font-weight:600;color:#C8D8E8;margin:10px 0 5px;">Élimination des lignes adverses</div>
         {circulation_html}
 
@@ -11116,11 +11167,18 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         f"{_ctx_c.get('adversaire', '')}"
                     )
 
-                    _cc1, _cc2, _cc3, _cc4 = st.columns(4)
+                    # "Système de jeu" n'est plus tagué dans le nouveau format d'export —
+                    # tuile masquée automatiquement plutôt que d'afficher "—" en continu.
+                    _systeme_c = _ctx_c.get("systeme", "")
+                    if _systeme_c:
+                        _cc1, _cc2, _cc3, _cc4 = st.columns(4)
+                    else:
+                        _cc1, _cc2, _cc3 = st.columns(3)
                     _cc1.metric("Compétition", _ctx_c.get("competition", "") or "—")
                     _cc2.metric("Journée", _ctx_c.get("journee", "") or "—")
                     _cc3.metric("Lieu", _ctx_c.get("lieu", "") or "—")
-                    _cc4.metric("Système de jeu", _ctx_c.get("systeme", "") or "—")
+                    if _systeme_c:
+                        _cc4.metric("Système de jeu", _systeme_c)
 
                     st.divider()
                     _collectif_report = compute_collective_report(_dft_c)
