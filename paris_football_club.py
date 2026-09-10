@@ -457,6 +457,49 @@ def save_presence(date_iso: str, statuts: dict) -> bool:
         return False
 
 
+OBJECTIFS_MOIS = ["Sep", "Oct", "Nov", "Déc", "Jan", "Fév", "Mar", "Avr", "Mai", "Juin"]
+OBJECTIFS_CATEGORIE_LABELS = {
+    "incontournable": "🔒 Incontournables",
+    "technique_tactique": "🎯 Techniques / tactiques",
+    "physique": "💪 Physiques / athlétiques",
+}
+
+
+@st.cache_data(ttl=300)
+def load_objectifs_joueuses() -> list:
+    """Liste des joueuses ayant un plan de développement (table objectifs_joueuse),
+    indépendante du référentiel/roster Présence (incomplets en production)."""
+    _sb = get_supabase_client()
+    if _sb is None:
+        return []
+    try:
+        _res = _sb.table("objectifs_joueuse").select("joueuse").execute()
+        return sorted(set(r["joueuse"] for r in _res.data))
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=300)
+def load_objectifs_pour_joueuse(joueuse: str) -> pd.DataFrame:
+    """Objectifs d'une joueuse (toutes catégories), triés pour affichage :
+    incontournables d'abord, puis techniques/tactiques, puis physiques."""
+    _sb = get_supabase_client()
+    if _sb is None or not joueuse:
+        return pd.DataFrame()
+    try:
+        _res = _sb.table("objectifs_joueuse").select(
+            "poste,categorie,objectif,statut,statut_label,actif,mois_actifs,ordre"
+        ).eq("joueuse", joueuse).order("ordre").execute()
+        if not _res.data:
+            return pd.DataFrame()
+        _df = pd.DataFrame(_res.data)
+        _cat_order = {"incontournable": 0, "technique_tactique": 1, "physique": 2}
+        _df["_cat_ordre"] = _df["categorie"].map(_cat_order).fillna(9)
+        return _df.sort_values(["_cat_ordre", "ordre"]).drop(columns="_cat_ordre").reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
+
+
 MEDICAL_PROFESSIONNELS = ["Médecin", "Kiné", "Ostéopathe", "Psychologue",
                            "Nutritionniste", "Préparateur physique", "Autre"]
 MEDICAL_TYPES_SOIN = ["Consultation/bilan", "Soin de kinésithérapie", "Rééducation",
@@ -11754,8 +11797,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     key="perf_gps_player_sel"
                 )
 
-        _st_seances, _st_match, _st_charge, _st_params, _st_fiche, _suivi_eval = st.tabs([
-            "🏃 Séances", "⚽ Match", "⚖️ Charge", "⚙️ Paramètres", "📋 Fiche Bilan", "📝 Évaluations"
+        _st_seances, _st_match, _st_charge, _st_params, _st_fiche, _suivi_eval, _st_objectifs = st.tabs([
+            "🏃 Séances", "⚽ Match", "⚖️ Charge", "⚙️ Paramètres", "📋 Fiche Bilan", "📝 Évaluations", "🎯 Objectifs"
         ])
 
     with _suivi_eval:
@@ -11763,6 +11806,95 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
             st.info("Accès réservé au staff.")
         else:
             render_evaluation_page(user_profile, permissions, _saison_sel)
+
+    # ── Objectifs (plan de développement individuel — import du Gantt staff) ──
+    # Liste déroulante dédiée, indépendante du sélecteur _pgps (basé sur les
+    # données GPS) : le référentiel joueuses et le roster Présence sont
+    # actuellement incomplets/vides en production, donc la liste vient
+    # directement des joueuses présentes dans la table objectifs_joueuse.
+    with _st_objectifs:
+        _obj_joueuses = load_objectifs_joueuses()
+        if not _obj_joueuses:
+            st.info("Aucun plan de développement disponible pour le moment.")
+        else:
+            _obj_default = None
+            if role == ROLE_JOUEUSE:
+                _obj_default = next(
+                    (p for p in _obj_joueuses if nom_tokens(p) & nom_tokens(_perf_player or "")), None
+                )
+
+            if role == ROLE_JOUEUSE and _obj_default:
+                _obj_sel = _obj_default
+                st.caption(f"Joueuse : **{_obj_sel}**")
+            elif role == ROLE_JOUEUSE:
+                st.info("Aucun plan de développement disponible pour le moment.")
+                _obj_sel = None
+            else:
+                _obj_idx = _obj_joueuses.index(_obj_default) if _obj_default in _obj_joueuses else 0
+                _obj_sel = st.selectbox("Joueuse", _obj_joueuses, index=_obj_idx, key="objectifs_player_sel")
+
+            if _obj_sel:
+                _obj_df = load_objectifs_pour_joueuse(_obj_sel)
+                if _obj_df.empty:
+                    st.info("Aucun objectif enregistré pour cette joueuse.")
+                else:
+                    st.caption(f"Poste : **{_obj_df['poste'].iloc[0]}**")
+
+                    def _obj_statut_badge(statut, statut_label):
+                        if statut_label:
+                            return f"<span style='background:#1A2A3A;color:#6A8090;border-radius:3px;padding:2px 7px;font-size:11px;font-weight:600;'>{statut_label}</span>"
+                        if statut is None or (isinstance(statut, float) and pd.isna(statut)):
+                            return ""
+                        _s = int(statut)
+                        _colors = {1: "#EF4444", 2: "#F4830A", 3: "#FFD700", 4: "#84CC16", 5: "#22C55E"}
+                        _c = _colors.get(_s, "#6A8090")
+                        return f"<span style='background:{_c}22;color:{_c};border:1px solid {_c}55;border-radius:3px;padding:2px 7px;font-size:11px;font-weight:700;'>{_s}/5</span>"
+
+                    def _obj_gantt_strip(mois_actifs):
+                        _actifs = set(mois_actifs or [])
+                        _cells = ""
+                        for _m in OBJECTIFS_MOIS:
+                            _col = "#00A3E0" if _m in _actifs else "#1A2A3A"
+                            _cells += (
+                                f"<span title='{_m}' style='display:inline-block;width:14px;height:8px;"
+                                f"margin-right:2px;border-radius:1px;background:{_col};'></span>"
+                            )
+                        return f"<div style='margin-top:3px;'>{_cells}</div>"
+
+                    def _render_objectif_row(_row, show_statut=False, show_gantt=True):
+                        _badge = _obj_statut_badge(_row.get("statut"), _row.get("statut_label")) if show_statut else ""
+                        _gantt = _obj_gantt_strip(_row.get("mois_actifs")) if show_gantt else ""
+                        st.markdown(
+                            f"<div style='background:#0C1220;border-left:2px solid #00A3E0;border-radius:2px;"
+                            f"padding:8px 14px;margin-bottom:6px;'>"
+                            f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
+                            f"<span style='color:#C8D8E8;font-size:13.5px;'>{_row['objectif']}</span>{_badge}"
+                            f"</div>{_gantt}</div>",
+                            unsafe_allow_html=True
+                        )
+
+                    for _cat in ("incontournable", "technique_tactique", "physique"):
+                        _cat_df = _obj_df[_obj_df["categorie"] == _cat]
+                        if _cat_df.empty:
+                            continue
+                        st.markdown(f"**{OBJECTIFS_CATEGORIE_LABELS[_cat]}**")
+
+                        if _cat == "incontournable":
+                            for _, _row in _cat_df.iterrows():
+                                _render_objectif_row(_row, show_statut=True, show_gantt=False)
+                        else:
+                            _actifs_df = _cat_df[_cat_df["actif"]]
+                            _inactifs_df = _cat_df[~_cat_df["actif"]]
+                            if _actifs_df.empty:
+                                st.caption("Aucun objectif actif dans cette catégorie.")
+                            else:
+                                for _, _row in _actifs_df.iterrows():
+                                    _render_objectif_row(_row)
+                            if not _inactifs_df.empty:
+                                with st.expander(f"Voir le pool complet ({len(_inactifs_df)} non actifs)"):
+                                    for _, _row in _inactifs_df.iterrows():
+                                        st.caption(f"· {_row['objectif']}")
+                        st.markdown("")
 
     # ── Séances (méthodologie Emma : cartes par catégorie + profil en
     # barres vs moyenne équipe) — remplace les anciens onglets
