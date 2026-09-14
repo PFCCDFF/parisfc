@@ -457,7 +457,6 @@ def save_presence(date_iso: str, statuts: dict) -> bool:
         return False
 
 
-OBJECTIFS_MOIS = ["Sep", "Oct", "Nov", "Déc", "Jan", "Fév", "Mar", "Avr", "Mai", "Juin"]
 OBJECTIFS_CATEGORIE_LABELS = {
     "incontournable": "🔒 Incontournables",
     "technique_tactique": "🎯 Techniques / tactiques",
@@ -488,7 +487,7 @@ def load_objectifs_pour_joueuse(joueuse: str) -> pd.DataFrame:
         return pd.DataFrame()
     try:
         _res = _sb.table("objectifs_joueuse").select(
-            "poste,categorie,objectif,statut,statut_label,actif,mois_actifs,ordre"
+            "id,poste,categorie,objectif,statut,statut_label,actif,mois_actifs,ordre"
         ).eq("joueuse", joueuse).order("ordre").execute()
         if not _res.data:
             return pd.DataFrame()
@@ -498,6 +497,47 @@ def load_objectifs_pour_joueuse(joueuse: str) -> pd.DataFrame:
         return _df.sort_values(["_cat_ordre", "ordre"]).drop(columns="_cat_ordre").reset_index(drop=True)
     except Exception:
         return pd.DataFrame()
+
+
+@st.cache_data(ttl=60)
+def load_pdi_evaluations(joueuse: str, match_date: str) -> pd.DataFrame:
+    """Évaluations (joueuse + coach) déjà saisies pour un match donné.
+    Colonnes : objectif_id, evaluateur, evaluateur_nom, note."""
+    _sb = get_supabase_client()
+    if _sb is None or not joueuse or not match_date:
+        return pd.DataFrame()
+    try:
+        _res = _sb.table("objectifs_evaluations").select(
+            "objectif_id,evaluateur,evaluateur_nom,note"
+        ).eq("joueuse", joueuse).eq("match_date", match_date).execute()
+        return pd.DataFrame(_res.data) if _res.data else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+def save_objectifs_evaluations(objectif_notes: dict, joueuse: str, match_date: str,
+                                match_label: str, evaluateur: str, evaluateur_nom: str) -> bool:
+    """Upsert une ligne par (objectif_id, note) pour ce match/évaluateur.
+    on_conflict=objectif_id,match_date,evaluateur : une nouvelle saisie coach
+    remplace la précédente (vision coach partagée, pas d'historique par coach)."""
+    _sb = get_supabase_client()
+    if _sb is None:
+        return False
+    try:
+        _rows = [
+            {
+                "joueuse": joueuse, "objectif_id": _oid, "match_date": match_date,
+                "match_label": match_label, "evaluateur": evaluateur,
+                "evaluateur_nom": evaluateur_nom, "note": _note,
+            }
+            for _oid, _note in objectif_notes.items()
+        ]
+        if _rows:
+            _sb.table("objectifs_evaluations").upsert(_rows, on_conflict="objectif_id,match_date,evaluateur").execute()
+        load_pdi_evaluations.clear()
+        return True
+    except Exception:
+        return False
 
 
 MEDICAL_PROFESSIONNELS = ["Médecin", "Kiné", "Ostéopathe", "Psychologue",
@@ -11850,26 +11890,14 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         _c = _colors.get(_s, "#6A8090")
                         return f"<span style='background:{_c}22;color:{_c};border:1px solid {_c}55;border-radius:3px;padding:2px 7px;font-size:11px;font-weight:700;'>{_s}/5</span>"
 
-                    def _obj_gantt_strip(mois_actifs):
-                        _actifs = set(mois_actifs or [])
-                        _cells = ""
-                        for _m in OBJECTIFS_MOIS:
-                            _col = "#00A3E0" if _m in _actifs else "#1A2A3A"
-                            _cells += (
-                                f"<span title='{_m}' style='display:inline-block;width:14px;height:8px;"
-                                f"margin-right:2px;border-radius:1px;background:{_col};'></span>"
-                            )
-                        return f"<div style='margin-top:3px;'>{_cells}</div>"
-
-                    def _render_objectif_row(_row, show_statut=False, show_gantt=True):
+                    def _render_objectif_row(_row, show_statut=False):
                         _badge = _obj_statut_badge(_row.get("statut"), _row.get("statut_label")) if show_statut else ""
-                        _gantt = _obj_gantt_strip(_row.get("mois_actifs")) if show_gantt else ""
                         st.markdown(
                             f"<div style='background:#0C1220;border-left:2px solid #00A3E0;border-radius:2px;"
                             f"padding:8px 14px;margin-bottom:6px;'>"
                             f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
                             f"<span style='color:#C8D8E8;font-size:13.5px;'>{_row['objectif']}</span>{_badge}"
-                            f"</div>{_gantt}</div>",
+                            f"</div></div>",
                             unsafe_allow_html=True
                         )
 
@@ -11881,7 +11909,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                         if _cat == "incontournable":
                             for _, _row in _cat_df.iterrows():
-                                _render_objectif_row(_row, show_statut=True, show_gantt=False)
+                                _render_objectif_row(_row, show_statut=True)
                         else:
                             _actifs_df = _cat_df[_cat_df["actif"]]
                             _inactifs_df = _cat_df[~_cat_df["actif"]]
@@ -11895,6 +11923,96 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                     for _, _row in _inactifs_df.iterrows():
                                         st.caption(f"· {_row['objectif']}")
                         st.markdown("")
+
+                    # ── Évaluation après match (joueuse vs coach) ──────────────
+                    st.divider()
+                    st.markdown("**📝 Évaluation après match**")
+                    _obj_matches = sorted(
+                        (t for t in _tac_files if t.get("date") is not None),
+                        key=lambda t: t["date"], reverse=True
+                    )
+                    _obj_actifs_df = _obj_df[_obj_df["actif"]]
+                    if not _obj_matches:
+                        st.caption("Aucun match disponible pour évaluer les objectifs.")
+                    elif _obj_actifs_df.empty:
+                        st.caption("Aucun objectif actif à évaluer.")
+                    else:
+                        _obj_match_labels = [t["label"] for t in _obj_matches]
+                        _obj_match_sel_label = st.selectbox(
+                            "Match", _obj_match_labels, key=f"objectifs_match_sel_{_obj_sel}"
+                        )
+                        _obj_match = next(t for t in _obj_matches if t["label"] == _obj_match_sel_label)
+                        _obj_match_date_iso = pd.Timestamp(_obj_match["date"]).date().isoformat()
+                        _obj_evals = load_pdi_evaluations(_obj_sel, _obj_match_date_iso)
+
+                        if not _obj_evals.empty:
+                            _pivot = _obj_evals.pivot_table(
+                                index="objectif_id", columns="evaluateur", values="note", aggfunc="last"
+                            )
+                            _comp_rows = []
+                            for _, _row in _obj_actifs_df.iterrows():
+                                _oid = _row["id"]
+                                if _oid not in _pivot.index:
+                                    continue
+                                _nj = _pivot.loc[_oid].get("joueuse")
+                                _nc = _pivot.loc[_oid].get("coach")
+                                _comp_rows.append({
+                                    "Objectif": _row["objectif"],
+                                    "Joueuse": _nj if pd.notna(_nj) else "—",
+                                    "Coach": _nc if pd.notna(_nc) else "—",
+                                    "Écart": abs(_nj - _nc) if pd.notna(_nj) and pd.notna(_nc) else "—",
+                                })
+                            if _comp_rows:
+                                st.dataframe(pd.DataFrame(_comp_rows), hide_index=True, use_container_width=True)
+                            else:
+                                st.caption("Aucune évaluation pour ce match.")
+                        else:
+                            st.caption("Aucune évaluation pour ce match.")
+
+                        _obj_eval_role = "joueuse" if (role == ROLE_JOUEUSE and _obj_sel == _obj_default) else "coach"
+                        _obj_eval_btn_label = "✏️ M'évaluer pour ce match" if _obj_eval_role == "joueuse" else "✏️ Évaluer (coach) pour ce match"
+                        _obj_eval_ctx = (_obj_sel, _obj_match_date_iso, _obj_eval_role)
+
+                        if st.button(_obj_eval_btn_label, key=f"objectifs_eval_btn_{_obj_sel}_{_obj_match_date_iso}_{_obj_eval_role}"):
+                            st.session_state["_objectifs_eval_ctx"] = _obj_eval_ctx
+
+                        if st.session_state.get("_objectifs_eval_ctx") == _obj_eval_ctx:
+                            _obj_existing_notes = {}
+                            if not _obj_evals.empty:
+                                _mine = _obj_evals[_obj_evals["evaluateur"] == _obj_eval_role]
+                                _obj_existing_notes = dict(zip(_mine["objectif_id"], _mine["note"]))
+
+                            @st.dialog(f"Évaluation — {_obj_match_sel_label}")
+                            def _objectifs_eval_dialog():
+                                st.caption(f"Joueuse : **{_obj_sel}**")
+                                _new_notes = {}
+                                for _cat2 in ("incontournable", "technique_tactique", "physique"):
+                                    _cat_actifs = _obj_actifs_df[_obj_actifs_df["categorie"] == _cat2]
+                                    if _cat_actifs.empty:
+                                        continue
+                                    st.markdown(f"**{OBJECTIFS_CATEGORIE_LABELS[_cat2]}**")
+                                    for _, _row2 in _cat_actifs.iterrows():
+                                        _default_note = int(_obj_existing_notes.get(_row2["id"], 3))
+                                        _new_notes[_row2["id"]] = st.select_slider(
+                                            _row2["objectif"], options=[1, 2, 3, 4, 5],
+                                            value=_default_note, key=f"objectifs_eval_slider_{_row2['id']}"
+                                        )
+                                st.divider()
+                                _odb1, _odb2 = st.columns(2)
+                                with _odb1:
+                                    if st.button("💾 Enregistrer", type="primary", key="objectifs_eval_save", use_container_width=True):
+                                        save_objectifs_evaluations(
+                                            _new_notes, _obj_sel, _obj_match_date_iso, _obj_match_sel_label,
+                                            _obj_eval_role, user_profile
+                                        )
+                                        st.session_state.pop("_objectifs_eval_ctx", None)
+                                        st.rerun()
+                                with _odb2:
+                                    if st.button("Annuler", key="objectifs_eval_cancel", use_container_width=True):
+                                        st.session_state.pop("_objectifs_eval_ctx", None)
+                                        st.rerun()
+
+                            _objectifs_eval_dialog()
 
     # ── Séances (méthodologie Emma : cartes par catégorie + profil en
     # barres vs moyenne équipe) — remplace les anciens onglets
