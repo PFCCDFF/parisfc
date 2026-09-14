@@ -12813,6 +12813,22 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
             st.markdown(f"**Fiche bilan — {_fiche_player}**")
             st.caption("Données agrégées sur la période et les matchs sélectionnés.")
 
+            # ── Bornage par date (dédié à la fiche — indépendant du sélecteur
+            # Période/Match de l'onglet Performance Individuelle) ──────────
+            _fp1, _fp2 = st.columns([1, 2])
+            with _fp1:
+                _fiche_period_mode = st.selectbox(
+                    "Période", ["Toute la saison", "Plage de dates"], key="fiche_period_mode"
+                )
+            _fiche_date_deb = _fiche_date_fin = None
+            if _fiche_period_mode == "Plage de dates":
+                with _fp2:
+                    _fdc1, _fdc2 = st.columns(2)
+                    with _fdc1:
+                        _fiche_date_deb = st.date_input("Du", key="fiche_date_deb")
+                    with _fdc2:
+                        _fiche_date_fin = st.date_input("Au", key="fiche_date_fin")
+
             # ── Indicateurs à afficher + templates nommés (persistants) ─────
             _fiche_templates = load_fiche_templates()
             if "_fiche_indic_sel" not in st.session_state:
@@ -12871,7 +12887,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         st.rerun()
 
             _selected_indicators = set(st.session_state["_fiche_indic_sel"])
-            _fiche_cache_key = (_fiche_player, frozenset(_selected_indicators))
+            _fiche_cache_key = (_fiche_player, frozenset(_selected_indicators),
+                                _fiche_period_mode, _fiche_date_deb, _fiche_date_fin)
 
             _col_btn1, _col_btn2 = st.columns([1, 1])
             with _col_btn1:
@@ -12884,6 +12901,31 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 with st.spinner("Génération en cours..."):
                     try:
                         _gm_all = st.session_state.get("gps_match_df", pd.DataFrame())
+
+                        # ── Bornage par date : filtre les KPIs match et les données GPS
+                        # avant agrégation dans build_fiche_bilan_html (même convention de
+                        # colonnes que le filtre Plage de dates de Performance Individuelle :
+                        # "Date" pour pfc_kpi_all, "DATE" pour gps_match_df).
+                        _pfc_kpi_all_fiche = pfc_kpi_all
+                        if (_fiche_period_mode == "Plage de dates" and _fiche_date_deb and _fiche_date_fin
+                                and pfc_kpi_all is not None and not pfc_kpi_all.empty
+                                and "Date" in pfc_kpi_all.columns):
+                            _pfc_kpi_all_fiche = pfc_kpi_all.copy()
+                            _pfc_kpi_all_fiche["_dt"] = pd.to_datetime(_pfc_kpi_all_fiche["Date"], errors="coerce")
+                            _pfc_kpi_all_fiche = _pfc_kpi_all_fiche[
+                                (_pfc_kpi_all_fiche["_dt"] >= pd.Timestamp(_fiche_date_deb)) &
+                                (_pfc_kpi_all_fiche["_dt"] <= pd.Timestamp(_fiche_date_fin))
+                            ].drop(columns="_dt")
+
+                        _gm_all_fiche = _gm_all
+                        if (_fiche_period_mode == "Plage de dates" and _fiche_date_deb and _fiche_date_fin
+                                and _gm_all is not None and not _gm_all.empty):
+                            _gm_all_fiche = ensure_date_column(_gm_all)
+                            if "DATE" in _gm_all_fiche.columns:
+                                _gm_all_fiche = _gm_all_fiche[
+                                    (_gm_all_fiche["DATE"] >= pd.Timestamp(_fiche_date_deb)) &
+                                    (_gm_all_fiche["DATE"] <= pd.Timestamp(_fiche_date_fin))
+                                ]
 
                         # Récupérer les données personnelles depuis le référentiel passerelles
                         _info = {}
@@ -12909,16 +12951,15 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                         _med_summary_fiche = medical_player_summary(load_visites_medicales(), _fiche_player)
 
-                        # Mesures corporelles pour la période sélectionnée (réutilise le
-                        # sélecteur Période/Match de Performance Individuelle — seul le mode
-                        # "Plage de dates" filtre réellement, comme pour le résumé GPS).
+                        # Mesures corporelles pour la période sélectionnée (bornage dédié
+                        # à la fiche, cf. plus haut).
                         _df_mesures_fiche = load_mesures_corporelles()
                         if not _df_mesures_fiche.empty:
                             _df_mesures_fiche = _df_mesures_fiche[_df_mesures_fiche["joueuse"] == _fiche_player]
-                        if not _df_mesures_fiche.empty and _perf_period == "Plage de dates" and _date_deb and _date_fin:
+                        if not _df_mesures_fiche.empty and _fiche_period_mode == "Plage de dates" and _fiche_date_deb and _fiche_date_fin:
                             _df_mesures_fiche = _df_mesures_fiche[
-                                (_df_mesures_fiche["date"] >= pd.Timestamp(_date_deb)) &
-                                (_df_mesures_fiche["date"] <= pd.Timestamp(_date_fin))
+                                (_df_mesures_fiche["date"] >= pd.Timestamp(_fiche_date_deb)) &
+                                (_df_mesures_fiche["date"] <= pd.Timestamp(_fiche_date_fin))
                             ]
                         _health_measures_key = tuple(sorted(
                             (r["date"].date().isoformat(), r["poids_kg"], r["masse_grasse_pct"])
@@ -12927,8 +12968,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                         _fiche_html = build_fiche_bilan_html(
                             player_name=_fiche_player,
-                            pfc_kpi_all=pfc_kpi_all,
-                            gps_match_df=_gm_all,
+                            pfc_kpi_all=_pfc_kpi_all_fiche,
+                            gps_match_df=_gm_all_fiche,
                             player_info=_info,
                             selected_indicators=_selected_indicators,
                             taux_presence=load_presence_rate(_fiche_player),
