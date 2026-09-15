@@ -1309,15 +1309,19 @@ def parse_week_from_gf1_filename(fn: str) -> Optional[int]:
 
 
 def extract_season_from_filename(filename: str) -> Optional[str]:
+    """Extrait un token de saison "AABB" (ex. 2627 = 26/27) depuis un nom de
+    fichier — générique plutôt qu'une liste de saisons codée en dur (cf. bug
+    saison 2627 invisible, corrigé pour saison_options/_saison_date_range,
+    manqué ici) : un token de 4 chiffres n'est retenu comme saison que si ses
+    deux moitiés sont des années consécutives (BB = AA+1 mod 100), ce qui
+    exclut les faux positifs comme l'année d'une date ("...2026.csv")."""
     if not filename:
         return None
     s = str(filename)
-    candidates = re.findall(r"\b\d{4}\b", s)
-    for c in candidates:
-        if c in {"2425", "2526"}:
-            return c
-    m = re.search(r"(2425|2526)", s)
-    return m.group(1) if m else None
+    for a, b in re.findall(r"\b(\d{2})(\d{2})\b", s):
+        if int(b) == (int(a) + 1) % 100:
+            return a + b
+    return None
 
 
 # =========================
