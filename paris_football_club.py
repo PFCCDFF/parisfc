@@ -11685,7 +11685,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         st.markdown("<div style='font-family:Oswald,sans-serif;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6A8090;margin-bottom:8px;'>KPIs</div>", unsafe_allow_html=True)
                         _kc = st.columns(min(3, len(_avail_kpis)))
                         for _i, (_col_ui, (lbl, col)) in enumerate(zip(_kc * 2, _avail_kpis)):
-                            _col_ui.metric(lbl, f"{int(aggregated[col].iloc[0])}/100")
+                            _kpi_val = aggregated[col].iloc[0]
+                            _col_ui.metric(lbl, f"{int(_kpi_val)}/100" if pd.notna(_kpi_val) else "—")
 
                     st.divider()
 
@@ -11698,7 +11699,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         st.markdown("<div style='font-family:Oswald,sans-serif;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6A8090;margin-bottom:8px;'>Postes</div>", unsafe_allow_html=True)
                         _pc = st.columns(min(3, len(_avail_postes)))
                         for _i, (_cu, (lbl, col)) in enumerate(zip(_pc * 2, _avail_postes)):
-                            _cu.metric(lbl, f"{int(aggregated[col].iloc[0])}/100")
+                            _poste_val = aggregated[col].iloc[0]
+                            _cu.metric(lbl, f"{int(_poste_val)}/100" if pd.notna(_poste_val) else "—")
 
                 # Comparaison optionnelle
                 if _perf_compare != "— aucune —":
