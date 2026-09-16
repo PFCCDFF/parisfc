@@ -11,7 +11,6 @@ import io
 import re
 import csv
 import shutil
-import hashlib
 import threading
 import functools
 import unicodedata
@@ -19,7 +18,7 @@ import warnings
 from typing import Any, Dict, List, Optional, Set, Tuple
 from collections import Counter
 from difflib import get_close_matches, SequenceMatcher
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 import calendar as _calmod
 
 import numpy as np
@@ -2914,14 +2913,28 @@ def list_files_recursive(service, folder_id: str) -> List[dict]:
                 out.append(it)
     return out
 
-def download_file(service, file_id, file_name, output_folder, mime_type=None):
+def download_file(service, file_id, file_name, output_folder, mime_type=None, modified_time=None):
     os.makedirs(output_folder, exist_ok=True)
     final_path = os.path.join(output_folder, file_name)
     tmp_path = final_path + ".tmp"
 
-    # Fichier déjà présent et non vide → skip (évite les re-téléchargements inutiles)
+    # Fichier déjà présent et non vide → skip, SAUF si modified_time (Drive) prouve
+    # qu'une version plus récente existe côté Drive que la copie locale. Avant ce
+    # correctif, ce skip était inconditionnel dès qu'un fichier non-trivial existait
+    # déjà — ça empêchait silencieusement toute mise à jour d'un fichier déjà
+    # synchronisé une fois (le check de fraîcheur de _should_download(), fait par
+    # l'appelant AVANT d'appeler download_file(), était donc annulé ici).
     if os.path.exists(final_path) and os.path.getsize(final_path) > 512:
-        return final_path
+        _stale = False
+        if modified_time:
+            try:
+                _drive_dt = datetime.fromisoformat(str(modified_time).replace("Z", "+00:00"))
+                _local_dt = datetime.fromtimestamp(os.path.getmtime(final_path), tz=timezone.utc)
+                _stale = _drive_dt > _local_dt
+            except Exception:
+                _stale = False
+        if not _stale:
+            return final_path
 
     if mime_type == "application/vnd.google-apps.spreadsheet":
         request = service.files().export_media(
@@ -2930,9 +2943,18 @@ def download_file(service, file_id, file_name, output_folder, mime_type=None):
         if not final_path.lower().endswith(".xlsx"):
             final_path = os.path.splitext(final_path)[0] + ".xlsx"
             tmp_path = final_path + ".tmp"
-        # Re-check après renommage xlsx
+        # Re-check après renommage xlsx (même logique de fraîcheur que ci-dessus)
         if os.path.exists(final_path) and os.path.getsize(final_path) > 512:
-            return final_path
+            _stale2 = False
+            if modified_time:
+                try:
+                    _drive_dt2 = datetime.fromisoformat(str(modified_time).replace("Z", "+00:00"))
+                    _local_dt2 = datetime.fromtimestamp(os.path.getmtime(final_path), tz=timezone.utc)
+                    _stale2 = _drive_dt2 > _local_dt2
+                except Exception:
+                    _stale2 = False
+            if not _stale2:
+                return final_path
     elif mime_type and mime_type.startswith("application/vnd.google-apps."):
         # Type Google natif non exportable (Docs, Slides, etc.) → on skip
         raise ValueError(f"Type non téléchargeable : {mime_type}")
@@ -2994,7 +3016,7 @@ def download_permissions_file():
 
         path = download_file(
             service, candidate["id"], candidate["name"], DATA_FOLDER,
-            mime_type=candidate.get("mimeType")
+            mime_type=candidate.get("mimeType"), modified_time=candidate.get("modifiedTime")
         )
         return path
 
@@ -3138,7 +3160,7 @@ def download_google_drive():
             n_skip += 1
             continue
         try:
-            download_file(service, f["id"], f["name"], DATA_FOLDER, mime_type=f.get("mimeType"))
+            download_file(service, f["id"], f["name"], DATA_FOLDER, mime_type=f.get("mimeType"), modified_time=f.get("modifiedTime"))
         except Exception as e:
             _warn(f"Drive: impossible de télécharger '{f['name']}' → {e}")
     if n_skip:
@@ -3149,7 +3171,7 @@ def download_google_drive():
         if normalize_str(f["name"]) == normalize_str(PASSERELLE_FILENAME):
             if _should_download(f, PASSERELLE_FOLDER):
                 try:
-                    download_file(service, f["id"], f["name"], PASSERELLE_FOLDER, mime_type=f.get("mimeType"))
+                    download_file(service, f["id"], f["name"], PASSERELLE_FOLDER, mime_type=f.get("mimeType"), modified_time=f.get("modifiedTime"))
                 except Exception as e:
                     _warn(f"Drive: impossible de télécharger le fichier passerelle → {e}")
             break
@@ -8594,31 +8616,50 @@ def collect_data(selected_season=None):
     # ======================================================
     # PFC Matchs
     # ======================================================
-    _pfc_seen_hashes = set()  # détecte un même match uploadé deux fois sous des noms
-                               # différents (ex. "U19" et "U19F" du même export) — sans
-                               # ce garde-fou, les stats de chaque joueuse sont comptées
-                               # deux fois (cf. audit saison 2627, match AAS Sarcelles J1).
+    # Un même match peut être présent sous deux noms de fichier différents (ex.
+    # "U19" et "U19F" pour le même export) — sans dédoublonnage, les stats de
+    # chaque joueuse seraient comptées deux fois (cf. audit saison 2627, match
+    # AAS Sarcelles J1). On ne peut pas se fier à un hash de contenu identique :
+    # si Drive renvoie une version corrigée d'un seul des deux noms, les fichiers
+    # divergent tout en représentant toujours le même match. On regroupe donc par
+    # identité de match (journée, catégorie, date) et on ne garde que le fichier
+    # le plus récemment modifié de chaque groupe.
+    _pfc_candidates = []
     for filename in fichiers:
         if not (filename.endswith(".csv") and "PFC" in filename):
+            continue
+        parts = filename.split(".")[0].split("_")
+        if len(parts) < 6:
+            continue
+        _match_key = (parts[3], parts[4], parts[5])
+        _path = os.path.join(DATA_FOLDER, filename)
+        try:
+            _mtime = os.path.getmtime(_path)
+        except OSError:
+            continue
+        _pfc_candidates.append((filename, _match_key, _mtime))
+
+    _pfc_best_by_key = {}
+    for _filename, _key, _mtime in _pfc_candidates:
+        _cur = _pfc_best_by_key.get(_key)
+        if _cur is None or _mtime > _cur[1]:
+            _pfc_best_by_key[_key] = (_filename, _mtime)
+    _pfc_files_to_process = {v[0] for v in _pfc_best_by_key.values()}
+    for _filename, _key, _mtime in _pfc_candidates:
+        if _filename not in _pfc_files_to_process:
+            _warn(f"Match: {_filename} ignoré — doublon d'un même match (fichier plus récent conservé)")
+
+    for filename in fichiers:
+        if filename not in _pfc_files_to_process:
             continue
 
         path = os.path.join(DATA_FOLDER, filename)
 
         try:
             parts = filename.split(".")[0].split("_")
-            if len(parts) < 6:
-                continue
-
             journee = parts[3]
             categorie = parts[4]
             date = parts[5]
-
-            with open(path, "rb") as _fh:
-                _file_hash = hashlib.md5(_fh.read()).hexdigest()
-            if _file_hash in _pfc_seen_hashes:
-                _warn(f"Match: {filename} ignoré — contenu identique à un fichier déjà traité pour ce match")
-                continue
-            _pfc_seen_hashes.add(_file_hash)
 
             data = pd.read_csv(path)
             if "Row" not in data.columns:
@@ -11816,6 +11857,24 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     if _adv_n: _skip.add(_adv_n)
                     _tplayers = [r for r in _dft["Row"].dropna().unique()
                                  if r not in _skip and not any(k in str(r) for k in ["Transition","Carton","def "])]                             if "Row" in _dft.columns else []
+
+                    # Sauvetage : format d'export où "Row" ne contient que des libellés
+                    # d'équipe (PFC/adversaire/Transition/Carton), les joueuses étant
+                    # indiquées dans les colonnes de poste des lignes d'équipe plutôt que
+                    # sur une ligne dédiée — cf. audit match AAS Sarcelles 26/27 (colonne
+                    # Action entièrement vide dans ce format, donc pas de détail passes/
+                    # tirs/duels par joueuse, mais au moins la composition et les données
+                    # GPS individuelles restent affichables).
+                    if not _tplayers and "Row" in _dft.columns:
+                        _tac_posts = [c for c in POST_COLS if c in _dft.columns]
+                        if _tac_posts:
+                            _pfc_lbl = nettoyer_nom_equipe("PFC")
+                            _lineup_rows = _dft[_dft["Row"].astype(str).apply(nettoyer_nom_equipe) == _pfc_lbl]
+                            _lineup_players = set()
+                            for _, _lrow in _lineup_rows.iterrows():
+                                _lineup_players |= extract_lineup_from_row(_lrow, _tac_posts)
+                            _tplayers = sorted(_lineup_players)
+
                     with _cpj:
                         _di = 0
                         if _perf_player:
