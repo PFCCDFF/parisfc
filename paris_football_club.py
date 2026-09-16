@@ -95,6 +95,7 @@ PERMISSIONS_FILENAME = "Classeurs permissions streamlit.xlsx"
 EDF_JOUEUSES_FILENAME = "EDF_Joueuses.xlsx"
 PASSERELLE_FILENAME = "Liste Joueuses Passerelles.xlsx"
 REFERENTIEL_FILENAME = "Noms Prénoms Paris FC.xlsx"
+TEMPS_JEU_RESCUE_FILENAME = "SuiviPerformanceJoueuse.xlsx"  # sauvetage temps de jeu (feuille SuiviMatch) quand le CSV tactique n'a pas de ligne d'équipe exploitable
 OBJECTIFS_EVAL_FILENAME = "Evaluations Objectifs.csv"  # Export CSV du Google Sheet lié au Forms
 DRIVE_OBJECTIFS_FOLDER_ID = ""  # À renseigner : ID du dossier Drive contenant le CSV des évaluations
 OBJECTIFS_FOLDER = "data/objectifs"
@@ -3618,6 +3619,87 @@ def extract_lineup_from_row(row: pd.Series, available_posts: List[str]) -> Set[s
             if looks_like_player(p):
                 players.add(p)
     return players
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_temps_jeu_rescue() -> pd.DataFrame:
+    """Charge la feuille "SuiviMatch" du fichier de sauvetage temps de jeu
+    (TEMPS_JEU_RESCUE_FILENAME) : une ligne par (joueuse, match), utilisée en
+    dernier recours quand un CSV tactique n'a ni ligne d'équipe ("PFC"/adversaire)
+    ni couple Duration+poste exploitable pour calculer le temps de jeu (cf.
+    players_duration_from_player_rows ci-dessous). Colonnes retenues : Player
+    (NOM+Prénom canonicalisés comme les "Row" des CSV tactiques), Date,
+    Adversaire (brut, pour le matching flou), Temps de jeu (minutes).
+    Retourne un DataFrame vide si le fichier est absent — sauvetage optionnel,
+    jamais bloquant."""
+    path = find_local_file_by_normalized_name(DATA_FOLDER, TEMPS_JEU_RESCUE_FILENAME)
+    if not path or not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        df = read_excel_auto(path, sheet_name="SuiviMatch")
+        if isinstance(df, dict):
+            df = df.get("SuiviMatch") or (list(df.values())[0] if df else pd.DataFrame())
+        needed = {"NOM", "Prénom", "Date", "Adversaire", "Temps de jeu"}
+        if not isinstance(df, pd.DataFrame) or df.empty or not needed.issubset(set(df.columns)):
+            return pd.DataFrame()
+        out = pd.DataFrame()
+        out["Player"] = (df["NOM"].fillna("").astype(str) + " " + df["Prénom"].fillna("").astype(str)).map(nettoyer_nom_joueuse)
+        out["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        out["Adversaire"] = df["Adversaire"].fillna("").astype(str)
+        out["Temps de jeu (en minutes)"] = pd.to_numeric(df["Temps de jeu"], errors="coerce")
+        out = out[out["Player"].ne("") & out["Date"].notna() & out["Temps de jeu (en minutes)"].notna()]
+        return out.reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _temps_jeu_rescue_adv_score(a_raw: str, b_raw: str) -> float:
+    """Similarité adversaire pour le sauvetage temps de jeu — variante locale de
+    _adv_similarity : gère en plus les ligatures œ/æ (ex. "Paris So Cœur") et
+    sépare lettres/chiffres collés (ex. "FC93" vs "FC 93 Bobigny"), deux écarts
+    de nommage réels entre les CSV tactiques et le fichier de sauvetage."""
+    def _norm(s):
+        s = str(s or "").strip()
+        s = s.replace("œ", "oe").replace("Œ", "Oe").replace("æ", "ae").replace("Æ", "Ae")
+        s = normalize_str(s)
+        return re.sub(r"(?<=[a-z])(?=[0-9])|(?<=[0-9])(?=[a-z])", " ", s)
+    a, b = _norm(a_raw), _norm(b_raw)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    if a in b or b in a:
+        return 0.85
+    ta, tb = set(re.findall(r"[a-z0-9]{2,}", a)), set(re.findall(r"[a-z0-9]{2,}", b))
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / max(len(ta), len(tb))
+
+
+def get_temps_jeu_rescue_for_match(rescue_df: pd.DataFrame, match_date, adv_label: str) -> pd.DataFrame:
+    """Filtre le fichier de sauvetage sur la date exacte du match, puis choisit
+    — parmi les candidats de ce jour (plusieurs équipes/catégories du club
+    peuvent jouer le même jour) — celui dont l'adversaire ressemble le plus à
+    adv_label. Retourne ["Player", "Temps de jeu (en minutes)"], ou un
+    DataFrame vide si aucune date ne correspond ou si aucun adversaire de ce
+    jour ne dépasse le seuil de similarité minimal."""
+    if rescue_df is None or rescue_df.empty or match_date is None or pd.isna(match_date):
+        return pd.DataFrame()
+    same_day = rescue_df[rescue_df["Date"].dt.date == pd.Timestamp(match_date).date()]
+    if same_day.empty:
+        return pd.DataFrame()
+
+    scores = same_day["Adversaire"].map(lambda a: _temps_jeu_rescue_adv_score(adv_label, a))
+    best_adv, best_score = None, 0.0
+    for adv, score in zip(same_day["Adversaire"], scores):
+        if score > best_score:
+            best_score, best_adv = score, adv
+    if best_score < 0.3:
+        return pd.DataFrame()
+
+    matched = same_day[same_day["Adversaire"] == best_adv]
+    out = matched.groupby("Player", as_index=False)["Temps de jeu (en minutes)"].sum()
+    return out
 
 
 def players_duration_from_player_rows(d2: pd.DataFrame, available_posts: list) -> pd.DataFrame:
@@ -8591,9 +8673,18 @@ def collect_data(selected_season=None):
                 # que d'abandonner silencieusement le fichier (cf. cas Sarcelles U18).
                 _fallback_duration_df = players_duration_from_player_rows(d2, available_posts)
                 if _fallback_duration_df.empty:
+                    # Dernier recours : fichier de sauvetage temps de jeu (saisie
+                    # manuelle staff) — certains exports n'ont ni ligne d'équipe
+                    # ni poste renseigné sur aucune ligne (cf. audit saison 2526,
+                    # ~12 matchs U18F).
+                    _match_date = pd.to_datetime(date, format="%d-%m-%Y", errors="coerce")
+                    _fallback_duration_df = get_temps_jeu_rescue_for_match(
+                        load_temps_jeu_rescue(), _match_date, adv_label
+                    )
+                if _fallback_duration_df.empty:
                     _warn(f"Match: aucune ligne d'équipe ni donnée de temps de jeu exploitable dans {filename}")
                     continue
-                _warn(f"Match: {filename} — pas de ligne d'équipe, temps de jeu calculé depuis les lignes joueuses")
+                _warn(f"Match: {filename} — pas de ligne d'équipe, temps de jeu calculé depuis les lignes joueuses ou le fichier de sauvetage")
 
             mask_joueurs = ~d2["Row_clean"].str.contains("CORNER|COUP-FRANC|COUP FRANC|PENALTY|CARTON", na=False)
             mask_joueurs &= ~d2.index.isin(match.index)
@@ -13043,6 +13134,22 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     if check_permission(user_profile, "update_data", permissions) or check_permission(user_profile, "all", permissions):
         pass  # Boutons admin déplacés dans l'onglet Gestion → Administration
 
+    # Toujours garder une copie non-filtrée pour l'export, les comparaisons et le
+    # rapport tactique (relu directement depuis session_state ailleurs) — dérivée
+    # des paramètres reçus ici (collect_data() sans argument de saison = déjà
+    # toutes saisons), capturée AVANT toute ré-affectation de pfc_kpi/edf_kpi par
+    # le filtre saison ci-dessous. Recalculée à chaque rerun (un .copy() sur un
+    # DataFrame déjà en mémoire est peu coûteux) plutôt que mise en cache dans
+    # session_state : l'ancien cache ne se rafraîchissait que lorsque la saison de
+    # la barre latérale changeait de valeur, donc restait bloqué sur une saison
+    # filtrée (ex. après un test sur "2627") même en revenant exporter une autre
+    # saison — l'export/la comparaison se retrouvait alors filtré(e) deux fois et
+    # semblait avoir perdu des données.
+    pfc_kpi_all = pfc_kpi.copy() if isinstance(pfc_kpi, pd.DataFrame) else pd.DataFrame()
+    edf_kpi_all = edf_kpi.copy() if isinstance(edf_kpi, pd.DataFrame) else pd.DataFrame()
+    st.session_state["pfc_kpi_all"] = pfc_kpi_all
+    st.session_state["edf_kpi_all"] = edf_kpi_all
+
     # Filtrer par saison si nécessaire (collect_data déjà appelé dans main())
     if selected_saison != "Toutes les saisons":
         pfc_kpi, edf_kpi, _gps, _gpsw, _gps_match, _nr = collect_data(selected_saison)
@@ -13059,17 +13166,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         with st.sidebar.expander(f"⚠️ {n} avertissement{'s' if n > 1 else ''}", expanded=False):
             for w in _sys_warns:
                 st.caption(f"• {w}")
-
-    # Toujours garder une copie non-filtrée pour l'export et les comparaisons
-    if "pfc_kpi_all" not in st.session_state or selected_saison != st.session_state.get("_last_saison"):
-        pfc_kpi_all = pfc_kpi.copy() if isinstance(pfc_kpi, pd.DataFrame) else pd.DataFrame()
-        edf_kpi_all = edf_kpi.copy() if isinstance(edf_kpi, pd.DataFrame) else pd.DataFrame()
-        st.session_state["pfc_kpi_all"] = pfc_kpi_all
-        st.session_state["edf_kpi_all"] = edf_kpi_all
-        st.session_state["_last_saison"] = selected_saison
-    else:
-        pfc_kpi_all = st.session_state["pfc_kpi_all"]
-        edf_kpi_all = st.session_state["edf_kpi_all"]
 
     if player_name and pfc_kpi is not None and not pfc_kpi.empty and "Player" in pfc_kpi.columns:
         pfc_kpi = filter_data_by_player(pfc_kpi, player_name)
@@ -13289,12 +13385,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                     PARQUET_GPSM_PATH, PARQUET_EDF_PATH, PARQUET_META_PATH]:
                             if os.path.exists(_cp):
                                 os.remove(_cp)
-                        # Invalider le snapshot pfc_kpi_all/edf_kpi_all gardé en session —
-                        # sans ça, l'affichage reste bloqué sur les anciennes données même
-                        # après une sync complète, car ce snapshot n'est rafraîchi que
-                        # lorsque la saison sélectionnée change (_last_saison).
-                        for _k in ("pfc_kpi_all", "edf_kpi_all", "_last_saison"):
-                            st.session_state.pop(_k, None)
                         st.rerun()
 
                     if st.button("🔄 Synchroniser GPS Match", key="gestion_sync_gps_match"):
@@ -14919,8 +15009,6 @@ def main():
             st.session_state["_sync_thread_started"] = False
             st.session_state["_sync_done"] = True
             st.cache_data.clear()
-            for _k in ("pfc_kpi_all", "edf_kpi_all", "_last_saison"):
-                st.session_state.pop(_k, None)
         else:
             st.sidebar.caption("🔄 Mise à jour Drive en cours…")
 
