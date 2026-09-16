@@ -11,6 +11,7 @@ import io
 import re
 import csv
 import shutil
+import hashlib
 import threading
 import functools
 import unicodedata
@@ -8593,6 +8594,10 @@ def collect_data(selected_season=None):
     # ======================================================
     # PFC Matchs
     # ======================================================
+    _pfc_seen_hashes = set()  # détecte un même match uploadé deux fois sous des noms
+                               # différents (ex. "U19" et "U19F" du même export) — sans
+                               # ce garde-fou, les stats de chaque joueuse sont comptées
+                               # deux fois (cf. audit saison 2627, match AAS Sarcelles J1).
     for filename in fichiers:
         if not (filename.endswith(".csv") and "PFC" in filename):
             continue
@@ -8607,6 +8612,13 @@ def collect_data(selected_season=None):
             journee = parts[3]
             categorie = parts[4]
             date = parts[5]
+
+            with open(path, "rb") as _fh:
+                _file_hash = hashlib.md5(_fh.read()).hexdigest()
+            if _file_hash in _pfc_seen_hashes:
+                _warn(f"Match: {filename} ignoré — contenu identique à un fichier déjà traité pour ce match")
+                continue
+            _pfc_seen_hashes.add(_file_hash)
 
             data = pd.read_csv(path)
             if "Row" not in data.columns:
