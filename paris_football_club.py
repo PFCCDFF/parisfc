@@ -11964,7 +11964,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         _pjs = ('<script>function pr(){var w=window.open("","_blank","width=900,height=1200");'
                                 'w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">'
                                 '<style>@page{size:A4 portrait;margin:0}body{margin:0;background:#060F1A}</style>'
-                                '</head><body>' + '' + '</body></html>`);'
+                                '</head><body>' + _html.replace('`', '\\`') + '</body></html>`);'
                                 'w.document.close();setTimeout(()=>w.print(),800);}</script>'
                                 '<button onclick="pr()" style="background:#00A3E0;color:#060F1A;border:none;'
                                 'border-radius:4px;padding:8px 18px;font-family:Oswald,sans-serif;'
