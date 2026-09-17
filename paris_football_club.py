@@ -5113,6 +5113,37 @@ def standardize_gps_v2_export(path: str, filename: str) -> pd.DataFrame:
     return d
 
 
+def parse_gps_v2_header_name(name: str) -> dict:
+    """Extrait adversaire/journée depuis le champ "Name" de l'en-tête d'un export
+    GPS multi-sections (ex. "1 / J02 Paris FC - HAC 12/09/2026") — utile quand le
+    NOM DE FICHIER Drive ne suit aucune convention club (export brut d'un 2e capteur),
+    auquel cas parse_match_info_from_filename() ne peut rien en tirer."""
+    info = {"adversaire": "", "journee": ""}
+    if not name:
+        return info
+    j_m = re.search(r'\bJ0*(\d{1,2})\b', name, re.IGNORECASE)
+    if j_m:
+        info["journee"] = j_m.group(1).zfill(2)
+
+    # Retire le préfixe "N / " (index) puis "J14 " (journée) en tête, pour que la
+    # capture de l'adversaire n'avale pas ces tokens dans le cas "ADV - Paris FC".
+    core = re.sub(r'^\s*\d+\s*/\s*', '', name)
+    core = re.sub(r'^\s*J0*\d{1,2}\s+', '', core, flags=re.IGNORECASE)
+
+    date_suffix = r'(?:\s+\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4})?\s*$'
+    adv = None
+    m1 = re.search(r'Paris\s*FC\s*-\s*([A-Za-zÀ-ɏ][\w\s]*?)' + date_suffix, core, re.IGNORECASE)
+    if m1 and m1.group(1).strip():
+        adv = m1.group(1).strip()
+    if not adv:
+        m2 = re.search(r'([A-Za-zÀ-ɏ][\w\s]*?)\s*-\s*Paris\s*FC' + date_suffix, core, re.IGNORECASE)
+        if m2 and m2.group(1).strip():
+            adv = m2.group(1).strip()
+    if adv:
+        info["adversaire"] = re.sub(r'\s{2,}', ' ', adv).strip(" _-")[:40]
+    return info
+
+
 # ─── GPS MATCH ──────────────────────────────────────────────────────
 
 def is_gps_match_file(filename: str) -> bool:
@@ -5133,15 +5164,29 @@ def parse_match_info_from_filename(filename: str) -> dict:
     name = os.path.splitext(filename)[0]
     info = {"adversaire": "", "date": None, "journee": "", "label": name}
 
-    # Date : format DDMMYYYY ou DD_MM_YY à la fin
-    date_match = re.search(r'(\d{2})[_\-](\d{2})[_\-](\d{2,4})', name)
-    if date_match:
-        d, m, y = date_match.groups()
+    # Date : format DD_MM_YY(YY), DD-MM-YY(YY) ou DD.MM.YY(YY), isolé par des bornes
+    # non-numériques (sans quoi "2425 ... 08-12-2024" matchait à tort "25 ... 08"
+    # comme date — un préfixe de saison à 4 chiffres collé à la vraie date créait un
+    # faux positif). Plusieurs candidats sont possibles dans un même nom (ex. préfixe
+    # de saison ou numéro de journée adjacent, qui peuvent eux-mêmes matcher le motif
+    # DD_MM_YY par coïncidence) : on priorise l'année sur 4 chiffres (non ambiguë),
+    # puis le candidat le plus à droite dans le nom (la vraie date suit en général
+    # les préfixes numériques plutôt que les précéder), et on ne garde le résultat
+    # que s'il forme une date valide (sinon on retente avec le candidat suivant).
+    _date_candidates = [
+        (m.start(1), m.group(2), m.group(3), m.group(4))
+        for m in re.finditer(
+            r'(?=((?<!\d)(\d{2})[_\-.](\d{2})[_\-.](\d{2,4})(?!\d)))', name
+        )
+    ]
+    _date_candidates.sort(key=lambda c: (len(c[3]) == 4, c[0]), reverse=True)
+    for _, d, m, y in _date_candidates:
         y = "20" + y if len(y) == 2 else y
         try:
             info["date"] = pd.Timestamp(f"{y}-{m}-{d}")
+            break
         except Exception:
-            pass
+            continue
 
     # Journée : J0x ou J1x
     j_match = re.search(r'[_\-](J\d+)[_\-]', name, re.IGNORECASE)
@@ -5198,10 +5243,16 @@ def load_gps_match(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon,
         try:
             fname = os.path.basename(p)
 
+            _v2_name_info = None
             if is_multisection_gps_v2_file(p):
                 df = standardize_gps_v2_export(p, fname)
                 if df.empty:
                     continue
+                # Export brut d'un 2e capteur : le nom de fichier Drive ne suit pas
+                # forcément la convention club (ex. "2026_12-09-2026.csv", sans
+                # adversaire/journée) — le champ "Name" de l'en-tête, lui, les a.
+                _v2_header_name = parse_gps_v2_sections(p).get("header", {}).get("Name", "")
+                _v2_name_info = parse_gps_v2_header_name(_v2_header_name)
             else:
                 df = read_csv_auto(p)
 
@@ -5215,8 +5266,18 @@ def load_gps_match(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon,
                 else:
                     continue  # format inconnu
 
-            # Infos match depuis nom de fichier
+            # Infos match depuis nom de fichier, complétées par l'en-tête v2 si le
+            # nom de fichier n'a pas pu fournir l'adversaire/la journée.
             minfo = parse_match_info_from_filename(fname)
+            if _v2_name_info:
+                if not minfo["adversaire"] and _v2_name_info["adversaire"]:
+                    minfo["adversaire"] = _v2_name_info["adversaire"]
+                if not minfo["journee"] and _v2_name_info["journee"]:
+                    minfo["journee"] = _v2_name_info["journee"]
+                _date_str = minfo["date"].strftime("%d/%m/%Y") if minfo["date"] else ""
+                _parts = [x for x in [minfo["journee"], minfo["adversaire"], _date_str] if x]
+                if _parts:
+                    minfo["label"] = " · ".join(_parts)
             df["__match_label"] = minfo["label"]
             df["__adversaire"] = minfo["adversaire"]
             df["__journee"] = minfo["journee"]
@@ -6538,21 +6599,29 @@ def _get_match_context(df_tactic):
     ctx = {"timeline": tl, "pfc": "Paris FC",
            "adversaire": (adv_m.group(1) or adv_m.group(2) or "ADV").strip() if adv_m else "ADV"}
     if not pfc.empty:
-        scores = pfc["Score"].dropna().apply(lambda x: str(x).split(",")[0].strip()) if "Score" in pfc.columns else pd.Series(dtype=str)
-        sf = scores.iloc[-1] if not scores.empty else "0-0"
-        pts = sf.split("-")
-        ctx["score_pfc"]    = pts[0].strip() if len(pts)>=2 else "?"
-        ctx["score_adv"]    = pts[1].strip() if len(pts)>=2 else "?"
         ctx["lieu"]         = pfc["Lieu"].dropna().apply(lambda x: x.split(",")[0].strip()).iloc[0] if "Lieu" in pfc.columns and not pfc["Lieu"].dropna().empty else ""
         ctx["journee"]      = str(pfc["Journée"].dropna().apply(lambda x: str(x).split(",")[0]).iloc[0]) if "Journée" in pfc.columns and not pfc["Journée"].dropna().empty else ""
         ctx["competition"]  = pfc["Compétition"].dropna().apply(lambda x: x.split(",")[0].strip()).iloc[0] if "Compétition" in pfc.columns and not pfc["Compétition"].dropna().empty else ""
         ctx["systeme"]      = pfc["Système de Jeu PFC"].dropna().apply(lambda x: x.split(",")[0].strip()).mode().iloc[0] if "Système de Jeu PFC" in pfc.columns and not pfc["Système de Jeu PFC"].dropna().empty else ""
         adv_name = pfc["Teamersaire"].dropna().iloc[0] if "Teamersaire" in pfc.columns and not pfc["Teamersaire"].dropna().empty else ctx["adversaire"]
         ctx["adversaire"] = adv_name
-        adv_seq = len(df_tactic[df_tactic["Row"] == adv_name])
+        adv_rows = df_tactic[df_tactic["Row"] == adv_name]
+        adv_seq = len(adv_rows)
         total = len(pfc) + adv_seq
         ctx["poss_pfc"] = round(len(pfc)/total*100, 1) if total > 0 else 50.0
         ctx["poss_adv"] = round(100 - ctx["poss_pfc"], 1)
+        # Score : compté depuis les tags "But" (Issue d'action) plutôt que lu dans la
+        # colonne "Score" — celle-ci peut être remise à 0-0 par le tagger au changement
+        # de mi-temps (compteur par mi-temps, pas cumulé sur le match), ce qui faisait
+        # afficher le score de la 2e mi-temps seule comme si c'était le score final.
+        if "Issue d'action" in pfc.columns:
+            ctx["score_pfc"] = str(int(pfc["Issue d'action"].apply(lambda v: _tag_contains(v, "But")).sum()))
+        else:
+            ctx["score_pfc"] = "?"
+        if "Issue d'action" in adv_rows.columns:
+            ctx["score_adv"] = str(int(adv_rows["Issue d'action"].apply(lambda v: _tag_contains(v, "But")).sum()))
+        else:
+            ctx["score_adv"] = "?"
     else:
         ctx.update({"score_pfc":"?","score_adv":"?","lieu":"","journee":"","competition":"","systeme":"","poss_pfc":50.0,"poss_adv":50.0})
     return ctx
