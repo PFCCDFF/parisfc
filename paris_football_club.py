@@ -11437,11 +11437,12 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             # même rerun — un rerun explicite en plus doublerait juste le coût
                             # (recalcul de toute la page, onglets compris) sans rien apporter.
                             st.session_state["_presence_dialog_date"] = _pd_date
+                            st.session_state["_active_dialog_id"] = "presence"
 
             st.caption("🟢 Jour avec présence saisie — clique sur une date pour saisir/modifier la présence.")
 
             _pres_dialog_date = st.session_state.get("_presence_dialog_date")
-            if _pres_dialog_date:
+            if _pres_dialog_date and st.session_state.get("_active_dialog_id") == "presence":
                 _pres_all_players = load_presence_roster()
                 if not _pres_all_players:
                     # Repli : liste déduite des données de matchs/GPS tant qu'aucun fichier
@@ -11523,6 +11524,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 st.session_state.pop("_presence_dialog_date", None)
                                 st.session_state.pop("_presence_extra_names", None)
                                 st.session_state.pop("_presence_extra_names_date", None)
+                                st.session_state.pop("_active_dialog_id", None)
                                 st.rerun()
                             else:
                                 st.error("Échec de l'enregistrement (Supabase indisponible ?).")
@@ -11531,6 +11533,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             st.session_state.pop("_presence_dialog_date", None)
                             st.session_state.pop("_presence_extra_names", None)
                             st.session_state.pop("_presence_extra_names_date", None)
+                            st.session_state.pop("_active_dialog_id", None)
                             st.rerun()
 
                 _presence_dialog()
@@ -12182,8 +12185,9 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                         if st.button(_obj_eval_btn_label, key=f"objectifs_eval_btn_{_obj_sel}_{_obj_match_date_iso}_{_obj_eval_role}"):
                             st.session_state["_objectifs_eval_ctx"] = _obj_eval_ctx
+                            st.session_state["_active_dialog_id"] = "objectifs"
 
-                        if st.session_state.get("_objectifs_eval_ctx") == _obj_eval_ctx:
+                        if st.session_state.get("_objectifs_eval_ctx") == _obj_eval_ctx and st.session_state.get("_active_dialog_id") == "objectifs":
                             _obj_existing_notes = {}
                             if not _obj_evals.empty:
                                 _mine = _obj_evals[_obj_evals["evaluateur"] == _obj_eval_role]
@@ -12213,10 +12217,12 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                             _obj_eval_role, user_profile
                                         )
                                         st.session_state.pop("_objectifs_eval_ctx", None)
+                                        st.session_state.pop("_active_dialog_id", None)
                                         st.rerun()
                                 with _odb2:
                                     if st.button("Annuler", key="objectifs_eval_cancel", use_container_width=True):
                                         st.session_state.pop("_objectifs_eval_ctx", None)
+                                        st.session_state.pop("_active_dialog_id", None)
                                         st.rerun()
 
                             _objectifs_eval_dialog()
@@ -14520,11 +14526,12 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                 # naturel, le bloc dialog ci-dessous relit _med_dialog_date dans
                                 # ce même rerun (même raisonnement que pour Présence).
                                 st.session_state["_med_dialog_date"] = _md_date
+                                st.session_state["_active_dialog_id"] = "medical"
 
                 st.caption("🩺 Jour avec visite(s) médicale(s) — clique sur une date pour saisir/consulter.")
 
                 _med_dialog_date = st.session_state.get("_med_dialog_date")
-                if _med_dialog_date:
+                if _med_dialog_date and st.session_state.get("_active_dialog_id") == "medical":
                     _med_roster = _med_get_roster()
                     _med_date_iso = _med_dialog_date.isoformat()
 
@@ -14620,6 +14627,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         st.divider()
                         if st.button("Fermer", key="med_dialog_close"):
                             st.session_state.pop("_med_dialog_date", None)
+                            st.session_state.pop("_active_dialog_id", None)
                             st.rerun()
 
                     _medical_dialog()
