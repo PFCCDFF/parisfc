@@ -2569,12 +2569,22 @@ def sync_photos_from_drive(folder_id: str = None, local_folder: str = None):
     if downloaded > 0:
         pass  # photos sync count recorded silently
 
-@st.cache_resource(show_spinner=False)
+_drive_service_tls = threading.local()
+
 def authenticate_google_drive():
+    """Un service Drive par thread : googleapiclient/httplib2 n'est pas
+    thread-safe, un @st.cache_resource partagerait la même connexion HTTP
+    entre toutes les sessions/threads concurrents et pouvait corrompre le
+    tas (crashs SIGABRT/SIGSEGV aléatoires)."""
+    _svc = getattr(_drive_service_tls, "service", None)
+    if _svc is not None:
+        return _svc
     scopes = ["https://www.googleapis.com/auth/drive"]
     service_account_info = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
     creds = service_account.Credentials.from_service_account_info(service_account_info, scopes=scopes)
-    return build("drive", "v3", credentials=creds)
+    _svc = build("drive", "v3", credentials=creds)
+    _drive_service_tls.service = _svc
+    return _svc
 
 
 def _is_retryable_http_error(e: Exception) -> bool:
@@ -6197,6 +6207,12 @@ def load_tactical_files() -> list:
     search_dirs = [TACTICAL_FOLDER, "data/tactical"]
     seen = set()
 
+    # ── Pré-passe : dédoublonnage par match (date, journée, adversaire) ──
+    # Un renommage de catégorie sur Drive (ex. "U19" -> "U19F") laisse
+    # l'ancien fichier orphelin en local sans le supprimer — on ne garde
+    # que le fichier le plus récent par match, sinon le rapport individuel
+    # compile (et double) les données des deux fichiers du même match.
+    _candidates = []
     for folder in search_dirs:
         if not os.path.exists(folder):
             continue
@@ -6209,64 +6225,85 @@ def load_tactical_files() -> list:
             if full in seen:
                 continue
             seen.add(full)
+            _pinfo = parse_tactical_filename(f)
+            _key = (_pinfo.get("date"), _pinfo.get("journee"), _pinfo.get("adv_norm")) if _pinfo.get("date") is not None else full
             try:
-                df = read_csv_auto(full)
-                # Vérification : doit avoir Timeline et Action (colonnes tactiques)
-                if "Timeline" not in df.columns or "Action" not in df.columns:
-                    continue
-                info = parse_tactical_filename(f)
-
-                # ── Enrichissement depuis la colonne Timeline ──────────────────
-                _tl = str(df["Timeline"].dropna().iloc[0]) if not df["Timeline"].dropna().empty else ""
-                if _tl:
-                    _adv_m = re.search(r"paris\s*fc\s*[-–]\s*(.+)|(.+)\s*[-–]\s*paris\s*fc", _tl, re.IGNORECASE)
-                    if _adv_m:
-                        _adv = (_adv_m.group(1) or _adv_m.group(2) or "").strip()
-                        if _adv:
-                            info["adversaire"] = _adv
-                            info["adv_norm"]   = normalize_str(_adv)
-                    if not info["journee"]:
-                        _pj = re.search(r'P\d+J(\d{1,2})', _tl, re.IGNORECASE)
-                        _jm = re.search(r'\bJ(\d{1,2})\b', _tl, re.IGNORECASE)
-                        if _pj:   info["journee"] = _pj.group(1).zfill(2)
-                        elif _jm: info["journee"] = _jm.group(1).zfill(2)
-                    _comp_m = re.search(r'^([A-Za-z0-9]+(?:\s[A-Za-z0-9]+)?)\s+(?:P\d+)?J\d+', _tl, re.IGNORECASE)
-                    if _comp_m:
-                        info["competition"] = _comp_m.group(1).strip()
-
-                # ── Enrichissement prioritaire depuis colonnes CSV ─────────────
-                # Les colonnes Compétition, Journée, Teamersaire sont dans les
-                # lignes de l'adversaire (Row == nom_adversaire) — source fiable.
-                _adv_rows = df[df["Row"].notna() & ~df["Row"].isin({"START","PFC",""})] if "Row" in df.columns else pd.DataFrame()
-
-                # Compétition depuis colonne CSV (ex: "U19 Nat")
-                if "Compétition" in df.columns:
-                    _comp_vals = df["Compétition"].dropna().apply(lambda x: str(x).split(",")[0].strip())
-                    if not _comp_vals.empty:
-                        info["competition"] = _comp_vals.iloc[0]
-
-                # Journée depuis colonne CSV (prioritaire sur Timeline/filename)
-                if "Journée" in df.columns:
-                    _jour_vals = df["Journée"].dropna().apply(lambda x: str(x).split(",")[0].strip())
-                    if not _jour_vals.empty:
-                        try:
-                            info["journee"] = str(int(float(_jour_vals.iloc[0]))).zfill(2)
-                        except Exception:
-                            info["journee"] = _jour_vals.iloc[0].zfill(2)
-
-                # Adversaire depuis Teamersaire (valeur exacte du nom de l'équipe adverse)
-                if "Teamersaire" in df.columns:
-                    _team_vals = df["Teamersaire"].dropna().apply(lambda x: str(x).split(",")[0].strip())
-                    if not _team_vals.empty:
-                        _adv_csv = _team_vals.iloc[0]
-                        if _adv_csv:
-                            info["adversaire"] = _adv_csv
-                            info["adv_norm"]   = normalize_str(_adv_csv)
-
-                results.append({**info, "path": full, "filename": f, "df": df})
-            except Exception as e:
-                _warn(f"Tactique: impossible de lire {f} → {e}")
+                _mtime = os.path.getmtime(full)
+            except OSError:
                 continue
+            _candidates.append((full, f, _key, _mtime))
+
+    _best_by_key = {}
+    for full, f, key, mtime in _candidates:
+        _cur = _best_by_key.get(key)
+        if _cur is None or mtime > _cur[1]:
+            _best_by_key[key] = (full, mtime)
+    _files_to_keep = {v[0] for v in _best_by_key.values()}
+    for full, f, key, mtime in _candidates:
+        if full not in _files_to_keep:
+            _warn(f"Tactique: {f} ignoré — doublon d'un même match (fichier plus récent conservé)")
+
+    for full, f, key, mtime in _candidates:
+        if full not in _files_to_keep:
+            continue
+        try:
+            df = read_csv_auto(full)
+            # Vérification : doit avoir Timeline et Action (colonnes tactiques)
+            if "Timeline" not in df.columns or "Action" not in df.columns:
+                continue
+            info = parse_tactical_filename(f)
+
+            # ── Enrichissement depuis la colonne Timeline ──────────────────
+            _tl = str(df["Timeline"].dropna().iloc[0]) if not df["Timeline"].dropna().empty else ""
+            if _tl:
+                _adv_m = re.search(r"paris\s*fc\s*[-–]\s*(.+)|(.+)\s*[-–]\s*paris\s*fc", _tl, re.IGNORECASE)
+                if _adv_m:
+                    _adv = (_adv_m.group(1) or _adv_m.group(2) or "").strip()
+                    if _adv:
+                        info["adversaire"] = _adv
+                        info["adv_norm"]   = normalize_str(_adv)
+                if not info["journee"]:
+                    _pj = re.search(r'P\d+J(\d{1,2})', _tl, re.IGNORECASE)
+                    _jm = re.search(r'\bJ(\d{1,2})\b', _tl, re.IGNORECASE)
+                    if _pj:   info["journee"] = _pj.group(1).zfill(2)
+                    elif _jm: info["journee"] = _jm.group(1).zfill(2)
+                _comp_m = re.search(r'^([A-Za-z0-9]+(?:\s[A-Za-z0-9]+)?)\s+(?:P\d+)?J\d+', _tl, re.IGNORECASE)
+                if _comp_m:
+                    info["competition"] = _comp_m.group(1).strip()
+
+            # ── Enrichissement prioritaire depuis colonnes CSV ─────────────
+            # Les colonnes Compétition, Journée, Teamersaire sont dans les
+            # lignes de l'adversaire (Row == nom_adversaire) — source fiable.
+            _adv_rows = df[df["Row"].notna() & ~df["Row"].isin({"START","PFC",""})] if "Row" in df.columns else pd.DataFrame()
+
+            # Compétition depuis colonne CSV (ex: "U19 Nat")
+            if "Compétition" in df.columns:
+                _comp_vals = df["Compétition"].dropna().apply(lambda x: str(x).split(",")[0].strip())
+                if not _comp_vals.empty:
+                    info["competition"] = _comp_vals.iloc[0]
+
+            # Journée depuis colonne CSV (prioritaire sur Timeline/filename)
+            if "Journée" in df.columns:
+                _jour_vals = df["Journée"].dropna().apply(lambda x: str(x).split(",")[0].strip())
+                if not _jour_vals.empty:
+                    try:
+                        info["journee"] = str(int(float(_jour_vals.iloc[0]))).zfill(2)
+                    except Exception:
+                        info["journee"] = _jour_vals.iloc[0].zfill(2)
+
+            # Adversaire depuis Teamersaire (valeur exacte du nom de l'équipe adverse)
+            if "Teamersaire" in df.columns:
+                _team_vals = df["Teamersaire"].dropna().apply(lambda x: str(x).split(",")[0].strip())
+                if not _team_vals.empty:
+                    _adv_csv = _team_vals.iloc[0]
+                    if _adv_csv:
+                        info["adversaire"] = _adv_csv
+                        info["adv_norm"]   = normalize_str(_adv_csv)
+
+            results.append({**info, "path": full, "filename": f, "df": df})
+        except Exception as e:
+            _warn(f"Tactique: impossible de lire {f} → {e}")
+            continue
 
     return results
 
