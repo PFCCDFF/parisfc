@@ -6309,9 +6309,14 @@ def load_tactical_files() -> list:
             continue
         try:
             df = read_csv_auto(full)
-            # Vérification : doit avoir Timeline et Action (colonnes tactiques)
-            if "Timeline" not in df.columns or "Action" not in df.columns:
+            # Vérification : doit avoir Timeline et Row (colonnes Sportscode).
+            # "Action" n'existe que si des lignes joueuses ont été taguées : un
+            # match taggé uniquement collectivement (PFC / adversaire / transitions,
+            # ex. LOSC J3 26/27) n'a pas cette colonne mais doit rester visible.
+            if "Timeline" not in df.columns or "Row" not in df.columns:
                 continue
+            if "Action" not in df.columns:
+                df["Action"] = np.nan
             info = parse_tactical_filename(f)
 
             # ── Enrichissement depuis la colonne Timeline ──────────────────
