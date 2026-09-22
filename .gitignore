@@ -1,0 +1,20 @@
+# Secrets / config locale
+.env
+.env.*
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Sync / données locales (contient supabase_sync_state.json + fichiers tactiques téléchargés)
+data/
+
+# OS / éditeurs
+.DS_Store
+.vscode/
+.idea/
