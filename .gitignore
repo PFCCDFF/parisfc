@@ -13,8 +13,14 @@ env/
 
 # Sync / données locales (contient supabase_sync_state.json + fichiers tactiques téléchargés)
 data/
+tmp_*.csv
 
 # OS / éditeurs
 .DS_Store
 .vscode/
 .idea/
+
+# Outils IA locaux
+.claude/
+.agents/
+.superpowers/
