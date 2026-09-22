@@ -6673,6 +6673,16 @@ def compute_collective_report(df_tactic):
     if seq.empty:
         return {}
 
+    # Un fichier tagué uniquement joueuse par joueuse (aucune ligne collective "PFC")
+    # n'a pas de séquence à comparer : sans ce garde-fou, le fallback ci-dessus peut
+    # prendre une joueuse pour "l'adversaire" (comptage > 20 occurrences) et produire
+    # un faux rapport collectif — et la section zones plus bas (filtre MT2 sur un
+    # sous-DataFrame à 0 ligne) lève un KeyError côté pandas (le masque booléen vide
+    # sur un DataFrame vide fait disparaître les colonnes). Cf. audit Sarcelles J2 U23
+    # 26/27, tagué uniquement en individuel.
+    if seq[seq["Row"] == pfc_name].empty:
+        return {}
+
     for col in ["Issue d'action", "Type d'animation offensive", "Mode de circulation du ballon",
                 "Entrée dernier 1/3", "Zone Départ action", "Lancement de Possession", "Mi-temps"]:
         seq[col + "_c"] = seq[col].apply(_clean_tag) if col in seq.columns else None
