@@ -6498,7 +6498,13 @@ def compute_tactical_stats(df_tactic, player_name):
     _mt2_inst: set = set()
     if "Row" in df_tactic.columns and "Instance number" in df_tactic.columns and "Mi-temps" in df_tactic.columns:
         _pfc_mt = df_tactic[df_tactic["Row"] == "PFC"][["Instance number", "Mi-temps"]].copy()
-        _mt2_inst = set(_pfc_mt[_pfc_mt["Mi-temps"].apply(lambda x: "MT2" in str(x))]["Instance number"].tolist())
+        # Si aucune ligne "PFC" (fichier tagué uniquement joueuse par joueuse, cf. audit
+        # Sarcelles J2 U23 26/27), _pfc_mt est vide : un masque booléen vide appliqué à un
+        # DataFrame vide fait disparaître les colonnes côté pandas et lève un KeyError sur
+        # "Instance number" ci-dessous. On garde alors _mt2_inst vide (pas d'inversion MT2
+        # calculable sans ligne PFC de référence).
+        if not _pfc_mt.empty:
+            _mt2_inst = set(_pfc_mt[_pfc_mt["Mi-temps"].apply(lambda x: "MT2" in str(x))]["Instance number"].tolist())
 
     def _inst(r):
         try: return int(str(r.get("Instance number","")).split(",")[0].strip())
@@ -6767,9 +6773,13 @@ def compute_collective_report(df_tactic):
     _mt2_inst_zone = set()
     if "Instance number" in df_tactic.columns and "Mi-temps" in df_tactic.columns:
         _pfc_mt_zone = df_tactic[df_tactic["Row"] == pfc_name][["Instance number", "Mi-temps"]]
-        _mt2_inst_zone = set(
-            _pfc_mt_zone[_pfc_mt_zone["Mi-temps"].apply(lambda x: "MT2" in str(x))]["Instance number"].tolist()
-        )
+        # Garde-fou (voir compute_tactical_stats) : masque booléen vide sur DataFrame
+        # vide -> KeyError côté pandas. Normalement déjà écarté par le retour anticipé
+        # ci-dessus si aucune ligne pfc_name n'existe, mais on protège l'appel direct.
+        if not _pfc_mt_zone.empty:
+            _mt2_inst_zone = set(
+                _pfc_mt_zone[_pfc_mt_zone["Mi-temps"].apply(lambda x: "MT2" in str(x))]["Instance number"].tolist()
+            )
 
     def _zone_from_xy(r):
         try:
