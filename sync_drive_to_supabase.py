@@ -190,6 +190,15 @@ def upsert_session_gps(sb: Client, joueuse_id: str, capteur_id: str,
 # Upsert des données de match (tagging vidéo)
 # ------------------------------------------------------------
 
+def delete_evenements_match_existants(sb: Client, match_id: str) -> None:
+    existants = sb.table("evenements_match").select("id").eq("match_id", match_id).execute()
+    ids = [row["id"] for row in existants.data]
+    if not ids:
+        return
+    sb.table("evenement_tags").delete().in_("evenement_id", ids).execute()
+    sb.table("evenements_match").delete().eq("match_id", match_id).execute()
+
+
 def upsert_evenement_match(sb: Client, match_id: str, evenement: dict, tags: dict) -> str:
     payload = {"match_id": match_id, "tags": tags, **evenement}
     result = sb.table("evenements_match").insert(payload).execute()
@@ -306,6 +315,8 @@ def sync_fichier_match(sb: Client, filepath: str, categorie: str) -> None:
         journee=minfo["journee"],
     )
     adversaire = minfo["adversaire"] or "Inconnu"
+
+    delete_evenements_match_existants(sb, match_id)
 
     count = 0
     for _, row in df.iterrows():
