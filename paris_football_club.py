@@ -12863,15 +12863,43 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             import matplotlib.pyplot as _plt_acwr
                             import matplotlib.patches as _mpatches_acwr
 
-                            # ── Sélecteur nombre de semaines ──────────────
-                            _n_sem_tot = len(_weekly_acwr)
-                            _n_sem_sel = st.slider(
-                                "Nombre de semaines affichées",
-                                4, max(4, _n_sem_tot),
-                                min(8, _n_sem_tot),
-                                key="perf_charge_n_semaines"
+                            # ── Date de référence (fin de période) ────────
+                            # L'ACWR est calculé sur tout l'historique (charge
+                            # chronique correcte), puis on n'affiche que les
+                            # semaines/séances jusqu'à cette date.
+                            _d_min_ch = _weekly_acwr["DATE_FIN"].min().date()
+                            _d_max_ch = _weekly_acwr["DATE_FIN"].max().date()
+                            _charge_ref = st.date_input(
+                                "📅 Suivi de charge jusqu'au",
+                                value=_d_max_ch, min_value=_d_min_ch, max_value=_d_max_ch,
+                                format="DD/MM/YYYY",
+                                key=f"perf_charge_date_ref_{_pgps}",
+                                help="Affiche les semaines et séances précédant cette date "
+                                     "(nombre choisi avec les curseurs)."
                             )
-                            _weekly_disp = _weekly_acwr.tail(_n_sem_sel).copy()
+                            _charge_ref_ts = pd.Timestamp(_charge_ref)
+                            # Inclure la semaine ISO contenant la date de référence
+                            _weekly_upto = _weekly_acwr[
+                                _weekly_acwr["DATE_FIN"]
+                                < _charge_ref_ts - pd.Timedelta(days=_charge_ref_ts.weekday()) + pd.Timedelta(days=7)
+                            ]
+
+                            # ── Sélecteur nombre de semaines ──────────────
+                            _n_sem_tot = len(_weekly_upto)
+                            if _n_sem_tot > 4:
+                                # Clé liée au max pour éviter une valeur hors bornes
+                                # quand la date change ; la valeur choisie est conservée.
+                                _n_sem_pref = st.session_state.get("_perf_charge_n_sem_pref", 8)
+                                _n_sem_sel = st.slider(
+                                    "Nombre de semaines affichées",
+                                    4, _n_sem_tot,
+                                    max(4, min(_n_sem_pref, _n_sem_tot)),
+                                    key=f"perf_charge_n_semaines_{_n_sem_tot}"
+                                )
+                                st.session_state["_perf_charge_n_sem_pref"] = _n_sem_sel
+                            else:
+                                _n_sem_sel = _n_sem_tot
+                            _weekly_disp = _weekly_upto.tail(_n_sem_sel).copy()
                             _last = _weekly_disp.iloc[-1]
 
                             def _zone_color(v):
@@ -12887,7 +12915,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 return "🔴 Sur-charge"
 
                             # ── Métriques dernière semaine ─────────────────
-                            st.markdown("##### Dernière semaine enregistrée")
+                            st.markdown("##### Dernière semaine de la période")
                             _rc1, _rc2, _rc3 = st.columns(3)
                             _rc1.metric("📅 Semaine", _last["Label_semaine"])
                             _rc2.metric("📦 Charge totale (UA)", f"{_last['CHARGE_semaine']:.0f}")
@@ -13026,15 +13054,22 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             _dr_cat = _gr[_gr["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)].copy()
                             _dr_cat = ensure_date_column(_dr_cat)
                             _dr_cat = _dr_cat[_dr_cat["DATE"].notna()].sort_values("DATE")
+                            _dr_cat = _dr_cat[pd.to_datetime(_dr_cat["DATE"]).dt.normalize() <= _charge_ref_ts]
 
                             if _dr_cat.empty:
                                 st.info("Pas de données de séance exploitables pour la répartition par catégorie.")
                             else:
-                                _n_seances_cat = st.slider(
-                                    "Nombre de séances affichées",
-                                    3, max(3, len(_dr_cat)), min(8, len(_dr_cat)),
-                                    key="perf_charge_cat_n_seances"
-                                )
+                                if len(_dr_cat) > 3:
+                                    _n_seances_pref = st.session_state.get("_perf_charge_n_seances_pref", 8)
+                                    _n_seances_cat = st.slider(
+                                        "Nombre de séances affichées",
+                                        3, len(_dr_cat),
+                                        max(3, min(_n_seances_pref, len(_dr_cat))),
+                                        key=f"perf_charge_cat_n_seances_{len(_dr_cat)}"
+                                    )
+                                    st.session_state["_perf_charge_n_seances_pref"] = _n_seances_cat
+                                else:
+                                    _n_seances_cat = len(_dr_cat)
                                 _dr_cat_disp  = _dr_cat.tail(_n_seances_cat).copy()
                                 _last_row_cat = _dr_cat_disp.iloc[-1]
 
