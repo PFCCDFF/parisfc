@@ -12906,13 +12906,13 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             def _zone_color(v):
                                 if pd.isna(v): return "⚪"
                                 if v < 0.8:    return "🔵"
-                                if v <= 1.5:   return "🟢"
+                                if v <= 1.3:   return "🟢"
                                 return "🔴"
 
                             def _zone_label(v):
                                 if pd.isna(v): return "—"
                                 if v < 0.8:    return "🔵 Sous-charge"
-                                if v <= 1.5:   return "🟢 Zone optimale"
+                                if v <= 1.3:   return "🟢 Zone optimale"
                                 return "🔴 Sur-charge"
 
                             # ── Métriques dernière semaine ─────────────────
@@ -12975,9 +12975,9 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 _ax2_ch.tick_params(axis="y", colors="#C8D8E8", labelsize=8)
                                 _ax2_ch.spines[:].set_color("#1A2A3A")
 
-                                _ax2_ch.axhspan(0.8, 1.5, color="#22C55E", alpha=0.08, zorder=1)
+                                _ax2_ch.axhspan(0.8, 1.3, color="#22C55E", alpha=0.08, zorder=1)
                                 _ax2_ch.axhline(0.8, color="#22C55E", lw=0.8, ls="--", alpha=0.5)
-                                _ax2_ch.axhline(1.5, color="#EF4444", lw=0.8, ls="--", alpha=0.5)
+                                _ax2_ch.axhline(1.3, color="#EF4444", lw=0.8, ls="--", alpha=0.5)
 
                                 _ax2_ch.plot(_x_ch, _acwr_ra, color="#F4830A", lw=2,
                                              marker="o", ms=5, label="ACWR RA (Gabbett)", zorder=5)
@@ -12987,7 +12987,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 for _xi, (_ra, _ew) in enumerate(zip(_acwr_ra, _acwr_ew)):
                                     for _val, _col in [(_ra, "#F4830A"), (_ew, "#00A3E0")]:
                                         if not pd.isna(_val):
-                                            _fc = "#22C55E" if 0.8 <= _val <= 1.5 else ("#EF4444" if _val > 1.5 else "#3B82F6")
+                                            _fc = "#22C55E" if 0.8 <= _val <= 1.3 else ("#EF4444" if _val > 1.3 else "#3B82F6")
                                             _ax2_ch.scatter(_xi, _val, color=_fc, edgecolors=_col,
                                                             s=45, zorder=6, linewidths=1.5)
 
@@ -13000,7 +13000,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                     _mpatches_acwr.Patch(color="#1A3A5C", alpha=0.8, label="Charge hebdo"),
                                     _plt_acwr.Line2D([0],[0], color="#F4830A", lw=2, marker="o", ms=5, label="ACWR RA (Gabbett)"),
                                     _plt_acwr.Line2D([0],[0], color="#00A3E0", lw=2, marker="s", ms=5, label="ACWR EWMA (Murray)"),
-                                    _mpatches_acwr.Patch(color="#22C55E", alpha=0.15, label="Zone optimale (0.8–1.5)"),
+                                    _mpatches_acwr.Patch(color="#22C55E", alpha=0.15, label="Zone optimale (0.8–1.3)"),
                                 ]
                                 _ax2_ch.legend(handles=_handles_ch, loc="upper center",
                                                bbox_to_anchor=(0.5, 1.14), ncol=4,
@@ -13012,7 +13012,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 _plt_acwr.close(_fig_ch)
 
                             st.caption(
-                                "🔵 Sous-charge (<0.8) · 🟢 Zone optimale (0.8–1.5) · 🔴 Sur-charge / risque blessure (>1.5)  |  "
+                                "🔵 Sous-charge (<0.8) · 🟢 Zone optimale (0.8–1.3) · 🔴 Sur-charge / risque blessure (>1.3)  |  "
                                 "**RA** = Rolling Average (Gabbett, 2016) · **EWMA** = Exponentially Weighted Moving Average (Murray et al., 2016)"
                             )
 
