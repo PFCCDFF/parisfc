@@ -8237,21 +8237,18 @@ def ensure_date_column(df: pd.DataFrame) -> pd.DataFrame:
 
     d = df.copy()
 
-    src = None
+    # Combiner les colonnes candidates dans l'ordre de priorité : une ligne
+    # sans "Activity Date" (ex. exports GF1 déjà standardisés) garde son DATE.
+    s = pd.Series(pd.NaT, index=d.index, dtype="datetime64[ns]")
     for cand in ["Activity Date", "activity date", "DATE", "Date"]:
         if cand in d.columns:
-            src = cand
-            break
-
-    if src is not None:
-        s = pd.to_datetime(d[src], errors="coerce", utc=True)
-        try:
-            s = s.dt.tz_convert(None)
-        except Exception:
-            pass
-        d["DATE"] = s
-    else:
-        d["DATE"] = pd.NaT
+            parsed = pd.to_datetime(d[cand], errors="coerce", utc=True)
+            try:
+                parsed = parsed.dt.tz_convert(None)
+            except Exception:
+                pass
+            s = s.fillna(parsed)
+    d["DATE"] = s
 
     if "__source_file" in d.columns:
         missing = d["DATE"].isna()
@@ -8261,8 +8258,12 @@ def ensure_date_column(df: pd.DataFrame) -> pd.DataFrame:
                 .astype(str)
                 .str.extract(r"(\d{2}[\./-]\d{2}[\./-]\d{2,4})", expand=False)
             )
-            parsed = pd.to_datetime(extracted, dayfirst=True, errors="coerce")
-            d.loc[missing, "DATE"] = parsed.values
+            # Parsing élément par élément : les noms de fichiers mélangent
+            # "28.07.25" et "01-08-2026", un format unique inféré en rate une partie.
+            parsed = extracted.apply(
+                lambda v: pd.to_datetime(v, dayfirst=True, errors="coerce") if isinstance(v, str) else pd.NaT
+            )
+            d.loc[missing, "DATE"] = pd.to_datetime(parsed, errors="coerce").values
 
     d["DATE"] = pd.to_datetime(d["DATE"], errors="coerce", utc=True)
     try:
