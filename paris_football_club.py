@@ -24,6 +24,7 @@ import calendar as _calmod
 import numpy as np
 import pandas as pd
 import streamlit as st
+import logging
 import matplotlib
 matplotlib.use("Agg", force=True)  # Backend non-interactif — nécessaire mais PAS suffisant pour la
 # sécurité thread : pyplot garde un état global (figure/axes courantes) qui peut se corrompre si
@@ -47,6 +48,16 @@ import textwrap
 warnings.filterwarnings("ignore")
 
 MPL_LOCK = threading.RLock()  # RLock : certaines fonctions de graphique en appellent d'autres
+
+class _IgnoreBgSyncCtxWarning(logging.Filter):
+    """Masque le warning « missing ScriptRunContext » émis par le thread de sync
+    Drive en arrière-plan (pfc_bg_sync) : attendu et sans effet, il n'écrit
+    jamais dans st.session_state (signal par fichier, cf. _bg_sync)."""
+    def filter(self, record):
+        return not (threading.current_thread().name == "pfc_bg_sync"
+                    and "missing ScriptRunContext" in record.getMessage())
+
+logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").addFilter(_IgnoreBgSyncCtxWarning())
 
 
 def _mpl_safe(func):
@@ -1722,7 +1733,7 @@ def render_gps_concordance_ui(gps_match_df, tac_players: list):
         cols = st.columns([3, 3, 2])
         cols[0].markdown(f"`{gps_name}`")
         sel = cols[1].selectbox(
-            label="",
+            label=f"Correspondance tactique pour {gps_name}",
             options=tac_options,
             index=idx,
             key=f"gps_map_{gps_c}",
@@ -2142,7 +2153,7 @@ def _render_photo_picker(player_name: str, canon: str, photos_index: Dict[str, s
                     label,
                     key=f"pick_photo_{canon}_{fn}",
                     type=btn_type,
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     set_manual_photo(player_name, fn)
                     st.success(f"✅ Photo **{fn}** associée à **{player_name}**")
@@ -6057,7 +6068,7 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
             ax_r.spines["polar"].set_color("#1A2A3A"); ax_r.grid(color="#1A2A3A", linewidth=0.8)
             ax_r.legend(loc="upper right", bbox_to_anchor=(1.35, 1.15), fontsize=8,
                         facecolor="#0C1220", edgecolor="#1A2A3A", labelcolor="#C8D8E8")
-            fig_r.tight_layout(); st.pyplot(fig_r, use_container_width=True); plt.close(fig_r)
+            fig_r.tight_layout(); st.pyplot(fig_r, width="stretch"); plt.close(fig_r)
 
         with col_ec:
             st.markdown("**Écarts Coach − Joueuse par dimension**")
@@ -6145,7 +6156,7 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
             for sp in ["bottom","left"]: ax2.spines[sp].set_color("#1A2A3A")
 
             fig_ev.subplots_adjust(bottom=0.18, top=0.95, left=0.06, right=0.98, hspace=0.08)
-            st.pyplot(fig_ev, use_container_width=True); plt.close(fig_ev)
+            st.pyplot(fig_ev, width="stretch"); plt.close(fig_ev)
 
     # ══════════════════════════════════════════════════════════════════
     # VUE ÉQUIPE — heatmap écarts
@@ -6211,7 +6222,7 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
                     disp[["Moy. coach","Moy. joueuse","Écart"]].style
                     .background_gradient(subset=["Moy. coach"], cmap="Blues", vmin=1, vmax=5)
                     .background_gradient(subset=["Écart"], cmap="RdYlGn_r", vmin=-2, vmax=2),
-                    use_container_width=True
+                    width="stretch"
                 )
 
             with col_hm:
@@ -6239,7 +6250,7 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
                     cb = plt.colorbar(im, ax=ax_h, fraction=0.03, pad=0.04)
                     cb.ax.tick_params(colors="#6A8090", labelsize=7)
                     cb.set_label("Coach − Joueuse", color="#6A8090", fontsize=7)
-                    fig_h.tight_layout(); st.pyplot(fig_h, use_container_width=True); plt.close(fig_h)
+                    fig_h.tight_layout(); st.pyplot(fig_h, width="stretch"); plt.close(fig_h)
                 else:
                     st.info("Pas assez de paires Coach/Joueuse pour calculer les écarts.")
 
@@ -6252,7 +6263,7 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
             det["date"] = det["date"].dt.strftime("%d/%m/%Y")
             rn = {"date":"Date","joueur_label":"Joueuse","adversaire":"Adversaire","score_global_c":"Moy. coach"}
             rn.update({k+"_c": lbl+" (C)" for k,c,lbl in _EVAL_DIMS})
-            st.dataframe(det.rename(columns=rn), use_container_width=True, hide_index=True)
+            st.dataframe(det.rename(columns=rn), width="stretch", hide_index=True)
 
     if check_permission(user_profile, "all", permissions):
         if st.button("🔄 Recharger les évaluations", key="eval_reload_admin"):
@@ -7002,7 +7013,6 @@ def render_collective_report(report: dict, gps_stats: dict = None):
 
     # ── Bouton d'export PDF (A4 paysage) ─────────────────────────────────
     try:
-        import streamlit.components.v1 as _comp_coll
         _html_export = build_collective_report_html(report, gps_stats=gps_stats)
         _print_js = (
             '<script>function prColl(){var w=window.open("","_blank","width=1200,height=850");'
@@ -7013,7 +7023,7 @@ def render_collective_report(report: dict, gps_stats: dict = None):
             'font-size:13px;font-weight:700;cursor:pointer;margin:8px 0;">'
             '🖨️ Exporter en PDF (A4 paysage)</button>'
         )
-        _comp_coll.html(_print_js, height=55)
+        st.iframe(_print_js, height=55)
     except Exception:
         pass
 
@@ -7139,7 +7149,7 @@ def render_collective_report(report: dict, gps_stats: dict = None):
       with MPL_LOCK:
         st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Entrée dernier 1/3 (couloir)</div>", unsafe_allow_html=True)
         fig_e = build_entree_tiers_figure(report["entree_tiers"])
-        st.pyplot(fig_e, use_container_width=True)
+        st.pyplot(fig_e, width="stretch")
         plt.close(fig_e)
 
     # ── GPS Collectif — agrégat de toutes les joueuses trackées sur le match ──
@@ -7200,13 +7210,13 @@ def render_collective_report(report: dict, gps_stats: dict = None):
       with MPL_LOCK:
         fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
                                            "Récupération (%)", "RdYlGn_r", figsize=(2.6, 3.6), dpi=90)
-        st.pyplot(fig_r, use_container_width=False)
+        st.pyplot(fig_r, width="content")
         plt.close(fig_r)
     with _zg2:
       with MPL_LOCK:
         fig_p = build_zone_heatmap_figure(report["grid_perte"], report["zone_rows"], report["zone_cols"],
                                            "Perte (%)", "RdYlGn_r", figsize=(2.6, 3.6), dpi=90)
-        st.pyplot(fig_p, use_container_width=False)
+        st.pyplot(fig_p, width="content")
         plt.close(fig_p)
 
 
@@ -10121,7 +10131,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                    edgecolor="#1A2A3A", labelcolor="#C8D8E8", loc="upper left")
 
         fig.subplots_adjust(bottom=0.28, top=0.95, left=0.10, right=0.86)
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width="stretch")
         plt.close(fig)
 
     # ── Sprints & vitesse max ──────────────────────────────────────
@@ -10160,7 +10170,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
         lines2, labs2 = ax2b.get_legend_handles_labels()
         ax2.legend(lines1+lines2, labs1+labs2, fontsize=8, facecolor="#0C1220", edgecolor="#1A2A3A", labelcolor="#C8D8E8")
         fig2.subplots_adjust(bottom=0.28, top=0.95, left=0.08, right=0.93)
-        st.pyplot(fig2, use_container_width=True)
+        st.pyplot(fig2, width="stretch")
         plt.close(fig2)
 
     # ── Plages de vitesse (stacked) ────────────────────────────────
@@ -10180,7 +10190,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
         fig3 = _make_match_bar_chart(labels,
             [(_col(k), l, c) for k,l,c in avail_speed],
             "Distance (m)", "m", figsize=(12, 3.5), stacked=True)
-        st.pyplot(fig3, use_container_width=True)
+        st.pyplot(fig3, width="stretch")
         plt.close(fig3)
 
     # ── Accélérations / Décélérations ─────────────────────────────
@@ -10199,7 +10209,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
         fig4 = _make_match_bar_chart(labels,
             [(_col(k), l, c) for k,l,c in avail_ad],
             "Nombre", "nb", figsize=(12, 3.5))
-        st.pyplot(fig4, use_container_width=True)
+        st.pyplot(fig4, width="stretch")
         plt.close(fig4)
 
     # ── Tableau détaillé ──────────────────────────────────────────
@@ -10222,7 +10232,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
         disp = dm[show_cols_m].rename(columns=rename_display)
         if "DATE" in disp.columns:
             disp = disp.sort_values("DATE", ascending=False)
-        st.dataframe(disp, use_container_width=True)
+        st.dataframe(disp, width="stretch")
 
     # ── Section Technico-Tactique ──────────────────────────────────
     if tactical_files:
@@ -10341,7 +10351,6 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                     )
 
                     # Générer et afficher le rapport HTML pour la joueuse sélectionnée
-                    import streamlit.components.v1 as _components
                     gps_match_df = st.session_state.get("gps_match_df", pd.DataFrame())
                     gps_summary = get_gps_match_summary_for_player(
                         gps_match_df,
@@ -10427,7 +10436,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                         radar_b64=_tac_radar_b64,
                         gps_match_df=gps_match_df,
                     )
-                    _components.html(html_report, height=1120, scrolling=False)
+                    st.iframe(html_report, height=1120)
 
                 # Données brutes en expander (optionnel)
                 with st.expander("📋 Données tactiques brutes", expanded=False):
@@ -10440,7 +10449,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                         _mask  = df_tactic["Row"].dropna().apply(
                             lambda x: normalize_str(str(x)) == _pnorm or _pnorm in normalize_str(str(x)))
                         df_disp = df_tactic[_mask][show_tac_cols] if show_tac_cols else df_tactic[_mask]
-                    st.dataframe(df_disp, use_container_width=True)
+                    st.dataframe(df_disp, width="stretch")
 
     if is_admin and DRIVE_GPS_MATCH_FOLDER_ID:
         st.divider()
@@ -11223,7 +11232,6 @@ table {{ width: 100%; border-collapse: collapse; }}
 def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                              player_name, user_profile, permissions, role=None):
     """Page Performance unifiée — données chargées une seule fois."""
-    import streamlit.components.v1 as _comp_perf
 
     if role is None:
         role = get_user_role(user_profile, permissions)
@@ -11289,7 +11297,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                 _nc1, _nc2, _nc3, _nc4 = st.columns([1, 2, 3, 1])
                 with _nc1:
-                    if st.button("◀", key="cal_prev_month", use_container_width=True):
+                    if st.button("◀", key="cal_prev_month", width="stretch"):
                         _m, _y = st.session_state["_cal_month"] - 1, st.session_state["_cal_year"]
                         if _m < 1:
                             _m, _y = 12, _y - 1
@@ -11310,7 +11318,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         unsafe_allow_html=True
                     )
                 with _nc4:
-                    if st.button("▶", key="cal_next_month", use_container_width=True):
+                    if st.button("▶", key="cal_next_month", width="stretch"):
                         _m, _y = st.session_state["_cal_month"] + 1, st.session_state["_cal_year"]
                         if _m > 12:
                             _m, _y = 1, _y + 1
@@ -11345,7 +11353,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 if st.button(
                                     f"🟢 {_day}", key=f"cal_day_{_d.isoformat()}",
                                     type="primary" if _is_sel else "secondary",
-                                    help=f"{_n} joueuse(s)", use_container_width=True,
+                                    help=f"{_n} joueuse(s)", width="stretch",
                                 ):
                                     st.session_state["_cal_selected_date"] = _d
                                     st.rerun()
@@ -11402,7 +11410,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             .format(_fmt_agg)
                             .apply(monitoring_heatmap_styles, subset=_num_cols_agg)
                         )
-                        st.dataframe(styled_agg, use_container_width=True, hide_index=True)
+                        st.dataframe(styled_agg, width="stretch", hide_index=True)
                         st.markdown(MONITORING_HEATMAP_LEGEND, unsafe_allow_html=True)
                         st.caption(
                             "Total équipe = somme des joueuses présentes (max pour vitesse max / accél. max) · "
@@ -11412,7 +11420,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     with st.expander("Voir le détail par joueuse"):
                         _detail_cols = ["Player"] + [c for c in MONITORING_ALL_COLS if c in _day_df.columns]
                         _detail_df = _day_df[_detail_cols].rename(columns={"Player": "Joueuse", **MONITORING_ALL_LABELS})
-                        st.dataframe(_detail_df, use_container_width=True, hide_index=True)
+                        st.dataframe(_detail_df, width="stretch", hide_index=True)
 
         with _ent_sub_presence:
             with st.expander("📋 Effectif (liste des joueuses)"):
@@ -11471,7 +11479,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
             _pnc1, _pnc2, _pnc3, _pnc4 = st.columns([1, 2, 3, 1])
             with _pnc1:
-                if st.button("◀", key="pres_cal_prev_month", use_container_width=True):
+                if st.button("◀", key="pres_cal_prev_month", width="stretch"):
                     _m, _y = st.session_state["_pres_cal_month"] - 1, st.session_state["_pres_cal_year"]
                     if _m < 1:
                         _m, _y = 12, _y - 1
@@ -11492,7 +11500,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     unsafe_allow_html=True
                 )
             with _pnc4:
-                if st.button("▶", key="pres_cal_next_month", use_container_width=True):
+                if st.button("▶", key="pres_cal_next_month", width="stretch"):
                     _m, _y = st.session_state["_pres_cal_month"] + 1, st.session_state["_pres_cal_year"]
                     if _m > 12:
                         _m, _y = 1, _y + 1
@@ -11525,7 +11533,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         if st.button(
                             f"{'🟢 ' if _has_data else ''}{_pday}", key=f"pres_day_{_pd_date.isoformat()}",
                             type="primary" if _is_sel else "secondary",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             # Pas de st.rerun() ici : le clic déclenche déjà un rerun naturel,
                             # et le bloc dialog plus bas relit _presence_dialog_date dans CE
@@ -11603,7 +11611,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         _pres_new_name = st.text_input("Ajouter une joueuse", key=f"pres_new_name_{_pres_date_iso}")
                     with _padd2:
                         st.markdown("<div style='height:1.75em'></div>", unsafe_allow_html=True)
-                        if st.button("➕ Ajouter", key=f"pres_add_name_{_pres_date_iso}", use_container_width=True):
+                        if st.button("➕ Ajouter", key=f"pres_add_name_{_pres_date_iso}", width="stretch"):
                             _clean_name = _pres_new_name.strip()
                             if _clean_name and _clean_name not in _roster:
                                 st.session_state["_presence_extra_names"].append(_clean_name)
@@ -11614,7 +11622,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     st.divider()
                     _pb1, _pb2 = st.columns(2)
                     with _pb1:
-                        if st.button("💾 Enregistrer", type="primary", key=f"pres_save_{_pres_date_iso}", use_container_width=True):
+                        if st.button("💾 Enregistrer", type="primary", key=f"pres_save_{_pres_date_iso}", width="stretch"):
                             if save_presence(_pres_date_iso, _statuts):
                                 st.session_state.pop("_presence_dialog_date", None)
                                 st.session_state.pop("_presence_extra_names", None)
@@ -11624,7 +11632,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             else:
                                 st.error("Échec de l'enregistrement (Supabase indisponible ?).")
                     with _pb2:
-                        if st.button("Annuler", key=f"pres_cancel_{_pres_date_iso}", use_container_width=True):
+                        if st.button("Annuler", key=f"pres_cancel_{_pres_date_iso}", width="stretch"):
                             st.session_state.pop("_presence_dialog_date", None)
                             st.session_state.pop("_presence_extra_names", None)
                             st.session_state.pop("_presence_extra_names_date", None)
@@ -11843,7 +11851,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         if _radar_result is not None:
                           with MPL_LOCK:
                             fig_r, _top_txt, _low_txt = _radar_result
-                            st.pyplot(fig_r, use_container_width=True)
+                            st.pyplot(fig_r, width="stretch")
                             plt.close(fig_r)
                             st.markdown(
                                 f"<div style='font-size:12px;color:#C8D8E8;margin-top:4px;'>✅ <b>Forces :</b> {_top_txt}</div>"
@@ -11895,7 +11903,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 _perf_player, _p2)
                             if fig_c:
                               with MPL_LOCK:
-                                st.pyplot(fig_c, use_container_width=True); plt.close(fig_c)
+                                st.pyplot(fig_c, width="stretch"); plt.close(fig_c)
 
                     elif "EDF" in _perf_compare:
                         _edf_f = edf_kpi[edf_kpi["Poste"].astype(str).str.contains("EDF", na=False)] \
@@ -11919,7 +11927,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                         exclude_creativity=True)
                                     if fig_e:
                                       with MPL_LOCK:
-                                        st.pyplot(fig_e, use_container_width=True); plt.close(fig_e)
+                                        st.pyplot(fig_e, width="stretch"); plt.close(fig_e)
                                 else:
                                     st.info("Colonnes insuffisantes pour la comparaison.")
                         else:
@@ -11952,7 +11960,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                         exclude_creativity=True)
                                     if fig_a:
                                       with MPL_LOCK:
-                                        st.pyplot(fig_a, use_container_width=True); plt.close(fig_a)
+                                        st.pyplot(fig_a, width="stretch"); plt.close(fig_a)
                                 else:
                                     st.info("Colonnes insuffisantes pour la comparaison.")
                         else:
@@ -12061,7 +12069,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             _mr_tpl_name = st.text_input("Nom du template", key="match_report_tpl_name")
                         with _mr_tc2:
                             st.markdown("<div style='height:1.75em'></div>", unsafe_allow_html=True)
-                            if st.button("💾 Enregistrer", key="match_report_tpl_save", use_container_width=True):
+                            if st.button("💾 Enregistrer", key="match_report_tpl_save", width="stretch"):
                                 if _mr_tpl_name.strip():
                                     _mr_templates[_mr_tpl_name.strip()] = _mr_new_sel
                                     if save_match_report_templates(_mr_templates):
@@ -12107,8 +12115,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 'border-radius:4px;padding:8px 18px;font-family:Oswald,sans-serif;'
                                 'font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px;">'
                                 '\U0001f5a8\ufe0f Imprimer / A4</button>')
-                        _comp_perf.html(_pjs, height=55)
-                        _comp_perf.html(_html, height=1120, scrolling=False)
+                        st.iframe(_pjs, height=55)
+                        st.iframe(_html, height=1120)
 
     # ══════════════════════════════════
     # TAB — SUIVI DE LA PERFORMANCE — onglets à plat (Séances, Match,
@@ -12268,7 +12276,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                     "Écart": abs(_nj - _nc) if pd.notna(_nj) and pd.notna(_nc) else "—",
                                 })
                             if _comp_rows:
-                                st.dataframe(pd.DataFrame(_comp_rows), hide_index=True, use_container_width=True)
+                                st.dataframe(pd.DataFrame(_comp_rows), hide_index=True, width="stretch")
                             else:
                                 st.caption("Aucune évaluation pour ce match.")
                         else:
@@ -12306,7 +12314,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 st.divider()
                                 _odb1, _odb2 = st.columns(2)
                                 with _odb1:
-                                    if st.button("💾 Enregistrer", type="primary", key="objectifs_eval_save", use_container_width=True):
+                                    if st.button("💾 Enregistrer", type="primary", key="objectifs_eval_save", width="stretch"):
                                         save_objectifs_evaluations(
                                             _new_notes, _obj_sel, _obj_match_date_iso, _obj_match_sel_label,
                                             _obj_eval_role, user_profile
@@ -12315,7 +12323,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                         st.session_state.pop("_active_dialog_id", None)
                                         st.rerun()
                                 with _odb2:
-                                    if st.button("Annuler", key="objectifs_eval_cancel", use_container_width=True):
+                                    if st.button("Annuler", key="objectifs_eval_cancel", width="stretch"):
                                         st.session_state.pop("_objectifs_eval_ctx", None)
                                         st.session_state.pop("_active_dialog_id", None)
                                         st.rerun()
@@ -12415,7 +12423,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         if not _team_ref_s.empty:
                             _fig_profile_s = monitoring_profile_bars(_row_s, _team_ref_s, "moyenne équipe")
                             if _fig_profile_s:
-                                st.plotly_chart(_fig_profile_s, use_container_width=True)
+                                st.plotly_chart(_fig_profile_s, width="stretch")
                                 st.caption("Base 100 = moyenne équipe du jour | valeur brute sur chaque barre")
                             else:
                                 st.info("Pas assez de données pour calculer le profil vs équipe.")
@@ -12425,7 +12433,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         with st.expander("Voir les données détaillées"):
                             _sc_raw = [c for c in ["DATE", "Distance (m)", "Distance HID (>13 km/h)",
                                 "Sprints_23", "Vitesse max (km/h)", "CHARGE", "RPE"] if c in _dr.columns]
-                            st.dataframe(_dr[_sc_raw], use_container_width=True)
+                            st.dataframe(_dr[_sc_raw], width="stretch")
 
     with _st_match:
                     # ── Données GPS match pour la joueuse ─────────────────
@@ -12664,7 +12672,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                             spine.set_edgecolor("#1A2A3A")
                                         _fig_sp.tight_layout()
                                         st.markdown("##### Répartition par plage de vitesse")
-                                        st.pyplot(_fig_sp, use_container_width=True)
+                                        st.pyplot(_fig_sp, width="stretch")
                                         _plt_m.close(_fig_sp)
 
                                     # ── 2 panneaux : acc/déc + HID ────────────
@@ -12740,7 +12748,6 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                             player_name=_pgps,
                                             match_label=_sel_labels[0]
                                         )
-                                        import streamlit.components.v1 as _cmp_pdf
                                         _print_js = (
                                             '<script>'
                                             'function printGpsReport(){'
@@ -12757,7 +12764,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                             '🖨️ Exporter en PDF (A4)'
                                             '</button>'
                                         )
-                                        _cmp_pdf.html(_print_js, height=50)
+                                        st.iframe(_print_js, height=50)
                                     except Exception as _pe:
                                         st.warning(f"Export PDF indisponible : {_pe}")
 
@@ -12795,7 +12802,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                                 _comp_data[f"{lbl} ({unit})"] = _vals
 
                                         _df_comp = pd.DataFrame(_comp_data).set_index("Match")
-                                        st.dataframe(_df_comp, use_container_width=True)
+                                        st.dataframe(_df_comp, width="stretch")
 
                                         # Graphique barres groupées
                                         _n_kpis = len(_sel_kpis)
@@ -12846,7 +12853,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                                 spine.set_edgecolor("#1A2A3A")
 
                                         _fig_c.tight_layout()
-                                        st.pyplot(_fig_c, use_container_width=True)
+                                        st.pyplot(_fig_c, width="stretch")
                                         _plt_c.close(_fig_c)
 
     with _st_charge:
@@ -13008,7 +13015,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                                edgecolor="#1A2A3A", labelcolor="#C8D8E8")
 
                                 _fig_ch.tight_layout(rect=[0, 0, 1, 0.96])
-                                st.pyplot(_fig_ch, use_container_width=True)
+                                st.pyplot(_fig_ch, width="stretch")
                                 _plt_acwr.close(_fig_ch)
 
                             st.caption(
@@ -13034,7 +13041,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 _tbl_ch[_c] = _tbl_ch[_c].apply(lambda v: f"{v:.1f}" if not pd.isna(v) else "—")
                             for _c in ["ACWR RA", "ACWR EWMA"]:
                                 _tbl_ch[_c] = _tbl_ch[_c].apply(lambda v: f"{v:.2f}" if not pd.isna(v) else "—")
-                            st.dataframe(_tbl_ch.reset_index(drop=True), use_container_width=True, hide_index=True)
+                            st.dataframe(_tbl_ch.reset_index(drop=True), width="stretch", hide_index=True)
 
                             st.info(
                                 "**Interprétation** : La charge utilisée est basée sur la Distance (proxy) ou le produit RPE × Durée (UA). "
@@ -13116,7 +13123,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                         .format(_hm_fmt)
                                         .apply(monitoring_heatmap_styles, subset=_hm_num_cols)
                                     )
-                                    st.dataframe(_styled_hm, use_container_width=True, hide_index=True)
+                                    st.dataframe(_styled_hm, width="stretch", hide_index=True)
                                     st.markdown(MONITORING_HEATMAP_LEGEND, unsafe_allow_html=True)
 
     with _st_params:
@@ -13211,7 +13218,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     _tpl_name_input = st.text_input("Nom du template", key="fiche_tpl_name")
                 with _tc2:
                     st.markdown("<div style='height:1.75em'></div>", unsafe_allow_html=True)
-                    if st.button("💾 Enregistrer", key="fiche_tpl_save", use_container_width=True):
+                    if st.button("💾 Enregistrer", key="fiche_tpl_save", width="stretch"):
                         if _tpl_name_input.strip():
                             _fiche_templates[_tpl_name_input.strip()] = _new_sel
                             if save_fiche_templates(_fiche_templates):
@@ -13344,8 +13351,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 st.caption("💡 Ouvre le fichier dans ton navigateur puis fais **Fichier → Imprimer** (Ctrl+P) pour exporter en PDF.")
                 st.divider()
                 # Aperçu inline
-                import streamlit.components.v1 as _cmp_fiche
-                _cmp_fiche.html(_fiche_cached, height=900, scrolling=True)
+                st.iframe(_fiche_cached, height=900)
 
 
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
@@ -13518,7 +13524,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             ref_df = list(ref_df.values())[0] if ref_df else pd.DataFrame()
                         if isinstance(ref_df, pd.DataFrame) and not ref_df.empty:
                             st.caption(f"📁 Fichier : `{REFERENTIEL_FILENAME}` — {len(ref_df)} joueuses")
-                            st.dataframe(ref_df, use_container_width=True)
+                            st.dataframe(ref_df, width="stretch")
                         else:
                             st.warning("Référentiel vide ou illisible.")
                     except Exception as e:
@@ -13530,7 +13536,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 name_report_df = st.session_state.get("name_report_df", pd.DataFrame())
                 if name_report_df is not None and not name_report_df.empty:
                     with st.expander(f"⚠️ Rapport de concordance noms ({len(name_report_df)} entrées)", expanded=False):
-                        st.dataframe(name_report_df, use_container_width=True)
+                        st.dataframe(name_report_df, width="stretch")
 
             # ── Profils & permissions ─────────────────────────────────────
             with tab_perms:
@@ -13545,7 +13551,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         })
                     perms_df = pd.DataFrame(rows)
                     st.caption(f"{len(perms_df)} profil(s) chargé(s) depuis `{PERMISSIONS_FILENAME}`")
-                    st.dataframe(perms_df, use_container_width=True)
+                    st.dataframe(perms_df, width="stretch")
                 else:
                     st.info("Aucune permission chargée.")
 
@@ -14023,7 +14029,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                                     _gax.set_ylim(-0.8, 1.1)
                                                     _gax.axis("off")
                                                     _gfig.subplots_adjust(top=1, bottom=0, left=0, right=1)
-                                                    st.pyplot(_gfig, use_container_width=True)
+                                                    st.pyplot(_gfig, width="stretch")
                                                     plt.close(_gfig)
                                                     st.caption(f"Moyenne sur {_n_evals} évaluation{'s' if _n_evals > 1 else ''}")
                                 else:
@@ -14080,13 +14086,13 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         if _radar_result is not None:
                                           with MPL_LOCK:
                                             fig = _radar_result[0] if isinstance(_radar_result, tuple) else _radar_result
-                                            st.pyplot(fig, use_container_width=True)
+                                            st.pyplot(fig, width="stretch")
                                             plt.close(fig)
                                     except Exception as e:
                                         st.warning(f"Radar indisponible : {e}")
 
                                     with st.expander("Voir les données agrégées"):
-                                        st.dataframe(aggregated, use_container_width=True)
+                                        st.dataframe(aggregated, width="stretch")
 
                     with tab_edf:
                         st.subheader("Comparaison avec le référentiel EDF")
@@ -14140,7 +14146,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                     )
                                     if fig is not None:
                                       with MPL_LOCK:
-                                        st.pyplot(fig, use_container_width=True)
+                                        st.pyplot(fig, width="stretch")
                                         plt.close(fig)  # libère la mémoire
                                     else:
                                         st.info("Impossible de générer le radar de comparaison.")
@@ -14208,7 +14214,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         "__name_status", "__source_file"
                                     ] if c in d.columns]
 
-                                    st.dataframe(d.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
+                                    st.dataframe(d.sort_values("DATE", ascending=False)[show_cols], width="stretch")
 
                                 with tab_week_g:
                                     tmp = dgps.copy()
@@ -14233,7 +14239,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         if summary is None or summary.empty:
                                             st.info("Aucune donnée sur cette fenêtre de 7 jours.")
                                         else:
-                                            st.dataframe(summary, use_container_width=True)
+                                            st.dataframe(summary, width="stretch")
 
                                             with st.expander("Voir le détail (lignes brutes sur la période 7 jours)"):
                                                 show_cols = [c for c in [
@@ -14244,14 +14250,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                                     "CHARGE", "RPE",
                                                     "__name_status", "__source_file"
                                                 ] if c in df_7j.columns]
-                                                st.dataframe(df_7j.sort_values("DATE", ascending=False)[show_cols], use_container_width=True)
+                                                st.dataframe(df_7j.sort_values("DATE", ascending=False)[show_cols], width="stretch")
 
                                             if gps_weekly is not None and not gps_weekly.empty and "SEMAINE" in gps_weekly.columns:
                                                 st.divider()
                                                 st.caption("Vue hebdomadaire (somme par semaine ISO)")
                                                 dw = gps_weekly[gps_weekly["Player"].astype(str) == str(resolved_player)].copy()
                                                 if not dw.empty:
-                                                    st.dataframe(dw.sort_values("SEMAINE"), use_container_width=True)
+                                                    st.dataframe(dw.sort_values("SEMAINE"), width="stretch")
 
                                 with tab_graph_g:
                                     dg = dgps.copy()
@@ -14276,7 +14282,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                         if summary_md is None or summary_md.empty:
                                             st.info("Aucune donnée sur cette fenêtre de 7 jours.")
                                         else:
-                                            st.dataframe(summary_md, use_container_width=True)
+                                            st.dataframe(summary_md, width="stretch")
                                             try:
                                                 default_lines = [c for c in [
                                                     "Moyenne de Distance (m)",
@@ -14294,7 +14300,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                                 fig = plot_gps_md_graph(summary_md, selected_lines=selected_lines)
                                                 if fig is not None:
                                                   with MPL_LOCK:
-                                                    st.pyplot(fig, use_container_width=True)
+                                                    st.pyplot(fig, width="stretch")
                                                     plt.close(fig)  # libère la mémoire
                                             except Exception as e:
                                                 st.warning(f"Graphique indisponible : {e}")
@@ -14394,9 +14400,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
                     _pt_saut = st.date_input("Semaine du", format="DD/MM/YYYY", key="pt_lundi_input")
                     _pt_b1, _pt_b2 = st.columns(2)
-                    _pt_b1.button("◀ Semaine précédente", key="pt_wk_prev", use_container_width=True,
+                    _pt_b1.button("◀ Semaine précédente", key="pt_wk_prev", width="stretch",
                                   on_click=_pt_decale_semaine, args=(-1,))
-                    _pt_b2.button("Semaine suivante ▶", key="pt_wk_next", use_container_width=True,
+                    _pt_b2.button("Semaine suivante ▶", key="pt_wk_next", width="stretch",
                                   on_click=_pt_decale_semaine, args=(1,))
 
                     _pt_lundi = _pt_saut - timedelta(days=_pt_saut.weekday())
@@ -14464,7 +14470,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                 font=dict(color="#C8D8E8"),
                             )
                             _pt_fig.update_xaxes(tickformat="%d/%m")
-                            st.plotly_chart(_pt_fig, use_container_width=True)
+                            st.plotly_chart(_pt_fig, width="stretch")
 
                             st.markdown("#### Récapitulatif de la saison")
                             _pt_recap = (
@@ -14476,7 +14482,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             )
                             _pt_recap["Total"] = _pt_recap.sum(axis=1)
                             _pt_recap = _pt_recap.reset_index().rename(columns={"joueuse": "Joueuse"})
-                            st.dataframe(_pt_recap, use_container_width=True, hide_index=True)
+                            st.dataframe(_pt_recap, width="stretch", hide_index=True)
 
                 # ── Gestion des RDV ──────────────────────────────────────────
                 with _pt_tab_gestion:
@@ -14596,7 +14602,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
 
                 _mnc1, _mnc2, _mnc3, _mnc4 = st.columns([1, 2, 3, 1])
                 with _mnc1:
-                    if st.button("◀", key="med_cal_prev_month", use_container_width=True):
+                    if st.button("◀", key="med_cal_prev_month", width="stretch"):
                         _m, _y = st.session_state["_med_cal_month"] - 1, st.session_state["_med_cal_year"]
                         if _m < 1:
                             _m, _y = 12, _y - 1
@@ -14617,7 +14623,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         unsafe_allow_html=True
                     )
                 with _mnc4:
-                    if st.button("▶", key="med_cal_next_month", use_container_width=True):
+                    if st.button("▶", key="med_cal_next_month", width="stretch"):
                         _m, _y = st.session_state["_med_cal_month"] + 1, st.session_state["_med_cal_year"]
                         if _m > 12:
                             _m, _y = 1, _y + 1
@@ -14650,7 +14656,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             if st.button(
                                 f"{'🩺 ' if _has_data else ''}{_mday}", key=f"med_day_{_md_date.isoformat()}",
                                 type="primary" if _is_sel else "secondary",
-                                use_container_width=True,
+                                width="stretch",
                             ):
                                 # Pas de st.rerun() explicite : le clic déclenche déjà un rerun
                                 # naturel, le bloc dialog ci-dessous relit _med_dialog_date dans
@@ -14736,7 +14742,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                             )
 
                             _meb1, _meb2 = st.columns(2)
-                            if _meb1.button("💾 Enregistrer", type="primary", key=f"med_ed_save_{_med_vid}", use_container_width=True):
+                            if _meb1.button("💾 Enregistrer", type="primary", key=f"med_ed_save_{_med_vid}", width="stretch"):
                                 if update_visite_medicale(
                                     _med_vid, joueuse=_me_joueuse, professionnel=_me_pro,
                                     type_soin=(_me_soin or "").strip() or _med_ligne["type_soin"],
@@ -14747,7 +14753,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                                     st.rerun()
                                 else:
                                     st.error("Échec de la mise à jour.")
-                            if _meb2.button("🗑️ Supprimer", key=f"med_ed_del_{_med_vid}", use_container_width=True):
+                            if _meb2.button("🗑️ Supprimer", key=f"med_ed_del_{_med_vid}", width="stretch"):
                                 if delete_visite_medicale(_med_vid):
                                     st.success("Visite supprimée.")
                                     st.rerun()
@@ -14795,7 +14801,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         _mes_display = _med_mes_hist[["date", "poids_kg", "masse_grasse_pct"]].rename(
                             columns={"date": "Date", "poids_kg": "Poids (kg)", "masse_grasse_pct": "% Masse grasse"}
                         )
-                        st.dataframe(_mes_display, use_container_width=True, hide_index=True)
+                        st.dataframe(_mes_display, width="stretch", hide_index=True)
 
                         _mes_key = tuple(sorted(
                             (r["date"].date().isoformat(), r["poids_kg"], r["masse_grasse_pct"])
@@ -14833,14 +14839,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                         )
 
                         _meb1, _meb2 = st.columns(2)
-                        if _meb1.button("💾 Enregistrer", type="primary", key=f"med_mes_ed_save_{_mes_id}", use_container_width=True):
+                        if _meb1.button("💾 Enregistrer", type="primary", key=f"med_mes_ed_save_{_mes_id}", width="stretch"):
                             if update_mesure_corporelle(_mes_id, date=_me_date.isoformat(),
                                                          poids_kg=_me_poids, masse_grasse_pct=_me_grasse):
                                 st.success("Mesure mise à jour.")
                                 st.rerun()
                             else:
                                 st.error("Échec de la mise à jour.")
-                        if _meb2.button("🗑️ Supprimer", key=f"med_mes_ed_del_{_mes_id}", use_container_width=True):
+                        if _meb2.button("🗑️ Supprimer", key=f"med_mes_ed_del_{_mes_id}", width="stretch"):
                             if delete_mesure_corporelle(_mes_id):
                                 st.success("Mesure supprimée.")
                                 st.rerun()
@@ -14853,7 +14859,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                     st.info("Aucune visite médicale enregistrée pour l'instant.")
                 else:
                     st.markdown("#### Synthèse équipe")
-                    st.dataframe(medical_team_summary(_med_df), use_container_width=True, hide_index=True)
+                    st.dataframe(medical_team_summary(_med_df), width="stretch", hide_index=True)
 
                     st.divider()
                     st.markdown("#### Détail par joueuse")
@@ -14890,11 +14896,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
                 unsafe_allow_html=True
             )
             st.caption("Application de préparation physique — connectez-vous avec vos identifiants.")
-            st.components.v1.iframe(
-                src="https://parisfc-prepa.streamlit.app/?embed=true",
-                width=None,
+            st.iframe(
+                "https://parisfc-prepa.streamlit.app/?embed=true",
                 height=900,
-                scrolling=True,
             )
 
 
@@ -15226,7 +15230,7 @@ def main():
                                 _f.write(str(datetime.now().timestamp()))
                         except Exception:
                             pass
-                _t = threading.Thread(target=_bg_sync, daemon=True)
+                _t = threading.Thread(target=_bg_sync, daemon=True, name="pfc_bg_sync")
                 _t.start()
                 st.session_state["_sync_thread_started"] = True
                 st.session_state["_sync_pending"] = True
