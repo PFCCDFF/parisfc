@@ -6491,7 +6491,7 @@ def compute_tactical_stats(df_tactic, player_name):
 
     # PASSES
     pass_rows = d[d["Passe"].notna()].copy() if "Passe" in d.columns else d.iloc[0:0]
-    all_pass = [a.strip() for cell in pass_rows["Passe"].dropna() for a in str(cell).split(",")]
+    all_pass = [a.strip() for cell in pass_rows["Passe"].dropna() for a in str(cell).split(",")] if "Passe" in pass_rows.columns else []
     p_ok = all_pass.count("Réussie")
     p_ko = all_pass.count("Ratée")
     c_ok = sum(1 for _, r in pass_rows.iterrows() if "Courte" in str(r.get("Passe","")) and "Réussie" in str(r.get("Passe","")))
@@ -6545,13 +6545,13 @@ def compute_tactical_stats(df_tactic, player_name):
 
     # DRIBBLES
     drib_rows = d[d["Dribble"].notna()] if "Dribble" in d.columns else d.iloc[0:0]
-    all_drib = [a.strip() for cell in drib_rows["Dribble"].dropna() for a in str(cell).split(",")]
+    all_drib = [a.strip() for cell in drib_rows["Dribble"].dropna() for a in str(cell).split(",")] if "Dribble" in drib_rows.columns else []
     stats["drib_ok"] = all_drib.count("Réussi")
     stats["drib_ko"] = all_drib.count("Raté")
 
     # TIRS
     tir_rows = d[d["Tir"].notna()] if "Tir" in d.columns else d.iloc[0:0]
-    all_tir = [a.strip() for cell in tir_rows["Tir"].dropna() for a in str(cell).split(",")]
+    all_tir = [a.strip() for cell in tir_rows["Tir"].dropna() for a in str(cell).split(",")] if "Tir" in tir_rows.columns else []
     stats["tirs_tot"]    = len(tir_rows)
     stats["tirs_cadres"] = all_tir.count("Tir Cadré") + all_tir.count("But")
     stats["tirs_buts"]   = all_tir.count("But")
@@ -6564,7 +6564,7 @@ def compute_tactical_stats(df_tactic, player_name):
 
     # DUELS
     duel_rows = d[d["Duel défensifs"].notna()] if "Duel défensifs" in d.columns else d.iloc[0:0]
-    all_duels = [a.strip() for cell in duel_rows["Duel défensifs"].dropna() for a in str(cell).split(",")]
+    all_duels = [a.strip() for cell in duel_rows["Duel défensifs"].dropna() for a in str(cell).split(",")] if "Duel défensifs" in duel_rows.columns else []
     sol_list  = [r for _, r in duel_rows.iterrows() if "Sol"    in str(r.get("Duel défensifs",""))]
     aer_list  = [r for _, r in duel_rows.iterrows() if "Aérien" in str(r.get("Duel défensifs",""))]
     stats.update({
