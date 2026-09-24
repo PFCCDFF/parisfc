@@ -13441,7 +13441,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     role = get_user_role(user_profile, permissions)
 
     if role == ROLE_ADMIN:
-        options = ["Laboratoire", "Performance", "Programme talent", "Gestion", "Médical", "Recrutement"]
+        options = ["Performance", "Programme talent", "Gestion", "Médical", "Recrutement", "Laboratoire"]
     elif role == ROLE_STAFF:
         options = ["Performance", "Programme talent", "Médical", "Recrutement"]
     else:  # ROLE_JOUEUSE
@@ -13453,8 +13453,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         options.append("Staff Pro")
 
     # Forcer la navigation vers "Staff Pro" à la première exécution après connexion
-    # Performance reste la page d'accueil, même quand "Laboratoire" (admin)
-    # est placé en tête du menu.
+    # Performance reste la page d'accueil quel que soit l'ordre du menu.
     _default_index = options.index("Performance") if "Performance" in options else 0
     if _is_staff_pro and "Staff Pro" in options:
         _default_index = options.index("Staff Pro")
