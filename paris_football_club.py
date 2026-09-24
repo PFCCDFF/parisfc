@@ -13441,7 +13441,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     role = get_user_role(user_profile, permissions)
 
     if role == ROLE_ADMIN:
-        options = ["Performance", "Programme talent", "Gestion", "Médical", "Recrutement"]
+        options = ["Laboratoire", "Performance", "Programme talent", "Gestion", "Médical", "Recrutement"]
     elif role == ROLE_STAFF:
         options = ["Performance", "Programme talent", "Médical", "Recrutement"]
     else:  # ROLE_JOUEUSE
@@ -13453,7 +13453,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         options.append("Staff Pro")
 
     # Forcer la navigation vers "Staff Pro" à la première exécution après connexion
-    _default_index = 0
+    # Performance reste la page d'accueil, même quand "Laboratoire" (admin)
+    # est placé en tête du menu.
+    _default_index = options.index("Performance") if "Performance" in options else 0
     if _is_staff_pro and "Staff Pro" in options:
         _default_index = options.index("Staff Pro")
 
@@ -13461,6 +13463,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     _all_icons   = ["lightning-charge", "people-fill", "gear-fill", "people-fill", "heart-pulse", "search", "star-fill"]
     # Reconstruire la liste d'icônes en suivant l'ordre des options
     _icon_map = {
+        "Laboratoire":        "eyedropper",
         "Performance":        "lightning-charge",
         "Programme talent": "people-fill",
         "Gestion":            "gear-fill",
@@ -13498,7 +13501,15 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     # =====================
     # PERFORMANCE
     # =====================
-    if page == "Performance":
+    if page == "Laboratoire":
+        # Espace de test réservé aux admins (options du menu filtrées par rôle).
+        if role != ROLE_ADMIN:
+            st.error("Accès réservé aux administrateurs.")
+        else:
+            st.header("🧪 Laboratoire")
+            st.info("Espace de test pour les nouvelles fonctionnalités, visible uniquement par les admins.")
+
+    elif page == "Performance":
         render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 player_name, user_profile, permissions, role=role)
 
