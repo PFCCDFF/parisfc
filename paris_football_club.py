@@ -120,6 +120,7 @@ GPS_MATCH_FOLDER = "data/gps_match"
 TACTICAL_FOLDER = "data"        # Les fichiers tactiques sont dans le dossier data principal
 DRIVE_TACTICAL_FOLDER_ID = ""   # À renseigner si dossier Drive dédié
 DRIVE_GPS_MATCH_FOLDER_ID = "1jzLW_jR5sMtsP4lOb4mN9mJlthw3pvbu"  # Dossier Drive GPS Match
+DRIVE_COMPILATION_GPS_FOLDER_ID = "1YedLpRQTtOdNvWseY8G9mtd46b-CPBNo"  # « Compilation GPS » (à côté de CSV GPS, hors sync)
 DRIVE_LOGOS_FOLDER_ID = "1TCKyVOHzKynm6Z1fhKnNUKYDcN7NhMCj"  # Logos clubs adversaires
 LOGOS_FOLDER = "data/logos"  # Cache local
 EVAL_FILENAME = "Auto-évaluation de votre match (post-match).xlsx"  # Fichier Microsoft Forms export
@@ -13354,6 +13355,62 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 st.iframe(_fiche_cached, height=900)
 
 
+# =========================
+# LABORATOIRE — SUIVI DE LA CHARGE (modules gps_compilation / charge_entrainement)
+# =========================
+def _empreinte_dossiers_gps() -> str:
+    """Clé de cache : liste + mtime des CSV GPS locaux (le cache se recalcule après un sync)."""
+    from gps_compilation import lister_csv
+    return "|".join(f"{p}:{os.path.getmtime(p):.0f}" for p in lister_csv([GPS_FOLDER, GPS_MATCH_FOLDER]))
+
+
+@st.cache_data(ttl=3600, show_spinner="Compilation des données GPS…")
+def charger_sessions_charge(empreinte: str) -> pd.DataFrame:
+    """Table joueuse × session (matchs + entraînements, formats 2025-26 et 2026-27),
+    noms rattachés au référentiel comme dans load_gps_raw()."""
+    from gps_compilation import compiler_sessions_gps
+    mapper = None
+    ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
+    if not os.path.exists(ref_path):
+        ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME) or ""
+    if ref_path and os.path.exists(ref_path):
+        ref = build_referentiel_players(ref_path)
+        gps_map = load_gps_name_map()
+
+        def mapper(nom_brut: str) -> Optional[str]:
+            nom = gps_map.get(normalize_name_raw(str(nom_brut)), nom_brut)
+            canon, statut, _ = map_player_name(nom, *ref, cutoff_fuzzy=0.93)
+            return nettoyer_nom_joueuse(canon) if statut != "unmatched" and canon else None
+    return compiler_sessions_gps([GPS_FOLDER, GPS_MATCH_FOLDER], normaliser_nom=mapper)
+
+
+def render_laboratoire_charge():
+    from charge_entrainement import render_charge_tab
+    from gps_compilation import exporter_vers_drive
+    try:
+        df = charger_sessions_charge(_empreinte_dossiers_gps())
+    except Exception as e:
+        st.error(f"Compilation GPS impossible : {e}")
+        return
+    if df is None or df.empty:
+        st.warning("Aucune donnée GPS locale : lancer « Mettre à jour la base » pour synchroniser le dossier Drive CSV GPS.")
+        return
+    render_charge_tab(df)
+    with st.expander("📤 Exporter la compilation vers Google Drive"):
+        st.caption("Dépose gps_sessions.csv et Compilation_GPS.xlsx dans le dossier Drive « Compilation GPS » "
+                   "(à côté de « CSV GPS »), mis à jour à chaque export. Le compte de service de l'app doit "
+                   "avoir accès en écriture à ce dossier.")
+        c1, c2 = st.columns(2)
+        c1.download_button("Télécharger gps_sessions.csv", df.to_csv(index=False).encode("utf-8"),
+                           file_name="gps_sessions.csv", mime="text/csv")
+        if c2.button("Exporter vers Drive"):
+            try:
+                liens = exporter_vers_drive(authenticate_google_drive(), df, DRIVE_COMPILATION_GPS_FOLDER_ID)
+                st.success("Export terminé : " + " · ".join(f"[{n}]({l})" for n, l in liens.items()))
+            except Exception as e:
+                st.error(f"Export Drive impossible : {e}")
+
+
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     st.sidebar.markdown(
         "<div style='display:flex;flex-direction:column;align-items:center;padding:24px 0 16px 0;border-bottom:1px solid rgba(0,163,224,0.15);margin-bottom:8px;'>"
@@ -13507,6 +13564,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         else:
             st.header("🧪 Laboratoire")
             st.info("Espace de test pour les nouvelles fonctionnalités, visible uniquement par les admins.")
+            render_laboratoire_charge()
 
     elif page == "Performance":
         render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,

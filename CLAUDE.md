@@ -11,6 +11,8 @@ App Streamlit pour le centre de formation féminin du Paris FC (suivi GPS, taggi
 - `drive_utils.py` — helpers Drive minimalistes utilisés uniquement par `sync_drive_to_supabase.py` (pas par l'app) ; inclut un fetch incrémental via `data/supabase_sync_state.json` (ne retélécharge que les fichiers modifiés depuis le dernier run, via `last_modifiedTime`).
 - `sync_drive_to_supabase.py` — job autonome (lancé par un timer systemd sur le VPS), sans lien d'exécution avec l'app Streamlit. Télécharge les nouveaux CSV Drive et upsert dans Supabase.
 - `backfill_joueuse_tags.py` — script ponctuel de backfill (voir piège #7).
+- `gps_compilation.py` — compile les CSV GPS locaux (`data/gps`, `data/gps_match`, formats 2025-26 et 2026-27) en table joueuse × session (6 plages de vitesse, accél./décél., dédoublonnage, contrôles qualité) ; sans dépendance Streamlit. Export CSV/Excel vers le dossier Drive `DRIVE_COMPILATION_GPS_FOLDER_ID`.
+- `charge_entrainement.py` — calculs et UI du suivi de charge (% référence match, ACWR EWMA, microcycle), affiché dans l'onglet Laboratoire via `render_laboratoire_charge()`.
 - `sql/` — migrations SQL appliquées manuellement sur Supabase (pas d'outil de migration).
 
 ### Repères dans `paris_football_club.py`
