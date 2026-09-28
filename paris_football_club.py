@@ -6634,7 +6634,22 @@ def _get_match_context(df_tactic):
         ctx["journee"]      = str(pfc["Journée"].dropna().apply(lambda x: str(x).split(",")[0]).iloc[0]) if "Journée" in pfc.columns and not pfc["Journée"].dropna().empty else ""
         ctx["competition"]  = pfc["Compétition"].dropna().apply(lambda x: x.split(",")[0].strip()).iloc[0] if "Compétition" in pfc.columns and not pfc["Compétition"].dropna().empty else ""
         ctx["systeme"]      = pfc["Système de Jeu PFC"].dropna().apply(lambda x: x.split(",")[0].strip()).mode().iloc[0] if "Système de Jeu PFC" in pfc.columns and not pfc["Système de Jeu PFC"].dropna().empty else ""
-        adv_name = pfc["Teamersaire"].dropna().iloc[0] if "Teamersaire" in pfc.columns and not pfc["Teamersaire"].dropna().empty else ctx["adversaire"]
+        # Teamersaire est multi-valeurs (« Sarcelles, AAS SARCELLES, AAS SARCELLES ») : prendre
+        # la valeur la plus fréquente, pas la première cellule venue — sinon nom affiché composite
+        # et aucune ligne Row correspondante, donc 0 but adverse (Sarcelles R1 J2 : 9-0 au lieu de 9-1).
+        adv_name = ctx["adversaire"]
+        if "Teamersaire" in pfc.columns:
+            _tv = pfc["Teamersaire"].dropna().astype(str).str.split(",").str[0].str.strip()
+            _tv = _tv[_tv != ""]
+            if not _tv.empty:
+                adv_name = _tv.mode().iloc[0]
+        _rows = [r for r in df_tactic["Row"].dropna().astype(str).unique() if r not in ("PFC", "START")]
+        if adv_name not in _rows:
+            _na = normalize_str(adv_name)
+            _proches = [r for r in _rows if _na and (_na in normalize_str(r) or normalize_str(r) in _na)
+                        and not any(k in r for k in ["Transition", "Carton", "def "])]
+            if _proches:
+                adv_name = max(_proches, key=lambda r: (df_tactic["Row"] == r).sum())
         ctx["adversaire"] = adv_name
         adv_rows = df_tactic[df_tactic["Row"] == adv_name]
         adv_seq = len(adv_rows)
