@@ -13364,6 +13364,159 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
 
 # =========================
+# GESTION — IMPORT MANUEL DE CSV (module import_csv)
+# =========================
+_IMPORT_DEST = {
+    # type → (dossier local, dossier Drive). Mêmes dossiers que la sync Drive, pour
+    # qu'un fichier importé ici soit exactement celui que la sync aurait téléchargé.
+    "Tactique":         (TACTICAL_FOLDER, DRIVE_MAIN_FOLDER_ID),
+    "GPS match":        (GPS_MATCH_FOLDER, DRIVE_GPS_MATCH_FOLDER_ID),
+    "GPS entraînement": (GPS_FOLDER, DRIVE_GPS_FOLDER_ID),
+}
+
+
+def _drive_deposer_csv(service, dossier_id: str, nom: str, contenu: bytes) -> Tuple[Optional[str], str]:
+    """Dépose un CSV dans un dossier Drive. Retourne (id, "créé") ou (id, "existe") si un
+    fichier du même nom y est déjà (rien n'est écrasé)."""
+    from googleapiclient.http import MediaIoBaseUpload
+    nom_q = nom.replace("\\", "\\\\").replace("'", "\\'")
+    q = f"'{dossier_id}' in parents and name = '{nom_q}' and trashed = false"
+    ex = _execute_with_retry(service.files().list(q=q, fields="files(id)", supportsAllDrives=True,
+                                                  includeItemsFromAllDrives=True)).get("files", [])
+    if ex:
+        return ex[0]["id"], "existe"
+    media = MediaIoBaseUpload(io.BytesIO(contenu), mimetype="text/csv", resumable=False)
+    f = _execute_with_retry(service.files().create(body={"name": nom, "parents": [dossier_id]},
+                                                   media_body=media, fields="id", supportsAllDrives=True))
+    return f["id"], "créé"
+
+
+def _importer_un_csv(service, nom: str, contenu: bytes, typ: str) -> Tuple[bool, str]:
+    """Drive d'abord (source unique), puis copie locale nommée comme par la sync :
+    GPS → <nom>__<id8>.csv (_safe_local_path), tactique → data/<nom>."""
+    dossier_local, dossier_drive = _IMPORT_DEST[typ]
+    fid, drive_msg = None, ""
+    if service is not None and dossier_drive:
+        try:
+            fid, statut = _drive_deposer_csv(service, dossier_drive, nom, contenu)
+            drive_msg = "déposé sur le Drive" if statut == "créé" else "déjà sur le Drive (même nom, non écrasé)"
+        except HttpError as e:
+            drive_msg = ("⚠️ Drive en lecture seule pour l'app : enregistré sur le serveur uniquement"
+                         if getattr(getattr(e, "resp", None), "status", None) == 403 or "insufficient" in str(e).lower()
+                         else f"⚠️ Drive indisponible ({e.reason if hasattr(e, 'reason') else e}) : serveur uniquement")
+        except Exception as e:
+            drive_msg = f"⚠️ Drive indisponible ({e}) : serveur uniquement"
+    if typ == "Tactique":
+        chemin = os.path.join(dossier_local, nom)
+    else:
+        from import_csv import empreinte
+        chemin = _safe_local_path(nom, fid or empreinte(contenu), dest_folder=dossier_local)
+    if os.path.exists(chemin):
+        return False, " · ".join(x for x in [f"déjà présent sur le serveur ({os.path.basename(chemin)})", drive_msg] if x)
+    os.makedirs(os.path.dirname(chemin) or ".", exist_ok=True)
+    with open(chemin, "wb") as f:
+        f.write(contenu)
+    return True, " · ".join(x for x in [f"importé ({os.path.relpath(chemin, DATA_FOLDER)})", drive_msg] if x)
+
+
+def render_import_csv():
+    from import_csv import TYPES, analyser_fichier, empreinte, lister_doublons
+
+    st.subheader("📥 Importer des CSV")
+    st.caption("Exports de la plateforme GPS (séances, matchs) ou fichiers tactiques Sportscode (PFC_VS_…). "
+               "Chaque fichier est déposé dans le dossier Drive habituel puis copié sur le serveur : "
+               "il apparaît dans l'app sans attendre la synchronisation.")
+    _cle = f"import_csv_upl_{st.session_state.get('_import_csv_n', 0)}"
+    fichiers = st.file_uploader("Fichiers CSV", type=["csv"], accept_multiple_files=True, key=_cle)
+
+    if fichiers:
+        # Index des contenus déjà présents (calculé seulement quand des fichiers sont déposés :
+        # st.tabs exécute tous les onglets de Gestion à chaque rerun).
+        existants = {}
+        for d in (TACTICAL_FOLDER, GPS_FOLDER, GPS_MATCH_FOLDER):
+            if os.path.isdir(d):
+                for racine, _, fs in os.walk(d) if d != TACTICAL_FOLDER else [(d, None, os.listdir(d))]:
+                    for f in fs:
+                        if f.lower().endswith(".csv"):
+                            with open(os.path.join(racine, f), "rb") as fh:
+                                existants.setdefault(empreinte(fh.read()), os.path.join(racine, f))
+        lignes = []
+        for up in fichiers:
+            contenu = up.getvalue()
+            a = analyser_fichier(up.name, contenu, is_tactical_file, read_csv_auto,
+                                 parse_tactical_filename, is_gps_match_file)
+            dbl = existants.get(a["empreinte"])
+            lignes.append({"Importer": a["valide"], "Fichier": up.name, "Type": a["type"],
+                           "Valide": "✅" if a["valide"] else "❌", "Détail": a["detail"],
+                           "Date": a["date"].strftime("%d/%m/%Y") if a["date"] is not None and pd.notna(a["date"]) else "",
+                           "Déjà présent": os.path.relpath(dbl, DATA_FOLDER) if dbl else ""})
+        tab = st.data_editor(
+            pd.DataFrame(lignes), hide_index=True, width="stretch", key=f"{_cle}_ed",
+            disabled=["Fichier", "Valide", "Détail", "Date", "Déjà présent"],
+            column_config={"Type": st.column_config.SelectboxColumn("Type", options=TYPES, required=False,
+                                                                     help="Détecté automatiquement ; corrigeable entre GPS match et GPS entraînement."),
+                           "Déjà présent": st.column_config.TextColumn(help="Fichier au contenu strictement identique déjà sur le serveur.")})
+        a_importer = tab[tab["Importer"]]
+        if len(tab[tab["Déjà présent"] != ""]):
+            st.info("Certains fichiers ont un contenu identique à un fichier déjà présent (colonne « Déjà présent ») : "
+                    "les réimporter créerait un doublon.")
+        if st.button(f"📥 Importer {len(a_importer)} fichier(s)", type="primary", disabled=a_importer.empty,
+                     key=f"{_cle}_go"):
+            try:
+                service = authenticate_google_drive()
+            except Exception as e:
+                service = None
+                st.warning(f"Connexion Drive impossible ({e}) : fichiers enregistrés sur le serveur uniquement.")
+            par_nom = {up.name: up for up in fichiers}
+            detecte = {l["Fichier"]: l["Type"] for l in lignes}
+            n_ok = 0
+            for _, r in a_importer.iterrows():
+                nom, typ = r["Fichier"], r["Type"]
+                if r["Valide"] != "✅" or typ not in _IMPORT_DEST:
+                    st.error(f"{nom} : fichier non valide, ignoré.")
+                    continue
+                if (typ == "Tactique") != (detecte.get(nom) == "Tactique"):
+                    st.error(f"{nom} : type « {typ} » incompatible avec le contenu ({detecte.get(nom)}), ignoré.")
+                    continue
+                ok, msg = _importer_un_csv(service, nom, par_nom[nom].getvalue(), typ)
+                n_ok += ok
+                (st.success if ok else st.warning)(f"{nom} : {msg}")
+            if n_ok:
+                # Même invalidation que « Mettre à jour la base » (le cache Parquet se
+                # recalcule seul : un fichier source plus récent le rend invalide).
+                st.cache_data.clear()
+                st.session_state.pop("_tactical_files_cache", None)
+                st.session_state["_import_csv_n"] = st.session_state.get("_import_csv_n", 0) + 1
+                st.info(f"{n_ok} fichier(s) importé(s). Les données seront recalculées au prochain affichage "
+                        "(jusqu'à ~40 s la première fois).")
+
+    st.divider()
+    st.subheader("🔁 Fichiers en double")
+    st.caption("Fichiers présents plusieurs fois sur le serveur : même contenu, même session GPS sous deux noms, "
+               "ou même match tactique (ex. renommage U19 → U19F). Pour nettoyer, supprimer le fichier en trop "
+               "sur le Drive : la sync ne le retéléchargera plus.")
+    if st.button("🔍 Rechercher les doublons", key="import_csv_doublons"):
+        with st.spinner("Analyse des fichiers…"):
+            st.session_state["_import_csv_doublons"] = lister_doublons(
+                [GPS_FOLDER, GPS_MATCH_FOLDER], [TACTICAL_FOLDER, "data/tactical"],
+                is_tactical_file, parse_tactical_filename)
+    dbl = st.session_state.get("_import_csv_doublons")
+    if dbl is not None:
+        if dbl.empty:
+            st.success("Aucun fichier en double.")
+        else:
+            st.markdown(f"**{dbl.groupe.nunique()} groupe(s)** de doublons, {len(dbl)} fichiers.")
+            aff = dbl.assign(
+                dossier=dbl.dossier.map(lambda d: os.path.relpath(d, DATA_FOLDER) if d != DATA_FOLDER else "data"),
+                modifie=dbl.modifie.dt.strftime("%d/%m/%Y %H:%M"),
+                conserve=dbl.conserve.map(lambda v: "" if v is None else ("✅ utilisé" if v else "ignoré par l'app")))
+            st.dataframe(aff.drop(columns=["chemin"]).rename(columns={
+                "groupe": "Groupe", "motif": "Motif", "fichier": "Fichier (nom Drive)", "dossier": "Dossier",
+                "taille_ko": "Taille (Ko)", "modifie": "Modifié le", "conserve": "Statut"}),
+                hide_index=True, width="stretch")
+
+
+# =========================
 # LABORATOIRE — SUIVI DE LA CHARGE (modules gps_compilation / charge_entrainement)
 # =========================
 def _empreinte_dossiers_gps() -> str:
@@ -13598,7 +13751,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
         if not check_permission(user_profile, "all", permissions):
             st.warning("⛔ Accès réservé aux administrateurs.")
         else:
-            tab_ref, tab_perms, tab_jouеuses, tab_admin, tab_passerelles = st.tabs(["📋 Référentiel joueuses", "🔐 Profils & permissions", "👥 Joueuses", "🛠️ Administration", "📋 Passerelles"])
+            tab_ref, tab_perms, tab_jouеuses, tab_admin, tab_passerelles, tab_import = st.tabs(["📋 Référentiel joueuses", "🔐 Profils & permissions", "👥 Joueuses", "🛠️ Administration", "📋 Passerelles", "📥 Import"])
+
+            with tab_import:
+                render_import_csv()
 
             # ── Référentiel joueuses ──────────────────────────────────────
             with tab_ref:
