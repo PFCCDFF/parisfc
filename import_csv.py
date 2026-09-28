@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
 from typing import Callable, Iterable, Optional
 
@@ -39,6 +40,30 @@ def _avec_fichier_temp(nom: str, contenu: bytes, fn: Callable[[str], object]):
         return fn(chemin)
     finally:
         os.unlink(chemin)
+
+
+def infos_depuis_timeline(timeline: str) -> dict:
+    """« J3 U23 FC Mantois - Paris FC » / « U19 J3 Paris FC - LOSC » →
+    {journee: "3", categorie: "U23", adversaire: "FC Mantois"} (champs vides si absents)."""
+    t = " ".join(str(timeline or "").split())
+    j = re.search(r"\bJ(\d{1,2})\b", t, re.IGNORECASE)
+    c = re.search(r"\b(U\d{2})\b", t, re.IGNORECASE)
+    reste = re.sub(r"\bJ\d{1,2}\b|\bU\d{2}\b", " ", t, flags=re.IGNORECASE)
+    equipes = [e.strip() for e in re.split(r"\s[-–]\s", reste) if e.strip()]
+    adv = next((e for e in equipes if not re.fullmatch(r"paris\s*fc", e, re.IGNORECASE)), "")
+    return {"journee": j.group(1) if j else "", "categorie": c.group(1).upper() if c else "", "adversaire": adv}
+
+
+def nom_standard_tactique(date, categorie: str, adversaire: str, journee: str = "") -> str:
+    """Nom reconnu par l'app (is_tactical_file / parse_tactical_filename) :
+    « PFC_VS_ 2627 U23F FC Mantois_J3_U23_27-09-2026.csv »."""
+    d = pd.Timestamp(date)
+    y = d.year if d.month >= 7 else d.year - 1
+    cat = categorie.strip().upper()
+    adv = re.sub(r'[\\/:*?"<>|_]+', " ", adversaire).strip()
+    adv = " ".join(adv.split())
+    j = f"_J{int(journee)}" if str(journee).strip().isdigit() else ""
+    return f"PFC_VS_ {y % 100:02d}{(y + 1) % 100:02d} {cat}F {adv}{j}_{cat}_{d:%d-%m-%Y}.csv"
 
 
 def analyser_gps(chemin: str, nom: str, est_match_nom: Callable[[str], bool]) -> dict:
@@ -66,9 +91,12 @@ def analyser_fichier(nom: str, contenu: bytes, est_tactique: Callable[[str], boo
                      est_match_nom: Callable[[str], bool]) -> dict:
     """Détecte le type d'un CSV déposé et vérifie qu'il est exploitable par l'app.
 
-    Retourne {type, valide, detail, date, empreinte}. `type` vaut None si le fichier
-    n'est reconnu ni comme tactique ni comme GPS."""
-    res = {"type": None, "valide": False, "detail": "", "date": None, "empreinte": empreinte(contenu)}
+    Retourne {type, valide, detail, date, empreinte, a_nommer, proposition}. `type` vaut
+    None si le fichier n'est reconnu ni comme tactique ni comme GPS. `a_nommer` : export
+    Sportscode brut de la plateforme (nom sans date) — à renommer au format standard
+    (nom_standard_tactique) avec la date du match, `proposition` pré-remplie depuis Timeline."""
+    res = {"type": None, "valide": False, "detail": "", "date": None, "empreinte": empreinte(contenu),
+           "a_nommer": False, "proposition": {}}
     if not nom.lower().endswith(".csv"):
         res["detail"] = "Extension .csv attendue"
         return res
@@ -91,6 +119,18 @@ def analyser_fichier(nom: str, contenu: bytes, est_tactique: Callable[[str], boo
             adv = info.get("adversaire") or "?"
             j = f"J{info['journee']} · " if info.get("journee") else ""
             res["detail"] = f"{j}{adv} · {len(df)} lignes"
+        return res
+    # Export Sportscode brut (nom de la plateforme, ex. « J3 U23 FC Mantois Paris FC.csv ») :
+    # reconnu au contenu, l'app ne le lira qu'une fois renommé au format standard.
+    try:
+        df = _avec_fichier_temp(nom, contenu, lire_csv)
+    except Exception:
+        df = None
+    if df is not None and {"Timeline", "Row"} <= set(df.columns):
+        tl = df["Timeline"].dropna()
+        res.update(type="Tactique", a_nommer=True,
+                   proposition=infos_depuis_timeline(tl.iloc[0] if len(tl) else ""),
+                   detail=f"Export Sportscode brut ({len(df)} lignes) : renseigner la date du match")
         return res
     try:
         g = _avec_fichier_temp(nom, contenu, lambda p: analyser_gps(p, nom, est_match_nom))

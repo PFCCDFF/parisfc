@@ -60,6 +60,17 @@ class TestAnalyse(unittest.TestCase):
         a = analyser("2026_12-09-2026.csv", contenu)
         self.assertEqual((a["type"], a["valide"]), ("GPS match", True))
 
+    def test_export_sportscode_brut_a_nommer(self):
+        a = analyser("J3 U23 FC Mantois Paris FC.csv", TACTIQUE.replace("U19 J3 Paris FC - LOSC", "J3 U23 FC Mantois - Paris FC"))
+        self.assertEqual((a["type"], a["valide"], a["a_nommer"]), ("Tactique", False, True))
+        self.assertEqual(a["proposition"], {"journee": "3", "categorie": "U23", "adversaire": "FC Mantois"})
+
+    def test_nom_standard_tactique(self):
+        nom = ic.nom_standard_tactique(pd.Timestamp("2026-09-27"), "u23", "FC Mantois", "3")
+        self.assertEqual(nom, "PFC_VS_ 2627 U23F FC Mantois_J3_U23_27-09-2026.csv")
+        self.assertTrue(est_tactique(nom))
+        self.assertEqual(ic.nom_standard_tactique("2027-02-03", "U19", "OL_Lyonnes"), "PFC_VS_ 2627 U19F OL Lyonnes_U19_03-02-2027.csv")
+
     def test_fichier_inconnu(self):
         a = analyser("notes.csv", "x;y\n1;2\n")
         self.assertIsNone(a["type"])

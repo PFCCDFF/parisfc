@@ -13420,7 +13420,7 @@ def _importer_un_csv(service, nom: str, contenu: bytes, typ: str) -> Tuple[bool,
 
 
 def render_import_csv():
-    from import_csv import TYPES, analyser_fichier, empreinte, lister_doublons
+    from import_csv import TYPES, analyser_fichier, empreinte, lister_doublons, nom_standard_tactique
 
     st.subheader("📥 Importer des CSV")
     st.caption("Exports de la plateforme GPS (séances, matchs) ou fichiers tactiques Sportscode (PFC_VS_…). "
@@ -13440,14 +13440,15 @@ def render_import_csv():
                         if f.lower().endswith(".csv"):
                             with open(os.path.join(racine, f), "rb") as fh:
                                 existants.setdefault(empreinte(fh.read()), os.path.join(racine, f))
-        lignes = []
+        lignes, analyses = [], {}
         for up in fichiers:
             contenu = up.getvalue()
             a = analyser_fichier(up.name, contenu, is_tactical_file, read_csv_auto,
                                  parse_tactical_filename, is_gps_match_file)
+            analyses[up.name] = a
             dbl = existants.get(a["empreinte"])
-            lignes.append({"Importer": a["valide"], "Fichier": up.name, "Type": a["type"],
-                           "Valide": "✅" if a["valide"] else "❌", "Détail": a["detail"],
+            lignes.append({"Importer": a["valide"] or a["a_nommer"], "Fichier": up.name, "Type": a["type"],
+                           "Valide": "✅" if a["valide"] else ("✏️" if a["a_nommer"] else "❌"), "Détail": a["detail"],
                            "Date": a["date"].strftime("%d/%m/%Y") if a["date"] is not None and pd.notna(a["date"]) else "",
                            "Déjà présent": os.path.relpath(dbl, DATA_FOLDER) if dbl else ""})
         tab = st.data_editor(
@@ -13457,6 +13458,27 @@ def render_import_csv():
                                                                      help="Détecté automatiquement ; corrigeable entre GPS match et GPS entraînement."),
                            "Déjà présent": st.column_config.TextColumn(help="Fichier au contenu strictement identique déjà sur le serveur.")})
         a_importer = tab[tab["Importer"]]
+
+        # Exports Sportscode bruts : l'app ne lit un fichier tactique que sous le nom
+        # standard PFC_VS_… daté (parse_tactical_filename) → date du match obligatoire.
+        noms_finaux = {}
+        a_nommer = [n for n, a in analyses.items() if a["a_nommer"]]
+        if a_nommer:
+            st.markdown("**✏️ Exports Sportscode à nommer** — la date du match est obligatoire ; "
+                        "catégorie, adversaire et journée sont pré-remplis depuis la Timeline.")
+            for i, n in enumerate(a_nommer):
+                prop = analyses[n]["proposition"]
+                c = st.columns([2.2, 1.2, 0.8, 1.6, 0.7])
+                c[0].markdown(f"<div style='padding-top:32px'>{n}</div>", unsafe_allow_html=True)
+                d = c[1].date_input("Date du match", value=None, format="DD/MM/YYYY", key=f"{_cle}_d{i}")
+                cat = c[2].text_input("Catégorie", value=prop.get("categorie", ""), key=f"{_cle}_c{i}")
+                adv = c[3].text_input("Adversaire", value=prop.get("adversaire", ""), key=f"{_cle}_a{i}")
+                jr = c[4].text_input("Journée", value=prop.get("journee", ""), key=f"{_cle}_j{i}")
+                if d and cat.strip() and adv.strip():
+                    noms_finaux[n] = nom_standard_tactique(d, cat, adv, jr)
+                    st.caption(f"→ enregistré sous : `{noms_finaux[n]}`")
+                else:
+                    st.caption("⚠️ Renseigner la date du match (et vérifier catégorie / adversaire).")
         if len(tab[tab["Déjà présent"] != ""]):
             st.info("Certains fichiers ont un contenu identique à un fichier déjà présent (colonne « Déjà présent ») : "
                     "les réimporter créerait un doublon.")
@@ -13472,13 +13494,16 @@ def render_import_csv():
             n_ok = 0
             for _, r in a_importer.iterrows():
                 nom, typ = r["Fichier"], r["Type"]
-                if r["Valide"] != "✅" or typ not in _IMPORT_DEST:
+                if r["Valide"] == "✏️" and nom not in noms_finaux:
+                    st.error(f"{nom} : date du match (ou catégorie / adversaire) manquante, ignoré.")
+                    continue
+                if r["Valide"] not in ("✅", "✏️") or typ not in _IMPORT_DEST:
                     st.error(f"{nom} : fichier non valide, ignoré.")
                     continue
                 if (typ == "Tactique") != (detecte.get(nom) == "Tactique"):
                     st.error(f"{nom} : type « {typ} » incompatible avec le contenu ({detecte.get(nom)}), ignoré.")
                     continue
-                ok, msg = _importer_un_csv(service, nom, par_nom[nom].getvalue(), typ)
+                ok, msg = _importer_un_csv(service, noms_finaux.get(nom, nom), par_nom[nom].getvalue(), typ)
                 n_ok += ok
                 (st.success if ok else st.warning)(f"{nom} : {msg}")
             if n_ok:
