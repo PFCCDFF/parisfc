@@ -71,6 +71,30 @@ class TestAnalyse(unittest.TestCase):
         self.assertTrue(est_tactique(nom))
         self.assertEqual(ic.nom_standard_tactique("2027-02-03", "U19", "OL_Lyonnes"), "PFC_VS_ 2627 U19F OL Lyonnes_U19_03-02-2027.csv")
 
+    def test_titre_timeline_contredit_par_les_colonnes(self):
+        # incident du 28/09/2026 : match HAC J2 dont le titre Sportscode était « AAS Sarcelles - Paris FC »
+        csv_hac = ("Timeline,Row,Teamersaire,Journée,Compétition\n"
+                   "AAS Sarcelles - Paris FC,PFC,,,\nAAS Sarcelles - Paris FC,HAC,HAC,2,U19 Nat\n")
+        a = analyser("export.csv", csv_hac)
+        self.assertEqual(a["proposition"], {"journee": "2", "categorie": "U19", "adversaire": "HAC"})
+        self.assertIn("AAS Sarcelles", a["alerte"])
+
+    def test_timeline_vs_et_categorie_feminine(self):
+        self.assertEqual(ic.infos_depuis_timeline("Paris FC U23F vs AAS Sarcelles - R1F J2"),
+                         {"journee": "2", "categorie": "U23", "adversaire": "AAS Sarcelles"})
+
+    def test_blocages(self):
+        contenu = b"Timeline,Row\nx,PFC\n"
+        existants = {ic.empreinte(contenu): "/data/PFC_VS_ 2627 U19F HAC_J2_U19_12-09-2026.csv"}
+        vrai = "PFC_VS_ 2627 U23 AAS Sarcelles_J2_U23_19-09-2026.csv"
+        tactiques = {ic.cle_match_tactique(vrai, infos_tactique): "/data/" + vrai}
+        nouveau = "PFC_VS_ 2627 U23F AAS Sarcelles_J2_U23_19-09-2026.csv"
+        r = ic.blocages_import(nouveau, "Tactique", contenu, existants, tactiques, infos_tactique)
+        self.assertEqual(len(r), 2)
+        self.assertIn("contenu identique", r[0])
+        self.assertIn(vrai, r[1])
+        self.assertEqual(ic.blocages_import(nouveau, "Tactique", b"autre", {}, {}, infos_tactique), [])
+
     def test_fichier_inconnu(self):
         a = analyser("notes.csv", "x;y\n1;2\n")
         self.assertIsNone(a["type"])

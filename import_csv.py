@@ -43,15 +43,57 @@ def _avec_fichier_temp(nom: str, contenu: bytes, fn: Callable[[str], object]):
 
 
 def infos_depuis_timeline(timeline: str) -> dict:
-    """« J3 U23 FC Mantois - Paris FC » / « U19 J3 Paris FC - LOSC » →
-    {journee: "3", categorie: "U23", adversaire: "FC Mantois"} (champs vides si absents)."""
+    """« J3 U23 FC Mantois - Paris FC » / « Paris FC U23F vs AAS Sarcelles - R1F J2 » →
+    {journee: "3", categorie: "U23", adversaire: "FC Mantois"} (champs vides si absents).
+    Titre saisi à la main dans Sportscode : peut être faux (projet dupliqué d'un autre match)."""
     t = " ".join(str(timeline or "").split())
     j = re.search(r"\bJ(\d{1,2})\b", t, re.IGNORECASE)
-    c = re.search(r"\b(U\d{2})\b", t, re.IGNORECASE)
-    reste = re.sub(r"\bJ\d{1,2}\b|\bU\d{2}\b", " ", t, flags=re.IGNORECASE)
-    equipes = [e.strip() for e in re.split(r"\s[-–]\s", reste) if e.strip()]
-    adv = next((e for e in equipes if not re.fullmatch(r"paris\s*fc", e, re.IGNORECASE)), "")
-    return {"journee": j.group(1) if j else "", "categorie": c.group(1).upper() if c else "", "adversaire": adv}
+    c = re.search(r"\bU(\d{2})F?\b", t, re.IGNORECASE)
+    reste = re.sub(r"\bJ\d{1,2}\b|\bU\d{2}F?\b|\b[RD]\dF?\b", " ", t, flags=re.IGNORECASE)
+    equipes = [" ".join(e.split()) for e in re.split(r"\s(?:[-–]|vs\.?)\s", reste, flags=re.IGNORECASE)]
+    adv = next((e for e in equipes if e and not re.search(r"paris\s*fc", e, re.IGNORECASE)), "")
+    return {"journee": j.group(1) if j else "", "categorie": f"U{c.group(1)}" if c else "", "adversaire": adv}
+
+
+def _premiere_valeur(df: pd.DataFrame, col: str) -> str:
+    """Première valeur d'une colonne Sportscode multi-valeurs (« HAC,HAC » → « HAC »)."""
+    if col not in df.columns:
+        return ""
+    v = df[col].dropna().astype(str).str.split(",").str[0].str.strip()
+    v = v[(v != "") & (v.str.lower() != col.lower())]
+    return v.mode().iloc[0] if len(v) else ""
+
+
+def _meme_equipe(a: str, b: str) -> bool:
+    na, nb = (gc._cle_nom(x).replace(" ", "") for x in (a, b))
+    return bool(na) and bool(nb) and (na in nb or nb in na)
+
+
+def infos_sportscode(df: pd.DataFrame) -> tuple[dict, str]:
+    """Proposition (journee, categorie, adversaire) pour un export Sportscode brut, et une
+    alerte si le titre de la Timeline contredit les colonnes du fichier.
+    Les colonnes Teamersaire / Journée / Compétition (lignes adversaire) priment sur le titre,
+    comme dans load_tactical_files : c'est un titre recopié d'un autre match (HAC J2 titré
+    « AAS Sarcelles - Paris FC ») qui a fait masquer le vrai Sarcelles R1 J2 le 28/09/2026."""
+    tl = df["Timeline"].dropna()
+    titre = str(tl.iloc[0]) if len(tl) else ""
+    prop = infos_depuis_timeline(titre)
+    adv, jr, comp = _premiere_valeur(df, "Teamersaire"), _premiere_valeur(df, "Journée"), _premiere_valeur(df, "Compétition")
+    alerte = ""
+    if adv:
+        if prop["adversaire"] and not _meme_equipe(adv, prop["adversaire"]):
+            alerte = (f"Le titre de la Timeline (« {titre} ») indique {prop['adversaire']}, mais les actions "
+                      f"du fichier sont celles de {adv} : vérifier qu'il s'agit du bon match.")
+        prop["adversaire"] = adv
+    if jr:
+        try:
+            prop["journee"] = str(int(float(jr)))
+        except ValueError:
+            pass
+    c = re.search(r"\bU(\d{2})", comp, re.IGNORECASE)
+    if c:
+        prop["categorie"] = f"U{c.group(1)}"
+    return prop, alerte
 
 
 def nom_standard_tactique(date, categorie: str, adversaire: str, journee: str = "") -> str:
@@ -96,7 +138,7 @@ def analyser_fichier(nom: str, contenu: bytes, est_tactique: Callable[[str], boo
     Sportscode brut de la plateforme (nom sans date) — à renommer au format standard
     (nom_standard_tactique) avec la date du match, `proposition` pré-remplie depuis Timeline."""
     res = {"type": None, "valide": False, "detail": "", "date": None, "empreinte": empreinte(contenu),
-           "a_nommer": False, "proposition": {}}
+           "a_nommer": False, "proposition": {}, "alerte": ""}
     if not nom.lower().endswith(".csv"):
         res["detail"] = "Extension .csv attendue"
         return res
@@ -127,9 +169,8 @@ def analyser_fichier(nom: str, contenu: bytes, est_tactique: Callable[[str], boo
     except Exception:
         df = None
     if df is not None and {"Timeline", "Row"} <= set(df.columns):
-        tl = df["Timeline"].dropna()
-        res.update(type="Tactique", a_nommer=True,
-                   proposition=infos_depuis_timeline(tl.iloc[0] if len(tl) else ""),
+        prop, alerte = infos_sportscode(df)
+        res.update(type="Tactique", a_nommer=True, proposition=prop, alerte=alerte,
                    detail=f"Export Sportscode brut ({len(df)} lignes) : renseigner la date du match")
         return res
     try:
@@ -161,6 +202,30 @@ def _csv(dossiers: Iterable[str], recursif: bool) -> list[str]:
         else:
             out += [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith(".csv")]
     return sorted(set(out))
+
+
+def cle_match_tactique(nom: str, infos_tactique: Callable[[str], dict]):
+    """Clé de dédoublonnage de load_tactical_files : (date, journée, adversaire normalisé)."""
+    info = infos_tactique(nom)
+    return None if info.get("date") is None else (info["date"], info.get("journee"), info.get("adv_norm"))
+
+
+def blocages_import(nom_final: str, typ: str, contenu: bytes, existants: dict, tactiques: dict,
+                    infos_tactique: Callable[[str], dict]) -> list[str]:
+    """Raisons de refuser un import (liste vide = OK).
+    existants : {empreinte: chemin} des CSV déjà sur le serveur ;
+    tactiques : {cle_match: chemin} des fichiers tactiques déjà présents."""
+    raisons = []
+    dbl = existants.get(empreinte(contenu))
+    if dbl:
+        raisons.append(f"contenu identique à « {os.path.basename(dbl)} », déjà présent")
+    if typ == "Tactique":
+        cle = cle_match_tactique(nom_final, infos_tactique)
+        autre = tactiques.get(cle) if cle else None
+        if autre and os.path.basename(autre) != nom_final:
+            raisons.append(f"même date, journée et adversaire que « {os.path.basename(autre)} » : "
+                           "l'app n'afficherait plus que l'un des deux (le plus récent)")
+    return raisons
 
 
 def signature_gps(chemin: str) -> Optional[str]:

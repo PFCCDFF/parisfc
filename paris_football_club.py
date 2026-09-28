@@ -13420,7 +13420,8 @@ def _importer_un_csv(service, nom: str, contenu: bytes, typ: str) -> Tuple[bool,
 
 
 def render_import_csv():
-    from import_csv import TYPES, analyser_fichier, empreinte, lister_doublons, nom_standard_tactique
+    from import_csv import (TYPES, analyser_fichier, blocages_import, cle_match_tactique, empreinte,
+                            lister_doublons, nom_standard_tactique)
 
     st.subheader("📥 Importer des CSV")
     st.caption("Exports de la plateforme GPS (séances, matchs) ou fichiers tactiques Sportscode (PFC_VS_…). "
@@ -13440,7 +13441,17 @@ def render_import_csv():
                         if f.lower().endswith(".csv"):
                             with open(os.path.join(racine, f), "rb") as fh:
                                 existants.setdefault(empreinte(fh.read()), os.path.join(racine, f))
+        # Matchs tactiques déjà présents, par clé de dédoublonnage de load_tactical_files.
+        tactiques = {}
+        for d in (TACTICAL_FOLDER, "data/tactical"):
+            if os.path.isdir(d):
+                for f in os.listdir(d):
+                    if f.lower().endswith(".csv") and is_tactical_file(f):
+                        cle = cle_match_tactique(f, parse_tactical_filename)
+                        if cle:
+                            tactiques.setdefault(cle, os.path.join(d, f))
         lignes, analyses = [], {}
+        par_contenu = {up.name: up.getvalue() for up in fichiers}
         for up in fichiers:
             contenu = up.getvalue()
             a = analyser_fichier(up.name, contenu, is_tactical_file, read_csv_auto,
@@ -13474,15 +13485,31 @@ def render_import_csv():
                 cat = c[2].text_input("Catégorie", value=prop.get("categorie", ""), key=f"{_cle}_c{i}")
                 adv = c[3].text_input("Adversaire", value=prop.get("adversaire", ""), key=f"{_cle}_a{i}")
                 jr = c[4].text_input("Journée", value=prop.get("journee", ""), key=f"{_cle}_j{i}")
+                if analyses[n]["alerte"]:
+                    st.warning(analyses[n]["alerte"])
                 if d and cat.strip() and adv.strip():
                     noms_finaux[n] = nom_standard_tactique(d, cat, adv, jr)
                     st.caption(f"→ enregistré sous : `{noms_finaux[n]}`")
                 else:
                     st.caption("⚠️ Renseigner la date du match (et vérifier catégorie / adversaire).")
+
+        # Garde-fous : un doublon exact ou un fichier qui masquerait un autre match est refusé.
+        blocages = {}
+        for _, r in a_importer.iterrows():
+            n = r["Fichier"]
+            if r["Type"] in _IMPORT_DEST and (analyses[n]["valide"] or n in noms_finaux):
+                raisons = blocages_import(noms_finaux.get(n, n), r["Type"], par_contenu[n], existants,
+                                          tactiques, parse_tactical_filename)
+                if raisons:
+                    blocages[n] = raisons
+                    st.error(f"⛔ {n} ne sera pas importé : " + " ; ".join(raisons) + ".")
+        if blocages:
+            st.caption("Pour remplacer volontairement un fichier existant, le supprimer d'abord du Drive et du serveur.")
         if len(tab[tab["Déjà présent"] != ""]):
             st.info("Certains fichiers ont un contenu identique à un fichier déjà présent (colonne « Déjà présent ») : "
                     "les réimporter créerait un doublon.")
-        if st.button(f"📥 Importer {len(a_importer)} fichier(s)", type="primary", disabled=a_importer.empty,
+        _n_imp = len(a_importer) - len(blocages)
+        if st.button(f"📥 Importer {_n_imp} fichier(s)", type="primary", disabled=_n_imp <= 0,
                      key=f"{_cle}_go"):
             try:
                 service = authenticate_google_drive()
@@ -13494,6 +13521,8 @@ def render_import_csv():
             n_ok = 0
             for _, r in a_importer.iterrows():
                 nom, typ = r["Fichier"], r["Type"]
+                if nom in blocages:
+                    continue
                 if r["Valide"] == "✏️" and nom not in noms_finaux:
                     st.error(f"{nom} : date du match (ou catégorie / adversaire) manquante, ignoré.")
                     continue
