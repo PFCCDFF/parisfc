@@ -103,6 +103,15 @@ class TestCompilation(unittest.TestCase):
         self.assertEqual(canon["Maeline MUPSAFOSI"], "Maelline MUPFASONI")
         self.assertEqual(canon["Louane"], "Louane EXILIE")
 
+    def test_nom_compose_partiel_avec_faute(self):
+        self.assertTrue(gc.sous_ensemble_flou(["THANIA", "AMAR"], ["AMMAR", "PARMENTIER", "THANIA"]))
+        self.assertFalse(gc.sous_ensemble_flou(["MARIAM", "DEMBELE"], ["AISSATA", "DEMBELE"]))
+        self.assertFalse(gc.sous_ensemble_flou(["BINTA"], ["BINTA", "TRAORE"]))       # prénom seul : autre règle
+        canon = gc.regrouper_variantes(pd.Series(["Chloé NIAMA MAHOUKOU"] * 5 + ["Clhoé NIAMA", "Mariam DEMBELE", "Aïssata DEMBELE"]))
+        self.assertEqual(canon["Clhoé NIAMA"], "Chloé NIAMA MAHOUKOU")
+        self.assertEqual(canon["Mariam DEMBELE"], "Mariam DEMBELE")
+        self.assertEqual(canon["Aïssata DEMBELE"], "Aïssata DEMBELE")
+
 
 class TestCharge(unittest.TestCase):
     def test_ewma_et_reprise_apres_interruption(self):

@@ -13376,8 +13376,16 @@ def _empreinte_dossiers_gps() -> str:
 def charger_sessions_charge(empreinte: str) -> pd.DataFrame:
     """Table joueuse × session (matchs + entraînements, formats 2025-26 et 2026-27),
     noms rattachés au référentiel comme dans load_gps_raw()."""
-    from gps_compilation import compiler_sessions_gps
-    mapper = None
+    from gps_compilation import compiler_sessions_gps, nom_lisible, sous_ensemble_flou
+
+    def format_canon(nom_brut: str) -> str:
+        """Joueuse hors référentiel : même format « NOM PRENOM » que les canoniques."""
+        toks = nom_lisible(nom_brut).split()
+        nom = [t for t in toks if t.isupper() and len(t) > 1]
+        prenom = [t for t in toks if not (t.isupper() and len(t) > 1)]
+        return nettoyer_nom_joueuse(" ".join(nom + prenom))
+
+    mapper = format_canon
     ref_path = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
     if not os.path.exists(ref_path):
         ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME) or ""
@@ -13385,10 +13393,16 @@ def charger_sessions_charge(empreinte: str) -> pd.DataFrame:
         ref = build_referentiel_players(ref_path)
         gps_map = load_gps_name_map()
 
-        def mapper(nom_brut: str) -> Optional[str]:
+        def mapper(nom_brut: str) -> str:
             nom = gps_map.get(normalize_name_raw(str(nom_brut)), nom_brut)
             canon, statut, _ = map_player_name(nom, *ref, cutoff_fuzzy=0.93)
-            return nettoyer_nom_joueuse(canon) if statut != "unmatched" and canon else None
+            if statut != "unmatched" and canon:
+                return nettoyer_nom_joueuse(canon)
+            # Nom composé partiel dans l'export GPS (« Thania AMAR » → AMMAR PARMENTIER THANIA) :
+            # retenu seulement si une seule joueuse du référentiel correspond.
+            toks = nettoyer_nom_joueuse(nom).split()
+            cands = [r for r in ref[0] if sous_ensemble_flou(toks, r.split())]
+            return cands[0] if len(cands) == 1 else format_canon(nom_brut)
     return compiler_sessions_gps([GPS_FOLDER, GPS_MATCH_FOLDER], normaliser_nom=mapper)
 
 

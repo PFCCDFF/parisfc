@@ -70,10 +70,28 @@ def _cle_nom(n: str) -> str:
     return " ".join(sorted(n.replace("-", " ").split()))
 
 
+def sous_ensemble_flou(petit: list, grand: list, seuil: float = 0.8) -> bool:
+    """Chaque mot de `petit` (au moins 2) correspond à un mot distinct de `grand`,
+    à une faute de frappe près : « THANIA AMAR » ⊂ « AMMAR PARMENTIER THANIA »,
+    « CLHOE NIAMA » ⊂ « NIAMA MAHOUKOU CHLOE »."""
+    import difflib
+    if len(petit) < 2 or len(petit) > len(grand):
+        return False
+    reste = list(grand)
+    for t in petit:
+        m = t if t in reste else next(
+            (g for g in reste if difflib.SequenceMatcher(None, t, g).ratio() >= seuil), None)
+        if m is None:
+            return False
+        reste.remove(m)
+    return True
+
+
 def regrouper_variantes(noms: pd.Series, seuil: float = 0.8) -> dict:
     """Rattache les variantes orthographiques à la forme la plus fréquente :
     fautes de frappe (« MUPSAFOSI » → « MUPFASONI »), prénom seul quand il est
-    sans ambiguïté (« Louane » → « Louane EXILIE »), prénom et nom inversés."""
+    sans ambiguïté (« Louane » → « Louane EXILIE »), prénom et nom inversés,
+    nom composé partiel avec faute (« Clhoé NIAMA » → « Chloé NIAMA MAHOUKOU »)."""
     import difflib
     freq = noms.value_counts()
     cles = {n: _cle_nom(n) for n in freq.index}
@@ -87,7 +105,8 @@ def regrouper_variantes(noms: pd.Series, seuil: float = 0.8) -> dict:
             tk, tr = set(k.split()), set(kr.split())
             ratio = max(difflib.SequenceMatcher(None, k.replace(" ", ""), kr.replace(" ", "")).ratio(),
                         difflib.SequenceMatcher(None, "".join(sorted(k.replace(" ", ""))), "".join(sorted(kr.replace(" ", "")))).ratio() - 0.1)
-            if k == kr or ratio >= seuil or (len(tk) >= 2 and len(tr) >= 2 and (tk <= tr or tr <= tk)):
+            if (k == kr or ratio >= seuil or (len(tk) >= 2 and len(tr) >= 2 and (tk <= tr or tr <= tk))
+                    or sous_ensemble_flou(k.split(), kr.split()) or sous_ensemble_flou(kr.split(), k.split())):
                 cible = r
                 break
         if cible is None and len(k.split()) == 1:  # prénom seul
