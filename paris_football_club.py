@@ -3401,23 +3401,31 @@ def normalize_players_in_df(
     fuzzy_cutoff: float = 0.93,
 ) -> pd.DataFrame:
     out = df.copy()
+    # map_player_name est pure (même entrée → même sortie) mais coûteuse (fuzzy
+    # matching difflib) : une même valeur revient des milliers de fois dans un
+    # fichier (noms, "PFC", équipes). Sans ce memo, la reconstruction du cache
+    # après un sync Drive prenait ~1 min 40 et bloquait le premier affichage.
+    _memo: Dict[Tuple[str, str], Tuple[str, str, str]] = {}
     for col in cols:
         if col not in out.columns:
             continue
         new_vals = []
         for v in out[col].tolist():
-            mapped, status, raw = map_player_name(
-                v,
-                ref_set,
-                alias_to_canon,
-                tokenkey_to_canon,
-                compact_to_canon,
-                first_to_canons,
-                last_to_canons,
-                cutoff_fuzzy=fuzzy_cutoff,
-                cutoff_token=0.92,
-                cutoff_single=0.90,
-            )
+            _k = (type(v).__name__, str(v))
+            if _k not in _memo:
+                _memo[_k] = map_player_name(
+                    v,
+                    ref_set,
+                    alias_to_canon,
+                    tokenkey_to_canon,
+                    compact_to_canon,
+                    first_to_canons,
+                    last_to_canons,
+                    cutoff_fuzzy=fuzzy_cutoff,
+                    cutoff_token=0.92,
+                    cutoff_single=0.90,
+                )
+            mapped, status, raw = _memo[_k]
             if status not in {"exact", "alias", "token_set", "compact"} and str(v).strip():
                 report.append({"file": filename, "column": col, "raw": raw, "mapped": mapped, "status": status})
             new_vals.append(mapped if looks_like_player(mapped) else v)
