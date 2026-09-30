@@ -13655,8 +13655,78 @@ def render_laboratoire_charge():
                 st.error(f"Export Drive impossible : {e}")
 
 
-def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
-    st.sidebar.markdown(
+def _render_nav_menu(user_profile, permissions) -> str:
+    """Menu de navigation de la sidebar (composant streamlit_option_menu).
+
+    Appelé par main() AVANT collect_data() : le composant doit signaler qu'il est prêt
+    dans les 60 s qui suivent son affichage, sinon Streamlit affiche « having trouble
+    loading the option_menu component ». Rendu après collect_data(), il attendait toute
+    la reconstruction des données (≥ 45 s après chaque nouveau fichier Drive, plus avec
+    plusieurs sessions en parallèle)."""
+    role = get_user_role(user_profile, permissions)
+
+    if role == ROLE_ADMIN:
+        options = ["Performance", "Programme talent", "Gestion", "Médical", "Recrutement", "Laboratoire"]
+    elif role == ROLE_STAFF:
+        options = ["Performance", "Programme talent", "Médical", "Recrutement"]
+    else:  # ROLE_JOUEUSE
+        options = ["Performance"]
+
+    # Onglet Staff Pro — visible uniquement pour le profil "Staff Pro"
+    _is_staff_pro = str(user_profile).strip().lower() in ("staff pro", "staffpro", "staff_pro")
+    if _is_staff_pro:
+        options.append("Staff Pro")
+
+    # Forcer la navigation vers "Staff Pro" à la première exécution après connexion
+    # Performance reste la page d'accueil quel que soit l'ordre du menu.
+    _default_index = options.index("Performance") if "Performance" in options else 0
+    if _is_staff_pro and "Staff Pro" in options:
+        _default_index = options.index("Staff Pro")
+
+    _base_icons = ["lightning-charge", "people-fill", "heart-pulse", "search"]
+    _all_icons   = ["lightning-charge", "people-fill", "gear-fill", "people-fill", "heart-pulse", "search", "star-fill"]
+    # Reconstruire la liste d'icônes en suivant l'ordre des options
+    _icon_map = {
+        "Laboratoire":        "eyedropper",
+        "Performance":        "lightning-charge",
+        "Programme talent": "people-fill",
+        "Gestion":            "gear-fill",
+        "Médical":            "heart-pulse",
+        "Recrutement":        "search",
+        "Staff Pro":          "star-fill",
+    }
+    icons = [_icon_map.get(o, "circle") for o in options]
+
+    with st.sidebar:
+        return option_menu(
+            menu_title="",
+            options=options,
+            icons=icons,
+            menu_icon="cast",
+            default_index=_default_index,
+            orientation="vertical",
+            styles={
+                "container": {"padding": "6px 4px !important", "background-color": "transparent"},
+                "icon": {"color": "#00A3E0", "font-size": "16px"},
+                "nav-link": {
+                    "font-size": "13px", "font-family": "Oswald, sans-serif",
+                    "font-weight": "500", "letter-spacing": "0.07em", "text-transform": "uppercase",
+                    "text-align": "left", "margin": "1px 6px", "--hover-color": "rgba(0,163,224,0.12)",
+                    "border-radius": "3px", "color": "#C8D8E8",
+                },
+                "nav-link-selected": {
+                    "background-color": "#00A3E0",
+                    "color": "#08090D", "font-weight": "600",
+                },
+            },
+        )
+
+
+def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sidebar=None):
+    # sidebar : conteneur réservé par main() au-dessus du menu (déjà affiché) pour garder
+    # l'ordre logo / profil / saison / déconnexion / menu ; page : choix du menu.
+    _sb = sidebar if sidebar is not None else st.sidebar
+    _sb.markdown(
         "<div style='display:flex;flex-direction:column;align-items:center;padding:24px 0 16px 0;border-bottom:1px solid rgba(0,163,224,0.15);margin-bottom:8px;'>"
         "<img src='https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png' style='width:90px;height:90px;object-fit:contain;'>"
         "<div style='font-family:Oswald,sans-serif;font-size:9px;font-weight:500;letter-spacing:0.18em;text-transform:uppercase;color:#6A8090;margin-top:10px;'>Centre de Formation F&eacute;minin</div>"
@@ -13665,7 +13735,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     )
 
     player_name = get_player_for_profile(user_profile, permissions)
-    st.sidebar.markdown(
+    _sb.markdown(
         f"<div style='font-family:Oswald,sans-serif;font-size:11px;font-weight:500;letter-spacing:0.14em;"
         f"text-transform:uppercase;color:#6A8090;padding:0 12px 2px 12px;'>Connecté</div>"
         f"<div style='font-family:Oswald,sans-serif;font-size:20px;font-weight:700;letter-spacing:0.06em;"
@@ -13674,14 +13744,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     )
 
     if player_name:
-        st.sidebar.write(f"Joueuse associée : {player_name}")
+        _sb.write(f"Joueuse associée : {player_name}")
 
     saison_options = ["Toutes les saisons", "2425", "2526", "2627"]
-    selected_saison = st.sidebar.selectbox("Saison", saison_options)
+    selected_saison = _sb.selectbox("Saison", saison_options)
     # Rendre la saison accessible globalement dans tous les onglets
     st.session_state["selected_saison"] = selected_saison
 
-    if st.sidebar.button("🔒 Déconnexion"):
+    if _sb.button("🔒 Déconnexion"):
         st.session_state.authenticated = False
         st.session_state.user_profile = None
         st.rerun()
@@ -13718,7 +13788,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     _sys_warns = st.session_state.get("_system_warnings", [])
     if _sys_warns and check_permission(user_profile, "all", permissions):
         n = len(_sys_warns)
-        with st.sidebar.expander(f"⚠️ {n} avertissement{'s' if n > 1 else ''}", expanded=False):
+        with _sb.expander(f"⚠️ {n} avertissement{'s' if n > 1 else ''}", expanded=False):
             for w in _sys_warns:
                 st.caption(f"• {w}")
 
@@ -13740,62 +13810,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile):
     st.session_state["_export_is_admin"] = export_is_admin
 
     role = get_user_role(user_profile, permissions)
-
-    if role == ROLE_ADMIN:
-        options = ["Performance", "Programme talent", "Gestion", "Médical", "Recrutement", "Laboratoire"]
-    elif role == ROLE_STAFF:
-        options = ["Performance", "Programme talent", "Médical", "Recrutement"]
-    else:  # ROLE_JOUEUSE
-        options = ["Performance"]
-
-    # Onglet Staff Pro — visible uniquement pour le profil "Staff Pro"
     _is_staff_pro = str(user_profile).strip().lower() in ("staff pro", "staffpro", "staff_pro")
-    if _is_staff_pro:
-        options.append("Staff Pro")
 
-    # Forcer la navigation vers "Staff Pro" à la première exécution après connexion
-    # Performance reste la page d'accueil quel que soit l'ordre du menu.
-    _default_index = options.index("Performance") if "Performance" in options else 0
-    if _is_staff_pro and "Staff Pro" in options:
-        _default_index = options.index("Staff Pro")
-
-    _base_icons = ["lightning-charge", "people-fill", "heart-pulse", "search"]
-    _all_icons   = ["lightning-charge", "people-fill", "gear-fill", "people-fill", "heart-pulse", "search", "star-fill"]
-    # Reconstruire la liste d'icônes en suivant l'ordre des options
-    _icon_map = {
-        "Laboratoire":        "eyedropper",
-        "Performance":        "lightning-charge",
-        "Programme talent": "people-fill",
-        "Gestion":            "gear-fill",
-        "Médical":            "heart-pulse",
-        "Recrutement":        "search",
-        "Staff Pro":          "star-fill",
-    }
-    icons = [_icon_map.get(o, "circle") for o in options]
-
-    with st.sidebar:
-        page = option_menu(
-            menu_title="",
-            options=options,
-            icons=icons,
-            menu_icon="cast",
-            default_index=_default_index,
-            orientation="vertical",
-            styles={
-                "container": {"padding": "6px 4px !important", "background-color": "transparent"},
-                "icon": {"color": "#00A3E0", "font-size": "16px"},
-                "nav-link": {
-                    "font-size": "13px", "font-family": "Oswald, sans-serif",
-                    "font-weight": "500", "letter-spacing": "0.07em", "text-transform": "uppercase",
-                    "text-align": "left", "margin": "1px 6px", "--hover-color": "rgba(0,163,224,0.12)",
-                    "border-radius": "3px", "color": "#C8D8E8",
-                },
-                "nav-link-selected": {
-                    "background-color": "#00A3E0",
-                    "color": "#08090D", "font-weight": "600",
-                },
-            },
-        )
+    if page is None:
+        page = _render_nav_menu(user_profile, permissions)
 
     # =====================
     # =====================
@@ -15581,6 +15599,11 @@ def main():
         else:
             st.sidebar.caption("🔄 Mise à jour Drive en cours…")
 
+    # Menu affiché avant le chargement des données (cf. _render_nav_menu) ; le haut de
+    # la sidebar est réservé au-dessus pour conserver l'ordre d'affichage.
+    _sb_haut = st.sidebar.container()
+    _page = _render_nav_menu(st.session_state.user_profile, permissions)
+
     with st.spinner("Chargement des données…"):
         pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, gps_match_df, name_report_df = collect_data()
     st.session_state["name_report_df"] = name_report_df
@@ -15588,7 +15611,7 @@ def main():
     st.session_state["gps_weekly_df"] = gps_week_df
     st.session_state["gps_match_df"] = gps_match_df
 
-    script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile)
+    script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile, page=_page, sidebar=_sb_haut)
 
 
 if __name__ == "__main__":
