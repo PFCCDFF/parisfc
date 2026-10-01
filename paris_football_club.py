@@ -298,7 +298,7 @@ def save_fiche_templates(templates: dict) -> bool:
 
 # ── Rapport de match : catalogue d'indicateurs + templates nommés persistants ──
 MATCH_REPORT_INDICATORS = {
-    "Statistiques générales": ["Buts", "Passes décisives", "Ballons touchés", "Ballons perdus"],
+    "Statistiques générales": ["Buts", "Passes décisives", "Ballons joués", "Ballons perdus"],
     "Technique":  ["Passes", "Passes par direction", "Passes dernier tiers",
                    "Dribbles", "Tirs", "Interceptions", "Duels au sol", "Duels aériens"],
     "Athlétique": ["Distance totale", "Distance par plage de vitesse", "Accélérations", "Décélérations"],
@@ -9512,6 +9512,21 @@ def build_touch_heatmap_b64(locs: list) -> str:
         plt.close(fig)
 
 
+REPORT_BACKGROUND_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fond_rapport_match.jpg")
+
+
+@functools.lru_cache(maxsize=1)
+def _report_background_uri() -> str:
+    """Fond du rapport de match (plan de Paris navy) en data URI, lu une seule fois.
+    Fichier versionné dans assets/ (pas dans data/, qui n'est jamais commit)."""
+    try:
+        import base64 as _b64bg
+        with open(REPORT_BACKGROUND_PATH, "rb") as f:
+            return "data:image/jpeg;base64," + _b64bg.b64encode(f.read()).decode()
+    except Exception:
+        return ""
+
+
 def build_tactical_report_html(
     df_tactic,
     player_canon: str,
@@ -9658,6 +9673,8 @@ def build_tactical_report_html(
         date_long = f"{_JOURS[_ref_date.weekday()]} {_ref_date.day} {_MOIS[_ref_date.month - 1]} {_ref_date.year}"
 
     PFC_LOGO = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
+    _bg_uri = _report_background_uri()
+    _bg_css = f"url('{_bg_uri}') center/cover no-repeat," if _bg_uri else ""
 
     def _show(*labels):
         return any(l in _msel for l in labels)
@@ -9710,8 +9727,8 @@ def build_tactical_report_html(
             gen += f'<div class="note">{tps_sub}</div>'
     if _show("Buts", "Passes décisives"):
         gen += row("Buts / Passes décisives", f"{t_but} / {assists}")
-    if "Ballons touchés" in _msel:
-        gen += row("Ballons touchés", ballons)
+    if "Ballons joués" in _msel:
+        gen += row("Ballons joués", ballons)
     if "Ballons perdus" in _msel:
         gen += row("Ballons perdus", pertes)
 
@@ -9731,7 +9748,7 @@ def build_tactical_report_html(
     if "Dribbles" in _msel:
         off += row("Dribbles tentés", d_tot, _pct_txt(d_ok, d_tot))
     if "Tirs" in _msel:
-        off += row("Tirs tentés <span class='rs'>(% cadrés)</span>", t_tot, _pct_txt(t_cad, t_tot))
+        off += row("Tirs (cadrés)", f"{t_tot} ({t_cad})")
 
     def _cell(lbl, val, extra=""):
         return f'<div class="cell"><div class="cl">{lbl}</div><div class="cv">{val}{extra}</div></div>'
@@ -9741,7 +9758,8 @@ def build_tactical_report_html(
     if "Interceptions" in _msel:
         _cells.append(_cell("Interceptions", interc))
     if _show("Duels au sol", "Duels aériens"):
-        _cells.append(_cell("Duels joués / gagnés", f"{du_tot} / {du_ok}"))
+        _cells.append(_cell("Duels joués", du_tot))
+        _cells.append(_cell("Duels gagnés", du_ok, _pct_txt(du_ok, du_tot)))
     if "Duels au sol" in _msel:
         _cells.append(_cell("Duels au sol gagnés", f"{sol_ok}/{sol_tot}", _pct_txt(sol_ok, sol_tot)))
     if "Duels aériens" in _msel:
@@ -9754,7 +9772,7 @@ def build_tactical_report_html(
         ath += row("Distance", _fmt_int(_gf("distance_m"), " m"))
     if "Distance par plage de vitesse" in _msel:
         for lbl, key in [("0-7 km/h", "d_0_7"), ("7-13 km/h", "d_7_13"), ("13-19 km/h", "d_13_19_m"),
-                         ("19-23 km/h", "d_19_23_m"), ("Sprint &gt;23 km/h", "d_23p_m")]:
+                         ("19-23 km/h", "d_19_23_m"), ("Sprint <span class='rs'>&gt;23 km/h</span>", "d_23p_m")]:
             ath += row(lbl, _fmt_int(_gf(key), " m"))
     if "Accélérations" in _msel:
         ath += row("Accélérations <span class='rs'>&gt;2 m/s²</span>", _fmt_int(_gf("acc2")),
@@ -9813,7 +9831,7 @@ def build_tactical_report_html(
                            for i, (k, v) in enumerate(_kv[:3]))
             _low = "".join(f'<div class="tr"><span class="tn">{i + 1}</span><span>{k}</span><b>{int(round(v))}</b></div>'
                            for i, (k, v) in enumerate(reversed(_kv[-2:])))
-            forces_cards = card("Points forts", _top) + card("Axes de progression", _low)
+            forces_cards = card("Top 3 points forts", _top) + card("Top 2 axes de progression", _low)
 
     _footer_lbl = mi.get("label", "") or ""
 
@@ -9826,9 +9844,7 @@ def build_tactical_report_html(
 body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exact;display:flex;justify-content:center;padding:6px;}}
 .page{{width:297mm;height:210mm;overflow:hidden;display:flex;flex-direction:column;font-family:Inter,sans-serif;color:#E6EEF8;
   background:
-    radial-gradient(ellipse at 75% 40%,rgba(31,168,224,.10),transparent 60%),
-    repeating-linear-gradient(115deg,rgba(255,255,255,.018) 0 2px,transparent 2px 22px),
-    repeating-linear-gradient(25deg,rgba(255,255,255,.014) 0 1px,transparent 1px 30px),
+    {_bg_css}
     #0A2453;}}
 .hdr{{display:flex;align-items:center;gap:14px;padding:12px 22px;background:#061A40;border-bottom:2px solid #1FA8E0;flex-shrink:0;}}
 .hdr .sep{{width:1px;height:30px;background:rgba(255,255,255,.25);}}
@@ -9840,12 +9856,12 @@ body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exa
 .hs{{font-size:10.5px;color:#9FB8D8;margin-top:2px;}}
 .sc{{color:#E5322D;font-weight:800;}}
 .body{{display:grid;grid-template-columns:41% 1fr;flex:1;min-height:0;}}
-.left{{padding:12px 14px 12px 22px;border-right:2px solid rgba(31,168,224,.35);display:flex;flex-direction:column;min-height:0;}}
+.left{{background:rgba(4,18,50,.45);padding:12px 14px 12px 22px;border-right:2px solid rgba(31,168,224,.35);display:flex;flex-direction:column;min-height:0;}}
 .right{{padding:12px 22px 12px 18px;display:flex;flex-direction:column;min-height:0;}}
 .sect{{font-size:12px;font-weight:700;letter-spacing:2.2px;color:#1FA8E0;margin-bottom:9px;}}
 .cols{{display:grid;grid-template-columns:1fr 1fr;gap:10px;flex:1;min-height:0;}}
 .col{{display:flex;flex-direction:column;gap:10px;min-height:0;}}
-.card{{background:rgba(18,52,110,.82);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;}}
+.card{{background:rgba(16,46,100,.78);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;}}
 .col>.card{{flex-basis:0;}}
 .rows{{flex:1;display:flex;flex-direction:column;justify-content:space-around;}}
 .ct{{font-size:10.5px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:#1FA8E0;margin-bottom:5px;}}
