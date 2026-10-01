@@ -9856,12 +9856,12 @@ body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exa
 .hs{{font-size:10.5px;color:#9FB8D8;margin-top:2px;}}
 .sc{{color:#E5322D;font-weight:800;}}
 .body{{display:grid;grid-template-columns:41% 1fr;flex:1;min-height:0;}}
-.left{{background:rgba(4,18,50,.45);padding:12px 14px 12px 22px;border-right:2px solid rgba(31,168,224,.35);display:flex;flex-direction:column;min-height:0;}}
+.left{{background:rgba(4,18,50,.15);padding:12px 14px 12px 22px;border-right:2px solid rgba(31,168,224,.35);display:flex;flex-direction:column;min-height:0;}}
 .right{{padding:12px 22px 12px 18px;display:flex;flex-direction:column;min-height:0;}}
 .sect{{font-size:12px;font-weight:700;letter-spacing:2.2px;color:#1FA8E0;margin-bottom:9px;}}
 .cols{{display:grid;grid-template-columns:1fr 1fr;gap:10px;flex:1;min-height:0;}}
 .col{{display:flex;flex-direction:column;gap:10px;min-height:0;}}
-.card{{background:rgba(16,46,100,.78);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;}}
+.card{{background:rgba(16,46,100,.42);border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;}}
 .col>.card{{flex-basis:0;}}
 .rows{{flex:1;display:flex;flex-direction:column;justify-content:space-around;}}
 .ct{{font-size:10.5px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:#1FA8E0;margin-bottom:5px;}}
@@ -9879,7 +9879,7 @@ body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exa
 .cv{{font-family:Unbounded,sans-serif;font-size:15px;font-weight:700;color:#FFF;margin-top:2px;}}
 .graph{{display:grid;grid-template-columns:minmax(0,.72fr) minmax(0,1.08fr) minmax(0,1fr);grid-template-rows:1fr auto;gap:12px;flex:1;min-height:0;}}
 .gcol{{display:flex;flex-direction:column;gap:10px;min-height:0;}}
-.gcard{{background:rgba(12,40,92,.92);border:1px solid rgba(255,255,255,.08);border-top:3px solid #1FA8E0;border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;min-height:0;}}
+.gcard{{background:rgba(12,40,92,.48);border:1px solid rgba(255,255,255,.16);border-top:3px solid #1FA8E0;border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;min-height:0;}}
 .g-heat{{flex:1;}}
 .g-heat .panel img{{position:static!important;width:100%!important;height:auto!important;}}
 .g-heat .panel{{background:#FFF;padding:4px;}}
