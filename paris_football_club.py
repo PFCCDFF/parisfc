@@ -302,7 +302,7 @@ MATCH_REPORT_INDICATORS = {
     "Technique":  ["Passes", "Passes par direction", "Passes dernier tiers",
                    "Dribbles", "Tirs", "Interceptions", "Duels au sol", "Duels aériens"],
     "Athlétique": ["Distance totale", "Distance par plage de vitesse", "Accélérations", "Décélérations"],
-    "Visuels":    ["Carte des zones de touches", "Araignée tactique"],
+    "Visuels":    ["Heatmap des touches", "Araignée tactique"],
 }
 MATCH_REPORT_ALL_INDICATORS = [i for cat in MATCH_REPORT_INDICATORS.values() for i in cat]
 MATCH_REPORT_TEMPLATES_PATH = os.path.join("data", "match_report_templates.json")
@@ -9448,50 +9448,65 @@ def build_kpi_spider_b64(scores: dict) -> str:
         plt.close(fig)
 
 
-def _report_zone_map_svg(locs: list, pitch_svg: str) -> str:
-    """Carte des zones de touches : terrain horizontal (attaque vers la droite) découpé
-    selon le modèle de zones du rapport collectif — 4 bandes (Def, MDef, MOf, Off)
-    × 3 couloirs (G, C, D) — avec le % des ballons touchés par zone + points de touche."""
-    rows_lbl = ["Def", "MDef", "MOf", "Off"]
-    cols_lbl = ["G", "C", "D"]
-    counts = [[0] * 3 for _ in range(4)]
+@_mpl_safe
+def build_touch_heatmap_b64(locs: list) -> str:
+    """Heatmap lissée des ballons touchés sur terrain horizontal (attaque vers la droite).
+    `locs` : coordonnées déjà normalisées par compute_tactical_stats (x 0-100, y 0-68,
+    y=0 en haut = couloir gauche, inversion MT2 appliquée). Densité = histogramme fin
+    flouté par un noyau gaussien séparable (numpy seul, sans scipy) → data URI PNG."""
+    from matplotlib.colors import LinearSegmentedColormap
+    W, H, RES, SIGMA = 100.0, 68.0, 0.5, 4.5  # unités terrain (≈ m)
+    nx, ny = int(W / RES), int(H / RES)
+    xs, ys = [], []
     for l in locs or []:
         try:
             x, y = float(l["x"]), float(l["y"])
         except Exception:
             continue
-        ri = min(3, max(0, int(x // 25)))
-        ci = min(2, max(0, int(y // (68.0 / 3))))
-        counts[ri][ci] += 1
-    total = sum(sum(r) for r in counts)
-    vmax = max(max(r) for r in counts) or 1
-    cells, labels = "", ""
-    zh = 68.0 / 3
-    for ri in range(4):
-        for ci in range(3):
-            n = counts[ri][ci]
-            op = 0.06 + 0.74 * (n / vmax) if n else 0.0
-            x0, y0 = ri * 25.0, ci * zh
-            cells += (f'<rect x="{x0:.1f}" y="{y0:.2f}" width="25" height="{zh:.2f}" '
-                      f'fill="#00A3E0" fill-opacity="{op:.2f}" stroke="#1A3D5A" stroke-width=".35" '
-                      f'stroke-dasharray="1.2,1"/>')
-            pct = int(round(n / total * 100)) if total else 0
-            col = "#FFFFFF" if n else "#2A4060"
-            labels += (f'<text x="{x0 + 12.5:.1f}" y="{y0 + zh / 2 + 2.2:.2f}" text-anchor="middle" '
-                       f'font-size="4.6" font-weight="800" fill="{col}" '
-                       f'font-family="Barlow Condensed,sans-serif">{pct}%</text>')
-    dots = "".join(
-        f'<circle cx="{float(l["x"]):.1f}" cy="{float(l["y"]):.1f}" r=".75" fill="#E8F4FA" fill-opacity=".45"/>'
-        for l in (locs or []) if "x" in l and "y" in l
-    )
-    return (
-        '<svg viewBox="0 0 100 68" width="100%" style="display:block;border-radius:5px;" '
-        'xmlns="http://www.w3.org/2000/svg">'
-        f'{pitch_svg}{cells}{dots}{labels}'
-        '<text x="98" y="66" text-anchor="end" font-size="3.4" fill="#4A7A98" '
-        'font-family="Barlow Condensed,sans-serif">SENS DU JEU ▶</text>'
-        '</svg>'
-    )
+        if np.isfinite(x) and np.isfinite(y):
+            xs.append(x); ys.append(y)
+    grid = np.zeros((ny, nx))
+    if xs:
+        hist, _, _ = np.histogram2d(ys, xs, bins=[ny, nx], range=[[0, H], [0, W]])
+        s = SIGMA / RES
+        k = np.arange(-int(3 * s), int(3 * s) + 1)
+        ker = np.exp(-(k ** 2) / (2 * s ** 2)); ker /= ker.sum()
+        grid = np.apply_along_axis(lambda r: np.convolve(r, ker, mode="same"), 1, hist)
+        grid = np.apply_along_axis(lambda c: np.convolve(c, ker, mode="same"), 0, grid)
+    vmax = grid.max() if grid.max() > 0 else 1.0
+    cmap = LinearSegmentedColormap.from_list(
+        "pfc_heat", [(0.0, (0, 0, 0, 0)), (0.12, "#0B3A5A"), (0.4, "#00A3E0"),
+                     (0.75, "#7DD3FC"), (1.0, "#FFFFFF")])
+
+    fig, ax = plt.subplots(figsize=(5.0, 3.4), dpi=160)
+    fig.patch.set_facecolor("#07111C")
+    ax.set_facecolor("#070E04")
+    # y=0 (haut du SVG) affiché en haut : extent inversé sur l'axe vertical
+    ax.imshow(grid, extent=(0, W, H, 0), cmap=cmap, vmin=0, vmax=vmax,
+              interpolation="bilinear", zorder=1)
+    lc, lw = "#2E5A24", 0.9
+    for patch in [
+        plt.Rectangle((1, 1), 98, 66, fill=False),
+        plt.Rectangle((1, 13.84), 16.5, 40.32, fill=False),
+        plt.Rectangle((1, 24.84), 5.5, 18.32, fill=False),
+        plt.Rectangle((82.5, 13.84), 16.5, 40.32, fill=False),
+        plt.Rectangle((93.5, 24.84), 5.5, 18.32, fill=False),
+        plt.Circle((50, 34), 9.15, fill=False),
+    ]:
+        patch.set_edgecolor(lc); patch.set_linewidth(lw); patch.set_zorder(3)
+        ax.add_patch(patch)
+    ax.plot([50, 50], [1, 67], color=lc, lw=lw, zorder=3)
+    ax.text(98, 66, "SENS DU JEU ▶", ha="right", va="bottom", fontsize=6.5,
+            color="#4A7A98", fontweight="bold", zorder=4)
+    ax.set_xlim(0, W); ax.set_ylim(H, 0)
+    ax.set_xticks([]); ax.set_yticks([])
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    fig.subplots_adjust(0, 0, 1, 1)
+    try:
+        return fig_to_b64(fig)
+    finally:
+        plt.close(fig)
 
 
 def build_tactical_report_html(
@@ -9513,7 +9528,7 @@ def build_tactical_report_html(
        sur un match, nombre de matchs analysés en compilation)
     2. Temps de jeu (GPS « Temps joué », cumulé si plusieurs matchs)
     3. Statistiques générales · techniques (distribution / offensif / défensif) · athlétiques
-    4. Carte des zones de touches + araignée des indicateurs tactiques (modèle de scoring KPI).
+    4. Heatmap des ballons touchés + araignée des indicateurs tactiques (modèle de scoring KPI).
     `tactic_dfs` : liste des fichiers tactiques d'une compilation, pour calculer les
     localisations match par match (inversion MT2 propre à chaque fichier)."""
     _all = set(MATCH_REPORT_ALL_INDICATORS)
@@ -9765,22 +9780,18 @@ def build_tactical_report_html(
                     + "".join(tile(v, l, c) for _, v, l, c in _gen) + '</div>')
 
     # Visuels
-    PITCH = (
-        '<rect width="100" height="68" fill="#070E04"/>'
-        '<rect x="1" y="1" width="98" height="66" fill="none" stroke="#1A3D12" stroke-width=".7"/>'
-        '<line x1="50" y1="1" x2="50" y2="67" stroke="#1A3D12" stroke-width=".6"/>'
-        '<circle cx="50" cy="34" r="9.15" fill="none" stroke="#1A3D12" stroke-width=".6"/>'
-        '<rect x="1" y="13.84" width="16.5" height="40.32" fill="none" stroke="#1A3D12" stroke-width=".6"/>'
-        '<rect x="1" y="24.84" width="5.5" height="18.32" fill="none" stroke="#1A3D12" stroke-width=".6"/>'
-        '<rect x="82.5" y="13.84" width="16.5" height="40.32" fill="none" stroke="#1A3D12" stroke-width=".6"/>'
-        '<rect x="93.5" y="24.84" width="5.5" height="18.32" fill="none" stroke="#1A3D12" stroke-width=".6"/>'
-    )
     map_html = ""
-    if "Carte des zones de touches" in _msel:
-        map_html = (stitle("Zones de touches de balle")
-                    + _report_zone_map_svg(locs, PITCH)
-                    + f'<div style="font-size:9.5px;color:#4A6A88;margin-top:3px;">{len(locs)} ballons localisés · '
-                      f'% par zone (Def · MDef · MOf · Off × G/C/D)</div>')
+    if "Heatmap des touches" in _msel:
+        _hm_b64 = ""
+        try:
+            _hm_b64 = build_touch_heatmap_b64(locs) if locs else ""
+        except Exception:
+            _hm_b64 = ""
+        map_html = stitle("Heatmap — ballons touchés") + (
+            f'<img src="{_hm_b64}" style="width:100%;display:block;border-radius:5px;"/>'
+            f'<div style="font-size:9.5px;color:#4A6A88;margin-top:3px;">{len(locs)} ballons localisés</div>'
+            if _hm_b64 else
+            '<div style="font-size:11px;color:#4A6A88;font-style:italic;">Aucune localisation disponible.</div>')
     spider_html = ""
     if "Araignée tactique" in _msel:
         _ks = kpi_scores or {}
