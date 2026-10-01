@@ -298,12 +298,11 @@ def save_fiche_templates(templates: dict) -> bool:
 
 # ── Rapport de match : catalogue d'indicateurs + templates nommés persistants ──
 MATCH_REPORT_INDICATORS = {
-    "Technico-Tactique": ["Passes réussies", "Dribbles réussis", "Duels défensifs gagnés",
-                          "Tirs cadrés", "Récupérations", "Pertes balle", "Créations déséquilibre"],
-    "Physique GPS":      ["Distance", "HID >13", "HID >19", "Vitesse max", "Sprints >23",
-                          "Acc/Déc total", "Accélérations", "Décélérations", "Répartition vitesse"],
-    "Visuels":           ["Heatmap zone d'action", "Rose des directions de passe",
-                          "Destinations de passes", "Radar du match"],
+    "Statistiques générales": ["Buts", "Passes décisives", "Ballons touchés", "Ballons perdus"],
+    "Technique":  ["Passes", "Passes par direction", "Passes dernier tiers",
+                   "Dribbles", "Tirs", "Interceptions", "Duels au sol", "Duels aériens"],
+    "Athlétique": ["Distance totale", "Distance par plage de vitesse", "Accélérations", "Décélérations"],
+    "Visuels":    ["Carte des zones de touches", "Araignée tactique"],
 }
 MATCH_REPORT_ALL_INDICATORS = [i for cat in MATCH_REPORT_INDICATORS.values() for i in cat]
 MATCH_REPORT_TEMPLATES_PATH = os.path.join("data", "match_report_templates.json")
@@ -6531,13 +6530,20 @@ def compute_tactical_stats(df_tactic, player_name):
         except: return None
 
     def _norm_x(v, inst=None):
+        # Coordonnée absente ("nan") : lever plutôt que renvoyer NaN, que le clamp
+        # min/max transformait en coin du terrain (98.5, 66.5) — faux ballons touchés.
+        if not np.isfinite(float(v)):
+            raise ValueError("coordonnée X absente")
         raw = float(v) * _SVG_W / _FIELD_MAX
         if inst is not None and inst in _mt2_inst:
             raw = _SVG_W - raw  # inversion côté MT2
         # PFC attaque vers la droite : x grand Sportscode = BUT PFC (droite SVG)
         return round(max(1.5, min(98.5, raw)), 1)
 
-    def _norm_y(v): return round(max(1.5, min(66.5, _SVG_H - float(v) * _SVG_H / _FIELD_MAX)), 1)
+    def _norm_y(v):
+        if not np.isfinite(float(v)):
+            raise ValueError("coordonnée Y absente")
+        return round(max(1.5, min(66.5, _SVG_H - float(v) * _SVG_H / _FIELD_MAX)), 1)
 
     pass_map = []
     for _, r in pass_rows.iterrows():
@@ -9295,6 +9301,199 @@ def get_playing_time_from_gps(gps_match_df, player_canon: str) -> str:
         return "—"
 
 
+# ── Rapport de match individuel (v5) — helpers ────────────────────────────────
+
+REPORT_SPIDER_KPIS = ["Rigueur", "Récupération", "Distribution", "Percussion", "Finition", "Créativité"]
+REPORT_SPIDER_COLORS = {
+    "Rigueur": "#2FB8FF", "Récupération": "#FFA06E", "Distribution": "#FF6B6B",
+    "Percussion": "#7B84FF", "Finition": "#BFBFBF", "Créativité": "#8E9BFF",
+}
+
+
+def _report_pass_breakdown(d_rows) -> dict:
+    """Passes d'une joueuse par plage de direction (tag Sportscode « Ungrouped » :
+    Courte/Longue Avant, Arrière, Latérale G/D, Diago G/D) + passes vers le dernier tiers.
+    Chaque entrée = [tentées, réussies]. Les diagonales sont comptées vers l'avant
+    (et isolées dans "diago" pour l'affichage). Seules les passes avec un résultat
+    (Réussie/Ratée) sont comptées, comme pour le total de passes."""
+    out = {"avant": [0, 0], "arriere": [0, 0], "cotes": [0, 0], "dernier_tiers": [0, 0], "diago": 0}
+    if d_rows is None or d_rows.empty or "Passe" not in d_rows.columns:
+        return out
+    _has_ung = "Ungrouped" in d_rows.columns
+    for _, r in d_rows[d_rows["Passe"].notna()].iterrows():
+        tags = [t.strip() for t in str(r.get("Passe", "")).split(",")]
+        if "Réussie" not in tags and "Ratée" not in tags:
+            continue
+        ok = 1 if "Réussie" in tags else 0
+        u = normalize_str(str(r.get("Ungrouped", ""))) if _has_ung else ""
+        cat = None
+        if "arriere" in u:
+            cat = "arriere"
+        elif "diago" in u:
+            cat = "avant"
+            out["diago"] += 1
+        elif "laterale" in u:
+            cat = "cotes"
+        elif "avant" in u:
+            cat = "avant"
+        if cat:
+            out[cat][0] += 1
+            out[cat][1] += ok
+        if "Passe dans dernier 1/3" in tags:
+            out["dernier_tiers"][0] += 1
+            out["dernier_tiers"][1] += ok
+    return out
+
+
+def get_player_demographics(player: str) -> dict:
+    """Date de naissance, pied fort, postes 1/2 depuis le fichier joueuses (load_passerelle_data).
+    Correspondance exacte du nom nettoyé, sinon au moins 2 tokens communs (évite les homonymes de prénom)."""
+    info = {"ddn": "", "pied": "", "poste1": "", "poste2": ""}
+    try:
+        data = load_passerelle_data() or {}
+    except Exception:
+        return info
+    target = nettoyer_nom_joueuse(player or "")
+    toks = nom_tokens(player or "")
+    best, best_sc = None, 0
+    for key, v in data.items():
+        full = f"{v.get('Nom', '')} {v.get('Prénom', '')}".strip()
+        if nettoyer_nom_joueuse(full) == target or nettoyer_nom_joueuse(key) == target:
+            best, best_sc = v, 99
+            break
+        sc = len(toks & nom_tokens(full))
+        if sc > best_sc:
+            best, best_sc = v, sc
+    if best is None or best_sc < 2:
+        return info
+    info.update({
+        "ddn": best.get("Date de naissance", "") or "",
+        "pied": best.get("Pied Fort", "") or "",
+        "poste1": best.get("Poste 1", "") or "",
+        "poste2": best.get("Poste 2", "") or "",
+    })
+    return info
+
+
+def get_match_kpi_scores(pfc_kpi_all, player: str, match_rows: list) -> dict:
+    """Scores KPI (Rigueur, Récupération, … — modèle create_metrics/create_kpis, percentiles
+    calculés dans chaque match) de la joueuse sur les matchs sélectionnés, moyennés.
+    Rattachement ligne pfc_kpi ↔ match par date (+ adversaire si plusieurs matchs le même jour).
+    Retourne {kpi: score, "_n": nb matchs rattachés} ou {}."""
+    if pfc_kpi_all is None or not isinstance(pfc_kpi_all, pd.DataFrame) or pfc_kpi_all.empty \
+            or "Player" not in pfc_kpi_all.columns:
+        return {}
+    _names = pfc_kpi_all["Player"].astype(str)
+    _target = nettoyer_nom_joueuse(player or "")
+    df = pfc_kpi_all[_names.apply(nettoyer_nom_joueuse) == _target]
+    if df.empty:
+        _tk = nom_tokens(player or "")
+        df = pfc_kpi_all[_names.apply(lambda n: len(nom_tokens(n) & _tk) >= 2)]
+    if df.empty or "Date" not in df.columns:
+        return {}
+    _dts = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce").dt.normalize()
+    parts = []
+    for r in match_rows:
+        d = pd.to_datetime(r.get("date"), errors="coerce")
+        if pd.isna(d):
+            continue
+        m = df[_dts == d.normalize()]
+        if len(m) > 1 and r.get("adversaire") and "Adversaire" in m.columns:
+            _an = normalize_str(r.get("adversaire"))
+            m2 = m[m["Adversaire"].astype(str).apply(lambda a: _an in normalize_str(a) or normalize_str(a) in _an)]
+            if not m2.empty:
+                m = m2
+        if not m.empty:
+            parts.append(m.iloc[[0]])
+    if not parts:
+        return {}
+    sub = pd.concat(parts, ignore_index=True)
+    out = {}
+    for k in REPORT_SPIDER_KPIS:
+        if k in sub.columns:
+            v = pd.to_numeric(sub[k], errors="coerce").mean()
+            if pd.notna(v):
+                out[k] = float(v)
+    if out:
+        out["_n"] = len(parts)
+    return out
+
+
+@_mpl_safe
+def build_kpi_spider_b64(scores: dict) -> str:
+    """Araignée 6 axes (indicateurs tactiques) au style des radars de l'app → data URI PNG."""
+    params = [k for k in REPORT_SPIDER_KPIS if k in (scores or {})]
+    if len(params) < 3:
+        return ""
+    values = [int(round(max(0.0, min(100.0, scores[k])))) for k in params]
+    pizza = PyPizza(
+        params=params, background_color="#07111C",
+        straight_line_color="#1A2A3A", last_circle_color="#00A3E0",
+        straight_line_lw=0.8, last_circle_lw=1.4, other_circle_lw=0.6, other_circle_color="#1A2A3A",
+    )
+    fig, ax = pizza.make_pizza(
+        values=values, figsize=(4.4, 4.4),
+        slice_colors=[REPORT_SPIDER_COLORS.get(p, "#9AA4B2") for p in params],
+        value_colors=["#FFFFFF"] * len(params),
+        kwargs_slices=dict(edgecolor="#07111C", linewidth=1.5),
+        kwargs_params=dict(color="#C8D8E8", fontsize=10, fontweight="bold"),
+        kwargs_values=dict(color="#FFFFFF", fontsize=10, fontweight="bold",
+                           bbox=dict(edgecolor="#00A3E0", facecolor="#0C1220",
+                                     boxstyle="round,pad=0.25", lw=0.8)),
+    )
+    fig.set_facecolor("#07111C")
+    try:
+        return fig_to_b64(fig)
+    finally:
+        plt.close(fig)
+
+
+def _report_zone_map_svg(locs: list, pitch_svg: str) -> str:
+    """Carte des zones de touches : terrain horizontal (attaque vers la droite) découpé
+    selon le modèle de zones du rapport collectif — 4 bandes (Def, MDef, MOf, Off)
+    × 3 couloirs (G, C, D) — avec le % des ballons touchés par zone + points de touche."""
+    rows_lbl = ["Def", "MDef", "MOf", "Off"]
+    cols_lbl = ["G", "C", "D"]
+    counts = [[0] * 3 for _ in range(4)]
+    for l in locs or []:
+        try:
+            x, y = float(l["x"]), float(l["y"])
+        except Exception:
+            continue
+        ri = min(3, max(0, int(x // 25)))
+        ci = min(2, max(0, int(y // (68.0 / 3))))
+        counts[ri][ci] += 1
+    total = sum(sum(r) for r in counts)
+    vmax = max(max(r) for r in counts) or 1
+    cells, labels = "", ""
+    zh = 68.0 / 3
+    for ri in range(4):
+        for ci in range(3):
+            n = counts[ri][ci]
+            op = 0.06 + 0.74 * (n / vmax) if n else 0.0
+            x0, y0 = ri * 25.0, ci * zh
+            cells += (f'<rect x="{x0:.1f}" y="{y0:.2f}" width="25" height="{zh:.2f}" '
+                      f'fill="#00A3E0" fill-opacity="{op:.2f}" stroke="#1A3D5A" stroke-width=".35" '
+                      f'stroke-dasharray="1.2,1"/>')
+            pct = int(round(n / total * 100)) if total else 0
+            col = "#FFFFFF" if n else "#2A4060"
+            labels += (f'<text x="{x0 + 12.5:.1f}" y="{y0 + zh / 2 + 2.2:.2f}" text-anchor="middle" '
+                       f'font-size="4.6" font-weight="800" fill="{col}" '
+                       f'font-family="Barlow Condensed,sans-serif">{pct}%</text>')
+    dots = "".join(
+        f'<circle cx="{float(l["x"]):.1f}" cy="{float(l["y"]):.1f}" r=".75" fill="#E8F4FA" fill-opacity=".45"/>'
+        for l in (locs or []) if "x" in l and "y" in l
+    )
+    return (
+        '<svg viewBox="0 0 100 68" width="100%" style="display:block;border-radius:5px;" '
+        'xmlns="http://www.w3.org/2000/svg">'
+        f'{pitch_svg}{cells}{dots}{labels}'
+        '<text x="98" y="66" text-anchor="end" font-size="3.4" fill="#4A7A98" '
+        'font-family="Barlow Condensed,sans-serif">SENS DU JEU ▶</text>'
+        '</svg>'
+    )
+
+
 def build_tactical_report_html(
     df_tactic,
     player_canon: str,
@@ -9305,16 +9504,26 @@ def build_tactical_report_html(
     radar_b64: str = "",
     gps_match_df=None,
     selected_indicators: set = None,
+    player_info: dict = None,
+    kpi_scores: dict = None,
+    tactic_dfs: list = None,
 ) -> str:
-    """Rapport match A4 HTML v4 — photo à côté du nom, polices grandes, layout lisible."""
-    import json as _json, math as _math
-
-    # None = tout afficher (rétrocompatible) ; sinon set des libellés
-    # d'indicateurs à inclure (MATCH_REPORT_ALL_INDICATORS).
-    _msel = set(MATCH_REPORT_ALL_INDICATORS) if selected_indicators is None else set(selected_indicators)
+    """Rapport de match individuel A4 (v5) :
+    1. Identité (nom, date de naissance, pied fort, postes 1/2) + contexte (adversaire/score
+       sur un match, nombre de matchs analysés en compilation)
+    2. Temps de jeu (GPS « Temps joué », cumulé si plusieurs matchs)
+    3. Statistiques générales · techniques (distribution / offensif / défensif) · athlétiques
+    4. Carte des zones de touches + araignée des indicateurs tactiques (modèle de scoring KPI).
+    `tactic_dfs` : liste des fichiers tactiques d'une compilation, pour calculer les
+    localisations match par match (inversion MT2 propre à chaque fichier)."""
+    _all = set(MATCH_REPORT_ALL_INDICATORS)
+    _msel = _all if selected_indicators is None else (set(selected_indicators) & _all)
+    if not _msel:  # ancien template (libellés v4) → tout afficher
+        _msel = _all
 
     player_label = str(player_canon or "").strip()
     mi = match_info or {}
+    pinfo = player_info or {}
 
     # ── GPS ───────────────────────────────────────────────────────────────────
     _gps = None
@@ -9323,647 +9532,362 @@ def build_tactical_report_html(
     elif isinstance(gps_summary, pd.DataFrame) and not gps_summary.empty:
         _gps = gps_summary.iloc[0].to_dict()
 
-    def _g(key, fmt="{:.0f}", fb="—"):
-        if _gps is None: return fb
+    def _gf(key):
+        if _gps is None:
+            return None
         v = pd.to_numeric(_gps.get(key, None), errors="coerce")
-        return fb if pd.isna(v) else fmt.format(float(v))
+        return None if pd.isna(v) else float(v)
 
-    def _gf(key, fb=0.0):
-        if _gps is None: return fb
-        v = pd.to_numeric(_gps.get(key, None), errors="coerce")
-        return float(v) if not pd.isna(v) else fb
-
-    import math as _m
-    # Temps de jeu : uniquement depuis gps_summary (colonne "Temps joué" du fichier GPS,
-    # convertie en minutes lors de la standardisation via _parse_hmmss H:MM:SS → minutes)
-    _tps_raw  = pd.to_numeric(_gps.get("duration_min", None), errors="coerce") if _gps else float("nan")
-    temps_gps = str(int(round(float(_tps_raw)))) if _gps and not _m.isnan(float(_tps_raw)) else "—"
+    def _fmt_int(v, unit=""):
+        return "—" if v is None else f"{int(round(v)):,}".replace(",", " ") + unit
 
     # ── Stats tactiques ────────────────────────────────────────────────────────
-    s = compute_tactical_stats(df_tactic, player_canon) if df_tactic is not None else {}
+    s = compute_tactical_stats(df_tactic, player_canon) if df_tactic is not None and not df_tactic.empty else {}
 
-    def _si(key, fb=0):
-        v = s.get(key, fb)
-        try: return int(float(v) if v is not None else fb)
-        except: return fb
+    def _si(key):
+        try:
+            return int(float(s.get(key, 0) or 0))
+        except Exception:
+            return 0
 
-    p_ok=_si("passes_ok"); p_ko=_si("passes_ko"); p_tot=p_ok+p_ko
-    p_pct=int(p_ok/p_tot*100) if p_tot else 0
-    c_ok=_si("courtes_ok"); c_ko=_si("courtes_ko"); c_tot=c_ok+c_ko
-    l_ok=_si("longues_ok"); l_ko=_si("longues_ko"); l_tot=l_ok+l_ko
-    d_ok=_si("drib_ok"); d_ko=_si("drib_ko"); d_tot=d_ok+d_ko
-    d_pct=int(d_ok/d_tot*100) if d_tot else 0
-    du_ok=_si("duels_gagnes"); du_ko=_si("duels_perdus"); du_tot=du_ok+du_ko
-    du_pct=int(du_ok/du_tot*100) if du_tot else 0
-    sol_ok=_si("sol_ok"); sol_ko=_si("sol_ko"); sol_tot=sol_ok+sol_ko
-    aer_ok=_si("aer_ok"); aer_ko=_si("aer_ko"); aer_tot=aer_ok+aer_ko
-    t_tot=_si("tirs_tot"); t_cad=_si("tirs_cadres"); t_but=_si("tirs_buts")
-    recup=_si("recuperations"); pertes=_si("pertes"); ballons=_si("ballons")
-    poste=str(s.get("postes","") or ""); systeme=str(s.get("systeme","") or "")
+    def _pct(ok, tot):
+        return int(round(ok / tot * 100)) if tot else 0
 
-    creation_deseq=0; passes_dt=0; passes_en1=0
+    p_ok, p_ko = _si("passes_ok"), _si("passes_ko"); p_tot = p_ok + p_ko
+    d_ok, d_ko = _si("drib_ok"), _si("drib_ko"); d_tot = d_ok + d_ko
+    sol_ok, sol_ko = _si("sol_ok"), _si("sol_ko"); sol_tot = sol_ok + sol_ko
+    aer_ok, aer_ko = _si("aer_ok"), _si("aer_ko"); aer_tot = aer_ok + aer_ko
+    du_ok, du_ko = _si("duels_gagnes"), _si("duels_perdus"); du_tot = du_ok + du_ko
+    t_tot, t_cad, t_but = _si("tirs_tot"), _si("tirs_cadres"), _si("tirs_buts")
+    interc, pertes, ballons = _si("interceptions"), _si("pertes"), _si("ballons")
+
+    d_rows = pd.DataFrame()
     if df_tactic is not None and not df_tactic.empty:
         try:
-            d_rows=_filter_player_rows(df_tactic, player_canon)
-            for col in d_rows.columns:
-                if "quilibre" in col and "Zone" not in col:
-                    # La colonne contient "Création de Deséquilibre" si tagué, sinon vide
-                    creation_deseq=int(d_rows[col].apply(
-                        lambda v: str(v).strip() not in ("","nan","None")
-                    ).sum()); break
-            if "Passe" in d_rows.columns:
-                pr=d_rows[d_rows["Passe"].notna()]
-                ap=[a.strip() for cell in pr["Passe"].dropna() for a in str(cell).split(",")]
-                passes_dt=ap.count("Passe dans dernier 1/3")
-                passes_en1=ap.count("En 1")
-        except: pass
+            d_rows = _filter_player_rows(df_tactic, player_canon)
+        except Exception:
+            d_rows = pd.DataFrame()
+    pb = _report_pass_breakdown(d_rows)
+    assists = 0
+    if not d_rows.empty and "Passe" in d_rows.columns:
+        assists = int(d_rows["Passe"].dropna().astype(str).str.count("Passe Décisive").sum())
 
-    dest_counts={}
-    if df_tactic is not None and not df_tactic.empty:
-        try:
-            d_rows=_filter_player_rows(df_tactic, player_canon)
-            if "Destination passe" in d_rows.columns and "Passe" in d_rows.columns:
-                for _,r in d_rows.iterrows():
-                    dest=str(r.get("Destination passe","")).strip()
-                    if dest and dest.lower() not in ("","nan") and str(r.get("Passe","")).strip():
-                        dest_counts[dest]=dest_counts.get(dest,0)+1
-        except: pass
+    # Localisations (carte des zones) : match par match en compilation
+    locs = []
+    if tactic_dfs:
+        for _dfi in tactic_dfs:
+            try:
+                if _dfi is not None and not _dfi.empty:
+                    locs.extend(compute_tactical_stats(_dfi, player_canon).get("locs", []))
+            except Exception:
+                pass
+    else:
+        locs = s.get("locs", [])
 
-    locs_json=_json.dumps(s.get("locs",[]))
-    passes_json=_json.dumps(s.get("passes_map",[]))
-    locs=s.get("locs",[])
-    cx=sum(l["x"] for l in locs)/len(locs) if locs else 50.0
-    cy=sum(l["y"] for l in locs)/len(locs) if locs else 34.0
+    # Poste joué (fallback du poste 1 si absent du fichier joueuses)
+    _poste_tac = ""
+    if not d_rows.empty and "Poste" in d_rows.columns:
+        _pv = d_rows["Poste"].dropna().astype(str).str.split(",").str[0].str.strip()
+        _pv = _pv[_pv.ne("") & _pv.str.lower().ne("nan")]
+        if not _pv.empty:
+            _poste_tac = _pv.mode().iloc[0]
 
-    # ── Centroïdes par poste — moyenne des centroïdes individuels par joueuse
-    def _parse_coord(v):
-        v=str(v).strip()
-        if not v or v in ("nan","None",""): return None
-        try: return float(v.split(",")[0].strip())
-        except: return None
-
-    # Étape 1 : centroïde individuel de chaque joueuse pour chaque poste joué
-    _player_poste_pts = {}  # {(player, poste): [(svgX, svgY)]}
-    if df_tactic is not None and not df_tactic.empty:
-        _skip = {"PFC","HAC","START",""}
-        for _,_r in df_tactic.iterrows():
-            _rn = str(_r.get("Row","") or "").strip()
-            if not _rn or _rn in _skip or "Transition" in _rn or "Carton" in _rn: continue
-            _xr = _parse_coord(_r.get("X_localisation",""))
-            _yr = _parse_coord(_r.get("Y_localisation",""))
-            _pr = str(_r.get("Poste","") or "").strip().split(",")[0].strip()
-            if _xr is None or _yr is None or not _pr: continue
-            _svgx_raw = _xr * 100/80
-            # PFC attaque vers la droite : même mapping que _norm_x, sans inversion
-            _svgx = round(max(1.5, min(98.5, _svgx_raw)), 2)
-            _svgy = round(max(1.5, min(66.5, 68.0 - _yr * 68/80)), 2)
-            _player_poste_pts.setdefault((_rn, _pr), []).append((_svgx, _svgy))
-
-    # Étape 2 : centroïde individuel par (joueuse, poste)
-    _indiv_centroids = {
-        (pl, po): (sum(x for x,y in pts)/len(pts), sum(y for x,y in pts)/len(pts))
-        for (pl, po), pts in _player_poste_pts.items() if pts
-    }
-
-    # Étape 3 : centroïde du poste = moyenne des centroïdes individuels de ce poste
-    _poste_indiv = {}  # {poste: [(cx_indiv, cy_indiv)]}
-    for (pl, po), (cx2, cy2) in _indiv_centroids.items():
-        _poste_indiv.setdefault(po, []).append((cx2, cy2))
-    _poste_centroids = {
-        po: (sum(x for x,y in items)/len(items), sum(y for x,y in items)/len(items))
-        for po, items in _poste_indiv.items()
-    }
-
-    # Étape 4 : poste principal de la joueuse sélectionnée = poste le plus joué (max n actions)
-    _player_postes = {po: len(pts) for (pl, po), pts in _player_poste_pts.items()
-                      if pl == player_label and pts}
-    _player_main_poste = max(_player_postes, key=_player_postes.get) if _player_postes else poste
-
-    # Étape 5 : centroïde propre de la joueuse à son poste principal
-    _player_own_centroid = _indiv_centroids.get((player_label, _player_main_poste), (None, None))
-
-    # JSON pour JS : centroïdes de référence par poste + centroïde propre de la joueuse
-    _ref_centroids_json = _json.dumps([
-        {"poste": po, "cx": round(cx2,2), "cy": round(cy2,2),
-         "isPlayer": False}
-        for po, (cx2, cy2) in sorted(_poste_centroids.items())
-    ])
-    # Centroïde propre de la joueuse (rouge) — séparé pour l'afficher différemment
-    _player_cx, _player_cy = _player_own_centroid if _player_own_centroid[0] is not None else (cx, cy)
-    _player_centroid_json = _json.dumps({
-        "poste": _player_main_poste,
-        "cx": round(_player_cx, 2),
-        "cy": round(_player_cy, 2)
-    })
-
-    # GPS vitesses
-    spd_data=[
-        ("0–7",   _gf("d_0_7"),     "#2D4060"),
-        ("7–13",  _gf("d_7_13"),    "#3B5478"),
-        ("13–19", _gf("d_13_19_m"), "#00A3E0"),
-        ("19–23", _gf("d_19_23_m"), "#38BDF8"),
-        (">23",   _gf("d_23p_m"),   "#7DD3FC"),
-    ]
-    max_spd=max(v for _,v,_ in spd_data) or 1.0
-    spd_bars=""
-    for lbl,val,col in spd_data:
-        pct=int(val/max_spd*100)
-        spd_bars+=(
-            f'<div style="display:grid;grid-template-columns:30px 1fr 52px;align-items:center;gap:4px;margin-bottom:3px;">'
-            f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:9px;color:#7A9AB8;">{lbl}</span>'
-            f'<div style="height:6px;background:#0A1520;border-radius:3px;overflow:hidden;">'
-            f'<div style="height:100%;width:{pct}%;background:{col};border-radius:3px;"></div></div>'
-            f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:9px;color:#A0BDD0;text-align:right;">{int(val):,} m</span>'
-            f'</div>'
-        )
-
-    # Match info
-    adversaire=mi.get("adversaire","") or ""; journee=mi.get("journee","") or ""
-    score=mi.get("score","") or ""; lieu=mi.get("lieu","") or ""
-    match_label=mi.get("label","") or ""; competition=mi.get("competition","") or "Match"
-    match_date=""
+    # ── Identité ──────────────────────────────────────────────────────────────
+    n_matchs = int(mi.get("n_matchs", 1) or 1)
+    _ref_date = None
     try:
-        raw_dt=mi.get("date",None)
-        if raw_dt: match_date=pd.Timestamp(raw_dt).strftime("%d/%m/%Y")
-    except: pass
-    journee_tag=f"J{journee}" if journee else ""
-    meta_line=" · ".join(p for p in [match_date,lieu] if p)
+        _ref_date = pd.Timestamp(mi.get("date")) if mi.get("date") else None
+    except Exception:
+        _ref_date = None
+    ddn = str(pinfo.get("ddn", "") or "").strip()
+    age_txt = ""
+    if ddn:
+        _dob = pd.to_datetime(ddn, dayfirst=True, errors="coerce")
+        if pd.notna(_dob):
+            _r = _ref_date if _ref_date is not None and pd.notna(_ref_date) else pd.Timestamp.today()
+            _age = _r.year - _dob.year - ((_r.month, _r.day) < (_dob.month, _dob.day))
+            age_txt = f"{_age} ans"
+    pied = str(pinfo.get("pied", "") or "").strip()
+    poste1 = str(pinfo.get("poste1", "") or "").strip() or _poste_tac
+    poste2 = str(pinfo.get("poste2", "") or "").strip()
 
-    # Logos
+    # ── Temps de jeu (GPS) ────────────────────────────────────────────────────
+    tps = _gf("duration_min")
+    n_gps = int(_gps.get("_n_matchs_gps", 1)) if _gps and _gps.get("_n_matchs_gps") else (1 if tps else 0)
+    tps_txt = _fmt_int(tps)
+    tps_sub = "Temps joué · GPS"
+    if n_matchs > 1:
+        tps_sub = f"Cumul GPS · {n_gps}/{n_matchs} match{'s' if n_matchs > 1 else ''}"
+        if tps and n_gps:
+            tps_sub += f" · moy. {int(round(tps / n_gps))} min"
+
+    # ── Contexte match ────────────────────────────────────────────────────────
+    adversaire = mi.get("adversaire", "") or ""
+    score = mi.get("score", "") or ""
+    competition = mi.get("competition", "") or ""
+    journee = mi.get("journee", "") or ""
+    match_date = ""
+    if _ref_date is not None and pd.notna(_ref_date):
+        match_date = _ref_date.strftime("%d/%m/%Y")
+
     PFC_LOGO = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
 
-    # Logo adversaire : chercher dans l'index Drive local
-    adv_logo_url = mi.get("logo_adversaire", "") or ""
-    if not adv_logo_url and adversaire:
-        try:
-            _logos_idx = sync_logos_from_drive()
-            _logo_path = find_logo_for_club(adversaire, _logos_idx)
-            if _logo_path:
-                adv_logo_url = logo_path_to_b64(_logo_path)
-        except Exception:
-            pass
-    adv_init=adversaire[:3].upper() if adversaire else "ADV"
-    adv_logo_html=(
-        f'<img src="{adv_logo_url}" style="width:44px;height:44px;object-fit:contain;" '
-        f'onerror="this.outerHTML=\'<div style=&quot;width:44px;height:44px;border-radius:50%;'
-        f'background:#0A1520;border:1px solid #1A2E44;display:flex;align-items:center;'
-        f'justify-content:center;font-size:11px;font-weight:700;color:#2A4060;'
-        f'font-family:Barlow Condensed,sans-serif;&quot;>{adv_init}</div>\'"/ >'
-    ) if adv_logo_url else (
-        f'<div style="width:44px;height:44px;border-radius:50%;background:#0A1520;'
-        f'border:1px solid #1A2E44;display:flex;align-items:center;justify-content:center;'
-        f'font-family:Barlow Condensed,sans-serif;font-size:11px;font-weight:700;color:#2A4060;">{adv_init}</div>'
+    initials = "".join(w[0].upper() for w in player_label.split()[:2]) if player_label else "??"
+    photo_html = (
+        f'<img src="{photo_b64}" style="width:84px;height:100px;object-fit:cover;object-position:top center;'
+        f'border-radius:6px;border:2px solid #00A3E0;display:block;"/>'
+        if photo_b64 else
+        f'<div style="width:84px;height:100px;border-radius:6px;background:#0A1520;border:2px solid #1A2E44;'
+        f'display:flex;align-items:center;justify-content:center;font-family:Barlow Condensed,sans-serif;'
+        f'font-size:30px;font-weight:700;color:#2A4060;">{initials}</div>'
     )
 
-    # Photo
-    initials="".join(w[0].upper() for w in player_label.split()[:2]) if player_label else "??"
-    if photo_b64:
-        photo_html=(
-            f'<img src="{photo_b64}" style="width:76px;height:92px;'
-            f'object-fit:cover;object-position:top center;'
-            f'border-radius:6px;border:2px solid #00A3E0;display:block;flex-shrink:0;"/>'
+    if n_matchs > 1:
+        _lines = [x for x in (mi.get("match_lines") or []) if x]
+        _shown = _lines[:5]
+        _more = f'<div class="ctx-li">+ {len(_lines) - 5} autre(s)</div>' if len(_lines) > 5 else ""
+        ctx_html = (
+            f'<div class="lbl">Matchs analysés</div>'
+            f'<div style="font-family:Barlow Condensed,sans-serif;font-size:44px;font-weight:900;color:#FFF;line-height:1;">{n_matchs}</div>'
+            + "".join(f'<div class="ctx-li">{x}</div>' for x in _shown) + _more
         )
     else:
-        photo_html=(
-            f'<div style="width:76px;height:92px;border-radius:6px;background:#0A1520;'
-            f'border:2px solid #1A2E44;display:flex;align-items:center;justify-content:center;'
-            f'font-family:Barlow Condensed,sans-serif;font-size:28px;font-weight:700;'
-            f'color:#2A4060;flex-shrink:0;">{initials}</div>'
+        _adv_logo = _team_logo_html(adversaire, size=40) if adversaire else ""
+        ctx_html = (
+            f'<div class="lbl">Adversaire</div>'
+            f'<div style="display:flex;align-items:center;gap:8px;margin:2px 0 4px;">{_adv_logo}'
+            f'<div style="font-family:Barlow Condensed,sans-serif;font-size:17px;font-weight:800;color:#FFF;'
+            f'text-transform:uppercase;line-height:1.05;">{adversaire or "—"}</div></div>'
+            f'<div class="lbl">Score</div>'
+            f'<div style="font-family:JetBrains Mono,monospace;font-size:24px;font-weight:600;color:#FFF;'
+            f'letter-spacing:3px;">{score or "—"}</div>'
+            f'<div class="ctx-li">{" · ".join(p for p in [f"J{journee}" if journee else "", competition, match_date] if p)}</div>'
         )
 
-    # Destinations
-    dest_html=""
-    if dest_counts:
-        sorted_dest=sorted(dest_counts.items(),key=lambda x:-x[1])
-        max_dest=sorted_dest[0][1] if sorted_dest else 1
-        for name,cnt in sorted_dest[:7]:
-            pct2=int(cnt/max_dest*100)
-            short=" ".join(name.split()[-2:]) if len(name.split())>2 else name
-            dest_html+=(
-                f'<div style="display:grid;grid-template-columns:1fr 50px 20px;'
-                f'align-items:center;gap:4px;margin-bottom:4px;">'
-                f'<span style="font-size:11px;color:#A8C4D8;font-family:Barlow,sans-serif;">{short}</span>'
-                f'<div style="height:5px;background:#0A1520;border-radius:3px;overflow:hidden;">'
-                f'<div style="height:100%;width:{pct2}%;background:#00A3E0;border-radius:3px;"></div></div>'
-                f'<span style="font-family:JetBrains Mono,monospace;font-size:9.5px;'
-                f'color:#E0EDF5;text-align:right;font-weight:600;">{cnt}</span>'
-                f'</div>'
-            )
-    if not dest_html:
-        dest_html = '<div style="font-size:11px;color:#1A2E44;font-style:italic;">Non disponible</div>'
+    # ── Briques HTML ──────────────────────────────────────────────────────────
+    def _show(*labels):
+        return any(l in _msel for l in labels)
 
-    # Pitch SVG
-    PITCH=(
+    def stitle(txt):
+        return (f'<div class="st">{txt}<div style="flex:1;height:1px;background:#123047;"></div></div>')
+
+    def ftitle(txt):
+        return f'<div class="ft">{txt}</div>'
+
+    def tile(val, lbl, col="#FFFFFF"):
+        return (f'<div class="tile"><div class="tv" style="color:{col};">{val}</div>'
+                f'<div class="tl">{lbl}</div></div>')
+
+    def prow(lbl, tot, ok, col="#22C55E", sub=""):
+        pct = _pct(ok, tot)
+        return (
+            f'<div class="pr"><div class="prl">{lbl}{f"<span class=prs> {sub}</span>" if sub else ""}</div>'
+            f'<div class="prn">{tot}</div>'
+            f'<div class="bar"><div style="width:{pct if tot else 0}%;background:{col};"></div></div>'
+            f'<div class="prp" style="color:{col if tot else "#3A5570"};">{f"{pct}%" if tot else "—"}</div></div>'
+        )
+
+    def nrow(lbl, val, sub=""):
+        return (f'<div class="pr"><div class="prl">{lbl}{f"<span class=prs> {sub}</span>" if sub else ""}</div>'
+                f'<div class="prn">{val}</div><div></div><div></div></div>')
+
+    # Distribution
+    dist_html = ""
+    if _show("Passes", "Passes par direction", "Passes dernier tiers"):
+        dist_html += ftitle("Distribution")
+        if "Passes" in _msel:
+            dist_html += prow("Passes", p_tot, p_ok, "#22C55E")
+        if "Passes par direction" in _msel:
+            dist_html += prow("↑ Vers l'avant", pb["avant"][0], pb["avant"][1], "#00A3E0",
+                              f"dont {pb['diago']} diag." if pb["diago"] else "")
+            dist_html += prow("↔ Vers les côtés", pb["cotes"][0], pb["cotes"][1], "#7B84FF")
+            dist_html += prow("↓ Vers l'arrière", pb["arriere"][0], pb["arriere"][1], "#F4830A")
+        if "Passes dernier tiers" in _msel:
+            dist_html += prow("Vers le dernier tiers", pb["dernier_tiers"][0], pb["dernier_tiers"][1], "#38BDF8")
+
+    off_html = ""
+    if _show("Dribbles", "Tirs"):
+        off_html += ftitle("Offensif")
+        if "Dribbles" in _msel:
+            off_html += prow("Dribbles tentés", d_tot, d_ok, "#00A3E0")
+        if "Tirs" in _msel:
+            off_html += prow("Tirs tentés", t_tot, t_cad, "#22C55E", "(% cadrés)")
+
+    def_html = ""
+    if _show("Interceptions", "Duels au sol", "Duels aériens"):
+        def_html += ftitle("Défensif")
+        if "Interceptions" in _msel:
+            def_html += nrow("Interceptions", interc)
+        if _show("Duels au sol", "Duels aériens"):
+            def_html += prow("Duels joués", du_tot, du_ok, "#F4830A", f"{du_ok} gagnés")
+        if "Duels au sol" in _msel:
+            def_html += prow("Duels au sol gagnés", sol_tot, sol_ok, "#F4830A", f"{sol_ok}/{sol_tot}")
+        if "Duels aériens" in _msel:
+            def_html += prow("Duels aériens gagnés", aer_tot, aer_ok, "#F4830A", f"{aer_ok}/{aer_tot}")
+
+    # Athlétique
+    spd = [("0–7 km/h", _gf("d_0_7"), "#2D4060"), ("7–13 km/h", _gf("d_7_13"), "#3B5478"),
+           ("13–19 km/h", _gf("d_13_19_m"), "#00A3E0"), ("19–23 km/h", _gf("d_19_23_m"), "#38BDF8"),
+           ("> 23 km/h", _gf("d_23p_m"), "#7DD3FC")]
+    _spd_max = max([v for _, v, _ in spd if v] or [1.0])
+    ath_html = ""
+    if _show("Distance totale"):
+        ath_html += (f'<div class="tile" style="margin-bottom:6px;"><div class="tv" style="color:#38BDF8;">'
+                     f'{_fmt_int(_gf("distance_m"))}<span style="font-size:13px;color:#5A7A98;"> m</span></div>'
+                     f'<div class="tl">Distance totale</div></div>')
+    if _show("Distance par plage de vitesse"):
+        ath_html += ftitle("Distance par plage de vitesse")
+        for lbl, v, col in spd:
+            w = int((v or 0) / _spd_max * 100)
+            ath_html += (f'<div class="pr" style="grid-template-columns:66px 1fr 56px;">'
+                         f'<div class="prl" style="font-size:10.5px;">{lbl}</div>'
+                         f'<div class="bar"><div style="width:{w}%;background:{col};"></div></div>'
+                         f'<div class="prp" style="color:#C8DCF0;">{_fmt_int(v, " m")}</div></div>')
+    _acc, _acc3 = _gf("acc2"), _gf("acc3")
+    _dec, _dec3 = _gf("dec2"), _gf("dec3")
+    if _show("Accélérations", "Décélérations"):
+        ath_html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;">'
+        if "Accélérations" in _msel:
+            ath_html += tile(_fmt_int(_acc), f"Accélérations &gt;2 m/s²<br><span style='color:#4A6A88'>dont &gt;3 : {_fmt_int(_acc3)}</span>", "#38BDF8")
+        if "Décélérations" in _msel:
+            ath_html += tile(_fmt_int(_dec), f"Décélérations &gt;2 m/s²<br><span style='color:#4A6A88'>dont &gt;3 : {_fmt_int(_dec3)}</span>", "#38BDF8")
+        ath_html += '</div>'
+    if _gps is None and ath_html:
+        ath_html += '<div style="font-size:10px;color:#4A6A88;font-style:italic;margin-top:4px;">Aucune donnée GPS rattachée.</div>'
+
+    # Générales
+    gen_html = ""
+    _gen = [("Buts", t_but, "Buts marqués", "#22C55E"), ("Passes décisives", assists, "Passes décisives", "#00A3E0"),
+            ("Ballons touchés", ballons, "Ballons touchés", "#FFFFFF"), ("Ballons perdus", pertes, "Ballons perdus", "#EF4444")]
+    _gen = [g for g in _gen if g[0] in _msel]
+    if _gen:
+        gen_html = (f'<div style="display:grid;grid-template-columns:repeat({len(_gen)},1fr);gap:6px;">'
+                    + "".join(tile(v, l, c) for _, v, l, c in _gen) + '</div>')
+
+    # Visuels
+    PITCH = (
         '<rect width="100" height="68" fill="#070E04"/>'
-        '<rect x="1" y="1" width="16" height="66" fill="rgba(255,255,255,0.008)"/>'
-        '<rect x="33" y="1" width="16" height="66" fill="rgba(255,255,255,0.008)"/>'
-        '<rect x="67" y="1" width="16" height="66" fill="rgba(255,255,255,0.008)"/>'
         '<rect x="1" y="1" width="98" height="66" fill="none" stroke="#1A3D12" stroke-width=".7"/>'
         '<line x1="50" y1="1" x2="50" y2="67" stroke="#1A3D12" stroke-width=".6"/>'
         '<circle cx="50" cy="34" r="9.15" fill="none" stroke="#1A3D12" stroke-width=".6"/>'
-        '<circle cx="50" cy="34" r=".6" fill="#1A3D12"/>'
         '<rect x="1" y="13.84" width="16.5" height="40.32" fill="none" stroke="#1A3D12" stroke-width=".6"/>'
         '<rect x="1" y="24.84" width="5.5" height="18.32" fill="none" stroke="#1A3D12" stroke-width=".6"/>'
         '<rect x="82.5" y="13.84" width="16.5" height="40.32" fill="none" stroke="#1A3D12" stroke-width=".6"/>'
         '<rect x="93.5" y="24.84" width="5.5" height="18.32" fill="none" stroke="#1A3D12" stroke-width=".6"/>'
-        '<rect x="0" y="29.34" width="1" height="9.32" fill="#1A3D12"/>'
-        '<rect x="99" y="29.34" width="1" height="9.32" fill="#1A3D12"/>'
     )
+    map_html = ""
+    if "Carte des zones de touches" in _msel:
+        map_html = (stitle("Zones de touches de balle")
+                    + _report_zone_map_svg(locs, PITCH)
+                    + f'<div style="font-size:9.5px;color:#4A6A88;margin-top:3px;">{len(locs)} ballons localisés · '
+                      f'% par zone (Def · MDef · MOf · Off × G/C/D)</div>')
+    spider_html = ""
+    if "Araignée tactique" in _msel:
+        _ks = kpi_scores or {}
+        _sp_b64 = ""
+        try:
+            _sp_b64 = build_kpi_spider_b64(_ks) if _ks else ""
+        except Exception:
+            _sp_b64 = ""
+        if _sp_b64:
+            _n_k = int(_ks.get("_n", 1) or 1)
+            spider_html = (stitle("Indicateurs tactiques")
+                           + f'<img src="{_sp_b64}" style="width:100%;max-width:330px;display:block;margin:0 auto;"/>'
+                           + f'<div style="font-size:9.5px;color:#4A6A88;text-align:center;">Scores /100 — percentiles intra-match'
+                           + (f', moyenne de {_n_k} matchs' if _n_k > 1 else '') + '</div>')
+        else:
+            spider_html = (stitle("Indicateurs tactiques")
+                           + '<div style="font-size:11px;color:#4A6A88;font-style:italic;">Scores KPI non disponibles pour ce match.</div>')
 
-    def srow(lbl, pct, col, detail=""):
-        return (
-            f'<div style="margin-bottom:6px;">'
-            f'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px;">'
-            f'<span style="font-family:Barlow,sans-serif;font-size:12px;color:#A8C4D8;">{lbl}</span>'
-            f'<span style="font-family:JetBrains Mono,monospace;font-size:13px;font-weight:600;color:{col};">{pct}%</span>'
-            f'</div>'
-            f'<div style="height:6px;background:#0A1520;border-radius:3px;overflow:hidden;margin-bottom:2px;">'
-            f'<div style="height:100%;width:{pct}%;background:{col};border-radius:3px;"></div></div>'
-            f'<div style="font-size:10px;color:#6A8898;">{detail}</div>'
-            f'</div>'
-        )
+    def _demo(lbl, val):
+        return (f'<div><div class="lbl">{lbl}</div>'
+                f'<div class="dv">{val or "—"}</div></div>')
 
-    def mcard(t, v, sub, col="#7A9AB8"):
-        return (
-            f'<div style="background:#080F1C;border:1px solid #101E2E;border-radius:5px;padding:5px 7px;">'
-            f'<div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:700;'
-            f'letter-spacing:.8px;text-transform:uppercase;color:#5A7A98;margin-bottom:2px;">{t}</div>'
-            f'<div style="font-family:Barlow Condensed,sans-serif;font-size:18px;font-weight:800;'
-            f'color:{col};line-height:1;">{v}</div>'
-            f'<div style="font-size:9.5px;color:#5A7A98;margin-top:1px;">{sub}</div>'
-            f'</div>'
-        )
-
-    def stitle(txt):
-        return (
-            f'<div style="font-family:Barlow Condensed,sans-serif;font-size:10.5px;font-weight:700;'
-            f'letter-spacing:1.6px;text-transform:uppercase;color:#00A3E0;'
-            f'display:flex;align-items:center;gap:6px;margin-bottom:7px;">'
-            f'{txt}<div style="flex:1;height:1px;background:#0F1E2E;"></div></div>'
-        )
-
-    sol_pct=int(sol_ok/sol_tot*100) if sol_tot else 0
-    c_pct=int(c_ok/c_tot*100) if c_tot else 0
-    l_pct=int(l_ok/l_tot*100) if l_tot else 0
-    grn_du="#22C55E" if du_pct>=50 else "#EF4444"
-    t_but_str=f"⚽ {t_but} but{'s' if t_but>1 else ''}" if t_but else "0 but"
-    deseq_pct=min(100,int(creation_deseq/max(ballons,1)*300)) if creation_deseq else 0
+    _ddn_disp = ddn + (f" <span style='color:#5A7A98;font-size:12px;'>({age_txt})</span>" if age_txt else "")
+    _footer_lbl = mi.get("label", "") or ""
 
     return f"""<!DOCTYPE html>
 <html lang="fr"><head>
 <meta charset="UTF-8"/>
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800;900&family=Barlow:wght@300;400;500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800;900&family=Barlow:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;}}
-body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exact;
-  display:flex;justify-content:center;padding:6px;}}
-.page{{width:210mm;height:297mm;overflow:hidden;background:#07111C;
-  display:flex;flex-direction:column;font-family:Barlow,sans-serif;}}
-@media print{{
-  body{{background:#030608!important;padding:0;}}
-  .page{{page-break-inside:avoid;}}
-  @page{{size:A4;margin:0;}}
-}}
+body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exact;display:flex;justify-content:center;padding:6px;}}
+.page{{width:210mm;height:297mm;overflow:hidden;background:#07111C;display:flex;flex-direction:column;font-family:Barlow,sans-serif;color:#C8DCF0;}}
+.lbl{{font-family:'Barlow Condensed',sans-serif;font-size:9.5px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#5A7A98;}}
+.dv{{font-family:'Barlow Condensed',sans-serif;font-size:16px;font-weight:700;color:#FFFFFF;margin-top:1px;}}
+.ctx-li{{font-family:'Barlow Condensed',sans-serif;font-size:10.5px;color:#8AABCA;letter-spacing:.3px;margin-top:2px;}}
+.st{{font-family:'Barlow Condensed',sans-serif;font-size:11.5px;font-weight:800;letter-spacing:1.6px;text-transform:uppercase;color:#00A3E0;display:flex;align-items:center;gap:6px;margin-bottom:6px;}}
+.ft{{font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#8AABCA;margin:7px 0 3px;padding-bottom:2px;border-bottom:1px solid #0F1E2E;}}
+.tile{{background:#0A1624;border:1px solid #12243A;border-radius:6px;padding:6px 8px;text-align:center;}}
+.tv{{font-family:'Barlow Condensed',sans-serif;font-size:26px;font-weight:800;line-height:1;}}
+.tl{{font-family:'Barlow Condensed',sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#5A7A98;margin-top:2px;}}
+.pr{{display:grid;grid-template-columns:1fr 34px 70px 38px;align-items:center;gap:6px;margin-bottom:3px;}}
+.prl{{font-size:11.5px;color:#A8C4D8;}}
+.prs{{font-size:9.5px;color:#4A6A88;}}
+.prn{{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:#FFFFFF;text-align:right;}}
+.prp{{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;text-align:right;}}
+.bar{{height:6px;background:#0A1520;border-radius:3px;overflow:hidden;}}
+.bar>div{{height:100%;border-radius:3px;}}
+.sec{{padding:9px 12px;border-bottom:1px solid #0F1E2E;}}
+@media print{{body{{background:#030608!important;padding:0;}} .page{{page-break-inside:avoid;}} @page{{size:A4;margin:0;}}}}
 </style></head>
 <body><div class="page">
 
-<!-- HEADER -->
-<div style="display:grid;grid-template-columns:1fr auto;gap:0;
-  background:#060F1A;border-bottom:2.5px solid #00A3E0;flex-shrink:0;">
-
-  <!-- Gauche : logo + photo + nom -->
-  <div style="display:flex;align-items:center;gap:14px;padding:11px 16px;">
-    <img src="{PFC_LOGO}" alt="PFC"
-      style="width:54px;height:54px;object-fit:contain;flex-shrink:0;"
-      onerror="this.style.display='none'"/>
+<!-- 1. IDENTITÉ -->
+<div style="display:grid;grid-template-columns:1fr 190px;background:#060F1A;border-bottom:2.5px solid #00A3E0;flex-shrink:0;">
+  <div style="display:flex;align-items:center;gap:14px;padding:12px 16px;">
+    <img src="{PFC_LOGO}" alt="PFC" style="width:50px;height:50px;object-fit:contain;" onerror="this.style.display='none'"/>
     {photo_html}
-    <div style="display:flex;flex-direction:column;gap:5px;">
-      <div style="font-family:'Barlow Condensed',sans-serif;font-size:34px;font-weight:900;
-        letter-spacing:.5px;color:#FFFFFF;line-height:1;text-transform:uppercase;">{player_label}</div>
-      <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;">
-        {'<span style="font-family:Barlow Condensed,sans-serif;font-size:11.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;padding:3px 10px;border-radius:3px;border:1.5px solid #00A3E0;color:#00A3E0;background:rgba(0,163,224,0.1);">'+poste+'</span>' if poste else ''}
-        {'<span style="font-family:Barlow Condensed,sans-serif;font-size:11.5px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;padding:3px 10px;border-radius:3px;border:1px solid #1A2E44;color:#8AABCA;background:#09131E;">'+systeme+'</span>' if systeme else ''}
-        <span style="font-family:Barlow Condensed,sans-serif;font-size:11.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;padding:3px 10px;border-radius:3px;border:1.5px solid #00A3E0;color:#00A3E0;background:rgba(0,163,224,0.1);">{temps_gps} MIN</span>
-        <span style="font-family:Barlow Condensed,sans-serif;font-size:11.5px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;padding:3px 10px;border-radius:3px;border:1px solid #1A2E44;color:#8AABCA;background:#09131E;">{journee_tag} · {competition}</span>
+    <div style="display:flex;flex-direction:column;gap:8px;flex:1;">
+      <div style="font-family:'Barlow Condensed',sans-serif;font-size:32px;font-weight:900;letter-spacing:.5px;color:#FFFFFF;line-height:1;text-transform:uppercase;">{player_label}</div>
+      <div style="display:grid;grid-template-columns:1.3fr 1fr 1fr 1fr;gap:10px;">
+        {_demo("Date de naissance", _ddn_disp)}
+        {_demo("Pied fort", pied)}
+        {_demo("Poste 1", poste1)}
+        {_demo("Poste 2", poste2)}
       </div>
-      <div style="font-size:10.5px;color:#5A7A98;font-family:Barlow Condensed,sans-serif;letter-spacing:.5px;">{meta_line}</div>
     </div>
   </div>
-
-  <!-- Droite : score + logo adverse -->
-  <div style="display:flex;align-items:center;gap:14px;padding:11px 16px;border-left:1px solid #0F1E2E;">
-    <div style="text-align:center;">
-      <div style="font-family:Barlow Condensed,sans-serif;font-size:10px;font-weight:600;color:#5A7A98;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:3px;">Paris FC vs {adversaire}</div>
-      {'<div style="font-family:JetBrains Mono,monospace;font-size:30px;font-weight:600;color:#FFFFFF;background:#09131E;border:1.5px solid #1A2E44;border-radius:8px;padding:3px 14px;letter-spacing:4px;">'+score+'</div>' if score else ''}
-      <div style="font-family:Barlow Condensed,sans-serif;font-size:9px;color:#5A7A98;letter-spacing:.6px;text-transform:uppercase;margin-top:3px;">Rapport match</div>
-    </div>
-    <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
-      {adv_logo_html}
-      <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;color:#5A7A98;letter-spacing:.5px;text-transform:uppercase;">{adversaire or "ADV"}</div>
-    </div>
+  <div style="padding:10px 14px;border-left:1px solid #0F1E2E;display:flex;flex-direction:column;justify-content:center;">
+    {ctx_html}
   </div>
-</div><!-- /header -->
-
-<!-- BODY 2 colonnes -->
-<div style="display:grid;grid-template-columns:1fr 1fr;flex:1;min-height:0;overflow:hidden;">
-
-  <!-- COLONNE GAUCHE -->
-  <div style="display:flex;flex-direction:column;border-right:1px solid #0F1E2E;overflow:hidden;">
-
-    <!-- 4 KPI -->
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid #0F1E2E;background:#060F1A;flex-shrink:0;">
-      <div style="padding:5px 8px;text-align:center;border-right:1px solid #0F1E2E;">
-        <div style="font-family:Barlow Condensed,sans-serif;font-size:24px;font-weight:800;color:#FFF;line-height:1;">{p_tot}</div>
-        <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#5A7A98;margin-top:1px;">Passes</div></div>
-      <div style="padding:5px 8px;text-align:center;border-right:1px solid #0F1E2E;">
-        <div style="font-family:Barlow Condensed,sans-serif;font-size:24px;font-weight:800;color:#FFF;line-height:1;">{t_tot}</div>
-        <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#5A7A98;margin-top:1px;">Tirs ({t_but_str})</div></div>
-      <div style="padding:5px 8px;text-align:center;border-right:1px solid #0F1E2E;">
-        <div style="font-family:Barlow Condensed,sans-serif;font-size:24px;font-weight:800;color:#FFF;line-height:1;">{d_tot}</div>
-        <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#5A7A98;margin-top:1px;">Dribbles</div></div>
-      <div style="padding:5px 8px;text-align:center;">
-        <div style="font-family:Barlow Condensed,sans-serif;font-size:24px;font-weight:800;color:{grn_du};line-height:1;">{du_ok}/{du_tot}</div>
-        <div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#5A7A98;margin-top:1px;">Duels déf.</div></div>
-    </div>
-
-    <!-- TECHNICO-TACTIQUE -->
-    <div style="padding:9px 11px;border-bottom:1px solid #0F1E2E;flex:1;overflow:hidden;">
-      {stitle("Technico-Tactique")}
-      {srow("Passes réussies", p_pct, "#22C55E",
-        f"{p_ok} réussies · {p_ko} ratées" + (f" · {passes_dt} dern.tiers" if passes_dt else "") + (f" · {passes_en1} en 1 tch." if passes_en1 else "")) if "Passes réussies" in _msel else ""}
-      {f'''<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:7px;">
-        {mcard("Courtes", f"{c_ok}/{c_tot}", f"Réussite {c_pct}%", "#22C55E")}
-        {mcard("Longues", f"{l_ok}/{l_tot}", f"Réussite {l_pct}%", "#E8B30A")}
-      </div>''' if "Passes réussies" in _msel else ""}
-      {srow("Dribbles réussis", d_pct, "#00A3E0", f"{d_ok} réussi{'s' if d_ok!=1 else ''} · {d_ko} raté{'s' if d_ko!=1 else ''}") if "Dribbles réussis" in _msel else ""}
-      {srow("Duels défensifs gagnés", du_pct, "#F4830A", f"{du_ok} gagnés · {du_ko} perdus") if "Duels défensifs gagnés" in _msel else ""}
-      {f'''<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:7px;">
-        {mcard("Sol", f"{sol_ok}G / {sol_tot}", f"{sol_pct}% réussite", "#F4830A")}
-        {mcard("Aérien", f"{aer_ok}G / {aer_tot}" if aer_tot else "—", "duels aériens" if aer_tot else "aucun", "#3A5570" if not aer_tot else "#F4830A")}
-      </div>''' if "Duels défensifs gagnés" in _msel else ""}
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:7px;">
-        {mcard("Tirs cadrés", f"{t_cad}/{t_tot}", t_but_str, "#22C55E") if "Tirs cadrés" in _msel else ""}
-        {mcard("Récupérations", str(recup), "interceptions", "#22C55E") if "Récupérations" in _msel else ""}
-        {mcard("Pertes balle", str(pertes), f"/{ballons} ballons", "#EF4444") if "Pertes balle" in _msel else ""}
-      </div>
-      {srow("Créations déséquilibre", deseq_pct, "#38BDF8", f"{creation_deseq} actions") if (creation_deseq and "Créations déséquilibre" in _msel) else ""}
-
-      <div style="height:1px;background:#0F1E2E;margin:6px 0 7px;"></div>
-      {stitle("Physique Match GPS")}
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:5px;">
-        {mcard("Distance", _g("distance_m","{:,.0f}"), "m", "#38BDF8") if "Distance" in _msel else ""}
-        {mcard("HID >13", _g("hid13_m","{:,.0f}"), "m", "#38BDF8") if "HID >13" in _msel else ""}
-        {mcard("HID >19", _g("hid19_m","{:,.0f}"), "m", "#38BDF8") if "HID >19" in _msel else ""}
-        {mcard("V. max", _g("vmax_kmh","{:.1f}"), "km/h", "#38BDF8") if "Vitesse max" in _msel else ""}
-        {mcard("Sprints >23", _g("sprints_23","{:.0f}"), "nb", "#38BDF8") if "Sprints >23" in _msel else ""}
-        {mcard("Acc/Déc tot.", _g("acc_dec","{:.0f}"), "nb", "#38BDF8") if "Acc/Déc total" in _msel else ""}
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:3px;margin-bottom:5px;">
-        {mcard("Acc >2", _g("acc2","{:.0f}"), "nb", "#5A7A98") if "Accélérations" in _msel else ""}
-        {mcard("Acc >3", _g("acc3","{:.0f}"), "nb", "#5A7A98") if "Accélérations" in _msel else ""}
-        {mcard("Déc >2", _g("dec2","{:.0f}"), "nb", "#5A7A98") if "Décélérations" in _msel else ""}
-        {mcard("Déc >3", _g("dec3","{:.0f}"), "nb", "#5A7A98") if "Décélérations" in _msel else ""}
-      </div>
-      {f'''<div style="font-family:Barlow Condensed,sans-serif;font-size:9.5px;font-weight:700;
-        letter-spacing:1.2px;text-transform:uppercase;color:#6A8898;margin-bottom:4px;">Répartition vitesse</div>
-      {spd_bars}''' if "Répartition vitesse" in _msel else ""}
-    </div>
-
-  </div><!-- /col gauche -->
-
-  <!-- COLONNE DROITE -->
-  <div style="display:flex;flex-direction:column;overflow:hidden;">
-
-    <!-- RADAR DU MATCH -->
-    {f'''
-    <div style="padding:9px 10px;border-bottom:1px solid #0F1E2E;flex-shrink:0;">
-      <div style="font-family:Barlow Condensed,sans-serif;font-size:10px;font-weight:700;
-        letter-spacing:1.4px;text-transform:uppercase;color:#00A3E0;margin-bottom:5px;">
-        ◈ Radar du match
-      </div>
-      <img src="{radar_b64}" style="width:100%;display:block;border-radius:5px;background:#08090D;" alt="Radar"/>
-    </div>
-    ''' if radar_b64 else ''}
-
-    <!-- HEATMAP -->
-    {f'''
-    <div style="padding:9px 10px;border-bottom:1px solid #0F1E2E;flex-shrink:0;">
-      {stitle("Heatmap — Zone d'action")}
-      <svg viewBox="0 0 100 68" width="100%" style="border-radius:5px;display:block;"
-           xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <clipPath id="cph"><rect x="1" y="1" width="98" height="66"/></clipPath>
-          <radialGradient id="hg" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stop-color="#00A3E0" stop-opacity="0.95"/>
-            <stop offset="55%" stop-color="#00A3E0" stop-opacity="0.35"/>
-            <stop offset="100%" stop-color="#00A3E0" stop-opacity="0"/>
-          </radialGradient>
-        </defs>
-        {PITCH}
-        <text x="3" y="65.5" font-size="4" fill="#1A3D10" font-family="Barlow Condensed,sans-serif">◀ BUT ADV</text>
-        <text x="73" y="65.5" font-size="4" fill="#1A3D10" font-family="Barlow Condensed,sans-serif">BUT PFC ▶</text>
-        <g id="heat-g" clip-path="url(#cph)"></g>
-      </svg>
-    </div>
-    ''' if "Heatmap zone d'action" in _msel else ''}
-
-    <!-- PASSES + ROSE -->
-    {f'''
-    <div style="padding:9px 10px;border-bottom:1px solid #0F1E2E;flex-shrink:0;">
-      {stitle("Rose des directions de passe")}
-      <svg id="svg-pass" viewBox="0 0 100 68" width="100%" style="border-radius:5px;display:block;"
-           xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <clipPath id="cpp"><rect x="1" y="1" width="98" height="66"/></clipPath>
-          <marker id="mOk" markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto">
-            <path d="M0,0.5 L4.5,2.5 L0,4.5 Z" fill="#22C55E"/></marker>
-          <marker id="mKo" markerWidth="5" markerHeight="5" refX="4" refY="2.5" orient="auto">
-            <path d="M0,0.5 L4.5,2.5 L0,4.5 Z" fill="#EF4444"/></marker>
-        </defs>
-        {PITCH}
-        <g id="pass-g" clip-path="url(#cpp)"></g>
-      </svg>
-      <div style="display:flex;gap:10px;margin:3px 0 4px;">
-        <span style="font-size:9.5px;color:#5A7A98;display:flex;align-items:center;gap:3px;">
-          <span style="width:7px;height:7px;border-radius:50%;background:#00A3E0;display:inline-block;"></span>Centroïde joueuse</span>
-        <span style="font-size:9px;color:#4A6A88;">↑ AV=vers but adverse · ↓ AR=arrière</span>
-      </div>
-    </div>
-    ''' if "Rose des directions de passe" in _msel else ''}
-
-    <!-- DESTINATIONS -->
-    {f'''
-    <div style="padding:9px 10px;flex:1;overflow:hidden;">
-      {stitle("Destinations de passes")}
-      {dest_html}
-    </div>
-    ''' if "Destinations de passes" in _msel else ''}
-
-  </div><!-- /col droite -->
-</div><!-- /body -->
-
-<!-- FOOTER -->
-<div style="height:18px;display:flex;align-items:center;justify-content:space-between;
-  padding:0 11px;background:#060F1A;border-top:1px solid #0F1E2E;flex-shrink:0;">
-  <span style="font-family:Barlow Condensed,sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#3A5A70;">Paris Football Club · Rapport individuel de match</span>
-  <span style="font-family:Barlow Condensed,sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#3A5A70;">{match_label}</span>
-  <span style="font-family:Barlow Condensed,sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#00A3E0;font-weight:700;">Confidentiel</span>
 </div>
 
-</div><!-- .page -->
-<script>
-var NS="http://www.w3.org/2000/svg";
-var LD={locs_json};
-var PD={passes_json};
-var CX={cx:.2f},CY={cy:.2f};
-var RC={_ref_centroids_json};
-var PC={_player_centroid_json};
+<!-- 2. TEMPS DE JEU + 3. STATS GÉNÉRALES -->
+<div class="sec" style="display:grid;grid-template-columns:170px 1fr;gap:10px;align-items:stretch;flex-shrink:0;">
+  <div class="tile" style="display:flex;flex-direction:column;justify-content:center;border-color:#00A3E0;">
+    <div class="tv" style="font-size:34px;color:#00A3E0;">{tps_txt}<span style="font-size:15px;color:#5A7A98;"> min</span></div>
+    <div class="tl">{tps_sub}</div>
+  </div>
+  <div>{stitle("Statistiques générales")}{gen_html}</div>
+</div>
 
-// ── HEATMAP avec centroïdes par poste ────────────────────────────────────────
-(function(){{
-  var g=document.getElementById("heat-g");if(!g)return;
-  // Centroïdes par poste (petits losanges gris + label)
-  RC.forEach(function(rc){{
-    if(rc.isPlayer) return;
-    var cx2=rc.cx,cy2=rc.cy;
-    var sz=2.0;
-    var pts=[cx2+","+( cy2-sz)+" "+(cx2+sz)+","+cy2+" "+cx2+","+(cy2+sz)+" "+(cx2-sz)+","+cy2];
-    var d=document.createElementNS(NS,"polygon");
-    d.setAttribute("points",pts.join(""));
-    d.setAttribute("fill","#3A5570");d.setAttribute("stroke","#07111C");d.setAttribute("stroke-width","0.5");
-    d.setAttribute("opacity","0.9");
-    g.appendChild(d);
-    var t=document.createElementNS(NS,"text");
-    t.setAttribute("x",(cx2+2.4).toFixed(1));t.setAttribute("y",(cy2-2.2).toFixed(1));
-    t.setAttribute("font-size","3.8");t.setAttribute("font-family","Barlow Condensed,sans-serif");
-    t.setAttribute("font-weight","700");t.setAttribute("fill","#3A5570");
-    t.textContent=rc.poste;g.appendChild(t);
-  }});
-  // Centroïde activité joueuse (cyan — position moyenne de toutes ses actions)
-  var c=document.createElementNS(NS,"circle");
-  c.setAttribute("cx",CX.toFixed(1));c.setAttribute("cy",CY.toFixed(1));
-  c.setAttribute("r","2.2");c.setAttribute("fill","#00A3E0");
-  c.setAttribute("stroke","#060F1A");c.setAttribute("stroke-width","0.8");
-  g.appendChild(c);
-  var ring=document.createElementNS(NS,"circle");
-  ring.setAttribute("cx",CX.toFixed(1));ring.setAttribute("cy",CY.toFixed(1));
-  ring.setAttribute("r","4.5");ring.setAttribute("fill","none");
-  ring.setAttribute("stroke","#00A3E0");ring.setAttribute("stroke-width","0.7");ring.setAttribute("opacity","0.5");
-  g.appendChild(ring);
-}})();
-(function(){{
-  var g=document.getElementById("pass-g");if(!g)return;
-  // Centroïde uniquement (pas de flèches)
-  var cd=document.createElementNS(NS,"circle");
-  cd.setAttribute("cx",CX.toFixed(1));cd.setAttribute("cy",CY.toFixed(1));
-  cd.setAttribute("r","2.5");cd.setAttribute("fill","#00A3E0");
-  cd.setAttribute("stroke","#060F1A");cd.setAttribute("stroke-width","1");
-  g.appendChild(cd);
-  var ring2=document.createElementNS(NS,"circle");
-  ring2.setAttribute("cx",CX.toFixed(1));ring2.setAttribute("cy",CY.toFixed(1));
-  ring2.setAttribute("r","4.5");ring2.setAttribute("fill","none");
-  ring2.setAttribute("stroke","#00A3E0");ring2.setAttribute("stroke-width","0.6");ring2.setAttribute("opacity","0.4");
-  g.appendChild(ring2);
-  // Rose des directions intégrée au terrain, centrée sur le centroïde de la joueuse
-  var NS2="http://www.w3.org/2000/svg";
-  var svgPass=document.getElementById("svg-pass");
-  // Le viewBox du terrain est "0 0 100 68"
-  // On place la rose centrée sur le centroïde (CX, CY), rayon max = 18 unités terrain
-  var rcx=CX, rcy=CY, rRMax=17, rRMin=2;
-  var SC2=[
-    {{l:"AV",     a:0,   c:"#00A3E0"}},
-    {{l:"D▸AV",   a:45,  c:"#38BDF8"}},
-    {{l:"LAT▸",   a:90,  c:"#64748B"}},
-    {{l:"D▸AR",   a:135, c:"#475569"}},
-    {{l:"AR",     a:180, c:"#F4830A"}},
-    {{l:"G▸AR",   a:-135,c:"#475569"}},
-    {{l:"◂LAT",   a:-90, c:"#64748B"}},
-    {{l:"G▸AV",   a:-45, c:"#38BDF8"}},
-  ];
-  // Cercles de fond
-  [0.33,0.66,1.0].forEach(function(fr){{
-    var r2=document.createElementNS(NS2,"circle");
-    r2.setAttribute("cx",rcx.toFixed(1));r2.setAttribute("cy",rcy.toFixed(1));
-    r2.setAttribute("r",(rRMin+(rRMax-rRMin)*fr).toFixed(1));
-    r2.setAttribute("fill","#060F1A");r2.setAttribute("fill-opacity","0.55");
-    r2.setAttribute("stroke","#0D1B2A");r2.setAttribute("stroke-width","0.5");
-    svgPass.appendChild(r2);
-  }});
-  // Spokes
-  for(var si=0;si<8;si++){{
-    var a2=si*45*Math.PI/180;
-    var sp=document.createElementNS(NS2,"line");
-    sp.setAttribute("x1",rcx.toFixed(1));sp.setAttribute("y1",rcy.toFixed(1));
-    sp.setAttribute("x2",(rcx+(rRMax+1)*Math.cos(a2)).toFixed(1));
-    sp.setAttribute("y2",(rcy+(rRMax+1)*Math.sin(a2)).toFixed(1));
-    sp.setAttribute("stroke","#0D1B2A");sp.setAttribute("stroke-width","0.4");
-    svgPass.appendChild(sp);
-  }}
-  // Comptage secteurs
-  var counts2=new Array(8).fill(0);
-  PD.forEach(function(p){{
-    if(p.x==null)return;
-    // AV = vers BUT PFC = droite SVG = dx positif
-    // Y inversé dans SVG : dy positif SVG = vers bas = vers DG (gauche terrain)
-    var dx=p.x-CX,dy=CY-p.y;
-    var angle=Math.atan2(dy,dx)*180/Math.PI;
-    var norm=(angle+360)%360;
-    var sector=Math.round(norm/45)%8;
-    counts2[sector]++;
-  }});
-  var maxC2=Math.max.apply(null,counts2)||1;
-  // Pétales
-  SC2.forEach(function(s,i){{
-    var n=counts2[i];
-    var aBase=i*45*Math.PI/180;
-    var hw=16*Math.PI/180;
-    var rFull2=rRMin+(rRMax-rRMin)*1.0;
-    var framePts=[[rcx,rcy],
-      [rcx+rFull2*Math.cos(aBase-hw),rcy+rFull2*Math.sin(aBase-hw)],
-      [rcx+rFull2*Math.cos(aBase),   rcy+rFull2*Math.sin(aBase)],
-      [rcx+rFull2*Math.cos(aBase+hw),rcy+rFull2*Math.sin(aBase+hw)]
-    ].map(function(p2){{return p2[0].toFixed(1)+","+p2[1].toFixed(1);}}).join(" ");
-    var frame=document.createElementNS(NS2,"polygon");
-    frame.setAttribute("points",framePts);frame.setAttribute("fill",s.c);
-    frame.setAttribute("fill-opacity","0.07");frame.setAttribute("stroke","none");
-    svgPass.appendChild(frame);
-    if(n===0){{
-      var lr2=rFull2+4.5;
-      var t2=document.createElementNS(NS2,"text");
-      t2.setAttribute("x",(rcx+lr2*Math.cos(aBase)).toFixed(1));
-      t2.setAttribute("y",(rcy+lr2*Math.sin(aBase)).toFixed(1));
-      t2.setAttribute("text-anchor","middle");t2.setAttribute("dominant-baseline","central");
-      t2.setAttribute("font-size","2.8");t2.setAttribute("font-family","Barlow Condensed,sans-serif");
-      t2.setAttribute("font-weight","600");t2.setAttribute("fill","#1E3050");
-      t2.textContent=s.l+":0";svgPass.appendChild(t2);return;
-    }}
-    var r3=rRMin+(rRMax-rRMin)*n/maxC2;
-    var pts2=[[rcx,rcy],
-      [rcx+r3*Math.cos(aBase-hw),rcy+r3*Math.sin(aBase-hw)],
-      [rcx+r3*Math.cos(aBase),   rcy+r3*Math.sin(aBase)],
-      [rcx+r3*Math.cos(aBase+hw),rcy+r3*Math.sin(aBase+hw)]
-    ].map(function(p2){{return p2[0].toFixed(1)+","+p2[1].toFixed(1);}}).join(" ");
-    var poly2=document.createElementNS(NS2,"polygon");
-    poly2.setAttribute("points",pts2);poly2.setAttribute("fill",s.c);
-    poly2.setAttribute("fill-opacity","0.85");poly2.setAttribute("stroke",s.c);poly2.setAttribute("stroke-width","0.3");
-    svgPass.appendChild(poly2);
-    var lr3=r3+4.5;
-    var t3=document.createElementNS(NS2,"text");
-    t3.setAttribute("x",(rcx+lr3*Math.cos(aBase)).toFixed(1));
-    t3.setAttribute("y",(rcy+lr3*Math.sin(aBase)).toFixed(1));
-    t3.setAttribute("text-anchor","middle");t3.setAttribute("dominant-baseline","central");
-    t3.setAttribute("font-size","3.2");t3.setAttribute("font-family","Barlow Condensed,sans-serif");
-    t3.setAttribute("font-weight","700");t3.setAttribute("fill","#C8DCF0");
-    t3.textContent=s.l+":"+n;svgPass.appendChild(t3);
-  }});
-  // Point central cyan
-  var cdc=document.createElementNS(NS2,"circle");
-  cdc.setAttribute("cx",rcx.toFixed(1));cdc.setAttribute("cy",rcy.toFixed(1));
-  cdc.setAttribute("r","1.5");cdc.setAttribute("fill","#00A3E0");
-  svgPass.appendChild(cdc);
-}})();
-// ── FIN ──
-</script></body></html>"""
+<!-- 4. TECHNIQUE | ATHLÉTIQUE -->
+<div style="display:grid;grid-template-columns:1.15fr 1fr;flex-shrink:0;border-bottom:1px solid #0F1E2E;">
+  <div class="sec" style="border-bottom:none;border-right:1px solid #0F1E2E;">
+    {stitle("Statistiques techniques")}
+    {dist_html}{off_html}{def_html}
+  </div>
+  <div class="sec" style="border-bottom:none;">
+    {stitle("Dimension athlétique")}
+    {ath_html}
+  </div>
+</div>
+
+<!-- 5. VISUELS -->
+<div style="display:grid;grid-template-columns:1.15fr 1fr;flex:1;min-height:0;overflow:hidden;">
+  <div class="sec" style="border-bottom:none;border-right:1px solid #0F1E2E;">{map_html}</div>
+  <div class="sec" style="border-bottom:none;">{spider_html}</div>
+</div>
+
+<!-- FOOTER -->
+<div style="height:18px;display:flex;align-items:center;justify-content:space-between;padding:0 11px;background:#060F1A;border-top:1px solid #0F1E2E;flex-shrink:0;">
+  <span style="font-family:'Barlow Condensed',sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#3A5A70;">Paris Football Club · Rapport individuel de match</span>
+  <span style="font-family:'Barlow Condensed',sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#3A5A70;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:110mm;">{_footer_lbl}</span>
+  <span style="font-family:'Barlow Condensed',sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#00A3E0;font-weight:700;">Confidentiel</span>
+</div>
+</div></body></html>"""
 
 
 # Clés numériques d'un résumé GPS match (get_gps_match_summary_for_player) —
@@ -10000,6 +9924,7 @@ def _aggregate_match_reports(selected_rows: list, player: str, gps_match_df) -> 
             if not _vals:
                 continue
             gps_summary_agg[k] = max(_vals) if k in _GPS_MATCH_SUMMARY_MAX_KEYS else sum(_vals)
+        gps_summary_agg["_n_matchs_gps"] = len(_gps_summaries)
 
     if len(selected_rows) == 1:
         _r = selected_rows[0]
@@ -10013,21 +9938,32 @@ def _aggregate_match_reports(selected_rows: list, player: str, gps_match_df) -> 
             "competition": _ctx.get("competition", ""),
             "date": _r.get("date"),
             "label": _r.get("display", ""),
+            "n_matchs": 1,
         }
     else:
-        _parts = []
+        _parts, _lines = [], []
         for r in selected_rows:
             _j = r.get("journee", "")
             _adv = r.get("adversaire", "")
             _d = pd.to_datetime(r.get("date"), errors="coerce")
             _d_str = _d.strftime("%d/%m") if pd.notna(_d) else ""
             _parts.append(" ".join(p for p in [f"J{_j}" if _j else "", _adv, _d_str] if p))
+            _sc = ""
+            try:
+                _c = _get_match_context(r["tac_obj"].get("df"))
+                if _c.get("score_pfc") not in (None, "?"):
+                    _sc = f"{_c.get('score_pfc')}–{_c.get('score_adv')}"
+            except Exception:
+                pass
+            _lines.append(" ".join(p for p in [f"J{_j}" if _j else "", _adv, _sc] if p))
         match_info = {
             "adversaire": f"{len(selected_rows)} matchs",
             "journee": "", "score": "", "lieu": "",
             "competition": "Compilation",
             "date": None,
             "label": " | ".join(_parts),
+            "n_matchs": len(selected_rows),
+            "match_lines": _lines,
         }
 
     return df_tactic_concat, gps_summary_agg, match_info
@@ -10459,6 +10395,8 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                         pfc_kpi_row=_tac_kpi_row,
                         radar_b64=_tac_radar_b64,
                         gps_match_df=gps_match_df,
+                        player_info=get_player_demographics(sel_tac_player),
+                        kpi_scores=get_match_kpi_scores(st.session_state.get("pfc_kpi_all"), sel_tac_player, [sel_row]),
                     )
                     st.iframe(html_report, height=1120)
 
@@ -12127,7 +12065,10 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         except Exception:
                             pass
                         _html = build_tactical_report_html(_dft_agg, _sp, gps_summary=_gs,
-                            photo_b64=_pb64, match_info=_mi, selected_indicators=_mr_selected_indicators)
+                            photo_b64=_pb64, match_info=_mi, selected_indicators=_mr_selected_indicators,
+                            player_info=get_player_demographics(_sp),
+                            kpi_scores=get_match_kpi_scores(st.session_state.get("pfc_kpi_all"), _sp, _srs),
+                            tactic_dfs=[r["tac_obj"].get("df") for r in _srs] if len(_srs) > 1 else None)
                         _html_js = json.dumps(_html).replace('</script', '<\\/script')
                         _pjs = ('<script>function pr(){var w=window.open("","_blank","width=900,height=1200");'
                                 'var _h=' + _html_js + ';'
