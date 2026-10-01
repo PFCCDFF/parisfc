@@ -9421,27 +9421,27 @@ def get_match_kpi_scores(pfc_kpi_all, player: str, match_rows: list) -> dict:
 
 @_mpl_safe
 def build_kpi_spider_b64(scores: dict) -> str:
-    """Araignée 6 axes (indicateurs tactiques) au style des radars de l'app → data URI PNG."""
+    """Araignée 6 axes (indicateurs tactiques) sur panneau blanc (charte rapport v5) → data URI PNG."""
     params = [k for k in REPORT_SPIDER_KPIS if k in (scores or {})]
     if len(params) < 3:
         return ""
     values = [int(round(max(0.0, min(100.0, scores[k])))) for k in params]
     pizza = PyPizza(
-        params=params, background_color="#07111C",
-        straight_line_color="#1A2A3A", last_circle_color="#00A3E0",
-        straight_line_lw=0.8, last_circle_lw=1.4, other_circle_lw=0.6, other_circle_color="#1A2A3A",
+        params=params, background_color="#FFFFFF",
+        straight_line_color="#D5DCE8", last_circle_color="#0B2A5C",
+        straight_line_lw=0.8, last_circle_lw=1.4, other_circle_lw=0.6, other_circle_color="#D5DCE8",
     )
     fig, ax = pizza.make_pizza(
         values=values, figsize=(4.4, 4.4),
         slice_colors=[REPORT_SPIDER_COLORS.get(p, "#9AA4B2") for p in params],
-        value_colors=["#FFFFFF"] * len(params),
-        kwargs_slices=dict(edgecolor="#07111C", linewidth=1.5),
-        kwargs_params=dict(color="#C8D8E8", fontsize=10, fontweight="bold"),
-        kwargs_values=dict(color="#FFFFFF", fontsize=10, fontweight="bold",
-                           bbox=dict(edgecolor="#00A3E0", facecolor="#0C1220",
+        value_colors=["#0B2A5C"] * len(params),
+        kwargs_slices=dict(edgecolor="#FFFFFF", linewidth=1.5),
+        kwargs_params=dict(color="#0B2A5C", fontsize=10, fontweight="bold"),
+        kwargs_values=dict(color="#0B2A5C", fontsize=10, fontweight="bold",
+                           bbox=dict(edgecolor="#0B2A5C", facecolor="#FFFFFF",
                                      boxstyle="round,pad=0.25", lw=0.8)),
     )
-    fig.set_facecolor("#07111C")
+    fig.set_facecolor("#FFFFFF")
     try:
         return fig_to_b64(fig)
     finally:
@@ -9450,10 +9450,10 @@ def build_kpi_spider_b64(scores: dict) -> str:
 
 @_mpl_safe
 def build_touch_heatmap_b64(locs: list) -> str:
-    """Heatmap lissée des ballons touchés sur terrain horizontal (attaque vers la droite).
-    `locs` : coordonnées déjà normalisées par compute_tactical_stats (x 0-100, y 0-68,
-    y=0 en haut = couloir gauche, inversion MT2 appliquée). Densité = histogramme fin
-    flouté par un noyau gaussien séparable (numpy seul, sans scipy) → data URI PNG."""
+    """Heatmap lissée des ballons touchés, terrain horizontal blanc (attaque vers la droite).
+    `locs` : coordonnées normalisées par compute_tactical_stats (x 0-100, y 0-68, y=0 en
+    haut = couloir gauche, inversion MT2 appliquée). Densité = histogramme fin flouté par
+    un noyau gaussien séparable (numpy seul, sans scipy) → data URI PNG."""
     from matplotlib.colors import LinearSegmentedColormap
     W, H, RES, SIGMA = 100.0, 68.0, 0.5, 4.5  # unités terrain (≈ m)
     nx, ny = int(W / RES), int(H / RES)
@@ -9475,30 +9475,33 @@ def build_touch_heatmap_b64(locs: list) -> str:
         grid = np.apply_along_axis(lambda c: np.convolve(c, ker, mode="same"), 0, grid)
     vmax = grid.max() if grid.max() > 0 else 1.0
     cmap = LinearSegmentedColormap.from_list(
-        "pfc_heat", [(0.0, (0, 0, 0, 0)), (0.12, "#0B3A5A"), (0.4, "#00A3E0"),
-                     (0.75, "#7DD3FC"), (1.0, "#FFFFFF")])
+        "pfc_heat_v5", [(0.0, "#5D6FC2"), (0.25, "#8FA3DC"), (0.5, "#E9E2EE"),
+                        (0.75, "#F0A07A"), (1.0, "#D23F37")])
 
-    fig, ax = plt.subplots(figsize=(5.0, 3.4), dpi=160)
-    fig.patch.set_facecolor("#07111C")
-    ax.set_facecolor("#070E04")
-    # y=0 (haut du SVG) affiché en haut : extent inversé sur l'axe vertical
+    fig, ax = plt.subplots(figsize=(5.2, 3.7), dpi=160)
+    fig.patch.set_facecolor("#FFFFFF")
+    ax.set_facecolor("#FFFFFF")
+    # y=0 (couloir gauche) affiché en haut
     ax.imshow(grid, extent=(0, W, H, 0), cmap=cmap, vmin=0, vmax=vmax,
               interpolation="bilinear", zorder=1)
-    lc, lw = "#2E5A24", 0.9
+    lc, lw = "#1B1B1B", 0.8
     for patch in [
-        plt.Rectangle((1, 1), 98, 66, fill=False),
-        plt.Rectangle((1, 13.84), 16.5, 40.32, fill=False),
-        plt.Rectangle((1, 24.84), 5.5, 18.32, fill=False),
-        plt.Rectangle((82.5, 13.84), 16.5, 40.32, fill=False),
-        plt.Rectangle((93.5, 24.84), 5.5, 18.32, fill=False),
-        plt.Circle((50, 34), 9.15, fill=False),
+        plt.Rectangle((0, 0), W, H, fill=False),
+        plt.Rectangle((0, 13.84), 16.5, 40.32, fill=False),
+        plt.Rectangle((0, 24.84), 5.5, 18.32, fill=False),
+        plt.Rectangle((W - 16.5, 13.84), 16.5, 40.32, fill=False),
+        plt.Rectangle((W - 5.5, 24.84), 5.5, 18.32, fill=False),
+        plt.Rectangle((-1.8, H / 2 - 3.66), 1.8, 7.32, fill=False),
+        plt.Rectangle((W, H / 2 - 3.66), 1.8, 7.32, fill=False),
+        plt.Circle((W / 2, H / 2), 9.15, fill=False),
     ]:
         patch.set_edgecolor(lc); patch.set_linewidth(lw); patch.set_zorder(3)
         ax.add_patch(patch)
-    ax.plot([50, 50], [1, 67], color=lc, lw=lw, zorder=3)
-    ax.text(98, 66, "SENS DU JEU ▶", ha="right", va="bottom", fontsize=6.5,
-            color="#4A7A98", fontweight="bold", zorder=4)
-    ax.set_xlim(0, W); ax.set_ylim(H, 0)
+    ax.plot([W / 2, W / 2], [0, H], color=lc, lw=lw, zorder=3)
+    ax.annotate("", xy=(62, H + 3.2), xytext=(38, H + 3.2),
+                arrowprops=dict(arrowstyle="-|>", color="#0B2A5C", lw=1.2), annotation_clip=False)
+    ax.text(W / 2, H + 5.6, "Sens du jeu", ha="center", va="top", fontsize=7, color="#0B2A5C")
+    ax.set_xlim(-3, W + 3); ax.set_ylim(H + 8, -2)
     ax.set_xticks([]); ax.set_yticks([])
     for sp in ax.spines.values():
         sp.set_visible(False)
@@ -9523,7 +9526,7 @@ def build_tactical_report_html(
     kpi_scores: dict = None,
     tactic_dfs: list = None,
 ) -> str:
-    """Rapport de match individuel A4 (v5) :
+    """Rapport de match individuel A4 paysage (v5, charte navy) :
     1. Identité (nom, date de naissance, pied fort, postes 1/2) + contexte (adversaire/score
        sur un match, nombre de matchs analysés en compilation)
     2. Temps de jeu (GPS « Temps joué », cumulé si plusieurs matchs)
@@ -9645,260 +9648,288 @@ def build_tactical_report_html(
     if _ref_date is not None and pd.notna(_ref_date):
         match_date = _ref_date.strftime("%d/%m/%Y")
 
+
+    # ── Présentation (charte v5 : navy, cartes arrondies, Unbounded/Inter) ─────
+    _JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+    _MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
+             "septembre", "octobre", "novembre", "décembre"]
+    date_long = ""
+    if _ref_date is not None and pd.notna(_ref_date):
+        date_long = f"{_JOURS[_ref_date.weekday()]} {_ref_date.day} {_MOIS[_ref_date.month - 1]} {_ref_date.year}"
+
     PFC_LOGO = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
 
-    initials = "".join(w[0].upper() for w in player_label.split()[:2]) if player_label else "??"
-    photo_html = (
-        f'<img src="{photo_b64}" style="width:84px;height:100px;object-fit:cover;object-position:top center;'
-        f'border-radius:6px;border:2px solid #00A3E0;display:block;"/>'
-        if photo_b64 else
-        f'<div style="width:84px;height:100px;border-radius:6px;background:#0A1520;border:2px solid #1A2E44;'
-        f'display:flex;align-items:center;justify-content:center;font-family:Barlow Condensed,sans-serif;'
-        f'font-size:30px;font-weight:700;color:#2A4060;">{initials}</div>'
-    )
-
-    if n_matchs > 1:
-        _lines = [x for x in (mi.get("match_lines") or []) if x]
-        _shown = _lines[:5]
-        _more = f'<div class="ctx-li">+ {len(_lines) - 5} autre(s)</div>' if len(_lines) > 5 else ""
-        ctx_html = (
-            f'<div class="lbl">Matchs analysés</div>'
-            f'<div style="font-family:Barlow Condensed,sans-serif;font-size:44px;font-weight:900;color:#FFF;line-height:1;">{n_matchs}</div>'
-            + "".join(f'<div class="ctx-li">{x}</div>' for x in _shown) + _more
-        )
-    else:
-        _adv_logo = _team_logo_html(adversaire, size=40) if adversaire else ""
-        ctx_html = (
-            f'<div class="lbl">Adversaire</div>'
-            f'<div style="display:flex;align-items:center;gap:8px;margin:2px 0 4px;">{_adv_logo}'
-            f'<div style="font-family:Barlow Condensed,sans-serif;font-size:17px;font-weight:800;color:#FFF;'
-            f'text-transform:uppercase;line-height:1.05;">{adversaire or "—"}</div></div>'
-            f'<div class="lbl">Score</div>'
-            f'<div style="font-family:JetBrains Mono,monospace;font-size:24px;font-weight:600;color:#FFF;'
-            f'letter-spacing:3px;">{score or "—"}</div>'
-            f'<div class="ctx-li">{" · ".join(p for p in [f"J{journee}" if journee else "", competition, match_date] if p)}</div>'
-        )
-
-    # ── Briques HTML ──────────────────────────────────────────────────────────
     def _show(*labels):
         return any(l in _msel for l in labels)
 
-    def stitle(txt):
-        return (f'<div class="st">{txt}<div style="flex:1;height:1px;background:#123047;"></div></div>')
+    def _pct_txt(ok, tot):
+        return f'<span class="pc">({_pct(ok, tot)}%)</span>' if tot else ""
 
-    def ftitle(txt):
-        return f'<div class="ft">{txt}</div>'
+    def row(lbl, val, extra=""):
+        return f'<div class="r"><div class="rl">{lbl}</div><div class="rv">{val}{extra}</div></div>'
 
-    def tile(val, lbl, col="#FFFFFF"):
-        return (f'<div class="tile"><div class="tv" style="color:{col};">{val}</div>'
-                f'<div class="tl">{lbl}</div></div>')
+    def card(title, body, cls=""):
+        if not body:
+            return ""
+        # flex-grow ∝ nombre de lignes : la colonne remplit la page avec un interligne homogène
+        _n = body.count('class="r"') + 2 * body.count('class="cells"') + body.count('class="cell"') // 2 + body.count('class="tr"')
+        return (f'<div class="card {cls}" style="flex-grow:{max(1, _n)};"><div class="ct">{title}</div>'
+                f'<div class="rows">{body}</div></div>')
 
-    def prow(lbl, tot, ok, col="#22C55E", sub=""):
-        pct = _pct(ok, tot)
-        return (
-            f'<div class="pr"><div class="prl">{lbl}{f"<span class=prs> {sub}</span>" if sub else ""}</div>'
-            f'<div class="prn">{tot}</div>'
-            f'<div class="bar"><div style="width:{pct if tot else 0}%;background:{col};"></div></div>'
-            f'<div class="prp" style="color:{col if tot else "#3A5570"};">{f"{pct}%" if tot else "—"}</div></div>'
+    # Identité — pastilles de poste
+    pills = ""
+    if poste1:
+        pills += f'<span class="pill">{poste1}</span>'
+    if poste2:
+        pills += f'<span class="pill pill-o">{poste2}</span>'
+
+    # Contexte (en-tête droite)
+    if n_matchs > 1:
+        _lines = [x for x in (mi.get("match_lines") or []) if x]
+        _ml = " · ".join(_lines[:6]) + (f" · +{len(_lines) - 6}" if len(_lines) > 6 else "")
+        ctx_html = (f'<div class="hm"><b>{n_matchs} matchs analysés</b></div>'
+                    f'<div class="hs">{_ml}</div>')
+    else:
+        _sp = [p.strip() for p in re.split(r"[–-]", score)] if score else []
+        if len(_sp) == 2 and all(_sp):
+            _score_html = f'<span class="sc">{_sp[0]}</span> - <span class="sc">{_sp[1]}</span>'
+        else:
+            _score_html = "vs"
+        _adv_logo = _team_logo_html(adversaire, size=30) if adversaire else ""
+        _sub = " · ".join(p for p in [f"J{journee}" if journee else "", competition] if p)
+        ctx_html = (f'<div class="hm" style="display:flex;align-items:center;gap:8px;justify-content:flex-end;">'
+                    f'<span>Paris FC {_score_html} {adversaire or "Adversaire"}'
+                    f'{" · " + date_long if date_long else ""}</span>{_adv_logo}</div>'
+                    + (f'<div class="hs">{_sub}</div>' if _sub else ""))
+
+    # ── Cartes STATISTIQUES ───────────────────────────────────────────────────
+    gen = ""
+    if True:
+        gen += row("Temps de jeu", f"{tps_txt}'" if tps is not None else "—")
+        if n_matchs > 1:
+            gen += f'<div class="note">{tps_sub}</div>'
+    if _show("Buts", "Passes décisives"):
+        gen += row("Buts / Passes décisives", f"{t_but} / {assists}")
+    if "Ballons touchés" in _msel:
+        gen += row("Ballons touchés", ballons)
+    if "Ballons perdus" in _msel:
+        gen += row("Ballons perdus", pertes)
+
+    passes = ""
+    if "Passes" in _msel:
+        passes += row("Total", p_tot, _pct_txt(p_ok, p_tot))
+    if "Passes par direction" in _msel:
+        passes += row("Vers l'avant" + (f'<span class="rs">dont {pb["diago"]} diag.</span>' if pb["diago"] else ""),
+                      pb["avant"][0], _pct_txt(pb["avant"][1], pb["avant"][0]))
+        passes += row("Vers les côtés", pb["cotes"][0], _pct_txt(pb["cotes"][1], pb["cotes"][0]))
+        passes += row("Vers l'arrière", pb["arriere"][0], _pct_txt(pb["arriere"][1], pb["arriere"][0]))
+    if "Passes dernier tiers" in _msel:
+        passes += row("Vers le dernier tiers", pb["dernier_tiers"][0],
+                      _pct_txt(pb["dernier_tiers"][1], pb["dernier_tiers"][0]))
+
+    off = ""
+    if "Dribbles" in _msel:
+        off += row("Dribbles tentés", d_tot, _pct_txt(d_ok, d_tot))
+    if "Tirs" in _msel:
+        off += row("Tirs tentés <span class='rs'>(% cadrés)</span>", t_tot, _pct_txt(t_cad, t_tot))
+
+    def _cell(lbl, val, extra=""):
+        return f'<div class="cell"><div class="cl">{lbl}</div><div class="cv">{val}{extra}</div></div>'
+
+    dfn = ""
+    _cells = []
+    if "Interceptions" in _msel:
+        _cells.append(_cell("Interceptions", interc))
+    if _show("Duels au sol", "Duels aériens"):
+        _cells.append(_cell("Duels joués / gagnés", f"{du_tot} / {du_ok}"))
+    if "Duels au sol" in _msel:
+        _cells.append(_cell("Duels au sol gagnés", f"{sol_ok}/{sol_tot}", _pct_txt(sol_ok, sol_tot)))
+    if "Duels aériens" in _msel:
+        _cells.append(_cell("Duels aériens gagnés", f"{aer_ok}/{aer_tot}", _pct_txt(aer_ok, aer_tot)))
+    if _cells:
+        dfn = f'<div class="cells">{"".join(_cells)}</div>'
+
+    ath = ""
+    if "Distance totale" in _msel:
+        ath += row("Distance", _fmt_int(_gf("distance_m"), " m"))
+    if "Distance par plage de vitesse" in _msel:
+        for lbl, key in [("0-7 km/h", "d_0_7"), ("7-13 km/h", "d_7_13"), ("13-19 km/h", "d_13_19_m"),
+                         ("19-23 km/h", "d_19_23_m"), ("Sprint &gt;23 km/h", "d_23p_m")]:
+            ath += row(lbl, _fmt_int(_gf(key), " m"))
+    if "Accélérations" in _msel:
+        ath += row("Accélérations <span class='rs'>&gt;2 m/s²</span>", _fmt_int(_gf("acc2")),
+                   f'<span class="pc">(&gt;3 : {_fmt_int(_gf("acc3"))})</span>')
+    if "Décélérations" in _msel:
+        ath += row("Décélérations <span class='rs'>&gt;2 m/s²</span>", _fmt_int(_gf("dec2")),
+                   f'<span class="pc">(&gt;3 : {_fmt_int(_gf("dec3"))})</span>')
+    if ath and _gps is None:
+        ath += '<div class="note">Aucune donnée GPS rattachée.</div>'
+
+    col1 = card("Général", gen) + card("Passes <span class='ctl'>(% réussite)</span>", passes) + card("Offensif", off)
+    col2 = card("Données athlétiques", ath) + card("Défensif", dfn)
+
+    # ── Cartes GRAPH ──────────────────────────────────────────────────────────
+    heat_card = ""
+    if "Heatmap des touches" in _msel:
+        _hm = ""
+        try:
+            _hm = build_touch_heatmap_b64(locs) if locs else ""
+        except Exception:
+            _hm = ""
+        heat_card = (
+            f'<div class="gcard g-heat"><div class="gt"><b>Heatmap</b> · avec ballon</div>'
+            + (f'<div class="panel"><img src="{_hm}"/></div>'
+               f'<div class="gn">{len(locs)} ballons localisés</div>'
+               if _hm else '<div class="gn">Aucune localisation disponible.</div>')
+            + '</div>'
         )
 
-    def nrow(lbl, val, sub=""):
-        return (f'<div class="pr"><div class="prl">{lbl}{f"<span class=prs> {sub}</span>" if sub else ""}</div>'
-                f'<div class="prn">{val}</div><div></div><div></div></div>')
+    initials = "".join(w[0].upper() for w in player_label.split()[:2]) if player_label else "??"
+    photo = (f'<img src="{photo_b64}" class="photo"/>' if photo_b64 else
+             f'<div class="photo ph">{initials}</div>')
+    prof = (row("Date de naissance", ddn or "—", f'<span class="pc">({age_txt})</span>' if age_txt else "")
+            + row("Pied fort", pied or "—") + row("Poste 1", poste1 or "—") + row("Poste 2", poste2 or "—"))
+    prof_card = card("Profil", prof, "prof")
 
-    # Distribution
-    dist_html = ""
-    if _show("Passes", "Passes par direction", "Passes dernier tiers"):
-        dist_html += ftitle("Distribution")
-        if "Passes" in _msel:
-            dist_html += prow("Passes", p_tot, p_ok, "#22C55E")
-        if "Passes par direction" in _msel:
-            dist_html += prow("↑ Vers l'avant", pb["avant"][0], pb["avant"][1], "#00A3E0",
-                              f"dont {pb['diago']} diag." if pb["diago"] else "")
-            dist_html += prow("↔ Vers les côtés", pb["cotes"][0], pb["cotes"][1], "#7B84FF")
-            dist_html += prow("↓ Vers l'arrière", pb["arriere"][0], pb["arriere"][1], "#F4830A")
-        if "Passes dernier tiers" in _msel:
-            dist_html += prow("Vers le dernier tiers", pb["dernier_tiers"][0], pb["dernier_tiers"][1], "#38BDF8")
-
-    off_html = ""
-    if _show("Dribbles", "Tirs"):
-        off_html += ftitle("Offensif")
-        if "Dribbles" in _msel:
-            off_html += prow("Dribbles tentés", d_tot, d_ok, "#00A3E0")
-        if "Tirs" in _msel:
-            off_html += prow("Tirs tentés", t_tot, t_cad, "#22C55E", "(% cadrés)")
-
-    def_html = ""
-    if _show("Interceptions", "Duels au sol", "Duels aériens"):
-        def_html += ftitle("Défensif")
-        if "Interceptions" in _msel:
-            def_html += nrow("Interceptions", interc)
-        if _show("Duels au sol", "Duels aériens"):
-            def_html += prow("Duels joués", du_tot, du_ok, "#F4830A", f"{du_ok} gagnés")
-        if "Duels au sol" in _msel:
-            def_html += prow("Duels au sol gagnés", sol_tot, sol_ok, "#F4830A", f"{sol_ok}/{sol_tot}")
-        if "Duels aériens" in _msel:
-            def_html += prow("Duels aériens gagnés", aer_tot, aer_ok, "#F4830A", f"{aer_ok}/{aer_tot}")
-
-    # Athlétique
-    spd = [("0–7 km/h", _gf("d_0_7"), "#2D4060"), ("7–13 km/h", _gf("d_7_13"), "#3B5478"),
-           ("13–19 km/h", _gf("d_13_19_m"), "#00A3E0"), ("19–23 km/h", _gf("d_19_23_m"), "#38BDF8"),
-           ("> 23 km/h", _gf("d_23p_m"), "#7DD3FC")]
-    _spd_max = max([v for _, v, _ in spd if v] or [1.0])
-    ath_html = ""
-    if _show("Distance totale"):
-        ath_html += (f'<div class="tile" style="margin-bottom:6px;"><div class="tv" style="color:#38BDF8;">'
-                     f'{_fmt_int(_gf("distance_m"))}<span style="font-size:13px;color:#5A7A98;"> m</span></div>'
-                     f'<div class="tl">Distance totale</div></div>')
-    if _show("Distance par plage de vitesse"):
-        ath_html += ftitle("Distance par plage de vitesse")
-        for lbl, v, col in spd:
-            w = int((v or 0) / _spd_max * 100)
-            ath_html += (f'<div class="pr" style="grid-template-columns:66px 1fr 56px;">'
-                         f'<div class="prl" style="font-size:10.5px;">{lbl}</div>'
-                         f'<div class="bar"><div style="width:{w}%;background:{col};"></div></div>'
-                         f'<div class="prp" style="color:#C8DCF0;">{_fmt_int(v, " m")}</div></div>')
-    _acc, _acc3 = _gf("acc2"), _gf("acc3")
-    _dec, _dec3 = _gf("dec2"), _gf("dec3")
-    if _show("Accélérations", "Décélérations"):
-        ath_html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;">'
-        if "Accélérations" in _msel:
-            ath_html += tile(_fmt_int(_acc), f"Accélérations &gt;2 m/s²<br><span style='color:#4A6A88'>dont &gt;3 : {_fmt_int(_acc3)}</span>", "#38BDF8")
-        if "Décélérations" in _msel:
-            ath_html += tile(_fmt_int(_dec), f"Décélérations &gt;2 m/s²<br><span style='color:#4A6A88'>dont &gt;3 : {_fmt_int(_dec3)}</span>", "#38BDF8")
-        ath_html += '</div>'
-    if _gps is None and ath_html:
-        ath_html += '<div style="font-size:10px;color:#4A6A88;font-style:italic;margin-top:4px;">Aucune donnée GPS rattachée.</div>'
-
-    # Générales
-    gen_html = ""
-    _gen = [("Buts", t_but, "Buts marqués", "#22C55E"), ("Passes décisives", assists, "Passes décisives", "#00A3E0"),
-            ("Ballons touchés", ballons, "Ballons touchés", "#FFFFFF"), ("Ballons perdus", pertes, "Ballons perdus", "#EF4444")]
-    _gen = [g for g in _gen if g[0] in _msel]
-    if _gen:
-        gen_html = (f'<div style="display:grid;grid-template-columns:repeat({len(_gen)},1fr);gap:6px;">'
-                    + "".join(tile(v, l, c) for _, v, l, c in _gen) + '</div>')
-
-    # Visuels
-    map_html = ""
-    if "Heatmap des touches" in _msel:
-        _hm_b64 = ""
-        try:
-            _hm_b64 = build_touch_heatmap_b64(locs) if locs else ""
-        except Exception:
-            _hm_b64 = ""
-        map_html = stitle("Heatmap — ballons touchés") + (
-            f'<img src="{_hm_b64}" style="width:100%;display:block;border-radius:5px;"/>'
-            f'<div style="font-size:9.5px;color:#4A6A88;margin-top:3px;">{len(locs)} ballons localisés</div>'
-            if _hm_b64 else
-            '<div style="font-size:11px;color:#4A6A88;font-style:italic;">Aucune localisation disponible.</div>')
-    spider_html = ""
+    spider_card, forces_cards = "", ""
+    _ks = kpi_scores or {}
     if "Araignée tactique" in _msel:
-        _ks = kpi_scores or {}
         _sp_b64 = ""
         try:
             _sp_b64 = build_kpi_spider_b64(_ks) if _ks else ""
         except Exception:
             _sp_b64 = ""
-        if _sp_b64:
-            _n_k = int(_ks.get("_n", 1) or 1)
-            spider_html = (stitle("Indicateurs tactiques")
-                           + f'<img src="{_sp_b64}" style="width:100%;max-width:330px;display:block;margin:0 auto;"/>'
-                           + f'<div style="font-size:9.5px;color:#4A6A88;text-align:center;">Scores /100 — percentiles intra-match'
-                           + (f', moyenne de {_n_k} matchs' if _n_k > 1 else '') + '</div>')
-        else:
-            spider_html = (stitle("Indicateurs tactiques")
-                           + '<div style="font-size:11px;color:#4A6A88;font-style:italic;">Scores KPI non disponibles pour ce match.</div>')
+        _n_k = int(_ks.get("_n", 1) or 1) if _ks else 0
+        spider_card = (
+            f'<div class="gcard g-spider"><div class="gt"><b>Indicateurs tactiques</b> · /100</div>'
+            + (f'<div class="panel"><img src="{_sp_b64}"/></div>'
+               f'<div class="gn">Percentiles intra-match{f", moyenne de {_n_k} matchs" if _n_k > 1 else ""}</div>'
+               if _sp_b64 else '<div class="gn">Scores KPI non disponibles pour ce match.</div>')
+            + '</div>'
+        )
+        _kv = sorted([(k, _ks[k]) for k in REPORT_SPIDER_KPIS if k in _ks], key=lambda t: -t[1])
+        if len(_kv) >= 4:
+            _top = "".join(f'<div class="tr"><span class="tn">{i + 1}</span><span>{k}</span><b>{int(round(v))}</b></div>'
+                           for i, (k, v) in enumerate(_kv[:3]))
+            _low = "".join(f'<div class="tr"><span class="tn">{i + 1}</span><span>{k}</span><b>{int(round(v))}</b></div>'
+                           for i, (k, v) in enumerate(reversed(_kv[-2:])))
+            forces_cards = card("Points forts", _top) + card("Axes de progression", _low)
 
-    def _demo(lbl, val):
-        return (f'<div><div class="lbl">{lbl}</div>'
-                f'<div class="dv">{val or "—"}</div></div>')
-
-    _ddn_disp = ddn + (f" <span style='color:#5A7A98;font-size:12px;'>({age_txt})</span>" if age_txt else "")
     _footer_lbl = mi.get("label", "") or ""
 
     return f"""<!DOCTYPE html>
 <html lang="fr"><head>
 <meta charset="UTF-8"/>
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800;900&family=Barlow:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;}}
-body{{background:#030608;-webkit-print-color-adjust:exact;print-color-adjust:exact;display:flex;justify-content:center;padding:6px;}}
-.page{{width:210mm;height:297mm;overflow:hidden;background:#07111C;display:flex;flex-direction:column;font-family:Barlow,sans-serif;color:#C8DCF0;}}
-.lbl{{font-family:'Barlow Condensed',sans-serif;font-size:9.5px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#5A7A98;}}
-.dv{{font-family:'Barlow Condensed',sans-serif;font-size:16px;font-weight:700;color:#FFFFFF;margin-top:1px;}}
-.ctx-li{{font-family:'Barlow Condensed',sans-serif;font-size:10.5px;color:#8AABCA;letter-spacing:.3px;margin-top:2px;}}
-.st{{font-family:'Barlow Condensed',sans-serif;font-size:11.5px;font-weight:800;letter-spacing:1.6px;text-transform:uppercase;color:#00A3E0;display:flex;align-items:center;gap:6px;margin-bottom:6px;}}
-.ft{{font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#8AABCA;margin:7px 0 3px;padding-bottom:2px;border-bottom:1px solid #0F1E2E;}}
-.tile{{background:#0A1624;border:1px solid #12243A;border-radius:6px;padding:6px 8px;text-align:center;}}
-.tv{{font-family:'Barlow Condensed',sans-serif;font-size:26px;font-weight:800;line-height:1;}}
-.tl{{font-family:'Barlow Condensed',sans-serif;font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:#5A7A98;margin-top:2px;}}
-.pr{{display:grid;grid-template-columns:1fr 34px 70px 38px;align-items:center;gap:6px;margin-bottom:3px;}}
-.prl{{font-size:11.5px;color:#A8C4D8;}}
-.prs{{font-size:9.5px;color:#4A6A88;}}
-.prn{{font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:600;color:#FFFFFF;text-align:right;}}
-.prp{{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;text-align:right;}}
-.bar{{height:6px;background:#0A1520;border-radius:3px;overflow:hidden;}}
-.bar>div{{height:100%;border-radius:3px;}}
-.sec{{padding:9px 12px;border-bottom:1px solid #0F1E2E;}}
-@media print{{body{{background:#030608!important;padding:0;}} .page{{page-break-inside:avoid;}} @page{{size:A4;margin:0;}}}}
+body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exact;display:flex;justify-content:center;padding:6px;}}
+.page{{width:297mm;height:210mm;overflow:hidden;display:flex;flex-direction:column;font-family:Inter,sans-serif;color:#E6EEF8;
+  background:
+    radial-gradient(ellipse at 75% 40%,rgba(31,168,224,.10),transparent 60%),
+    repeating-linear-gradient(115deg,rgba(255,255,255,.018) 0 2px,transparent 2px 22px),
+    repeating-linear-gradient(25deg,rgba(255,255,255,.014) 0 1px,transparent 1px 30px),
+    #0A2453;}}
+.hdr{{display:flex;align-items:center;gap:14px;padding:12px 22px;background:#061A40;border-bottom:2px solid #1FA8E0;flex-shrink:0;}}
+.hdr .sep{{width:1px;height:30px;background:rgba(255,255,255,.25);}}
+.name{{font-family:Unbounded,sans-serif;font-size:23px;font-weight:800;color:#FFF;letter-spacing:.2px;white-space:nowrap;}}
+.pill{{font-size:11px;font-weight:700;padding:4px 12px;border-radius:999px;background:#1FA8E0;color:#061A40;white-space:nowrap;}}
+.pill-o{{background:transparent;color:#9FD8F2;border:1.5px solid #1FA8E0;}}
+.hctx{{margin-left:auto;text-align:right;}}
+.hm{{font-size:13.5px;color:#FFF;font-weight:500;}}
+.hs{{font-size:10.5px;color:#9FB8D8;margin-top:2px;}}
+.sc{{color:#E5322D;font-weight:800;}}
+.body{{display:grid;grid-template-columns:41% 1fr;flex:1;min-height:0;}}
+.left{{padding:12px 14px 12px 22px;border-right:2px solid rgba(31,168,224,.35);display:flex;flex-direction:column;min-height:0;}}
+.right{{padding:12px 22px 12px 18px;display:flex;flex-direction:column;min-height:0;}}
+.sect{{font-size:12px;font-weight:700;letter-spacing:2.2px;color:#1FA8E0;margin-bottom:9px;}}
+.cols{{display:grid;grid-template-columns:1fr 1fr;gap:10px;flex:1;min-height:0;}}
+.col{{display:flex;flex-direction:column;gap:10px;min-height:0;}}
+.card{{background:rgba(18,52,110,.82);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;}}
+.col>.card{{flex-basis:0;}}
+.rows{{flex:1;display:flex;flex-direction:column;justify-content:space-around;}}
+.ct{{font-size:10.5px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:#1FA8E0;margin-bottom:5px;}}
+.ctl{{text-transform:none;letter-spacing:.3px;color:#9FD8F2;font-weight:500;}}
+.r{{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.10);}}
+.r:last-child{{border-bottom:none;}}
+.rl{{font-size:12.5px;color:#E6EEF8;}}
+.rs{{font-size:9.5px;color:#8FA9CC;margin-left:4px;}}
+.rv{{font-family:Unbounded,sans-serif;font-size:15.5px;font-weight:700;color:#FFF;white-space:nowrap;}}
+.prof .rv{{font-size:13.5px;}}
+.pc{{font-family:Inter,sans-serif;font-size:11px;font-weight:500;color:#9FD8F2;margin-left:4px;}}
+.note{{font-size:9.5px;color:#8FA9CC;margin-top:3px;}}
+.cells{{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;}}
+.cl{{font-size:10.5px;color:#E6EEF8;line-height:1.25;min-height:26px;}}
+.cv{{font-family:Unbounded,sans-serif;font-size:15px;font-weight:700;color:#FFF;margin-top:2px;}}
+.graph{{display:grid;grid-template-columns:minmax(0,.72fr) minmax(0,1.08fr) minmax(0,1fr);grid-template-rows:1fr auto;gap:12px;flex:1;min-height:0;}}
+.gcol{{display:flex;flex-direction:column;gap:10px;min-height:0;}}
+.gcard{{background:rgba(12,40,92,.92);border:1px solid rgba(255,255,255,.08);border-top:3px solid #1FA8E0;border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;min-height:0;}}
+.g-heat{{flex:1;}}
+.g-heat .panel img{{position:static!important;width:100%!important;height:auto!important;}}
+.g-heat .panel{{background:#FFF;padding:4px;}}
+.g-heat .panel img{{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;border-radius:4px;}}
+.gcol>.card{{flex-basis:0;}}
+.g-spider{{flex:1;}}
+.gt{{font-size:12.5px;color:#FFF;margin-bottom:8px;}}
+.gt b{{font-weight:700;}}
+.panel{{background:#FFF;border-radius:4px;padding:6px;}}
+.panel img{{width:100%;display:block;}}
+.gn{{font-size:9.5px;color:#8FA9CC;margin-top:5px;}}
+.pcard{{background:linear-gradient(180deg,#F2F5FA,#C9D6E8);border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,.2);min-height:0;}}
+.photo{{width:100%;height:100%;object-fit:cover;object-position:top center;display:block;}}
+.ph{{display:flex;align-items:center;justify-content:center;font-family:Unbounded,sans-serif;font-size:44px;font-weight:800;color:#6C84A8;}}
+.tr{{display:grid;grid-template-columns:18px 1fr auto;align-items:center;padding:4px 0;font-size:11.5px;}}
+.tn{{font-family:Unbounded,sans-serif;font-weight:800;color:#1FA8E0;}}
+.tr b{{font-family:Unbounded,sans-serif;font-size:13px;}}
+.ftr{{height:20px;display:flex;align-items:center;justify-content:space-between;padding:0 22px;background:#061A40;flex-shrink:0;
+  font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#6E88AE;}}
+@media print{{body{{background:#0A2453!important;padding:0;}} .page{{page-break-inside:avoid;}} @page{{size:A4 landscape;margin:0;}}}}
 </style></head>
 <body><div class="page">
 
-<!-- 1. IDENTITÉ -->
-<div style="display:grid;grid-template-columns:1fr 190px;background:#060F1A;border-bottom:2.5px solid #00A3E0;flex-shrink:0;">
-  <div style="display:flex;align-items:center;gap:14px;padding:12px 16px;">
-    <img src="{PFC_LOGO}" alt="PFC" style="width:50px;height:50px;object-fit:contain;" onerror="this.style.display='none'"/>
-    {photo_html}
-    <div style="display:flex;flex-direction:column;gap:8px;flex:1;">
-      <div style="font-family:'Barlow Condensed',sans-serif;font-size:32px;font-weight:900;letter-spacing:.5px;color:#FFFFFF;line-height:1;text-transform:uppercase;">{player_label}</div>
-      <div style="display:grid;grid-template-columns:1.3fr 1fr 1fr 1fr;gap:10px;">
-        {_demo("Date de naissance", _ddn_disp)}
-        {_demo("Pied fort", pied)}
-        {_demo("Poste 1", poste1)}
-        {_demo("Poste 2", poste2)}
-      </div>
+<div class="hdr">
+  <img src="{PFC_LOGO}" alt="PFC" style="width:40px;height:40px;object-fit:contain;" onerror="this.style.display='none'"/>
+  <div class="sep"></div>
+  <div class="name">{player_label}</div>
+  {pills}
+  <div class="hctx">{ctx_html}</div>
+</div>
+
+<div class="body">
+  <div class="left">
+    <div class="sect">STATISTIQUES</div>
+    <div class="cols">
+      <div class="col">{col1}</div>
+      <div class="col">{col2}</div>
     </div>
   </div>
-  <div style="padding:10px 14px;border-left:1px solid #0F1E2E;display:flex;flex-direction:column;justify-content:center;">
-    {ctx_html}
+  <div class="right">
+    <div class="sect">GRAPH</div>
+    <div class="graph">
+      <div class="pcard">{photo}</div>
+      <div class="gcol">{prof_card}</div>
+      <div class="gcol">{forces_cards}</div>
+      <div style="grid-column:1 / span 2;display:flex;min-height:0;">{heat_card}</div>
+      <div class="gcol">{spider_card}</div>
+    </div>
   </div>
 </div>
 
-<!-- 2. TEMPS DE JEU + 3. STATS GÉNÉRALES -->
-<div class="sec" style="display:grid;grid-template-columns:170px 1fr;gap:10px;align-items:stretch;flex-shrink:0;">
-  <div class="tile" style="display:flex;flex-direction:column;justify-content:center;border-color:#00A3E0;">
-    <div class="tv" style="font-size:34px;color:#00A3E0;">{tps_txt}<span style="font-size:15px;color:#5A7A98;"> min</span></div>
-    <div class="tl">{tps_sub}</div>
-  </div>
-  <div>{stitle("Statistiques générales")}{gen_html}</div>
+<div class="ftr">
+  <span>Paris Football Club · Rapport individuel de match</span>
+  <span style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:150mm;">{_footer_lbl}</span>
+  <span style="color:#1FA8E0;font-weight:700;">Confidentiel</span>
 </div>
-
-<!-- 4. TECHNIQUE | ATHLÉTIQUE -->
-<div style="display:grid;grid-template-columns:1.15fr 1fr;flex-shrink:0;border-bottom:1px solid #0F1E2E;">
-  <div class="sec" style="border-bottom:none;border-right:1px solid #0F1E2E;">
-    {stitle("Statistiques techniques")}
-    {dist_html}{off_html}{def_html}
-  </div>
-  <div class="sec" style="border-bottom:none;">
-    {stitle("Dimension athlétique")}
-    {ath_html}
-  </div>
 </div>
-
-<!-- 5. VISUELS -->
-<div style="display:grid;grid-template-columns:1.15fr 1fr;flex:1;min-height:0;overflow:hidden;">
-  <div class="sec" style="border-bottom:none;border-right:1px solid #0F1E2E;">{map_html}</div>
-  <div class="sec" style="border-bottom:none;">{spider_html}</div>
-</div>
-
-<!-- FOOTER -->
-<div style="height:18px;display:flex;align-items:center;justify-content:space-between;padding:0 11px;background:#060F1A;border-top:1px solid #0F1E2E;flex-shrink:0;">
-  <span style="font-family:'Barlow Condensed',sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#3A5A70;">Paris Football Club · Rapport individuel de match</span>
-  <span style="font-family:'Barlow Condensed',sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#3A5A70;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:110mm;">{_footer_lbl}</span>
-  <span style="font-family:'Barlow Condensed',sans-serif;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#00A3E0;font-weight:700;">Confidentiel</span>
-</div>
-</div></body></html>"""
+<script>
+(function(){{
+  // Écran : ajuste la page paysage à la largeur de l'iframe Streamlit (pas d'effet à l'impression)
+  function fit(){{var w=window.innerWidth||1135;var z=Math.min(1,(w-12)/1123);document.body.style.zoom=z;}}
+  if(!window.matchMedia||!window.matchMedia('print').matches){{fit();window.addEventListener('resize',fit);}}
+  window.addEventListener('beforeprint',function(){{document.body.style.zoom=1;}});
+}})();
+</script>
+</body></html>"""
 
 
 # Clés numériques d'un résumé GPS match (get_gps_match_summary_for_player) —
@@ -10409,7 +10440,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                         player_info=get_player_demographics(sel_tac_player),
                         kpi_scores=get_match_kpi_scores(st.session_state.get("pfc_kpi_all"), sel_tac_player, [sel_row]),
                     )
-                    st.iframe(html_report, height=1120)
+                    st.iframe(html_report, height=820)
 
                 # Données brutes en expander (optionnel)
                 with st.expander("📋 Données tactiques brutes", expanded=False):
@@ -12081,10 +12112,10 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             kpi_scores=get_match_kpi_scores(st.session_state.get("pfc_kpi_all"), _sp, _srs),
                             tactic_dfs=[r["tac_obj"].get("df") for r in _srs] if len(_srs) > 1 else None)
                         _html_js = json.dumps(_html).replace('</script', '<\\/script')
-                        _pjs = ('<script>function pr(){var w=window.open("","_blank","width=900,height=1200");'
+                        _pjs = ('<script>function pr(){var w=window.open("","_blank","width=1200,height=900");'
                                 'var _h=' + _html_js + ';'
                                 'w.document.write(\'<!DOCTYPE html><html><head><meta charset="utf-8">\'+'
-                                '\'<style>@page{size:A4 portrait;margin:0}body{margin:0;background:#060F1A}</style>\'+'
+                                '\'<style>@page{size:A4 landscape;margin:0}body{margin:0;background:#0A2453}</style>\'+'
                                 '\'</head><body>\'+_h+\'</body></html>\');'
                                 'w.document.close();setTimeout(()=>w.print(),800);}</script>'
                                 '<button onclick="pr()" style="background:#00A3E0;color:#060F1A;border:none;'
@@ -12092,7 +12123,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 'font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px;">'
                                 '\U0001f5a8\ufe0f Imprimer / A4</button>')
                         st.iframe(_pjs, height=55)
-                        st.iframe(_html, height=1120)
+                        st.iframe(_html, height=820)
 
     # ══════════════════════════════════
     # TAB — SUIVI DE LA PERFORMANCE — onglets à plat (Séances, Match,
