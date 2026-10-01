@@ -122,6 +122,8 @@ DRIVE_TACTICAL_FOLDER_ID = ""   # À renseigner si dossier Drive dédié
 DRIVE_GPS_MATCH_FOLDER_ID = "1jzLW_jR5sMtsP4lOb4mN9mJlthw3pvbu"  # Dossier Drive GPS Match
 DRIVE_COMPILATION_GPS_FOLDER_ID = "1YedLpRQTtOdNvWseY8G9mtd46b-CPBNo"  # « Compilation GPS » (à côté de CSV GPS, hors sync)
 DRIVE_LOGOS_FOLDER_ID = "1TCKyVOHzKynm6Z1fhKnNUKYDcN7NhMCj"  # Logos clubs adversaires
+BEPRO_FOLDER = "data/bepro"     # Exports Bepro « JSON des Raw Event » (.zip) — cf. bepro_utils.py
+DRIVE_BEPRO_FOLDER_ID = ""      # À renseigner : dossier Drive où déposer les zips Bepro
 LOGOS_FOLDER = "data/logos"  # Cache local
 EVAL_FILENAME = "Auto-évaluation de votre match (post-match).xlsx"  # Fichier Microsoft Forms export
 EVAL_LOCAL_PATH = "data/evaluations.xlsx"  # Cache local
@@ -5405,6 +5407,82 @@ def sync_gps_match_from_drive() -> Tuple[int, int]:
     return ok, fail
 
 
+def sync_bepro_from_drive() -> Tuple[int, int]:
+    """Télécharge les exports Bepro (.zip / .json « Raw Event ») du dossier Drive dédié
+    vers data/bepro. Sans DRIVE_BEPRO_FOLDER_ID, les zips peuvent être déposés via
+    Gestion → Import."""
+    if not DRIVE_BEPRO_FOLDER_ID:
+        return 0, 0
+    from bepro_utils import is_bepro_file
+    os.makedirs(BEPRO_FOLDER, exist_ok=True)
+    service = authenticate_google_drive()
+    ok, fail = 0, 0
+    try:
+        for f in list_files_in_folder_paged(service, DRIVE_BEPRO_FOLDER_ID, page_size=200):
+            name = f.get("name", "")
+            if not is_bepro_file(name):
+                continue
+            dest = os.path.join(BEPRO_FOLDER, name)
+            if os.path.exists(dest):
+                ok += 1
+                continue
+            try:
+                fh = io.BytesIO()
+                downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=f["id"]), chunksize=1024 * 1024)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+                with open(dest, "wb") as out:
+                    out.write(fh.getvalue())
+                ok += 1
+            except Exception as e:
+                _warn(f"Bepro sync: {name} → {e}")
+                fail += 1
+    except Exception as e:
+        _warn(f"Bepro sync Drive: {e}")
+    return ok, fail
+
+
+def _bepro_folder_signature() -> tuple:
+    if not os.path.isdir(BEPRO_FOLDER):
+        return ()
+    return tuple(sorted((n, os.path.getmtime(os.path.join(BEPRO_FOLDER, n))) for n in os.listdir(BEPRO_FOLDER)))
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_bepro_cached(_sig: tuple) -> dict:
+    from bepro_utils import load_bepro_folder
+    return load_bepro_folder(BEPRO_FOLDER)
+
+
+def _bepro_ok(stats: dict) -> dict:
+    """Ne garde les stats Bepro que si tous les matchs sélectionnés sont couverts."""
+    return stats if stats and stats.get("_complet") else None
+
+
+def get_bepro_stats_for_matches(match_rows: list, player: str) -> dict:
+    """Stats Bepro d'une joueuse sur les matchs sélectionnés (lignes avec 'date' / 'adversaire').
+    {} si aucun export Bepro ne correspond ou si la joueuse n'y figure pas. Les matchs sans
+    export Bepro sont ignorés : l'appelant ne doit utiliser ce résultat que si TOUS les matchs
+    sont couverts (sinon mélange de sources), d'où la clé "_complet"."""
+    try:
+        from bepro_utils import compute_bepro_player_stats, find_bepro_match
+        bepro = _load_bepro_cached(_bepro_folder_signature())
+        if not bepro:
+            return {}
+        dfs = [find_bepro_match(bepro, r.get("date"), r.get("adversaire", "")) for r in match_rows]
+        found = [d for d in dfs if d is not None]
+        if not found:
+            return {}
+        s = compute_bepro_player_stats(pd.concat(found, ignore_index=True), player)
+        if s:
+            s["_complet"] = len(found) == len(match_rows)
+        return s
+    except Exception as e:
+        _warn(f"Bepro: lecture impossible → {e}")
+        return {}
+
+
 # ─── DONNÉES TECHNICO-TACTIQUES ─────────────────────────────────────
 
 def is_tactical_file(filename: str) -> bool:
@@ -8603,6 +8681,11 @@ def _run_initial_sync():
         _warn(f"GPS Match: sync échouée → {e}")
 
     try:
+        sync_bepro_from_drive()
+    except Exception as e:
+        _warn(f"Bepro: sync échouée → {e}")
+
+    try:
         sync_photos_from_drive()
     except Exception as e:
         _warn(f"Photos: sync échouée → {e}")
@@ -9540,6 +9623,7 @@ def build_tactical_report_html(
     player_info: dict = None,
     kpi_scores: dict = None,
     tactic_dfs: list = None,
+    bepro_stats: dict = None,
 ) -> str:
     """Rapport de match individuel A4 paysage (v5, charte navy) :
     1. Identité (nom, date de naissance, pied fort, postes 1/2) + contexte (adversaire/score
@@ -9616,6 +9700,25 @@ def build_tactical_report_html(
                 pass
     else:
         locs = s.get("locs", [])
+
+    # Données Bepro (si l'export du/des match(s) est disponible et contient la joueuse) :
+    # elles remplacent le tagging Sportscode pour les stats techniques et la heatmap —
+    # tagging plus complet (direction / zone de chaque passe, coordonnées de chaque action)
+    # et identique aux chiffres de la plateforme Bepro. Score, poste joué et GPS inchangés.
+    _src_tech = "Sportscode"
+    if bepro_stats:
+        _b = bepro_stats
+        p_ok, p_ko = int(_b.get("passes_ok", 0)), int(_b.get("passes_ko", 0)); p_tot = p_ok + p_ko
+        d_ok, d_ko = int(_b.get("drib_ok", 0)), int(_b.get("drib_ko", 0)); d_tot = d_ok + d_ko
+        sol_ok, sol_ko = int(_b.get("sol_ok", 0)), int(_b.get("sol_ko", 0)); sol_tot = sol_ok + sol_ko
+        aer_ok, aer_ko = int(_b.get("aer_ok", 0)), int(_b.get("aer_ko", 0)); aer_tot = aer_ok + aer_ko
+        du_ok, du_ko = int(_b.get("duels_gagnes", 0)), int(_b.get("duels_perdus", 0)); du_tot = du_ok + du_ko
+        t_tot, t_cad, t_but = int(_b.get("tirs_tot", 0)), int(_b.get("tirs_cadres", 0)), int(_b.get("tirs_buts", 0))
+        interc, pertes, ballons = int(_b.get("interceptions", 0)), int(_b.get("pertes", 0)), int(_b.get("ballons", 0))
+        assists = int(_b.get("assists", 0))
+        pb = _b.get("pass_breakdown") or pb
+        locs = _b.get("locs") or locs
+        _src_tech = "Bepro"
 
     # Poste joué (fallback du poste 1 si absent du fichier joueuses)
     _poste_tac = ""
@@ -9833,7 +9936,7 @@ def build_tactical_report_html(
                            for i, (k, v) in enumerate(reversed(_kv[-2:])))
             forces_cards = card("Top 3 points forts", _top) + card("Top 2 axes de progression", _low)
 
-    _footer_lbl = mi.get("label", "") or ""
+    _footer_lbl = " · ".join(x for x in [mi.get("label", "") or "", f"Données techniques : {_src_tech}"] if x)
 
     return f"""<!DOCTYPE html>
 <html lang="fr"><head>
@@ -10455,6 +10558,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                         gps_match_df=gps_match_df,
                         player_info=get_player_demographics(sel_tac_player),
                         kpi_scores=get_match_kpi_scores(st.session_state.get("pfc_kpi_all"), sel_tac_player, [sel_row]),
+                        bepro_stats=_bepro_ok(get_bepro_stats_for_matches([sel_row], sel_tac_player)),
                     )
                     st.iframe(html_report, height=820)
 
@@ -12126,7 +12230,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             photo_b64=_pb64, match_info=_mi, selected_indicators=_mr_selected_indicators,
                             player_info=get_player_demographics(_sp),
                             kpi_scores=get_match_kpi_scores(st.session_state.get("pfc_kpi_all"), _sp, _srs),
-                            tactic_dfs=[r["tac_obj"].get("df") for r in _srs] if len(_srs) > 1 else None)
+                            tactic_dfs=[r["tac_obj"].get("df") for r in _srs] if len(_srs) > 1 else None,
+                            bepro_stats=_bepro_ok(get_bepro_stats_for_matches(_srs, _sp)))
                         _html_js = json.dumps(_html).replace('</script', '<\\/script')
                         _pjs = ('<script>function pr(){var w=window.open("","_blank","width=1200,height=900");'
                                 'var _h=' + _html_js + ';'
@@ -13389,7 +13494,8 @@ _IMPORT_DEST = {
 }
 
 
-def _drive_deposer_csv(service, dossier_id: str, nom: str, contenu: bytes) -> Tuple[Optional[str], str]:
+def _drive_deposer_csv(service, dossier_id: str, nom: str, contenu: bytes,
+                       mimetype: str = "text/csv") -> Tuple[Optional[str], str]:
     """Dépose un CSV dans un dossier Drive. Retourne (id, "créé") ou (id, "existe") si un
     fichier du même nom y est déjà (rien n'est écrasé)."""
     from googleapiclient.http import MediaIoBaseUpload
@@ -13399,7 +13505,7 @@ def _drive_deposer_csv(service, dossier_id: str, nom: str, contenu: bytes) -> Tu
                                                   includeItemsFromAllDrives=True)).get("files", [])
     if ex:
         return ex[0]["id"], "existe"
-    media = MediaIoBaseUpload(io.BytesIO(contenu), mimetype="text/csv", resumable=False)
+    media = MediaIoBaseUpload(io.BytesIO(contenu), mimetype=mimetype, resumable=False)
     f = _execute_with_retry(service.files().create(body={"name": nom, "parents": [dossier_id]},
                                                    media_body=media, fields="id", supportsAllDrives=True))
     return f["id"], "créé"
@@ -13431,6 +13537,67 @@ def _importer_un_csv(service, nom: str, contenu: bytes, typ: str) -> Tuple[bool,
     with open(chemin, "wb") as f:
         f.write(contenu)
     return True, " · ".join(x for x in [f"importé ({os.path.relpath(chemin, DATA_FOLDER)})", drive_msg] if x)
+
+
+def render_import_bepro():
+    """Dépôt des exports Bepro (Stats → Télécharger → « JSON des Raw Event ») : le zip est
+    vérifié (lisible, date et équipes dans le nom), copié dans data/bepro et, si
+    DRIVE_BEPRO_FOLDER_ID est renseigné, déposé sur le Drive. Les rapports individuels des
+    matchs couverts utilisent alors Bepro pour les stats techniques et la heatmap."""
+    from bepro_utils import bepro_events_frame, is_bepro_file, parse_bepro_filename, read_bepro_events
+    st.subheader("📦 Importer des exports Bepro")
+    st.caption("Bepro → match → Stats → Télécharger → « JSON des Raw Event » : déposer le .zip tel quel "
+               "(sans le renommer).")
+    _cle = f"import_bepro_upl_{st.session_state.get('_import_bepro_n', 0)}"
+    fichiers = st.file_uploader("Exports Bepro", type=["zip", "json"], accept_multiple_files=True, key=_cle)
+    if not fichiers:
+        return
+    lignes, valides = [], []
+    for up in fichiers:
+        info = parse_bepro_filename(up.name)
+        try:
+            ev = read_bepro_events(up.getvalue(), up.name)
+            df = bepro_events_frame(ev)
+            ok = is_bepro_file(up.name) and info["date"] is not None and not df.empty
+            motif = "" if ok else ("nom de fichier non reconnu (ne pas renommer l'export)"
+                                   if info["date"] is None or not is_bepro_file(up.name) else "aucun événement")
+        except Exception as e:
+            df, ok, motif = pd.DataFrame(), False, f"illisible ({e})"
+        deja = os.path.exists(os.path.join(BEPRO_FOLDER, up.name))
+        lignes.append({
+            "Fichier": up.name,
+            "Date": info["date"].strftime("%d/%m/%Y") if info["date"] is not None else "—",
+            "Match": f"{info['home']} vs {info['away']}" if info["home"] else "—",
+            "Événements": len(df), "Joueuses": int(df["player"].nunique()) if not df.empty else 0,
+            "Valide": "✅" if ok and not deja else ("⏭️ déjà importé" if ok else f"❌ {motif}"),
+        })
+        if ok and not deja:
+            valides.append(up)
+    st.dataframe(pd.DataFrame(lignes), hide_index=True, width="stretch")
+    if st.button(f"📦 Importer {len(valides)} export(s) Bepro", type="primary", disabled=not valides,
+                 key=f"{_cle}_go"):
+        service = None
+        if DRIVE_BEPRO_FOLDER_ID:
+            try:
+                service = authenticate_google_drive()
+            except Exception as e:
+                st.warning(f"Connexion Drive impossible ({e}) : exports enregistrés sur le serveur uniquement.")
+        os.makedirs(BEPRO_FOLDER, exist_ok=True)
+        for up in valides:
+            msg = "importé"
+            if service is not None:
+                try:
+                    _drive_deposer_csv(service, DRIVE_BEPRO_FOLDER_ID, up.name, up.getvalue(),
+                                       mimetype="application/zip" if up.name.lower().endswith(".zip")
+                                       else "application/json")
+                    msg += " · déposé sur le Drive"
+                except Exception as e:
+                    msg += f" · ⚠️ Drive indisponible ({e}) : serveur uniquement"
+            with open(os.path.join(BEPRO_FOLDER, up.name), "wb") as f:
+                f.write(up.getvalue())
+            st.success(f"{up.name} : {msg}")
+        _load_bepro_cached.clear()
+        st.session_state["_import_bepro_n"] = st.session_state.get("_import_bepro_n", 0) + 1
 
 
 def render_import_csv():
@@ -13557,6 +13724,9 @@ def render_import_csv():
                 st.session_state["_import_csv_n"] = st.session_state.get("_import_csv_n", 0) + 1
                 st.info(f"{n_ok} fichier(s) importé(s). Les données seront recalculées au prochain affichage "
                         "(jusqu'à ~40 s la première fois).")
+
+    st.divider()
+    render_import_bepro()
 
     st.divider()
     st.subheader("🔁 Fichiers en double")
