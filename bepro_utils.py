@@ -162,13 +162,22 @@ def load_bepro_folder(folder: str = BEPRO_FOLDER) -> Dict[str, dict]:
     return out
 
 
-def find_bepro_match(bepro: Dict[str, dict], date, adversaire: str = "") -> Optional[pd.DataFrame]:
-    """Export Bepro d'un match : même date, et adversaire présent dans le nom si plusieurs."""
+def find_bepro_match(bepro: Dict[str, dict], date, adversaire: str = "",
+                     categorie: str = "") -> Optional[pd.DataFrame]:
+    """Export Bepro d'un match : même date, même catégorie (« U19 ») si elle figure des deux
+    côtés — sinon un export U19 servirait au match U23 du même jour —, et adversaire présent
+    dans le nom s'il reste plusieurs candidats."""
     d = pd.to_datetime(date, errors="coerce")
     if pd.isna(d):
         return None
     cands = [v for v in bepro.values() if v["info"]["date"] is not None
              and v["info"]["date"].normalize() == d.normalize()]
+    if categorie:
+        cat = categorie.strip().upper()
+
+        def _cats(v):
+            return set(re.findall(r"U\d{2}", (v["info"]["home"] + " " + v["info"]["away"]).upper()))
+        cands = [v for v in cands if not _cats(v) or cat in _cats(v)]
     if len(cands) > 1 and adversaire:
         a = _norm(adversaire)
         toks = [t for t in a.split() if len(t) > 2]

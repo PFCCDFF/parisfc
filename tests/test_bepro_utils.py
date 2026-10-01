@@ -125,6 +125,9 @@ class TestDossier(unittest.TestCase):
             df = B.find_bepro_match(bp, "2026-09-12", "HAC")
             self.assertEqual(len(df), 2)
             self.assertIsNone(B.find_bepro_match(bp, "2026-09-13"))
+            # même jour, autre catégorie (match U23) : l'export U19 ne doit pas être utilisé
+            self.assertIsNone(B.find_bepro_match(bp, "2026-09-12", "Red Star", "U23"))
+            self.assertEqual(len(B.find_bepro_match(bp, "2026-09-12", "HAC", "U19")), 2)
 
 
 if __name__ == "__main__":

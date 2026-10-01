@@ -5374,6 +5374,23 @@ def load_gps_match(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon,
             result[c] = pd.to_numeric(result[c], errors="coerce")
 
     result["DATE"] = pd.to_datetime(result.get("DATE", pd.NaT), errors="coerce")
+
+    # Un même match est présent sous plusieurs fichiers (export « GF1_… » et copie nommée
+    # « U19 1:J01 … », chacun avec et sans suffixe __id8) : sans dédoublonnage, chaque match
+    # comptait jusqu'à 4 fois dans les cumuls/moyennes de saison (audit 01/10/2026 : 617
+    # couples joueuse × date en double). Une ligne par joueuse × jour × (distance, durée),
+    # en gardant de préférence le fichier au nom descriptif (libellé de match plus lisible).
+    if "Player" in result.columns and not result.empty:
+        _cols = [c for c in ["Distance (m)", "Durée_min"] if c in result.columns]
+        _n0 = len(result)
+        result = (result.assign(_dk=result["DATE"].dt.normalize(),
+                                _gf1=result["__source_file"].astype(str).str.startswith("GF1_"))
+                  .sort_values("_gf1", kind="stable")
+                  .drop_duplicates(["Player", "_dk"] + _cols)
+                  .drop(columns=["_dk", "_gf1"])
+                  .sort_index())
+        if len(result) < _n0:
+            _warn(f"GPS Match: {_n0 - len(result)} ligne(s) en double ignorée(s) (même match présent dans plusieurs fichiers)")
     return result
 
 
@@ -5470,7 +5487,11 @@ def get_bepro_stats_for_matches(match_rows: list, player: str) -> dict:
         bepro = _load_bepro_cached(_bepro_folder_signature())
         if not bepro:
             return {}
-        dfs = [find_bepro_match(bepro, r.get("date"), r.get("adversaire", "")) for r in match_rows]
+        def _cat(r):
+            _src = str((r.get("tac_obj") or {}).get("filename", "") or r.get("display", "") or "")
+            _m = re.search(r"U(\d{2})", _src)
+            return f"U{_m.group(1)}" if _m else ""
+        dfs = [find_bepro_match(bepro, r.get("date"), r.get("adversaire", ""), _cat(r)) for r in match_rows]
         found = [d for d in dfs if d is not None]
         if not found:
             return {}
@@ -6384,7 +6405,15 @@ def load_tactical_files() -> list:
                 continue
             seen.add(full)
             _pinfo = parse_tactical_filename(f)
-            _key = (_pinfo.get("date"), _pinfo.get("journee"), _pinfo.get("adv_norm")) if _pinfo.get("date") is not None else full
+            # Même clé que le dédoublonnage des KPI (collect_data) : (journée, catégorie, date)
+            # lues dans le nom PFC_VS_<…>_<J>_<cat>_<date>. L'ancienne clé (date, journée,
+            # adversaire) laissait passer un même match sous deux graphies d'adversaire
+            # (« AAS Sarcelles » / « Sarcelles ») → liste des matchs ≠ stats KPI.
+            _parts = os.path.splitext(f)[0].split("_")
+            if len(_parts) >= 6:
+                _key = ("kpi", _parts[3], _parts[4], _parts[5])
+            else:
+                _key = (_pinfo.get("date"), _pinfo.get("journee"), _pinfo.get("adv_norm")) if _pinfo.get("date") is not None else full
             try:
                 _mtime = os.path.getmtime(full)
             except OSError:
