@@ -1399,7 +1399,8 @@ def infer_opponent_from_columns(df: pd.DataFrame, equipe_pfc: str) -> Optional[s
         if col not in df.columns:
             continue
 
-        s_raw = df[col].dropna().astype(str).map(lambda x: x.strip())
+        # Cellules multi-valeurs Sportscode (« LOSC, LOSC ») : première valeur seulement.
+        s_raw = df[col].dropna().astype(str).map(lambda x: x.split(",")[0].strip())
         s_raw = s_raw[s_raw != ""]
         if s_raw.empty:
             continue
@@ -1410,7 +1411,10 @@ def infer_opponent_from_columns(df: pd.DataFrame, equipe_pfc: str) -> Optional[s
         tmp = tmp[tmp["clean"] != ""]
         tmp = tmp[tmp["clean"] != pfc_clean]
         tmp = tmp[~tmp["clean"].isin(banned_clean)]
-        tmp = tmp[~tmp["raw"].map(lambda x: looks_like_player(x))]
+        # « Teamersaire » ne contient que des noms d'équipe : pas de filtre « ressemble à une
+        # joueuse », qui écartait « Angers sco » (deux mots, le 2e en minuscules) → « sco ».
+        if col != "Teamersaire":
+            tmp = tmp[~tmp["raw"].map(lambda x: looks_like_player(x))]
 
         if tmp.empty:
             continue
@@ -6495,26 +6499,29 @@ def load_tactical_files() -> list:
             # lignes de l'adversaire (Row == nom_adversaire) — source fiable.
             _adv_rows = df[df["Row"].notna() & ~df["Row"].isin({"START","PFC",""})] if "Row" in df.columns else pd.DataFrame()
 
+            # Valeurs les plus fréquentes, pas la 1re cellule : une ligne parasite recopiée
+            # d'un autre projet Sportscode (Angers J5 : « Guingamp / J0 / Amical » sur 1 ligne
+            # contre 312 « Angers sco / J5 / U19 Nat ») renommait tout le match.
             # Compétition depuis colonne CSV (ex: "U19 Nat")
             if "Compétition" in df.columns:
                 _comp_vals = df["Compétition"].dropna().apply(lambda x: str(x).split(",")[0].strip())
                 if not _comp_vals.empty:
-                    info["competition"] = _comp_vals.iloc[0]
+                    info["competition"] = _comp_vals.mode().iloc[0]
 
             # Journée depuis colonne CSV (prioritaire sur Timeline/filename)
             if "Journée" in df.columns:
                 _jour_vals = df["Journée"].dropna().apply(lambda x: str(x).split(",")[0].strip())
                 if not _jour_vals.empty:
                     try:
-                        info["journee"] = str(int(float(_jour_vals.iloc[0]))).zfill(2)
+                        info["journee"] = str(int(float(_jour_vals.mode().iloc[0]))).zfill(2)
                     except Exception:
-                        info["journee"] = _jour_vals.iloc[0].zfill(2)
+                        info["journee"] = _jour_vals.mode().iloc[0].zfill(2)
 
             # Adversaire depuis Teamersaire (valeur exacte du nom de l'équipe adverse)
             if "Teamersaire" in df.columns:
                 _team_vals = df["Teamersaire"].dropna().apply(lambda x: str(x).split(",")[0].strip())
                 if not _team_vals.empty:
-                    _adv_csv = _team_vals.iloc[0]
+                    _adv_csv = _team_vals.mode().iloc[0]
                     if _adv_csv:
                         info["adversaire"] = _adv_csv
                         info["adv_norm"]   = normalize_str(_adv_csv)
