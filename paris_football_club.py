@@ -7058,11 +7058,12 @@ def _team_logo_html(team_name: str, is_pfc: bool = False, size: int = 44) -> str
     )
 
 
-def _draw_collective_pitch(ax, half=False):
+def _draw_collective_pitch(ax, half=False, light=False):
     """Dessine un terrain vertical simplifié (attaque vers le haut) sur l'axe donné.
-    Si half=True, ne dessine que la moitié offensive (du rond central à la ligne de but adverse)."""
-    ax.set_facecolor("#08090D")
-    line_c = "#1E2D40"
+    Si half=True, ne dessine que la moitié offensive (du rond central à la ligne de but adverse).
+    light=True : fond blanc / lignes sombres (panneaux blancs des rapports charte v5)."""
+    ax.set_facecolor("#FFFFFF" if light else "#08090D")
+    line_c = "#1B1B1B" if light else "#1E2D40"
     y_min = 50 if half else 0
     ax.set_xlim(0, 68); ax.set_ylim(y_min, 100)
     ax.add_patch(plt.Rectangle((0, y_min), 68, 100 - y_min, fill=False, edgecolor=line_c, linewidth=1.2))
@@ -7077,7 +7078,7 @@ def _draw_collective_pitch(ax, half=False):
 
 
 @_mpl_safe
-def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 2.6), dpi=90):
+def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 2.6), dpi=90, light=False, title=True):
     """Demi-terrain (moitié offensive) avec 3 flèches (Gauche/Central/Droit), épaisseur/opacité ∝ %."""
     _pg = entree_tiers.get("Couloir Gauche", 0.0)
     _pc = entree_tiers.get("Couloir Central", 0.0)
@@ -7085,31 +7086,33 @@ def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 2.6), dpi=90):
     _pmax = max(_pg, _pc, _pd, 0.0001)
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    fig.patch.set_facecolor("#08090D")
-    _draw_collective_pitch(ax, half=True)
+    fig.patch.set_facecolor("#FFFFFF" if light else "#08090D")
+    _draw_collective_pitch(ax, half=True, light=light)
+    _arrow_c = "#E5322D" if light else "#FFA06E"
 
     for x, pct in [(12, _pg), (34, _pc), (56, _pd)]:
         lw = 1.5 + (pct / _pmax) * 7.5
         alpha = 0.35 + (pct / _pmax) * 0.65
         ax.annotate(
             "", xy=(x, 96), xytext=(x, 55),
-            arrowprops=dict(arrowstyle="-|>", color="#FFA06E", lw=lw, alpha=alpha,
+            arrowprops=dict(arrowstyle="-|>", color=_arrow_c, lw=lw, alpha=alpha,
                             mutation_scale=18 + (pct / _pmax) * 12),
         )
         ax.text(x, 51.5, f"{pct:.1f} %", ha="center", va="bottom",
-                color="#FFA06E", fontsize=10, fontweight="bold")
+                color="#0B2A5C" if light else _arrow_c, fontsize=10, fontweight="bold")
 
-    ax.set_title("Couloir d'entrée dans le dernier 1/3", color="#C8D8E8", fontsize=9.5)
+    if title:
+        ax.set_title("Couloir d'entrée dans le dernier 1/3", color="#0B2A5C" if light else "#C8D8E8", fontsize=9.5)
     fig.tight_layout()
     return fig
 
 
 @_mpl_safe
-def build_zone_heatmap_figure(grid, rows_lbl, cols_lbl, title, cmap_name, figsize=(4, 5.6), dpi=90):
+def build_zone_heatmap_figure(grid, rows_lbl, cols_lbl, title, cmap_name, figsize=(4, 5.6), dpi=90, light=False):
     """Vraie carte de chaleur (dégradé lissé, sans grille de carrés) superposée à un terrain vertical."""
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    fig.patch.set_facecolor("#08090D")
-    ax.set_facecolor("#08090D")
+    fig.patch.set_facecolor("#FFFFFF" if light else "#08090D")
+    ax.set_facecolor("#FFFFFF" if light else "#08090D")
 
     arr = np.array(grid, dtype=float)
     vmax = max(arr.max(), 1)
@@ -7122,204 +7125,41 @@ def build_zone_heatmap_figure(grid, rows_lbl, cols_lbl, title, cmap_name, figsiz
     )
 
     # Lignes de terrain PAR-DESSUS le dégradé (sinon elles seraient recouvertes)
-    _draw_collective_pitch(ax)
+    _draw_collective_pitch(ax, light=light)
     for artist in ax.patches + ax.lines:
         artist.set_zorder(3)
 
-    ax.set_title(title, color="#C8D8E8", fontsize=11)
+    if title:
+        ax.set_title(title, color="#0B2A5C" if light else "#C8D8E8", fontsize=11)
     fig.tight_layout()
     return fig
 
 
-def render_collective_report(report: dict, gps_stats: dict = None):
-    """Affiche le rapport collectif — logos, cartes, barres comparatives miroir (2 colonnes)
-    et barres de répartition, cohérent avec la charte graphique Paris FC."""
+def render_collective_report(report: dict, gps_stats: dict = None, match_info: dict = None):
+    """Affiche le rapport collectif (charte du rapport individuel v5) dans un iframe, avec
+    export PDF A4 paysage ; le diagnostic GPS (fichiers sources, noms bruts) reste en dessous."""
     if not report:
         st.info("Données insuffisantes pour générer le rapport collectif sur ce match.")
         return
 
-    pfc_name, adv_name = report["pfc_name"], report["adv_name"]
-    s_pfc, s_adv = report["stats"][pfc_name], report["stats"][adv_name]
-
-    CYAN = "#00A3E0"
-    CORAIL = "#FF6B6B"
-    TXT = "#C8D8E8"
-    MUTED = "#6A8090"
-
-    def _section_title(icon, txt):
-        st.markdown(
-            f"<div style='display:flex;align-items:center;gap:8px;margin:14px 0 8px;'>"
-            f"<span style='font-size:16px;'>{icon}</span>"
-            f"<span style='font-family:Oswald,sans-serif;font-size:14px;font-weight:600;"
-            f"letter-spacing:0.08em;text-transform:uppercase;color:#FFFFFF;'>{txt}</span>"
-            f"<div style='flex:1;height:1px;background:rgba(0,163,224,0.25);margin-left:8px;'></div>"
-            f"</div>", unsafe_allow_html=True)
-
-    # ── En-tête logos ─────────────────────────────────────────────────────
-    _lg1, _lg2, _lg3 = st.columns([1, 1, 1])
-    with _lg1:
-        st.markdown(
-            f"<div style='display:flex;align-items:center;gap:10px;'>"
-            f"{_team_logo_html(pfc_name, is_pfc=True, size=42)}"
-            f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CYAN};font-size:15px;"
-            f"text-transform:uppercase;'>{pfc_name}</span></div>", unsafe_allow_html=True)
-    with _lg2:
-        st.markdown(
-            "<div style='text-align:center;font-family:Oswald,sans-serif;color:#6A8090;"
-            "font-size:13px;text-transform:uppercase;letter-spacing:.1em;padding-top:8px;'>VS</div>",
-            unsafe_allow_html=True)
-    with _lg3:
-        st.markdown(
-            f"<div style='display:flex;align-items:center;justify-content:flex-end;gap:10px;'>"
-            f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CORAIL};font-size:15px;"
-            f"text-transform:uppercase;'>{adv_name}</span>{_team_logo_html(adv_name, size=42)}</div>",
-            unsafe_allow_html=True)
-
-    # ── Bouton d'export PDF (A4 paysage) ─────────────────────────────────
-    try:
-        _html_export = build_collective_report_html(report, gps_stats=gps_stats)
-        _print_js = (
-            '<script>function prColl(){var w=window.open("","_blank","width=1200,height=850");'
-            'w.document.write(`' + _html_export.replace("`", "\\`") + '`);'
+    _html = build_collective_report_html(report, gps_stats=gps_stats, match_info=match_info)
+    _html_js = json.dumps(_html).replace('</script', '<\\/script')
+    _pjs = ('<script>function prColl(){var w=window.open("","_blank","width=1200,height=900");'
+            'var _h=' + _html_js + ';'
+            'w.document.write(\'<!DOCTYPE html><html><head><meta charset="utf-8">\'+'
+            '\'<style>@page{size:A4 landscape;margin:0}body{margin:0;background:#0A2453}</style>\'+'
+            '\'</head><body>\'+_h+\'</body></html>\');'
             'w.document.close();setTimeout(()=>w.print(),800);}</script>'
             '<button onclick="prColl()" style="background:#00A3E0;color:#060F1A;border:none;'
             'border-radius:4px;padding:8px 18px;font-family:Oswald,sans-serif;'
-            'font-size:13px;font-weight:700;cursor:pointer;margin:8px 0;">'
-            '🖨️ Exporter en PDF (A4 paysage)</button>'
-        )
-        st.iframe(_print_js, height=55)
-    except Exception:
-        pass
+            'font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px;">'
+            '\U0001f5a8\ufe0f Exporter en PDF (A4 paysage)</button>')
+    st.iframe(_pjs, height=55)
+    st.iframe(_html, height=820)
 
-    # ── Temps de jeu effectif ────────────────────────────────────────────
-    _section_title("⏱️", "Temps de jeu effectif")
-    _t1, _t2, _t3 = st.columns(3)
-    _t1.metric("Total", _fmt_secs_to_mmss(report["temps_total"]))
-    _t2.metric("MT1", _fmt_secs_to_mmss(report["temps_mt1"]))
-    _t3.metric("MT2", _fmt_secs_to_mmss(report["temps_mt2"]))
-
-    # ── Statistiques comparées — barres miroir, en 2 colonnes compactes ──
-    _section_title("📊", "Statistiques comparées")
-
-    def _mirror_row(label, val_pfc, val_adv, unit="", is_pct=False):
-        try:
-            v1 = float(val_pfc) if val_pfc not in (None, "—") else 0.0
-            v2 = float(val_adv) if val_adv not in (None, "—") else 0.0
-        except (TypeError, ValueError):
-            v1, v2 = 0.0, 0.0
-        max_v = max(v1, v2, 0.0001)
-        pct1 = min(v1 / max_v * 100, 100)
-        pct2 = min(v2 / max_v * 100, 100)
-        disp1 = val_pfc if val_pfc is not None else "—"
-        disp2 = val_adv if val_adv is not None else "—"
-        if is_pct:
-            disp1 = f"{disp1} %" if disp1 != "—" else "—"
-            disp2 = f"{disp2} %" if disp2 != "—" else "—"
-        elif unit:
-            disp1 = f"{disp1} {unit}" if disp1 != "—" else "—"
-            disp2 = f"{disp2} {unit}" if disp2 != "—" else "—"
-
-        html = f"""
-        <div style="margin-bottom:6px;">
-          <div style="text-align:center;font-size:9.5px;color:{MUTED};font-family:Oswald,sans-serif;
-                      letter-spacing:0.05em;text-transform:uppercase;margin-bottom:2px;">{label}</div>
-          <div style="display:flex;align-items:center;gap:6px;">
-            <div style="width:46px;text-align:right;font-weight:700;color:{CYAN};font-size:11.5px;">{disp1}</div>
-            <div style="flex:1;display:flex;justify-content:flex-end;">
-              <div style="height:6px;width:{pct1}%;background:{CYAN};border-radius:3px 0 0 3px;"></div>
-            </div>
-            <div style="width:1px;height:12px;background:rgba(255,255,255,0.15);"></div>
-            <div style="flex:1;display:flex;justify-content:flex-start;">
-              <div style="height:6px;width:{pct2}%;background:{CORAIL};border-radius:0 3px 3px 0;"></div>
-            </div>
-            <div style="width:46px;text-align:left;font-weight:700;color:{CORAIL};font-size:11.5px;">{disp2}</div>
-          </div>
-        </div>"""
-        st.markdown(html, unsafe_allow_html=True)
-
-    _stat_rows = [
-        ("% Possession", report["poss_total"][pfc_name], report["poss_total"][adv_name], "", True),
-        ("% Possession MT1", report["poss_mt1"][pfc_name], report["poss_mt1"][adv_name], "", True),
-        ("% Possession MT2", report["poss_mt2"][pfc_name], report["poss_mt2"][adv_name], "", True),
-        ("Nombre de possessions", s_pfc["possessions"], s_adv["possessions"], "", False),
-        ("Durée moyenne possession", round(s_pfc["duree_moyenne"], 1), round(s_adv["duree_moyenne"], 1), "s", False),
-        ("Nombre de tirs", s_pfc["tirs"], s_adv["tirs"], "", False),
-        ("Nombre de tirs cadrés", s_pfc["tirs_cadres"], s_adv["tirs_cadres"], "", False),
-        ("% tirs cadrés", s_pfc["pct_tirs_cadres"], s_adv["pct_tirs_cadres"], "", True),
-        ("Nombre de buts", s_pfc["buts"], s_adv["buts"], "", False),
-    ]
-    _stat_rows2 = [
-        ("Nombre de tirs non cadrés", s_pfc["tirs_non_cadres"], s_adv["tirs_non_cadres"], "", False),
-        ("Nombre de fautes", s_pfc["fautes"], s_adv["fautes"], "", False),
-        ("Nombre de hors-jeu", s_pfc["hors_jeu"], s_adv["hors_jeu"], "", False),
-        ("Nombre de pertes de balle", s_pfc["pertes"], s_adv["pertes"], "", False),
-        ("% pertes de balle", s_pfc["pct_pertes"], s_adv["pct_pertes"], "", True),
-        ("Entrées dans le dernier 1/3", s_pfc["entrees_1_3"], s_adv["entrees_1_3"], "", False),
-        ("Possessions nécessaires / entrée 1/3", s_pfc["poss_par_entree"], s_adv["poss_par_entree"], "", False),
-        ("Entrées 1/3 nécessaires / tir", s_pfc["entrees_par_tir"], s_adv["entrees_par_tir"], "", False),
-    ]
-
-    _sc1, _sc2 = st.columns(2)
-    with _sc1:
-        st.markdown(
-            f"<div style='display:flex;justify-content:space-between;margin-bottom:4px;'>"
-            f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CYAN};font-size:11px;"
-            f"text-transform:uppercase;'>{pfc_name}</span>"
-            f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CORAIL};font-size:11px;"
-            f"text-transform:uppercase;'>{adv_name}</span></div>", unsafe_allow_html=True)
-        for label, v1, v2, unit, is_pct in _stat_rows:
-            _mirror_row(label, v1, v2, unit=unit, is_pct=is_pct)
-    with _sc2:
-        st.markdown(
-            f"<div style='display:flex;justify-content:space-between;margin-bottom:4px;'>"
-            f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CYAN};font-size:11px;"
-            f"text-transform:uppercase;'>{pfc_name}</span>"
-            f"<span style='font-family:Oswald,sans-serif;font-weight:700;color:{CORAIL};font-size:11px;"
-            f"text-transform:uppercase;'>{adv_name}</span></div>", unsafe_allow_html=True)
-        for label, v1, v2, unit, is_pct in _stat_rows2:
-            _mirror_row(label, v1, v2, unit=unit, is_pct=is_pct)
-
-    # ── Répartitions PFC — barres de répartition colorées ───────────────
-    _section_title("🎯", f"Répartitions {pfc_name} (jeu offensif)")
-
-    def _fill_bar(label, val, color=CYAN):
-        pct = max(0.0, min(float(val), 100.0))
-        st.markdown(f"""
-        <div style="margin-bottom:9px;">
-          <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
-            <span style="font-size:12.5px;color:{TXT};">{label}</span>
-            <span style="font-size:12.5px;font-weight:700;color:{color};">{val} %</span>
-          </div>
-          <div style="height:7px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;">
-            <div style="height:100%;width:{pct}%;background:{color};border-radius:4px;"></div>
-          </div>
-        </div>""", unsafe_allow_html=True)
-
-    # "Type d'animation offensive" n'est plus tagué dans le nouveau format d'export —
-    # colonne masquée automatiquement plutôt que de montrer des barres à 0 % en continu.
-    _has_animation = any(report["animation"].values())
-    _rep_cols = st.columns([1, 1, 1] if _has_animation else [1, 1])
-    _rc_it = iter(_rep_cols)
-    if _has_animation:
-        with next(_rc_it):
-            st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Type d'animation offensive</div>", unsafe_allow_html=True)
-            for lbl, val in report["animation"].items():
-                _fill_bar(lbl, val, CYAN)
-    with next(_rc_it):
-        st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Élimination des lignes adverses</div>", unsafe_allow_html=True)
-        for lbl, val in report["circulation"].items():
-            _fill_bar(lbl, val, "#7B84FF")
-    with next(_rc_it):
-      with MPL_LOCK:
-        st.markdown(f"<div style='font-weight:600;color:{TXT};font-size:13px;margin-bottom:8px;'>Entrée dernier 1/3 (couloir)</div>", unsafe_allow_html=True)
-        fig_e = build_entree_tiers_figure(report["entree_tiers"])
-        st.pyplot(fig_e, width="stretch")
-        plt.close(fig_e)
-
-    # ── GPS Collectif — agrégat de toutes les joueuses trackées sur le match ──
-    _section_title("🏃", "GPS Collectif")
+    # Diagnostic GPS (conservé de la vue précédente) : utile quand le GPS n'est pas rattaché.
+    _dbg = (gps_stats or {}).get("_debug", {})
     if not gps_stats or gps_stats.get("n_joueuses") is None:
-        _dbg = (gps_stats or {}).get("_debug", {})
         st.caption(
             "⚠️ Aucune donnée GPS trouvée pour ce match.  \n"
             f"Recherché : date = **{_dbg.get('searched_date') or '—'}**, "
@@ -7328,26 +7168,6 @@ def render_collective_report(report: dict, gps_stats: dict = None):
             f"({_dbg.get('reason', '')})"
         )
     else:
-        _g1, _g2, _g3, _g4 = st.columns(4)
-        _g1.metric("Joueuses trackées", gps_stats.get("n_joueuses") or "—")
-        _dt = gps_stats.get("distance_totale")
-        _g2.metric("Distance totale équipe", f"{_dt:,.0f} m".replace(",", " ") if _dt is not None else "—")
-        _dm = gps_stats.get("distance_moyenne")
-        _g3.metric("Distance moy. / joueuse", f"{_dm:,.0f} m".replace(",", " ") if _dm is not None else "—")
-        _vm = gps_stats.get("vmax_equipe")
-        _g4.metric("Vitesse max équipe", f"{_vm:.1f} km/h" if _vm is not None else "—")
-
-        _g5, _g6, _g7, _g8 = st.columns(4)
-        _h13 = gps_stats.get("hid13_totale")
-        _g5.metric("HID >13 km/h (total)", f"{_h13:,.0f} m".replace(",", " ") if _h13 is not None else "—")
-        _h19 = gps_stats.get("hid19_totale")
-        _g6.metric("HID >19 km/h (total)", f"{_h19:,.0f} m".replace(",", " ") if _h19 is not None else "—")
-        _s23 = gps_stats.get("sprints23_totaux")
-        _g7.metric("Sprints >23 (total)", f"{_s23:,.0f}".replace(",", " ") if _s23 is not None else "—")
-        _ad = gps_stats.get("accdec_totaux")
-        _g8.metric("Acc/Déc (total)", f"{_ad:,.0f}".replace(",", " ") if _ad is not None else "—")
-
-        _dbg = gps_stats.get("_debug", {})
         with st.expander("🔍 Détail du diagnostic GPS (nombre de lignes, fichiers sources)"):
             st.write(f"Lignes brutes trouvées avant dédoublonnage : **{_dbg.get('n_lignes_brutes', '—')}**")
             st.write(f"Lignes après dédoublonnage (= joueuses) : **{_dbg.get('n_apres_dedup', '—')}**")
@@ -7361,53 +7181,59 @@ def render_collective_report(report: dict, gps_stats: dict = None):
                 st.write(f"Noms bruts distincts trouvés ({len(_nb)}) :")
                 st.caption(", ".join(_nb))
 
-    # ── Zones de récupération / perte du ballon — heatmaps sur terrain ──
-    _section_title("🗺️", f"Zones de récupération / perte du ballon — {pfc_name}")
-    st.caption(
-        "Zones calculées à partir de la Zone de départ d'action quand elle est taguée, sinon à partir des "
-        "coordonnées X/Y, croisées avec le Lancement de possession (récupération) et l'Issue d'action (perte). "
-        "Le terrain est orienté attaque vers le haut."
-    )
 
-    _zg1, _zg2 = st.columns(2)
-    with _zg1:
-      with MPL_LOCK:
-        fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
-                                           "Récupération (%)", "RdYlGn_r", figsize=(2.6, 3.6), dpi=90)
-        st.pyplot(fig_r, width="content")
-        plt.close(fig_r)
-    with _zg2:
-      with MPL_LOCK:
-        fig_p = build_zone_heatmap_figure(report["grid_perte"], report["zone_rows"], report["zone_cols"],
-                                           "Perte (%)", "RdYlGn_r", figsize=(2.6, 3.6), dpi=90)
-        st.pyplot(fig_p, width="content")
-        plt.close(fig_p)
-
-
-def build_collective_report_html(report: dict, gps_stats: dict = None) -> str:
-    """Génère le rapport collectif en HTML imprimable, prévu pour tenir sur UNE page A4 PAYSAGE.
-    Réutilise les mêmes visuels (terrain à flèches, heatmaps lissées) que la vue Streamlit."""
+def build_collective_report_html(report: dict, gps_stats: dict = None, match_info: dict = None) -> str:
+    """Rapport collectif A4 paysage, charte du rapport individuel v5 (navy, plan de Paris,
+    cartes arrondies, Unbounded/Inter, graphiques sur panneaux blancs). Même contenu que la
+    vue précédente : 17 statistiques comparées, temps de jeu effectif, répartitions, GPS
+    collectif, couloir d'entrée dans le dernier 1/3, zones de récupération / perte.
+    `match_info` (optionnel) : score, date, journée, compétition, lieu pour l'en-tête."""
     if not report:
-        return "<html><body style='background:#08090D;color:#fff;'>Données insuffisantes.</body></html>"
+        return "<html><body style='background:#0A2453;color:#fff;font-family:sans-serif;'>Données insuffisantes.</body></html>"
 
     pfc_name, adv_name = report["pfc_name"], report["adv_name"]
     s_pfc, s_adv = report["stats"][pfc_name], report["stats"][adv_name]
-    CYAN, CORAIL = "#00A3E0", "#FF6B6B"
+    mi = match_info or {}
+    CYAN, CORAIL = "#1FA8E0", "#FF6B6B"
+    # Libellé affiché (le tagging nomme l'équipe « PFC ») — comme l'en-tête du rapport individuel.
+    pfc_lbl = "Paris FC" if str(pfc_name).strip().upper() == "PFC" else pfc_name
 
     with MPL_LOCK:
-        fig_e = build_entree_tiers_figure(report["entree_tiers"], figsize=(5.2, 3.1), dpi=115)
+        fig_e = build_entree_tiers_figure(report["entree_tiers"], figsize=(3.6, 2.5), dpi=140, light=True, title=False)
         b64_entree = fig_to_b64(fig_e); plt.close(fig_e)
         fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
-                                           "Récupération (%)", "RdYlGn_r", figsize=(2.7, 4.0), dpi=115)
+                                           "", "RdYlGn_r", figsize=(2.5, 3.5), dpi=140, light=True)
         b64_recup = fig_to_b64(fig_r); plt.close(fig_r)
         fig_p = build_zone_heatmap_figure(report["grid_perte"], report["zone_rows"], report["zone_cols"],
-                                           "Perte (%)", "RdYlGn_r", figsize=(2.7, 4.0), dpi=115)
+                                           "", "RdYlGn_r", figsize=(2.5, 3.5), dpi=140, light=True)
         b64_perte = fig_to_b64(fig_p); plt.close(fig_p)
 
-    _pfc_logo_html = _team_logo_html(pfc_name, is_pfc=True, size=48)
-    _adv_logo_html = _team_logo_html(adv_name, size=48)
+    # ── En-tête (même construction que le rapport individuel v5) ─────────────
+    _JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+    _MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
+             "septembre", "octobre", "novembre", "décembre"]
+    date_long = ""
+    try:
+        _d = pd.Timestamp(mi.get("date")) if mi.get("date") is not None else None
+        if _d is not None and pd.notna(_d):
+            date_long = f"{_JOURS[_d.weekday()]} {_d.day} {_MOIS[_d.month - 1]} {_d.year}"
+    except Exception:
+        pass
+    _sp, _sa = mi.get("score_pfc"), mi.get("score_adv")
+    if _sp in (None, "", "?"):
+        _sp, _sa = s_pfc.get("buts"), s_adv.get("buts")
+    _score_html = (f'<span class="sc">{_sp}</span> - <span class="sc">{_sa}</span>'
+                   if _sp not in (None, "") and _sa not in (None, "") else "vs")
+    _jr = str(mi.get("journee", "") or "").strip()
+    _sub = " · ".join(p for p in [f"J{_jr.zfill(2)}" if _jr.isdigit() else _jr, mi.get("competition", "") or "",
+                                  mi.get("lieu", "") or ""] if p)
+    _adv_logo = _team_logo_html(adv_name, size=30)
+    PFC_LOGO = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
+    _bg_uri = _report_background_uri()
+    _bg_css = f"url('{_bg_uri}') center/cover no-repeat," if _bg_uri else ""
 
-    def _mirror_row_html(label, v1, v2, unit="", is_pct=False):
+    # ── Statistiques comparées (barres miroir) ───────────────────────────────
+    def _mirror(label, v1, v2, unit="", is_pct=False):
         try:
             f1 = float(v1) if v1 not in (None, "—") else 0.0
             f2 = float(v2) if v2 not in (None, "—") else 0.0
@@ -7415,185 +7241,210 @@ def build_collective_report_html(report: dict, gps_stats: dict = None) -> str:
             f1, f2 = 0.0, 0.0
         m = max(f1, f2, 0.0001)
         p1, p2 = min(f1 / m * 100, 100), min(f2 / m * 100, 100)
-        d1, d2 = v1 if v1 is not None else "—", v2 if v2 is not None else "—"
-        if is_pct:
-            d1 = f"{d1} %" if d1 != "—" else "—"; d2 = f"{d2} %" if d2 != "—" else "—"
-        elif unit:
-            d1 = f"{d1} {unit}" if d1 != "—" else "—"; d2 = f"{d2} {unit}" if d2 != "—" else "—"
-        return f"""
-        <div style="margin-bottom:6px;">
-          <div style="text-align:center;font-size:8.5px;color:#6A8090;text-transform:uppercase;letter-spacing:.05em;">{label}</div>
-          <div style="display:flex;align-items:center;gap:5px;">
-            <div style="width:38px;text-align:right;font-weight:700;color:{CYAN};font-size:11px;">{d1}</div>
-            <div style="flex:1;display:flex;justify-content:flex-end;">
-              <div style="height:6px;width:{p1}%;background:{CYAN};border-radius:3px 0 0 3px;"></div>
-            </div>
-            <div style="width:1px;height:12px;background:rgba(255,255,255,0.15);"></div>
-            <div style="flex:1;display:flex;justify-content:flex-start;">
-              <div style="height:6px;width:{p2}%;background:{CORAIL};border-radius:0 3px 3px 0;"></div>
-            </div>
-            <div style="width:38px;text-align:left;font-weight:700;color:{CORAIL};font-size:11px;">{d2}</div>
-          </div>
-        </div>"""
+        def _fmt(v):
+            if v is None or v == "—":
+                return "—"
+            return f"{v}{' %' if is_pct else (' ' + unit if unit else '')}"
+        return (f'<div class="mr"><div class="ml">{label}</div>'
+                f'<div class="mb"><div class="mv" style="color:{CYAN};text-align:right;">{_fmt(v1)}</div>'
+                f'<div class="mt l"><div style="width:{p1:.0f}%;background:{CYAN};"></div></div>'
+                f'<div class="mt r"><div style="width:{p2:.0f}%;background:{CORAIL};"></div></div>'
+                f'<div class="mv" style="color:{CORAIL};">{_fmt(v2)}</div></div></div>')
 
-    rows_html = "".join([
-        _mirror_row_html("% Possession", report["poss_total"][pfc_name], report["poss_total"][adv_name], is_pct=True),
-        _mirror_row_html("% Poss. MT1", report["poss_mt1"][pfc_name], report["poss_mt1"][adv_name], is_pct=True),
-        _mirror_row_html("% Poss. MT2", report["poss_mt2"][pfc_name], report["poss_mt2"][adv_name], is_pct=True),
-        _mirror_row_html("Possessions", s_pfc["possessions"], s_adv["possessions"]),
-        _mirror_row_html("Durée moy. poss.", round(s_pfc["duree_moyenne"], 1), round(s_adv["duree_moyenne"], 1), unit="s"),
-        _mirror_row_html("Tirs", s_pfc["tirs"], s_adv["tirs"]),
-        _mirror_row_html("Tirs cadrés", s_pfc["tirs_cadres"], s_adv["tirs_cadres"]),
-        _mirror_row_html("% tirs cadrés", s_pfc["pct_tirs_cadres"], s_adv["pct_tirs_cadres"], is_pct=True),
-        _mirror_row_html("Tirs non cadrés", s_pfc["tirs_non_cadres"], s_adv["tirs_non_cadres"]),
-        _mirror_row_html("Buts", s_pfc["buts"], s_adv["buts"]),
-        _mirror_row_html("Fautes", s_pfc["fautes"], s_adv["fautes"]),
-        _mirror_row_html("Hors-jeu", s_pfc["hors_jeu"], s_adv["hors_jeu"]),
-        _mirror_row_html("Pertes de balle", s_pfc["pertes"], s_adv["pertes"]),
-        _mirror_row_html("% pertes de balle", s_pfc["pct_pertes"], s_adv["pct_pertes"], is_pct=True),
-        _mirror_row_html("Entrées dernier 1/3", s_pfc["entrees_1_3"], s_adv["entrees_1_3"]),
-        _mirror_row_html("Poss. / entrée 1/3", s_pfc["poss_par_entree"], s_adv["poss_par_entree"]),
-        _mirror_row_html("Entrées 1/3 / tir", s_pfc["entrees_par_tir"], s_adv["entrees_par_tir"]),
+    _poss = "".join([
+        _mirror("% Possession", report["poss_total"][pfc_name], report["poss_total"][adv_name], is_pct=True),
+        _mirror("% Possession MT1", report["poss_mt1"][pfc_name], report["poss_mt1"][adv_name], is_pct=True),
+        _mirror("% Possession MT2", report["poss_mt2"][pfc_name], report["poss_mt2"][adv_name], is_pct=True),
+        _mirror("Nombre de possessions", s_pfc["possessions"], s_adv["possessions"]),
+        _mirror("Durée moyenne possession", round(s_pfc["duree_moyenne"], 1), round(s_adv["duree_moyenne"], 1), unit="s"),
+    ])
+    _fin = "".join([
+        _mirror("Tirs", s_pfc["tirs"], s_adv["tirs"]),
+        _mirror("Tirs cadrés", s_pfc["tirs_cadres"], s_adv["tirs_cadres"]),
+        _mirror("% tirs cadrés", s_pfc["pct_tirs_cadres"], s_adv["pct_tirs_cadres"], is_pct=True),
+        _mirror("Tirs non cadrés", s_pfc["tirs_non_cadres"], s_adv["tirs_non_cadres"]),
+        _mirror("Buts", s_pfc["buts"], s_adv["buts"]),
+    ])
+    _prog = "".join([
+        _mirror("Pertes de balle", s_pfc["pertes"], s_adv["pertes"]),
+        _mirror("% pertes de balle", s_pfc["pct_pertes"], s_adv["pct_pertes"], is_pct=True),
+        _mirror("Entrées dans le dernier 1/3", s_pfc["entrees_1_3"], s_adv["entrees_1_3"]),
+        _mirror("Possessions / entrée 1/3", s_pfc["poss_par_entree"], s_adv["poss_par_entree"]),
+        _mirror("Entrées 1/3 / tir", s_pfc["entrees_par_tir"], s_adv["entrees_par_tir"]),
+    ])
+    _disc = "".join([
+        _mirror("Fautes", s_pfc["fautes"], s_adv["fautes"]),
+        _mirror("Hors-jeu", s_pfc["hors_jeu"], s_adv["hors_jeu"]),
     ])
 
-    def _fill_bar_html(label, val, color):
-        pct = max(0.0, min(float(val), 100.0))
-        return f"""
-        <div style="margin-bottom:7px;">
-          <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
-            <span style="font-size:10px;color:#C8D8E8;">{label}</span>
-            <span style="font-size:10px;font-weight:700;color:{color};">{val} %</span>
-          </div>
-          <div style="height:5px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;">
-            <div style="height:100%;width:{pct}%;background:{color};border-radius:3px;"></div>
-          </div>
-        </div>"""
+    def card(title, body, grow=1):
+        return (f'<div class="card" style="flex-grow:{grow};"><div class="ct">{title}</div>'
+                f'<div class="rows">{body}</div></div>') if body else ""
 
-    # "Type d'animation offensive" n'est plus tagué dans le nouveau format d'export —
-    # bloc masqué automatiquement plutôt que d'imprimer des barres à 0 % (même logique
-    # que la vue Streamlit interactive dans render_collective_report).
-    animation_block_html = ""
+    # ── Temps de jeu, répartitions, GPS ──────────────────────────────────────
+    def _cell(lbl, val):
+        return f'<div class="cell"><div class="cl">{lbl}</div><div class="cv">{val}</div></div>'
+
+    temps_html = ('<div class="cells c3">'
+                  + _cell("Total", _fmt_secs_to_mmss(report["temps_total"]))
+                  + _cell("MT1", _fmt_secs_to_mmss(report["temps_mt1"]))
+                  + _cell("MT2", _fmt_secs_to_mmss(report["temps_mt2"])) + '</div>')
+
+    def _bar(label, val, color):
+        try:
+            pct = max(0.0, min(float(val), 100.0))
+        except (TypeError, ValueError):
+            pct = 0.0
+        return (f'<div class="br"><div class="brl"><span>{label}</span><b style="color:{color};">{val} %</b></div>'
+                f'<div class="brt"><div style="width:{pct:.0f}%;background:{color};"></div></div></div>')
+
+    # « Type d'animation offensive » n'est plus tagué dans le nouveau format d'export :
+    # bloc masqué plutôt que des barres à 0 % (même logique qu'avant).
+    rep_html = ""
     if any(report["animation"].values()):
-        _animation_bars_html = "".join(_fill_bar_html(l, v, CYAN) for l, v in report["animation"].items())
-        animation_block_html = (
-            '<div style="font-size:10.5px;font-weight:600;color:#C8D8E8;margin-bottom:5px;">'
-            f'Type d\'animation offensive</div>{_animation_bars_html}'
-        )
-    circulation_html = "".join(_fill_bar_html(l, v, "#7B84FF") for l, v in report["circulation"].items())
+        rep_html += '<div class="sub">Type d\'animation offensive</div>' + "".join(
+            _bar(l, v, CYAN) for l, v in report["animation"].items())
+    rep_html += '<div class="sub">Élimination des lignes adverses</div>' + "".join(
+        _bar(l, v, "#9FA8FF") for l, v in report["circulation"].items())
 
-    def _gps_card_html(label, val):
-        return f"""
-        <div style="flex:1;background:#0C1220;border-top:2px solid #7FD3A8;border-radius:4px;padding:6px 8px;min-width:0;">
-          <div style="font-size:7.5px;color:#6A8090;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{label}</div>
-          <div style="font-family:Oswald,sans-serif;font-size:13px;font-weight:700;color:#fff;">{val}</div>
-        </div>"""
+    def _n(v, fmt="{:,.0f}", unit=""):
+        return "—" if v is None else fmt.format(v).replace(",", " ") + unit
 
-    gps_html = ""
     if gps_stats and gps_stats.get("n_joueuses") is not None:
-        _dt = gps_stats.get("distance_totale"); _dm = gps_stats.get("distance_moyenne")
-        _vm = gps_stats.get("vmax_equipe"); _h13 = gps_stats.get("hid13_totale")
-        _h19 = gps_stats.get("hid19_totale"); _s23 = gps_stats.get("sprints23_totaux")
-        _ad = gps_stats.get("accdec_totaux"); _nj = gps_stats.get("n_joueuses")
-        gps_html = f"""
-        <div class="section-title">🏃 GPS Collectif<div class="line"></div></div>
-        <div style="display:flex;gap:6px;margin-bottom:6px;">
-          {_gps_card_html("Joueuses trackées", _nj if _nj is not None else "—")}
-          {_gps_card_html("Distance totale", f"{_dt:,.0f} m".replace(",", " ") if _dt is not None else "—")}
-        </div>
-        <div style="display:flex;gap:6px;margin-bottom:6px;">
-          {_gps_card_html("Dist. moy./joueuse", f"{_dm:,.0f} m".replace(",", " ") if _dm is not None else "—")}
-          {_gps_card_html("Vitesse max équipe", f"{_vm:.1f} km/h" if _vm is not None else "—")}
-        </div>
-        <div style="display:flex;gap:6px;margin-bottom:6px;">
-          {_gps_card_html("HID >13 (total)", f"{_h13:,.0f} m".replace(",", " ") if _h13 is not None else "—")}
-          {_gps_card_html("HID >19 (total)", f"{_h19:,.0f} m".replace(",", " ") if _h19 is not None else "—")}
-        </div>
-        <div style="display:flex;gap:6px;">
-          {_gps_card_html("Sprints >23 (total)", f"{_s23:,.0f}".replace(",", " ") if _s23 is not None else "—")}
-          {_gps_card_html("Acc/Déc (total)", f"{_ad:,.0f}".replace(",", " ") if _ad is not None else "—")}
-        </div>"""
+        g = gps_stats
+        gps_html = ('<div class="cells c2">'
+                    + _cell("Joueuses trackées", g.get("n_joueuses") if g.get("n_joueuses") is not None else "—")
+                    + _cell("Distance totale", _n(g.get("distance_totale"), unit=" m"))
+                    + _cell("Distance moy. / joueuse", _n(g.get("distance_moyenne"), unit=" m"))
+                    + _cell("Vitesse max équipe", _n(g.get("vmax_equipe"), "{:.1f}", " km/h"))
+                    + _cell("HID &gt;13 km/h (total)", _n(g.get("hid13_totale"), unit=" m"))
+                    + _cell("HID &gt;19 km/h (total)", _n(g.get("hid19_totale"), unit=" m"))
+                    + _cell("Sprints &gt;23 (total)", _n(g.get("sprints23_totaux")))
+                    + _cell("Acc/Déc (total)", _n(g.get("accdec_totaux"))) + '</div>')
+    else:
+        gps_html = '<div class="note">Aucune donnée GPS rattachée à ce match.</div>'
+
+    _footer = " · ".join(p for p in [f"{pfc_lbl} vs {adv_name}", _sub] if p)
 
     return f"""<!DOCTYPE html>
 <html lang="fr"><head><meta charset="UTF-8"/>
-<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=Inter:wght@400;500&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box;}}
-html,body{{background:#050B12;-webkit-print-color-adjust:exact;print-color-adjust:exact;font-family:Inter,sans-serif;}}
-.page{{width:297mm;min-height:210mm;background:#08090D;padding:8mm 10mm;}}
-@media print{{ html,body{{background:#050B12 !important;}} @page{{size:A4 landscape;margin:0;}} }}
-.section-title{{font-family:Oswald,sans-serif;font-size:11.5px;font-weight:600;letter-spacing:.08em;
-  text-transform:uppercase;color:#fff;display:flex;align-items:center;gap:6px;margin-bottom:6px;}}
-.section-title .line{{flex:1;height:1px;background:rgba(0,163,224,0.25);margin-left:6px;}}
+body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exact;display:flex;justify-content:center;padding:6px;}}
+.page{{width:297mm;height:210mm;overflow:hidden;display:flex;flex-direction:column;font-family:Inter,sans-serif;color:#E6EEF8;
+  background:{_bg_css} #0A2453;}}
+.hdr{{display:flex;align-items:center;gap:14px;padding:12px 22px;background:#061A40;border-bottom:2px solid #1FA8E0;flex-shrink:0;}}
+.hdr .sep{{width:1px;height:30px;background:rgba(255,255,255,.25);}}
+.name{{font-family:Unbounded,sans-serif;font-size:21px;font-weight:800;color:#FFF;letter-spacing:.2px;white-space:nowrap;}}
+.pill{{font-size:11px;font-weight:700;padding:4px 12px;border-radius:999px;background:#1FA8E0;color:#061A40;white-space:nowrap;}}
+.hctx{{margin-left:auto;text-align:right;}}
+.hm{{font-size:13.5px;color:#FFF;font-weight:500;display:flex;align-items:center;gap:8px;justify-content:flex-end;}}
+.hs{{font-size:10.5px;color:#9FB8D8;margin-top:2px;}}
+.sc{{color:#E5322D;font-weight:800;}}
+.body{{display:grid;grid-template-columns:36% 1fr;flex:1;min-height:0;}}
+.left{{background:rgba(4,18,50,.15);padding:12px 14px 12px 22px;border-right:2px solid rgba(31,168,224,.35);display:flex;flex-direction:column;min-height:0;}}
+.right{{padding:12px 22px 12px 18px;display:flex;flex-direction:column;min-height:0;}}
+.sect{{font-size:12px;font-weight:700;letter-spacing:2.2px;color:#1FA8E0;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;}}
+.leg{{font-size:10.5px;letter-spacing:.3px;font-weight:600;}}
+.leg i{{display:inline-block;width:9px;height:9px;border-radius:2px;margin:0 4px 0 10px;vertical-align:-1px;}}
+.col{{display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;}}
+.card{{background:rgba(16,46,100,.42);border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:7px 12px;display:flex;flex-direction:column;flex-basis:0;min-height:0;}}
+.rows{{flex:1;display:flex;flex-direction:column;justify-content:space-around;}}
+.ct{{font-size:10.5px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:#1FA8E0;margin-bottom:3px;}}
+.mr{{padding:1px 0;}}
+.ml{{text-align:center;font-size:10px;color:#C5D4E8;letter-spacing:.2px;margin-bottom:1px;}}
+.mb{{display:grid;grid-template-columns:62px 1fr 1fr 62px;align-items:center;gap:6px;}}
+.mv{{font-family:Unbounded,sans-serif;font-size:12.5px;font-weight:700;white-space:nowrap;}}
+.mt{{height:7px;background:rgba(255,255,255,.08);display:flex;}}
+.mt.l{{justify-content:flex-end;border-radius:4px 0 0 4px;}} .mt.r{{border-radius:0 4px 4px 0;}}
+.mt.l>div{{border-radius:4px 0 0 4px;}} .mt.r>div{{border-radius:0 4px 4px 0;}}
+.graph{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:auto minmax(0,1fr);gap:11px;flex:1;min-height:0;}}
+.gcard{{background:rgba(12,40,92,.48);border:1px solid rgba(255,255,255,.16);border-top:3px solid #1FA8E0;border-radius:12px;padding:9px 12px;display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;}}
+.gt{{font-size:12px;color:#FFF;margin-bottom:7px;}}
+.gt b{{font-weight:700;}}
+.cells{{display:grid;gap:7px 10px;}}
+.cells.c3{{grid-template-columns:1fr 1fr 1fr;}} .cells.c2{{grid-template-columns:1fr 1fr;}}
+.cell{{background:rgba(255,255,255,.06);border-radius:8px;padding:5px 8px;}}
+.cl{{font-size:9.5px;color:#C5D4E8;line-height:1.2;}}
+.cv{{font-family:Unbounded,sans-serif;font-size:14px;font-weight:700;color:#FFF;margin-top:2px;white-space:nowrap;}}
+.cells.c3{{grid-template-columns:1fr;gap:5px;}} .c3 .cell{{display:flex;justify-content:space-between;align-items:baseline;padding:4px 9px;}} .c3 .cl{{font-size:11px;}} .c3 .cv{{font-size:15px;margin-top:0;}}
+.sub{{font-size:10.5px;font-weight:600;color:#9FD8F2;margin:2px 0 5px;}}
+.br{{margin-bottom:6px;}}
+.brl{{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:11px;margin-bottom:2px;}}
+.brl b{{font-family:Unbounded,sans-serif;font-size:11.5px;white-space:nowrap;}}
+.brt{{height:6px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden;}}
+.brt>div{{height:100%;border-radius:3px;}}
+.panel{{background:#FFF;border-radius:6px;padding:5px;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;}}
+.panel img{{max-width:100%;max-height:100%;display:block;object-fit:contain;}}
+.gn{{font-size:9.5px;color:#8FA9CC;margin-top:5px;}}
+.note{{font-size:10px;color:#8FA9CC;font-style:italic;}}
+.ftr{{height:20px;display:flex;align-items:center;justify-content:space-between;padding:0 22px;background:#061A40;flex-shrink:0;
+  font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#6E88AE;}}
+@media print{{body{{background:#0A2453!important;padding:0;}} .page{{page-break-inside:avoid;}} @page{{size:A4 landscape;margin:0;}}}}
 </style></head>
-<body>
-<div class="page">
+<body><div class="page">
 
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;border-bottom:2px solid {CYAN};padding-bottom:7px;">
-    <div style="display:flex;align-items:center;gap:12px;">
-      {_pfc_logo_html}
-      <div style="font-family:Oswald,sans-serif;font-size:22px;font-weight:700;color:#fff;text-transform:uppercase;">{pfc_name} vs {adv_name}</div>
-      {_adv_logo_html}
-    </div>
-    <div style="font-family:Oswald,sans-serif;font-size:13px;color:#6A8090;text-transform:uppercase;letter-spacing:.1em;">Rapport collectif</div>
+<div class="hdr">
+  <img src="{PFC_LOGO}" alt="PFC" style="width:40px;height:40px;object-fit:contain;" onerror="this.style.display='none'"/>
+  <div class="sep"></div>
+  <div class="name">Rapport collectif</div>
+  {f'<span class="pill">{mi.get("competition")}</span>' if mi.get("competition") else ''}
+  <div class="hctx">
+    <div class="hm"><span>{pfc_lbl} {_score_html} {adv_name}{" · " + date_long if date_long else ""}</span>{_adv_logo}</div>
+    {f'<div class="hs">{_sub}</div>' if _sub else ''}
   </div>
-
-  <table style="width:100%;border-collapse:collapse;table-layout:fixed;">
-    <tr>
-      <!-- Colonne 1 : statistiques comparées (colonne unique, pleine hauteur) -->
-      <td style="width:27%;vertical-align:top;padding-right:14px;">
-        <div class="section-title">📊 Statistiques comparées<div class="line"></div></div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
-          <span style="font-family:Oswald,sans-serif;font-weight:700;color:{CYAN};font-size:11px;text-transform:uppercase;">{pfc_name}</span>
-          <span style="font-family:Oswald,sans-serif;font-weight:700;color:{CORAIL};font-size:11px;text-transform:uppercase;">{adv_name}</span>
-        </div>
-        {rows_html}
-      </td>
-
-      <!-- Colonne 2 : temps de jeu + répartitions + GPS collectif -->
-      <td style="width:27%;vertical-align:top;padding-right:14px;">
-        <div class="section-title">⏱ Temps de jeu<div class="line"></div></div>
-        <div style="display:flex;gap:6px;margin-bottom:14px;">
-          <div style="flex:1;background:#0C1220;border-top:2px solid {CYAN};border-radius:4px;padding:8px 9px;">
-            <div style="font-size:8px;color:#6A8090;text-transform:uppercase;">Total</div>
-            <div style="font-family:Oswald,sans-serif;font-size:16px;font-weight:700;color:#fff;">{_fmt_secs_to_mmss(report['temps_total'])}</div>
-          </div>
-          <div style="flex:1;background:#0C1220;border-top:2px solid {CYAN};border-radius:4px;padding:8px 9px;">
-            <div style="font-size:8px;color:#6A8090;text-transform:uppercase;">MT1</div>
-            <div style="font-family:Oswald,sans-serif;font-size:16px;font-weight:700;color:#fff;">{_fmt_secs_to_mmss(report['temps_mt1'])}</div>
-          </div>
-          <div style="flex:1;background:#0C1220;border-top:2px solid {CYAN};border-radius:4px;padding:8px 9px;">
-            <div style="font-size:8px;color:#6A8090;text-transform:uppercase;">MT2</div>
-            <div style="font-family:Oswald,sans-serif;font-size:16px;font-weight:700;color:#fff;">{_fmt_secs_to_mmss(report['temps_mt2'])}</div>
-          </div>
-        </div>
-
-        <div class="section-title">🎯 Répartitions {pfc_name}<div class="line"></div></div>
-        {animation_block_html}
-        <div style="font-size:10.5px;font-weight:600;color:#C8D8E8;margin:10px 0 5px;">Élimination des lignes adverses</div>
-        {circulation_html}
-
-        {gps_html}
-      </td>
-
-      <!-- Colonne 3 : couloir d'entrée + heatmaps récup/perte -->
-      <td style="width:46%;vertical-align:top;">
-        <div class="section-title">🧭 Couloir d'entrée dans le dernier 1/3<div class="line"></div></div>
-        <img src="{b64_entree}" style="width:100%;display:block;margin-bottom:12px;"/>
-
-        <div class="section-title">🗺️ Zones de récupération / perte — {pfc_name}<div class="line"></div></div>
-        <div style="display:flex;gap:10px;">
-          <img src="{b64_recup}" style="width:50%;object-fit:contain;"/>
-          <img src="{b64_perte}" style="width:50%;object-fit:contain;"/>
-        </div>
-      </td>
-    </tr>
-  </table>
-
-  <div style="border-top:1px solid #1E2D40;margin-top:10px;padding-top:5px;font-size:8px;color:#3A4A5A;text-align:right;">
-    Paris FC — Centre de Formation Féminin · Rapport collectif
-  </div>
-
 </div>
+
+<div class="body">
+  <div class="left">
+    <div class="sect"><span>STATISTIQUES</span>
+      <span class="leg"><i style="background:{CYAN};"></i>{pfc_lbl}<i style="background:{CORAIL};"></i>{adv_name}</span></div>
+    <div class="col">
+      {card("Possession", _poss, 5)}
+      {card("Finition", _fin, 5)}
+      {card("Progression &amp; pertes", _prog, 5)}
+      {card("Discipline", _disc, 2)}
+    </div>
+  </div>
+  <div class="right">
+    <div class="sect"><span>GRAPH</span></div>
+    <div class="graph">
+      <div class="gcard"><div class="gt"><b>Temps de jeu effectif</b></div>{temps_html}
+        <div class="gt" style="margin:10px 0 6px;"><b>GPS collectif</b></div>{gps_html}</div>
+      <div class="gcard" style="grid-column:2 / span 2;"><div class="gt"><b>Répartitions</b> · {pfc_lbl} (jeu offensif)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 22px;">
+          <div>{rep_html}</div>
+          <div><div class="sub">Couloir d'entrée dans le dernier 1/3</div>
+            <div class="panel" style="height:150px;"><img src="{b64_entree}"/></div></div>
+        </div></div>
+      <div class="gcard"><div class="gt"><b>Zones de récupération</b> · %</div><div class="panel"><img src="{b64_recup}"/></div>
+        <div class="gn">Attaque vers le haut</div></div>
+      <div class="gcard"><div class="gt"><b>Zones de perte</b> · %</div><div class="panel"><img src="{b64_perte}"/></div>
+        <div class="gn">Attaque vers le haut</div></div>
+      <div class="gcard" style="justify-content:center;">
+        <div class="gt"><b>Lecture</b></div>
+        <div class="note" style="font-style:normal;line-height:1.5;">Zones calculées à partir de la zone de départ d'action quand elle est taguée,
+        sinon des coordonnées X/Y, croisées avec le lancement de possession (récupération) et l'issue d'action (perte).</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="ftr">
+  <span>Paris Football Club · Rapport collectif de match</span>
+  <span style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:150mm;">{_footer}</span>
+  <span style="color:#1FA8E0;font-weight:700;">Confidentiel</span>
+</div>
+</div>
+<script>
+(function(){{
+  // Écran : ajuste la page paysage à la largeur de l'iframe Streamlit (pas d'effet à l'impression)
+  function fit(){{var w=window.innerWidth||1135;var z=Math.min(1,(w-12)/1123);document.body.style.zoom=z;}}
+  if(!window.matchMedia||!window.matchMedia('print').matches){{fit();window.addEventListener('resize',fit);}}
+  window.addEventListener('beforeprint',function(){{document.body.style.zoom=1;}});
+}})();
+</script>
 </body></html>"""
 
 
@@ -11947,7 +11798,12 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         adversaire=_sr_c.get("adversaire"),
                         journee=_sr_c.get("journee"),
                     )
-                    render_collective_report(_collectif_report, gps_stats=_collectif_gps_stats)
+                    render_collective_report(_collectif_report, gps_stats=_collectif_gps_stats, match_info={
+                        "score_pfc": _ctx_c.get("score_pfc"), "score_adv": _ctx_c.get("score_adv"),
+                        "date": _sr_c["tac_obj"].get("date"),
+                        "journee": _ctx_c.get("journee") or _sr_c.get("journee"),
+                        "competition": _ctx_c.get("competition"), "lieu": _ctx_c.get("lieu"),
+                    })
 
         with _mat_individuel:
             # ── Contrôles (joueuse / période / comparaison) ─────────────────
