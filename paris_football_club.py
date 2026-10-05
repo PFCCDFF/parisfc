@@ -5093,9 +5093,15 @@ def parse_gps_v2_sections(path: str) -> dict:
 
 def standardize_gps_v2_export(path: str, filename: str) -> pd.DataFrame:
     """Normalise la section 'Effective Metrics' d'un export GPS multi-sections vers le même
-    schéma que standardize_gps_gf1_export. Seuils confirmés identiques à GF1 (Hid1→HID>13,
-    Hid2→HID>19, Sprint count→Sprints_23 à 23 km/h) ; le reste (Sprints_25, sous-zones fines,
-    Acc_4/Dec_4) reste absent plutôt qu'inventé — déjà géré nativement en aval."""
+    schéma que standardize_gps_gf1_export.
+
+    Zones de vitesse de ce format : R<7 = 0-7 km/h, Hid1 = 13-19, Hid2 = 19-23, Sprint = > 23,
+    R>15 = cumul au-delà de 15 km/h (Hid1 est une BANDE, pas un cumul > 13 : sur les 592
+    lignes 2026-27 vérifiées le 05/10/2026, les bandes reconstituées somment exactement à la
+    distance, et Hid1 < R>15 dans 8 cas, impossible pour un cumul). D'où, comme dans
+    gps_compilation._bandes_b : 7-13 = D − (R<7 + Hid1 + Hid2 + Sprint) ;
+    15-19 = R>15 − (Hid2 + Sprint) ; 13-15 = Hid1 − (15-19). Sprints_25, V_23_25/V_sup25 et
+    Acc_4/Dec_4 n'existent pas dans ce format : laissés absents plutôt qu'inventés."""
     sections = parse_gps_v2_sections(path)
     eff = sections.get("Effective Metrics")
     if eff is None or eff.empty:
@@ -5120,14 +5126,34 @@ def standardize_gps_v2_export(path: str, filename: str) -> pd.DataFrame:
     def _col(name):
         return pd.to_numeric(eff[name], errors="coerce") if name in eff.columns else np.nan
 
+    _D, _r7, _h1 = _col("Distance (m)"), _col("R<7 distance (m)"), _col("Hid1 distance (m)")
+    _r15, _h2, _sp = _col("R>15 distance (m)"), _col("Hid2 distance (m)"), _col("Sprint distance (m)")
+    _clip = lambda v: v.clip(lower=0) if isinstance(v, pd.Series) else v
+    _v15_19 = _clip(_r15 - (_h2 + _sp))
+
     d["Durée_min"] = _col("Time (min)")
-    d["Distance (m)"] = _col("Distance (m)")
-    d["Distance HID (>13 km/h)"] = _col("Hid1 distance (m)")
-    d["Distance HID (>19 km/h)"] = _col("Hid2 distance (m)")
+    d["Distance (m)"] = _D
+    # HID = cumuls au-delà du seuil (comme les exports GF1), et non la seule bande Hid1/Hid2.
+    d["Distance HID (>13 km/h)"] = _h1 + _h2 + _sp
+    d["Distance HID (>19 km/h)"] = _h2 + _sp
     d["Sprints_23"] = _col("Sprint count")
     d["Vitesse max (km/h)"] = _col("Speed max (km/h)")
     d["Accélération maximale (m/s²)"] = _col("Accel max (m/s²)")
-    d["V_0_7"] = _col("R<7 distance (m)")
+    # Plages de vitesse (mêmes colonnes que les exports GF1, lues par les rapports et le monitoring)
+    d["V_0_7"] = _r7
+    d["V_7_13"] = _clip(_D - (_r7 + _h1 + _h2 + _sp))
+    d["V_13_15"] = _clip(_h1 - _v15_19)
+    d["V_15_19"] = _v15_19
+    d["V_19_23"] = _h2
+    d["Distance 13-19 (m)"] = _h1
+    d["Distance 19-23 (m)"] = _h2
+    d["Distance >23 (m)"] = _sp
+    # Accélérations / décélérations
+    d["Acc_2"] = _col("Accel > 2 m/s² (nb)")
+    d["Acc_3"] = _col("Accel > 3 m/s² (nb)")
+    d["Dec_2"] = _col("Decel > 2 m/s² (nb)")
+    d["Dec_3"] = _col("Decel > 3 m/s² (nb)")
+    d["#accel/decel"] = _col("AD2 (nb)")
 
     d["SEMAINE"] = d["DATE"].dt.isocalendar().week.astype("Int64")
     d["__source_file"] = os.path.basename(filename)
