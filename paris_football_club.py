@@ -1696,10 +1696,17 @@ def render_gps_concordance_ui(gps_match_df, tac_players: list):
         st.info("Aucune donnée GPS match chargée.")
         return
 
-    # Noms GPS disponibles
-    gps_raw_names = sorted(
-        gps_match_df["NOM"].dropna().astype(str).str.strip().unique().tolist()
-    ) if "NOM" in gps_match_df.columns else []
+    # Noms GPS disponibles — une seule entrée par nom normalisé : deux graphies d'une même
+    # joueuse (« SINANI Adéla » / « SINANI ADELA ») donnaient la même clé de widget
+    # gps_map_<nom> → StreamlitDuplicateElementKey, page Performance interrompue (05/10/2026).
+    _gps_seen = set()
+    gps_raw_names = []
+    if "NOM" in gps_match_df.columns:
+        for _gn in sorted(gps_match_df["NOM"].dropna().astype(str).str.strip().unique().tolist()):
+            _gk = normalize_name_raw(_gn)
+            if _gk and _gk not in _gps_seen:
+                _gps_seen.add(_gk)
+                gps_raw_names.append(_gn)
 
     if not gps_raw_names:
         st.warning("Aucun nom trouvé dans la colonne 'NOM' du GPS.")
@@ -5506,6 +5513,69 @@ def _load_bepro_cached(_sig: tuple) -> dict:
 def _bepro_ok(stats: dict) -> dict:
     """Ne garde les stats Bepro que si tous les matchs sélectionnés sont couverts."""
     return stats if stats and stats.get("_complet") else None
+
+
+def bepro_only_matches(tac_files: list) -> list:
+    """Matchs couverts par un export Bepro mais sans fichier Sportscode (même date, même
+    catégorie) : pseudo-fichiers tactiques pour qu'ils apparaissent dans le rapport individuel
+    (ex. Le Mans – Paris FC U19 du 27/09/2026). Le « df » ne contient que la colonne Row
+    (joueuses de l'export, rattachées au référentiel) : stats techniques et heatmap viennent
+    alors de Bepro (get_bepro_stats_for_matches), GPS et profil comme d'habitude."""
+    out = []
+    try:
+        bepro = _load_bepro_cached(_bepro_folder_signature())
+    except Exception:
+        return out
+    if not bepro:
+        return out
+
+    def _cat(txt):
+        m_ = re.search(r"U(\d{2})", str(txt or ""))
+        return m_.group(1) if m_ else ""
+
+    _deja = {(pd.Timestamp(t.get("date")).normalize(), _cat(t.get("filename")))
+             for t in tac_files if t.get("date") is not None and pd.notna(t.get("date"))}
+    ref = None
+    try:
+        _rp = os.path.join(DATA_FOLDER, REFERENTIEL_FILENAME)
+        if not os.path.exists(_rp):
+            _rp = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME) or ""
+        ref = build_referentiel_players(_rp) if _rp and os.path.exists(_rp) else None
+    except Exception:
+        ref = None
+    for name, v in bepro.items():
+        info = v["info"]
+        if info.get("date") is None:
+            continue
+        cat = _cat(info.get("home", "") + " " + info.get("away", ""))
+        if (pd.Timestamp(info["date"]).normalize(), cat) in _deja:
+            continue
+        home, away = info.get("home", ""), info.get("away", "")
+        adv = away if re.search(r"paris\s*fc", home, re.IGNORECASE) else home
+        adv = re.sub(r"\s+U\d{2}\b.*$", "", adv).strip() or adv
+        joueuses = []
+        # « 4 Player » : joueuse non nommée dans Bepro (numéro seul) — écartée.
+        for pn in sorted({p for p in v["df"]["player"].dropna().unique()
+                          if str(p).strip() and not re.fullmatch(r"\d+\s+Player", str(p).strip(), re.IGNORECASE)}):
+            canon = None
+            if ref is not None:
+                c, statut, _ = map_player_name(pn, *ref, cutoff_fuzzy=0.90)
+                canon = nettoyer_nom_joueuse(c) if statut != "unmatched" and c else None
+            if not canon:  # hors référentiel : « Prénom Nom » → « NOM Prénom »
+                toks = str(pn).split()
+                canon = f"{toks[-1].upper()} {' '.join(toks[:-1])}".strip() if len(toks) > 1 else str(pn)
+            joueuses.append(canon)
+        d = pd.Timestamp(info["date"])
+        y = d.year if d.month >= 7 else d.year - 1
+        out.append({
+            "filename": f"BEPRO {d:%Y-%m-%d} {home} vs {away}",
+            "date": d, "journee": "", "adversaire": adv,
+            "competition": f"U{cat} Bepro" if cat else "Bepro",
+            "saison": f"{y % 100:02d}/{(y + 1) % 100:02d}",
+            "df": pd.DataFrame({"Row": joueuses}),
+            "bepro_only": True,
+        })
+    return out
 
 
 def get_bepro_stats_for_matches(match_rows: list, player: str) -> dict:
@@ -12092,10 +12162,18 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 st.info("Aucun fichier tactique trouvé dans `data/`.")
             else:
                 _mrows = []
-                for _tac in _tac_files:
+                # Matchs couverts uniquement par un export Bepro (pas de fichier Sportscode)
+                try:
+                    _bp_only = bepro_only_matches(_tac_files)
+                except Exception as _e_bp:
+                    _bp_only = []
+                    _warn(f"Bepro : matchs sans Sportscode non chargés → {_e_bp}")
+                for _tac in list(_tac_files) + _bp_only:
                     _s = _tac.get("saison",""); _sc = re.sub(r"20(\d{2})/20(\d{2})", r"\1/\2", _s) if _s else ""
                     _j = _tac.get("journee",""); _a = _tac.get("adversaire",""); _cp = _tac.get("competition","")
                     _pts = [p for p in [_sc, _cp, f"J{_j}" if _j else "", _a] if p]
+                    if _tac.get("bepro_only") and _tac.get("date") is not None:
+                        _pts.append(pd.Timestamp(_tac["date"]).strftime("%d/%m"))
                     _mrows.append({"display":" · ".join(_pts) if _pts else _tac.get("filename",""),
                                    "date":_tac.get("date"),"adversaire":_a,"journee":_j,"saison":_s,
                                    "tac_obj":_tac,"gps_label":""})
