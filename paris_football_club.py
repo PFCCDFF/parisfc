@@ -105,6 +105,7 @@ GPS_NAME_MAP_PATH  = "data/gps_name_map.json"   # concordance GPS nom → nom ca
 PERMISSIONS_FILENAME = "Classeurs permissions streamlit.xlsx"
 EDF_JOUEUSES_FILENAME = "EDF_Joueuses.xlsx"
 PASSERELLE_FILENAME = "Liste Joueuses Passerelles.xlsx"
+DONNEES_JOUEUSES_FILENAME = "Données joueuses.xlsx"  # fiche administrative de tout l'effectif (data/)
 REFERENTIEL_FILENAME = "Noms Prénoms Paris FC.xlsx"
 TEMPS_JEU_RESCUE_FILENAME = "SuiviPerformanceJoueuse.xlsx"  # sauvetage temps de jeu (feuille SuiviMatch) quand le CSV tactique n'a pas de ligne d'équipe exploitable
 OBJECTIFS_EVAL_FILENAME = "Evaluations Objectifs.csv"  # Export CSV du Google Sheet lié au Forms
@@ -9483,13 +9484,62 @@ def _report_pass_breakdown(d_rows) -> dict:
     return out
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_donnees_joueuses(path: str, _mtime: float) -> dict:
+    """« Données joueuses.xlsx » (tout l'effectif) au même format que load_passerelle_data :
+    {"NOM Prénom": {"Nom", "Prénom", "Date de naissance", "Pied Fort", "Poste 1", "Poste 2"}}.
+    `_mtime` invalide le cache quand le fichier est resynchronisé."""
+    out = {}
+    try:
+        df = read_excel_auto(path)
+        if isinstance(df, dict):
+            df = list(df.values())[0] if df else pd.DataFrame()
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return out
+        col_nom = _find_col(df, "NOM", "Nom")
+        col_prenom = _find_col(df, "Prénom", "Prenom")
+        col_ddn = _find_col(df, "Née le", "Date de naissance", "Date de Naissance")
+        col_pied = _find_col(df, "Latéralité", "Pied Fort", "Pied")
+        col_p1 = _find_col(df, "Poste 1", "Poste1", "Poste principal")
+        col_p2 = _find_col(df, "Poste 2", "Poste2", "Poste secondaire")
+        for _, row in df.iterrows():
+            nom = _passerelle_clean(row.get(col_nom)) if col_nom else ""
+            if not nom:
+                continue
+            prenom = _passerelle_clean(row.get(col_prenom)) if col_prenom else ""
+            out[f"{nom} {prenom}".strip()] = {
+                "Nom": nom, "Prénom": prenom,
+                "Date de naissance": _passerelle_fmt_date(row.get(col_ddn)) if col_ddn else "",
+                "Pied Fort": _passerelle_clean(row.get(col_pied)) if col_pied else "",
+                "Poste 1": _passerelle_clean(row.get(col_p1)) if col_p1 else "",
+                "Poste 2": _passerelle_clean(row.get(col_p2)) if col_p2 else "",
+            }
+    except Exception as e:
+        _warn(f"Données joueuses: erreur lecture → {e}")
+    return out
+
+
 def get_player_demographics(player: str) -> dict:
-    """Date de naissance, pied fort, postes 1/2 depuis le fichier joueuses (load_passerelle_data).
+    """Date de naissance, pied fort, postes 1/2 de la joueuse.
+    Source principale : « Données joueuses.xlsx » (tout l'effectif) ; complément : fichier
+    des passerelles (load_passerelle_data, 6 joueuses seulement — c'était l'unique source
+    jusqu'au 05/10/2026, d'où des « — » pour la plupart des joueuses).
     Correspondance exacte du nom nettoyé, sinon au moins 2 tokens communs (évite les homonymes de prénom)."""
     info = {"ddn": "", "pied": "", "poste1": "", "poste2": ""}
+    data = {}
     try:
-        data = load_passerelle_data() or {}
+        data.update(load_passerelle_data() or {})
     except Exception:
+        pass
+    try:
+        _dj = os.path.join(DATA_FOLDER, DONNEES_JOUEUSES_FILENAME)
+        if not os.path.exists(_dj):
+            _dj = find_local_file_by_normalized_name(DATA_FOLDER, DONNEES_JOUEUSES_FILENAME) or ""
+        if _dj and os.path.exists(_dj):
+            data.update(_load_donnees_joueuses(_dj, os.path.getmtime(_dj)))  # prioritaire
+    except Exception:
+        pass
+    if not data:
         return info
     target = nettoyer_nom_joueuse(player or "")
     toks = nom_tokens(player or "")
@@ -9503,7 +9553,20 @@ def get_player_demographics(player: str) -> dict:
         if sc > best_sc:
             best, best_sc = v, sc
     if best is None or best_sc < 2:
-        return info
+        # Repli : orthographe différente selon la source (« GARBAA Dahlia » / « GARBAA DHALIA »,
+        # nom composé partiel) — chaque mot du nom le plus court proche d'un mot de l'autre
+        # (même règle que les noms GPS du Laboratoire), retenu seulement si une seule fiche correspond.
+        from gps_compilation import sous_ensemble_flou
+        _t = target.split()
+        _cands = []
+        for v in data.values():
+            _f = nettoyer_nom_joueuse(f"{v.get('Nom', '')} {v.get('Prénom', '')}").split()
+            if sous_ensemble_flou(_t, _f) or sous_ensemble_flou(_f, _t):
+                _cands.append(v)
+        _uniq = {id(v): v for v in _cands}
+        if len(_uniq) != 1:
+            return info
+        best = next(iter(_uniq.values()))
     info.update({
         "ddn": best.get("Date de naissance", "") or "",
         "pied": best.get("Pied Fort", "") or "",
