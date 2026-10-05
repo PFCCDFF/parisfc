@@ -5578,6 +5578,67 @@ def bepro_only_matches(tac_files: list) -> list:
     return out
 
 
+def get_bepro_kpi_scores(match_rows: list, player: str, gps_match_df=None) -> dict:
+    """Indicateurs tactiques (Rigueur, Récupération, … — mêmes create_metrics / create_kpis
+    que Sportscode, percentiles parmi les joueuses du match) calculés depuis Bepro, moyennés
+    sur les matchs sélectionnés. Compteurs ramenés sur 90 min avec le temps de jeu GPS de
+    chaque joueuse quand il est connu (comme collect_data). {} si un des matchs n'a pas
+    d'export Bepro ou si la joueuse n'y figure pas — l'appelant garde alors Sportscode."""
+    try:
+        from bepro_utils import bepro_kpi_inputs, find_bepro_match, match_player_name
+        bepro = _load_bepro_cached(_bepro_folder_signature())
+        if not bepro or not match_rows:
+            return {}
+        parts = []
+        for r in match_rows:
+            _src = str((r.get("tac_obj") or {}).get("filename", "") or r.get("display", "") or "")
+            _m = re.search(r"U(\d{2})", _src)
+            bdf = find_bepro_match(bepro, r.get("date"), r.get("adversaire", ""), f"U{_m.group(1)}" if _m else "")
+            if bdf is None:
+                return {}
+            inp = bepro_kpi_inputs(bdf)
+            if inp.empty:
+                return {}
+            inp["__team_deseq_total"] = float(inp["__deseq"].sum())
+            num = [c for c in inp.columns if c not in ("Player", "__team_deseq_total")]
+            inp[num] = inp[num].astype(float)
+            if gps_match_df is not None and not getattr(gps_match_df, "empty", True):
+                for i, pn in inp["Player"].items():
+                    try:
+                        gs = get_gps_match_summary_for_player(gps_match_df, pn, match_date=pd.Timestamp(r.get("date")))
+                        tp = float((gs or {}).get("duration_min") or 0)
+                    except Exception:
+                        tp = 0.0
+                    if tp > 0:
+                        inp.loc[i, num] = inp.loc[i, num] * (90.0 / tp)
+            k = create_kpis(create_metrics(inp))
+            nm = match_player_name(player, k["Player"].tolist())
+            if not nm:
+                return {}
+            parts.append(k[k["Player"] == nm].iloc[[0]])
+        sub = pd.concat(parts, ignore_index=True)
+        out = {}
+        for kpi in REPORT_SPIDER_KPIS:
+            if kpi in sub.columns:
+                v = pd.to_numeric(sub[kpi], errors="coerce").mean()
+                if pd.notna(v):
+                    out[kpi] = float(v)
+        if out:
+            out["_n"] = len(parts)
+            out["_source"] = "Bepro"
+        return out
+    except Exception as e:
+        _warn(f"Bepro : indicateurs tactiques non calculés → {e}")
+        return {}
+
+
+def report_kpi_scores(pfc_kpi_all, player: str, match_rows: list, gps_match_df=None) -> dict:
+    """Indicateurs de l'araignée du rapport individuel : Bepro si tous les matchs sélectionnés
+    ont un export Bepro (même source que les stats techniques), sinon Sportscode (pfc_kpi)."""
+    b = get_bepro_kpi_scores(match_rows, player, gps_match_df)
+    return b if b else get_match_kpi_scores(pfc_kpi_all, player, match_rows)
+
+
 def get_bepro_stats_for_matches(match_rows: list, player: str) -> dict:
     """Stats Bepro d'une joueuse sur les matchs sélectionnés (lignes avec 'date' / 'adversaire').
     {} si aucun export Bepro ne correspond ou si la joueuse n'y figure pas. Les matchs sans
@@ -9985,7 +10046,7 @@ def build_tactical_report_html(
         spider_card = (
             f'<div class="gcard g-spider"><div class="gt"><b>Indicateurs tactiques</b> · /100</div>'
             + (f'<div class="panel"><img src="{_sp_b64}"/></div>'
-               f'<div class="gn">Percentiles intra-match{f", moyenne de {_n_k} matchs" if _n_k > 1 else ""}</div>'
+               f'<div class="gn">Percentiles intra-match{f", moyenne de {_n_k} matchs" if _n_k > 1 else ""}{" · Bepro" if _ks.get("_source") == "Bepro" else ""}</div>'
                if _sp_b64 else '<div class="gn">Scores KPI non disponibles pour ce match.</div>')
             + '</div>'
         )
@@ -10618,7 +10679,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                         radar_b64=_tac_radar_b64,
                         gps_match_df=gps_match_df,
                         player_info=get_player_demographics(sel_tac_player),
-                        kpi_scores=get_match_kpi_scores(st.session_state.get("pfc_kpi_all"), sel_tac_player, [sel_row]),
+                        kpi_scores=report_kpi_scores(st.session_state.get("pfc_kpi_all"), sel_tac_player, [sel_row], gps_match_df),
                         bepro_stats=_bepro_ok(get_bepro_stats_for_matches([sel_row], sel_tac_player)),
                     )
                     st.iframe(html_report, height=820)
@@ -12303,7 +12364,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         _html = build_tactical_report_html(_dft_agg, _sp, gps_summary=_gs,
                             photo_b64=_pb64, match_info=_mi, selected_indicators=_mr_selected_indicators,
                             player_info=get_player_demographics(_sp),
-                            kpi_scores=get_match_kpi_scores(st.session_state.get("pfc_kpi_all"), _sp, _srs),
+                            kpi_scores=report_kpi_scores(st.session_state.get("pfc_kpi_all"), _sp, _srs, _gps_match_df),
                             tactic_dfs=[r["tac_obj"].get("df") for r in _srs] if len(_srs) > 1 else None,
                             bepro_stats=_bepro_ok(get_bepro_stats_for_matches(_srs, _sp)))
                         _html_js = json.dumps(_html).replace('</script', '<\\/script')

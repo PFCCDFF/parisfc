@@ -312,3 +312,67 @@ def compute_bepro_player_stats(df: pd.DataFrame, player: str) -> dict:
     s["nom_bepro"] = name
     s["n_matchs_bepro"] = int(d["match_id"].nunique()) if "match_id" in d.columns else 1
     return s
+
+
+# ── Compteurs des indicateurs tactiques (create_metrics / create_kpis de l'app) ──
+
+KPI_INPUT_COLS = ["Duels défensifs", "Duels défensifs gagnés", "Fautes", "Interceptions", "Passes",
+                  "Passes courtes", "Passes réussies (courtes)", "Passes longues", "Passes réussies (longues)",
+                  "Dribbles", "Dribbles réussis", "Tirs", "Tirs cadrés",
+                  "__total_passes", "__last_third", "__assists", "__deseq"]
+
+
+def bepro_kpi_inputs(df: pd.DataFrame) -> pd.DataFrame:
+    """Une ligne par joueuse de l'export, avec les compteurs attendus par create_metrics
+    (mêmes noms de colonnes que create_data sur Sportscode). Correspondances :
+    duels défensifs = Duels + Tackles (gagnés : Succeeded / « Tackle Succeeded… ») ;
+    fautes = Fouls de type « Fouls » / « Handball Foul » (commises, pas subies) ;
+    passes courtes = Short + Medium Range, longues = Long Passes ; dribbles = Take-on ;
+    tirs cadrés = Shots On Target + Goals ; dernier tiers = Area « Passes In Final Third » ;
+    créations de déséquilibre (__deseq) = Key Passes, équivalent Bepro le plus proche."""
+    rows = []
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Player"] + KPI_INPUT_COLS)
+    for player, g in df.groupby("player"):
+        if not str(player).strip():
+            continue
+        c = dict.fromkeys(KPI_INPUT_COLS, 0)
+        for evs in g["events"]:
+            for ev in evs:
+                en, pr = ev.get("event_name"), ev.get("property") or {}
+                out = str(pr.get("Outcome", ""))
+                if en == "Duels":
+                    c["Duels défensifs"] += 1
+                    c["Duels défensifs gagnés"] += out == "Succeeded"
+                elif en == "Tackles":
+                    c["Duels défensifs"] += 1
+                    c["Duels défensifs gagnés"] += out.startswith("Tackle Succeeded")
+                elif en == "Fouls" and pr.get("Type") in ("Fouls", "Handball Foul"):
+                    c["Fautes"] += 1
+                elif en == "Interceptions":
+                    c["Interceptions"] += 1
+                elif en == "Passes":
+                    ok = out == "Succeeded"
+                    c["Passes"] += 1
+                    c["__total_passes"] += 1
+                    if pr.get("Distance") == "Long Passes":
+                        c["Passes longues"] += 1
+                        c["Passes réussies (longues)"] += ok
+                    else:
+                        c["Passes courtes"] += 1
+                        c["Passes réussies (courtes)"] += ok
+                    if pr.get("Area") == "Passes In Final Third":
+                        c["__last_third"] += 1
+                elif en == "Take-on":
+                    c["Dribbles"] += 1
+                    c["Dribbles réussis"] += out == "Succeeded"
+                elif en == "Shots & Goals":
+                    c["Tirs"] += 1
+                    c["Tirs cadrés"] += out in ("Shots On Target", "Goals")
+                elif en == "Assists":
+                    c["__assists"] += 1
+                elif en == "Key Passes":
+                    c["__deseq"] += 1
+        rows.append({"Player": player, **c})
+    return pd.DataFrame(rows, columns=["Player"] + KPI_INPUT_COLS)
+

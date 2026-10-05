@@ -111,6 +111,23 @@ class TestStats(unittest.TestCase):
         self.assertEqual(B.compute_bepro_player_stats(self.df, "DUPONT Julie"), {})
 
 
+class TestKpiInputs(unittest.TestCase):
+    def test_compteurs_indicateurs(self):
+        df = B.bepro_events_frame([
+            _ev("Sylia Renai", [_passe(distance="Long Passes", area="Passes In Final Third")], 0.5, 0.5),
+            _ev("Sylia Renai", [_passe("Failed")], 0.5, 0.5),
+            _ev("Sylia Renai", [{"event_name": "Tackles", "property": {"Outcome": "Tackle Succeeded: Possession"}},
+                                {"event_name": "Fouls", "property": {"Type": "Fouls"}}], 0.3, 0.5),
+            _ev("Sylia Renai", [{"event_name": "Duels", "property": {"Type": "Aerial Duels", "Outcome": "Failed"}},
+                                {"event_name": "Fouls", "property": {"Type": "Fouls Won"}}], 0.3, 0.5),
+            _ev("Sylia Renai", [{"event_name": "Key Passes", "property": {}}, {"event_name": "Assists", "property": {}}], 0.8, 0.5),
+        ])
+        r = B.bepro_kpi_inputs(df).set_index("Player").loc["Sylia Renai"]
+        self.assertEqual((r["Passes"], r["Passes longues"], r["Passes réussies (longues)"], r["Passes courtes"]), (2, 1, 1, 1))
+        self.assertEqual((r["Duels défensifs"], r["Duels défensifs gagnés"], r["Fautes"]), (2, 1, 1))  # faute subie exclue
+        self.assertEqual((r["__last_third"], r["__deseq"], r["__assists"]), (1, 1, 1))
+
+
 class TestDossier(unittest.TestCase):
     def test_zip_prioritaire_sur_json(self):
         p1 = [_ev("Sylia Renai", [_passe()], 0.3, 0.9)]
