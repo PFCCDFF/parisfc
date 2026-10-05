@@ -10617,8 +10617,10 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                     # Photo joueuse — via concordance passerelle (même logique que l'onglet Passerelles)
                     _tac_photo_b64 = ''
                     try:
-                        _cc = st.session_state.get('photo_concordance', {})
-                        _pi = st.session_state.get('photos_index', {})
+                        # Repli si la session n'a pas l'index : il est construit par la sync Drive,
+                        # qui tourne en arrière-plan (thread sans contexte → session non écrite).
+                        _pi = st.session_state.get('photos_index') or build_photos_index_local()
+                        _cc = st.session_state.get('photo_concordance') or get_photo_concordance()
                         # Essayer d'abord avec le nom canonique du fichier tactique
                         _pp = find_photo_for_player(sel_tac_player, concordance=_cc, photos_index=_pi)
                         # Fallback : chercher dans la passerelle_data par correspondance de nom
@@ -12352,9 +12354,11 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         _dft_agg, _gs, _mi = _aggregate_match_reports(_srs, _sp, _gps_match_df)
                         _pb64 = ""
                         try:
+                            # Même repli que l'onglet Passerelles : l'index photos de la session
+                            # n'existe pas quand la sync Drive a tourné en arrière-plan.
                             _pp2 = find_photo_for_player(_sp,
-                                concordance=st.session_state.get("photo_concordance",{}),
-                                photos_index=st.session_state.get("photos_index",{}))
+                                concordance=st.session_state.get("photo_concordance") or get_photo_concordance(),
+                                photos_index=st.session_state.get("photos_index") or build_photos_index_local())
                             if _pp2 and os.path.exists(str(_pp2)):
                                 import base64 as _b64x
                                 _rawb = load_photo_bytes(str(_pp2))
