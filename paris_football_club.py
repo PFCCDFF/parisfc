@@ -6709,7 +6709,22 @@ def compute_tactical_stats(df_tactic, player_name):
     all_actions_flat = [a.strip() for cell in d["Action"].dropna() for a in str(cell).split(",")] if "Action" in d.columns else []
     stats["pertes"]        = sum(1 for a in all_actions_flat if "Perte" in a)
     stats["recuperations"] = sum(1 for a in all_actions_flat if "Interception" in a)
-    stats["ballons"]       = len(d)
+    # Ballons touchés/joués : séquences de la joueuse contenant au moins une passe (réussie
+    # ou ratée), un tir, une interception, un dribble ou un duel gagné — et non plus toutes
+    # ses lignes (réceptions, duels perdus, placements… comptés à tort, ex. Angers J5 :
+    # 95 lignes pour YERRO Sharlie). Une séquence à plusieurs actions compte une fois.
+    def _col_has(col, *tags):
+        if col not in d.columns:
+            return pd.Series(False, index=d.index)
+        v = d[col].astype(str)
+        if not tags:
+            return d[col].notna() & v.str.strip().ne("") & v.str.lower().ne("nan")
+        return v.apply(lambda x: any(t in [a.strip() for a in x.split(",")] for t in tags))
+    _avec_ballon = (_col_has("Passe", "Réussie", "Ratée") | _col_has("Tir") | _col_has("Dribble")
+                    | _col_has("Duel défensifs", "Gagné")
+                    | (d["Action"].astype(str).str.contains("Interception", na=False) if "Action" in d.columns
+                       else pd.Series(False, index=d.index)))
+    stats["ballons"]       = int(_avec_ballon.sum())
 
     # DUELS
     duel_rows = d[d["Duel défensifs"].notna()] if "Duel défensifs" in d.columns else d.iloc[0:0]

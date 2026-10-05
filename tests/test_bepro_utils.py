@@ -100,8 +100,9 @@ class TestStats(unittest.TestCase):
         self.assertEqual((s["drib_ok"], s["drib_ko"]), (0, 1))
         self.assertEqual((s["tirs_tot"], s["tirs_cadres"], s["tirs_buts"]), (1, 1, 1))
         self.assertEqual((s["aer_ok"], s["aer_ko"], s["sol_ok"], s["sol_ko"]), (1, 0, 0, 1))
-        # Ballons joués : lignes avec ballon (2 passes, réception+dribble, tir) ; duels exclus
-        self.assertEqual(s["ballons"], 4)
+        # Ballons joués : passe, tir, interception, dribble ou duel gagné (2 passes,
+        # réception+dribble, tir, duel aérien gagné) ; le duel perdu est exclu
+        self.assertEqual(s["ballons"], 5)
         self.assertEqual(len(s["locs"]), 4)
         # Ballons perdus : passe ratée + dribble raté
         self.assertEqual(s["pertes"], 2)

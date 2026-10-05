@@ -40,7 +40,12 @@ BEPRO_FOLDER = os.path.join("data", "bepro")
 
 _SVG_W, _SVG_H = 100.0, 68.0
 
-# Événements « avec ballon » : comptés comme ballons joués et localisés sur la heatmap.
+# Ballons touchés/joués (même règle que le tagging Sportscode, compute_tactical_stats) :
+# instants contenant une passe (centres compris), un tir, une interception, un dribble
+# ou un duel gagné.
+TOUCH_EVENTS = {"Passes", "Crosses", "Shots & Goals", "Interceptions", "Take-on"}
+
+# Événements « avec ballon » : localisés sur la heatmap.
 BALL_EVENTS = {
     "Passes", "Passes Received", "Crosses", "Crosses Received", "Take-on",
     "Shots & Goals", "Recoveries", "Interceptions", "Step-in", "Aerial Control",
@@ -291,10 +296,13 @@ def compute_bepro_player_stats(df: pd.DataFrame, player: str) -> dict:
                     s["aer_ok" if won else "aer_ko"] += 1
                 else:  # Physical Duels, Loose Ball Duels, duels sans type (fautes)
                     s["sol_ok" if won else "sol_ko"] += 1
-        if has_ball:
+        touche = bool(names & TOUCH_EVENTS) or any(
+            ev["event_name"] == "Duels" and (ev.get("property") or {}).get("Outcome") == "Succeeded"
+            for ev in r["events"])
+        if touche:
             s["ballons"] += 1
-            if r["x"] is not None:
-                locs.append({"x": r["x"], "y": r["y"]})
+        if has_ball and r["x"] is not None:
+            locs.append({"x": r["x"], "y": r["y"]})
         if lost:
             s["pertes"] += 1
 
