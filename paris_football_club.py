@@ -13469,14 +13469,20 @@ _IMPORT_DEST = {
 
 
 def _drive_deposer_csv(service, dossier_id: str, nom: str, contenu: bytes,
-                       mimetype: str = "text/csv") -> Tuple[Optional[str], str]:
+                       mimetype: str = "text/csv", remplacer: bool = False) -> Tuple[Optional[str], str]:
     """Dépose un CSV dans un dossier Drive. Retourne (id, "créé") ou (id, "existe") si un
-    fichier du même nom y est déjà (rien n'est écrasé)."""
+    fichier du même nom y est déjà (rien n'est écrasé), ou (id, "remplacé") si
+    remplacer=True (contenu du fichier existant mis à jour, même id / même lien)."""
     from googleapiclient.http import MediaIoBaseUpload
     nom_q = nom.replace("\\", "\\\\").replace("'", "\\'")
     q = f"'{dossier_id}' in parents and name = '{nom_q}' and trashed = false"
     ex = _execute_with_retry(service.files().list(q=q, fields="files(id)", supportsAllDrives=True,
                                                   includeItemsFromAllDrives=True)).get("files", [])
+    if ex and remplacer:
+        media = MediaIoBaseUpload(io.BytesIO(contenu), mimetype=mimetype, resumable=False)
+        _execute_with_retry(service.files().update(fileId=ex[0]["id"], media_body=media, fields="id",
+                                                   supportsAllDrives=True))
+        return ex[0]["id"], "remplacé"
     if ex:
         return ex[0]["id"], "existe"
     media = MediaIoBaseUpload(io.BytesIO(contenu), mimetype=mimetype, resumable=False)
@@ -13485,15 +13491,19 @@ def _drive_deposer_csv(service, dossier_id: str, nom: str, contenu: bytes,
     return f["id"], "créé"
 
 
-def _importer_un_csv(service, nom: str, contenu: bytes, typ: str) -> Tuple[bool, str]:
+def _importer_un_csv(service, nom: str, contenu: bytes, typ: str, remplacer: bool = False) -> Tuple[bool, str]:
     """Drive d'abord (source unique), puis copie locale nommée comme par la sync :
-    GPS → <nom>__<id8>.csv (_safe_local_path), tactique → data/<nom>."""
+    GPS → <nom>__<id8>.csv (_safe_local_path), tactique → data/<nom>.
+    remplacer=True : nouvelle version d'un fichier existant (même nom) — contenu écrasé
+    sur le serveur, mis à jour sur le Drive si possible. La copie locale étant alors plus
+    récente que le Drive, la sync ne réimporte pas l'ancienne version."""
     dossier_local, dossier_drive = _IMPORT_DEST[typ]
     fid, drive_msg = None, ""
     if service is not None and dossier_drive:
         try:
-            fid, statut = _drive_deposer_csv(service, dossier_drive, nom, contenu)
-            drive_msg = "déposé sur le Drive" if statut == "créé" else "déjà sur le Drive (même nom, non écrasé)"
+            fid, statut = _drive_deposer_csv(service, dossier_drive, nom, contenu, remplacer=remplacer)
+            drive_msg = {"créé": "déposé sur le Drive", "remplacé": "remplacé sur le Drive"}.get(
+                statut, "déjà sur le Drive (même nom, non écrasé)")
         except HttpError as e:
             drive_msg = ("⚠️ Drive en lecture seule pour l'app : enregistré sur le serveur uniquement"
                          if getattr(getattr(e, "resp", None), "status", None) == 403 or "insufficient" in str(e).lower()
@@ -13505,12 +13515,13 @@ def _importer_un_csv(service, nom: str, contenu: bytes, typ: str) -> Tuple[bool,
     else:
         from import_csv import empreinte
         chemin = _safe_local_path(nom, fid or empreinte(contenu), dest_folder=dossier_local)
-    if os.path.exists(chemin):
+    if os.path.exists(chemin) and not remplacer:
         return False, " · ".join(x for x in [f"déjà présent sur le serveur ({os.path.basename(chemin)})", drive_msg] if x)
+    _verbe = "remplacé" if os.path.exists(chemin) else "importé"
     os.makedirs(os.path.dirname(chemin) or ".", exist_ok=True)
     with open(chemin, "wb") as f:
         f.write(contenu)
-    return True, " · ".join(x for x in [f"importé ({os.path.relpath(chemin, DATA_FOLDER)})", drive_msg] if x)
+    return True, " · ".join(x for x in [f"{_verbe} ({os.path.relpath(chemin, DATA_FOLDER)})", drive_msg] if x)
 
 
 def render_import_bepro():
@@ -13648,18 +13659,38 @@ def render_import_csv():
                 else:
                     st.caption("⚠️ Renseigner la date du match (et vérifier catégorie / adversaire).")
 
-        # Garde-fous : un doublon exact ou un fichier qui masquerait un autre match est refusé.
-        blocages = {}
+        # Garde-fous : un doublon exact est refusé ; un fichier qui masquerait un autre match
+        # est refusé, sauf remplacement explicite (nouvelle version du même match, ex. export
+        # enrichi des actions individuelles) — enregistré alors sous le nom de l'ancien fichier.
+        blocages, remplacements = {}, set()
         for _, r in a_importer.iterrows():
             n = r["Fichier"]
             if r["Type"] in _IMPORT_DEST and (analyses[n]["valide"] or n in noms_finaux):
-                raisons = blocages_import(noms_finaux.get(n, n), r["Type"], par_contenu[n], existants,
+                _final = noms_finaux.get(n, n)
+                _autre = None
+                if r["Type"] == "Tactique":
+                    _k = cle_match_tactique(_final, parse_tactical_filename)
+                    # Fichier existant du même match — y compris sous le même nom (cas d'un export
+                    # réimporté après ajout des actions individuelles : même nom standard).
+                    _autre = tactiques.get(_k) if _k else None
+                _identique = existants.get(empreinte(par_contenu[n]))
+                if _autre and not _identique:
+                    _nom_autre = os.path.basename(_autre)
+                    if st.checkbox(f"♻️ Remplacer « {_nom_autre} » par cette nouvelle version ({n})",
+                                   key=f"{_cle}_rpl_{n}",
+                                   help="Même match (journée, catégorie, date) : la nouvelle version prend la place de "
+                                        "l'ancienne, sous le même nom de fichier — pas de doublon."):
+                        noms_finaux[n] = _nom_autre
+                        remplacements.add(n)
+                        continue
+                raisons = blocages_import(_final, r["Type"], par_contenu[n], existants,
                                           tactiques, parse_tactical_filename)
                 if raisons:
                     blocages[n] = raisons
                     st.error(f"⛔ {n} ne sera pas importé : " + " ; ".join(raisons) + ".")
         if blocages:
-            st.caption("Pour remplacer volontairement un fichier existant, le supprimer d'abord du Drive et du serveur.")
+            st.caption("Nouvelle version d'un match déjà présent : cocher « Remplacer » ci-dessus. "
+                       "Un fichier au contenu identique à un fichier existant reste refusé.")
         if len(tab[tab["Déjà présent"] != ""]):
             st.info("Certains fichiers ont un contenu identique à un fichier déjà présent (colonne « Déjà présent ») : "
                     "les réimporter créerait un doublon.")
@@ -13687,7 +13718,8 @@ def render_import_csv():
                 if (typ == "Tactique") != (detecte.get(nom) == "Tactique"):
                     st.error(f"{nom} : type « {typ} » incompatible avec le contenu ({detecte.get(nom)}), ignoré.")
                     continue
-                ok, msg = _importer_un_csv(service, noms_finaux.get(nom, nom), par_nom[nom].getvalue(), typ)
+                ok, msg = _importer_un_csv(service, noms_finaux.get(nom, nom), par_nom[nom].getvalue(), typ,
+                                           remplacer=nom in remplacements)
                 n_ok += ok
                 (st.success if ok else st.warning)(f"{nom} : {msg}")
             if n_ok:

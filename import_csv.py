@@ -205,7 +205,12 @@ def _csv(dossiers: Iterable[str], recursif: bool) -> list[str]:
 
 
 def cle_match_tactique(nom: str, infos_tactique: Callable[[str], dict]):
-    """Clé de dédoublonnage de load_tactical_files : (date, journée, adversaire normalisé)."""
+    """Clé de dédoublonnage de l'app (load_tactical_files / KPI de collect_data) :
+    (journée, catégorie, date) lues dans PFC_VS_<…>_<J>_<cat>_<date>, sinon repli sur
+    (date, journée, adversaire normalisé) pour les noms hors convention."""
+    parts = os.path.splitext(os.path.basename(nom))[0].split("_")
+    if len(parts) >= 6:
+        return ("kpi", parts[3], parts[4], parts[5])
     info = infos_tactique(nom)
     return None if info.get("date") is None else (info["date"], info.get("journee"), info.get("adv_norm"))
 
