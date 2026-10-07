@@ -7433,9 +7433,7 @@ def build_collective_report_html(report: dict, gps_stats: dict = None, match_inf
     _bg_css = f"url('{_bg_uri}') center/cover no-repeat," if _bg_uri else ""
 
     # ── Statistiques comparées (barres miroir) ───────────────────────────────
-    def _mirror(label, v1, v2, unit="", is_pct=False, plus_bas_meilleur=False, neutre=False):
-        """Barre miroir ; l'équipe qui a l'avantage est mise en avant, l'autre atténuée
-        (plus_bas_meilleur : pertes, fautes, hors-jeu, possessions / entrée…)."""
+    def _mirror(label, v1, v2, unit="", is_pct=False):
         try:
             f1 = float(v1) if v1 not in (None, "—") else 0.0
             f2 = float(v2) if v2 not in (None, "—") else 0.0
@@ -7443,19 +7441,15 @@ def build_collective_report_html(report: dict, gps_stats: dict = None, match_inf
             f1, f2 = 0.0, 0.0
         m = max(f1, f2, 0.0001)
         p1, p2 = min(f1 / m * 100, 100), min(f2 / m * 100, 100)
-        o1 = o2 = 1.0
-        if f1 != f2 and not neutre:
-            pfc_mieux = (f1 < f2) if plus_bas_meilleur else (f1 > f2)
-            o1, o2 = (1.0, 0.4) if pfc_mieux else (0.4, 1.0)
         def _fmt(v):
             if v is None or v == "—":
                 return "—"
             return f"{v}{' %' if is_pct else (' ' + unit if unit else '')}"
         return (f'<div class="mr"><div class="ml">{label}</div>'
-                f'<div class="mb"><div class="mv" style="color:{CYAN};text-align:right;opacity:{o1};">{_fmt(v1)}</div>'
-                f'<div class="mt l"><div style="width:{p1:.0f}%;background:{CYAN};opacity:{o1};"></div></div>'
-                f'<div class="mt r"><div style="width:{p2:.0f}%;background:{CORAIL};opacity:{o2};"></div></div>'
-                f'<div class="mv" style="color:{CORAIL};opacity:{o2};">{_fmt(v2)}</div></div></div>')
+                f'<div class="mb"><div class="mv" style="color:{CYAN};text-align:right;">{_fmt(v1)}</div>'
+                f'<div class="mt l"><div style="width:{p1:.0f}%;background:{CYAN};"></div></div>'
+                f'<div class="mt r"><div style="width:{p2:.0f}%;background:{CORAIL};"></div></div>'
+                f'<div class="mv" style="color:{CORAIL};">{_fmt(v2)}</div></div></div>')
 
     _poss = "".join([
         _mirror("% Possession", report["poss_total"][pfc_name], report["poss_total"][adv_name], is_pct=True),
@@ -7468,19 +7462,19 @@ def build_collective_report_html(report: dict, gps_stats: dict = None, match_inf
         _mirror("Tirs", s_pfc["tirs"], s_adv["tirs"]),
         _mirror("Tirs cadrés", s_pfc["tirs_cadres"], s_adv["tirs_cadres"]),
         _mirror("% tirs cadrés", s_pfc["pct_tirs_cadres"], s_adv["pct_tirs_cadres"], is_pct=True),
-        _mirror("Tirs non cadrés", s_pfc["tirs_non_cadres"], s_adv["tirs_non_cadres"], neutre=True),
+        _mirror("Tirs non cadrés", s_pfc["tirs_non_cadres"], s_adv["tirs_non_cadres"]),
         _mirror("Buts", s_pfc["buts"], s_adv["buts"]),
     ])
     _prog = "".join([
-        _mirror("Pertes de balle", s_pfc["pertes"], s_adv["pertes"], plus_bas_meilleur=True),
-        _mirror("% pertes de balle", s_pfc["pct_pertes"], s_adv["pct_pertes"], is_pct=True, plus_bas_meilleur=True),
+        _mirror("Pertes de balle", s_pfc["pertes"], s_adv["pertes"]),
+        _mirror("% pertes de balle", s_pfc["pct_pertes"], s_adv["pct_pertes"], is_pct=True),
         _mirror("Entrées dans le dernier 1/3", s_pfc["entrees_1_3"], s_adv["entrees_1_3"]),
-        _mirror("Possessions / entrée 1/3", s_pfc["poss_par_entree"], s_adv["poss_par_entree"], plus_bas_meilleur=True),
-        _mirror("Entrées 1/3 / tir", s_pfc["entrees_par_tir"], s_adv["entrees_par_tir"], plus_bas_meilleur=True),
+        _mirror("Possessions / entrée 1/3", s_pfc["poss_par_entree"], s_adv["poss_par_entree"]),
+        _mirror("Entrées 1/3 / tir", s_pfc["entrees_par_tir"], s_adv["entrees_par_tir"]),
     ])
     _disc = "".join([
-        _mirror("Fautes", s_pfc["fautes"], s_adv["fautes"], plus_bas_meilleur=True),
-        _mirror("Hors-jeu", s_pfc["hors_jeu"], s_adv["hors_jeu"], plus_bas_meilleur=True),
+        _mirror("Fautes", s_pfc["fautes"], s_adv["fautes"]),
+        _mirror("Hors-jeu", s_pfc["hors_jeu"], s_adv["hors_jeu"]),
     ])
 
     def card(title, body, grow=1):
