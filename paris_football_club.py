@@ -7285,7 +7285,7 @@ def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 2.6), dpi=90, li
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
     fig.patch.set_facecolor("#FFFFFF" if light else "#08090D")
     _draw_collective_pitch(ax, half=True, light=light)
-    _arrow_c = "#E5322D" if light else "#FFA06E"
+    _arrow_c = "#1FA8E0" if light else "#FFA06E"  # bleu charte en version claire (rapport collectif)
 
     for x, pct in [(12, _pg), (34, _pc), (56, _pd)]:
         lw = 1.5 + (pct / _pmax) * 7.5
@@ -7396,7 +7396,7 @@ def build_collective_report_html(report: dict, gps_stats: dict = None, match_inf
     pfc_lbl = "Paris FC" if str(pfc_name).strip().upper() == "PFC" else pfc_name
 
     with MPL_LOCK:
-        fig_e = build_entree_tiers_figure(report["entree_tiers"], figsize=(3.6, 2.5), dpi=140, light=True, title=False)
+        fig_e = build_entree_tiers_figure(report["entree_tiers"], figsize=(3.4, 3.0), dpi=140, light=True, title=False)
         b64_entree = fig_to_b64(fig_e); plt.close(fig_e)
         fig_r = build_zone_heatmap_figure(report["grid_recup"], report["zone_rows"], report["zone_cols"],
                                            "", "RdYlGn_r", figsize=(2.5, 3.5), dpi=140, light=True)
@@ -7509,7 +7509,7 @@ def build_collective_report_html(report: dict, gps_stats: dict = None, match_inf
 
     if gps_stats and gps_stats.get("n_joueuses") is not None:
         g = gps_stats
-        gps_html = ('<div class="cells c2">'
+        gps_html = ('<div class="cells c4">'
                     + _cell("Joueuses trackées", g.get("n_joueuses") if g.get("n_joueuses") is not None else "—")
                     + _cell("Distance totale", _n(g.get("distance_totale"), unit=" m"))
                     + _cell("Distance moy. / joueuse", _n(g.get("distance_moyenne"), unit=" m"))
@@ -7556,7 +7556,7 @@ body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exa
 .mt{{height:7px;background:rgba(255,255,255,.08);display:flex;}}
 .mt.l{{justify-content:flex-end;border-radius:4px 0 0 4px;}} .mt.r{{border-radius:0 4px 4px 0;}}
 .mt.l>div{{border-radius:4px 0 0 4px;}} .mt.r>div{{border-radius:0 4px 4px 0;}}
-.graph{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:auto minmax(0,1fr);gap:11px;flex:1;min-height:0;}}
+.graph{{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));grid-template-rows:auto minmax(0,1fr);gap:11px;flex:1;min-height:0;}}
 .gcard{{background:rgba(12,40,92,.48);border:1px solid rgba(255,255,255,.16);border-top:3px solid #1FA8E0;border-radius:12px;padding:9px 12px;display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;}}
 .gt{{font-size:12px;color:#FFF;margin-bottom:7px;}}
 .gt b{{font-weight:700;}}
@@ -7565,7 +7565,8 @@ body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exa
 .cell{{background:rgba(255,255,255,.06);border-radius:8px;padding:5px 8px;}}
 .cl{{font-size:9.5px;color:#C5D4E8;line-height:1.2;}}
 .cv{{font-family:Unbounded,sans-serif;font-size:14px;font-weight:700;color:#FFF;margin-top:2px;white-space:nowrap;}}
-.cells.c3{{grid-template-columns:1fr;gap:5px;}} .c3 .cell{{display:flex;justify-content:space-between;align-items:baseline;padding:4px 9px;}} .c3 .cl{{font-size:11px;}} .c3 .cv{{font-size:15px;margin-top:0;}}
+.cells.c3{{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;}} .c3 .cell{{display:flex;justify-content:space-between;align-items:baseline;padding:5px 10px;}} .c3 .cl{{font-size:11px;}} .c3 .cv{{font-size:15px;margin-top:0;}}
+.cells.c4{{grid-template-columns:repeat(4,minmax(0,1fr));}} .c4 .cv{{font-size:13px;}}
 .sub{{font-size:10.5px;font-weight:600;color:#9FD8F2;margin:2px 0 5px;}}
 .br{{margin-bottom:6px;}}
 .brl{{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:11px;margin-bottom:2px;}}
@@ -7605,25 +7606,16 @@ body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exa
     </div>
   </div>
   <div class="right">
-    <div class="sect"><span>GRAPH</span></div>
     <div class="graph">
-      <div class="gcard"><div class="gt"><b>Temps de jeu effectif</b></div>{temps_html}
+      <div class="gcard" style="grid-column:1 / span 2;grid-row:1;"><div class="gt"><b>Répartitions</b> · jeu offensif</div>{rep_html}</div>
+      <div class="gcard" style="grid-column:3 / span 4;grid-row:1;"><div class="gt"><b>Temps de jeu effectif</b></div>{temps_html}
         <div class="gt" style="margin:10px 0 6px;"><b>GPS collectif</b></div>{gps_html}</div>
-      <div class="gcard" style="grid-column:2 / span 2;"><div class="gt"><b>Répartitions</b> · {pfc_lbl} (jeu offensif)</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 22px;">
-          <div>{rep_html}</div>
-          <div><div class="sub">Couloir d'entrée dans le dernier 1/3</div>
-            <div class="panel" style="height:150px;"><img src="{b64_entree}"/></div></div>
-        </div></div>
-      <div class="gcard"><div class="gt"><b>Zones de récupération</b> · %</div><div class="panel"><img src="{b64_recup}"/></div>
-        <div class="gn">Attaque vers le haut</div></div>
-      <div class="gcard"><div class="gt"><b>Zones de perte</b> · %</div><div class="panel"><img src="{b64_perte}"/></div>
-        <div class="gn">Attaque vers le haut</div></div>
-      <div class="gcard" style="justify-content:center;">
-        <div class="gt"><b>Lecture</b></div>
-        <div class="note" style="font-style:normal;line-height:1.5;">Zones calculées à partir de la zone de départ d'action quand elle est taguée,
-        sinon des coordonnées X/Y, croisées avec le lancement de possession (récupération) et l'issue d'action (perte).</div>
-      </div>
+      <div class="gcard" style="grid-column:1 / span 2;grid-row:2;"><div class="gt"><b>Entrées dernier 1/3</b> · couloir</div>
+        <div class="panel" style="flex:0 0 auto;margin:auto 0;"><img src="{b64_entree}"/></div><div class="gn">Attaque vers le haut</div></div>
+      <div class="gcard" style="grid-column:3 / span 2;grid-row:2;"><div class="gt"><b>Zones de récupération</b> · %</div>
+        <div class="panel"><img src="{b64_recup}"/></div><div class="gn">Lancement de possession</div></div>
+      <div class="gcard" style="grid-column:5 / span 2;grid-row:2;"><div class="gt"><b>Zones de perte</b> · %</div>
+        <div class="panel"><img src="{b64_perte}"/></div><div class="gn">Issue d'action</div></div>
     </div>
   </div>
 </div>
