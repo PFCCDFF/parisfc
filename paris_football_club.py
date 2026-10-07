@@ -2072,9 +2072,20 @@ def find_photo_for_player(
 
         # Fuzzy
         pn_tokens = set(pn.split())
+        # Photo nommée au seul nom de famille (« Chérif.jpg ») déjà attribuée par la
+        # concordance à une joueuse du référentiel au prénom différent : ne pas la donner à
+        # une homonyme (CHERIF Asmaou / CHERIF HADRIA Mina, 07/10/2026).
+        _owners = {}
+        for _ck, _cp in (concordance or {}).items():
+            _kt = set(_photo_key_spaced(_ck).split())
+            if len(_kt) >= 2:
+                _owners.setdefault(_cp, []).append(_kt)
         best_path, best_score = None, 0.0
         for k, path in photos_index.items():
             k_tokens = set(k.split())
+            if len(k_tokens) == 1 and _owners.get(path) and not any(
+                    o <= pn_tokens or pn_tokens <= o for o in _owners[path]):
+                continue
             inter    = len(pn_tokens & k_tokens)
             union    = max(1, len(pn_tokens | k_tokens))
             jaccard  = inter / union
@@ -5515,6 +5526,31 @@ def _bepro_ok(stats: dict) -> dict:
     return stats if stats and stats.get("_complet") else None
 
 
+SCORES_MATCHS_PATH = os.path.join("data", "scores_matchs.json")
+
+
+def load_scores_matchs() -> dict:
+    """Scores saisis à la main pour les matchs Bepro (Bepro n'exporte pas les buts
+    adverses ; le site de la FFF bloque les accès automatiques) : {"AAAA-MM-JJ|U19": "2-1"},
+    score du point de vue du Paris FC."""
+    try:
+        with open(SCORES_MATCHS_PATH, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def save_scores_matchs(scores: dict) -> bool:
+    try:
+        os.makedirs(os.path.dirname(SCORES_MATCHS_PATH), exist_ok=True)
+        with open(SCORES_MATCHS_PATH, "w", encoding="utf-8") as f:
+            json.dump(scores, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        _warn(f"Scores : enregistrement impossible → {e}")
+        return False
+
+
 def bepro_only_matches(tac_files: list) -> list:
     """Matchs couverts par un export Bepro mais sans fichier Sportscode (même date, même
     catégorie) : pseudo-fichiers tactiques pour qu'ils apparaissent dans le rapport individuel
@@ -5554,20 +5590,24 @@ def bepro_only_matches(tac_files: list) -> list:
         adv = away if re.search(r"paris\s*fc", home, re.IGNORECASE) else home
         adv = re.sub(r"\s+U\d{2}\b.*$", "", adv).strip() or adv
         joueuses = []
-        # « 4 Player » : joueuse non nommée dans Bepro (numéro seul) — écartée.
+        # « Player 4 » : joueuse non nommée dans Bepro et absente de la table n° → nom
+        # (bepro_utils.BEPRO_JOUEUSES_SANS_NOM / data/bepro_noms.json) — écartée.
+        from bepro_utils import est_sans_nom
         for pn in sorted({p for p in v["df"]["player"].dropna().unique()
-                          if str(p).strip() and not re.fullmatch(r"\d+\s+Player", str(p).strip(), re.IGNORECASE)}):
+                          if str(p).strip() and not est_sans_nom(p)}):
             canon = None
             if ref is not None:
                 c, statut, _ = map_player_name(pn, *ref, cutoff_fuzzy=0.90)
                 canon = nettoyer_nom_joueuse(c) if statut != "unmatched" and c else None
-            if not canon:  # hors référentiel : « Prénom Nom » → « NOM Prénom »
+            if not canon:  # hors référentiel : Bepro écrit « Prénom Nom [Nom] » → « NOM [NOM] Prénom »
                 toks = str(pn).split()
-                canon = f"{toks[-1].upper()} {' '.join(toks[:-1])}".strip() if len(toks) > 1 else str(pn)
+                canon = f"{' '.join(toks[1:]).upper()} {toks[0]}".strip() if len(toks) > 1 else str(pn)
             joueuses.append(canon)
         d = pd.Timestamp(info["date"])
         y = d.year if d.month >= 7 else d.year - 1
+        _score = load_scores_matchs().get(f"{d:%Y-%m-%d}|U{cat}", "")
         out.append({
+            "score": _score,
             "filename": f"BEPRO {d:%Y-%m-%d} {home} vs {away}",
             "date": d, "journee": "", "adversaire": adv,
             "competition": f"U{cat} Bepro" if cat else "Bepro",
@@ -5585,7 +5625,7 @@ def get_bepro_kpi_scores(match_rows: list, player: str, gps_match_df=None) -> di
     chaque joueuse quand il est connu (comme collect_data). {} si un des matchs n'a pas
     d'export Bepro ou si la joueuse n'y figure pas — l'appelant garde alors Sportscode."""
     try:
-        from bepro_utils import bepro_kpi_inputs, find_bepro_match, match_player_name
+        from bepro_utils import bepro_kpi_inputs, bepro_minutes, find_bepro_match, match_player_name
         bepro = _load_bepro_cached(_bepro_folder_signature())
         if not bepro or not match_rows:
             return {}
@@ -5602,15 +5642,17 @@ def get_bepro_kpi_scores(match_rows: list, player: str, gps_match_df=None) -> di
             inp["__team_deseq_total"] = float(inp["__deseq"].sum())
             num = [c for c in inp.columns if c not in ("Player", "__team_deseq_total")]
             inp[num] = inp[num].astype(float)
-            if gps_match_df is not None and not getattr(gps_match_df, "empty", True):
-                for i, pn in inp["Player"].items():
+            for i, pn in inp["Player"].items():
+                # Temps joué Bepro (même temps que celui affiché dans le rapport), repli GPS
+                tp = bepro_minutes(bdf, pn)
+                if not tp and gps_match_df is not None and not getattr(gps_match_df, "empty", True):
                     try:
                         gs = get_gps_match_summary_for_player(gps_match_df, pn, match_date=pd.Timestamp(r.get("date")))
                         tp = float((gs or {}).get("duration_min") or 0)
                     except Exception:
                         tp = 0.0
-                    if tp > 0:
-                        inp.loc[i, num] = inp.loc[i, num] * (90.0 / tp)
+                if tp > 0:
+                    inp.loc[i, num] = inp.loc[i, num] * (90.0 / tp)
             k = create_kpis(create_metrics(inp))
             nm = match_player_name(player, k["Player"].tolist())
             if not nm:
@@ -6881,7 +6923,9 @@ def compute_tactical_stats(df_tactic, player_name):
 
     # LOCALISATION — normalisation coordonnées Sportscode (1-80) → SVG (0-100 × 0-68)
     locs = []
-    for _, r in d.iterrows():
+    # Mêmes séquences que « ballons joués » (_avec_ballon), sinon plus de ballons localisés
+    # sous la heatmap que de ballons joués affichés en haut à gauche.
+    for _, r in d[_avec_ballon].iterrows():
         try:
             _i = _inst(r)
             x = _norm_x(str(r.get("X_localisation","")).split(",")[0].strip(), _i)
@@ -9878,6 +9922,12 @@ def build_tactical_report_html(
         tps_sub = f"Cumul GPS · {n_gps}/{n_matchs} match{'s' if n_matchs > 1 else ''}"
         if tps and n_gps:
             tps_sub += f" · moy. {int(round(tps / n_gps))} min"
+    # Matchs Bepro : temps joué Bepro (entrée → sortie d'après les actions), plus proche de
+    # ce que les joueuses voient sur Bepro que le temps de présence GPS.
+    if bepro_stats and bepro_stats.get("temps_jeu_min"):
+        tps = float(bepro_stats["temps_jeu_min"])
+        tps_txt = _fmt_int(tps)
+        tps_sub = "Temps joué · Bepro" if n_matchs <= 1 else f"Cumul Bepro · {n_matchs} matchs · moy. {int(round(tps / n_matchs))} min"
 
     # ── Contexte match ────────────────────────────────────────────────────────
     adversaire = mi.get("adversaire", "") or ""
@@ -9933,7 +9983,7 @@ def build_tactical_report_html(
                     f'<div class="hs">{_ml}</div>')
     else:
         _sp = [p.strip() for p in re.split(r"[–-]", score)] if score else []
-        if len(_sp) == 2 and all(_sp):
+        if len(_sp) == 2 and all(x.isdigit() for x in _sp):  # « ? – ? » (score inconnu) → « vs »
             _score_html = f'<span class="sc">{_sp[0]}</span> - <span class="sc">{_sp[1]}</span>'
         else:
             _score_html = "vs"
@@ -10050,7 +10100,9 @@ def build_tactical_report_html(
                if _sp_b64 else '<div class="gn">Scores KPI non disponibles pour ce match.</div>')
             + '</div>'
         )
-        _kv = sorted([(k, _ks[k]) for k in REPORT_SPIDER_KPIS if k in _ks], key=lambda t: -t[1])
+        # « Top 3 points forts / Top 2 axes de progression » retirés à la demande du staff
+        # (07/10/2026 : un classement relatif faisait ressortir un 46 comme point fort).
+        _kv = []
         if len(_kv) >= 4:
             _top = "".join(f'<div class="tr"><span class="tn">{i + 1}</span><span>{k}</span><b>{int(round(v))}</b></div>'
                            for i, (k, v) in enumerate(_kv[:3]))
@@ -10096,7 +10148,7 @@ body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exa
 .rl{{font-size:12.5px;color:#E6EEF8;}}
 .rs{{font-size:9.5px;color:#8FA9CC;margin-left:4px;}}
 .rv{{font-family:Unbounded,sans-serif;font-size:15.5px;font-weight:700;color:#FFF;white-space:nowrap;}}
-.prof .rv{{font-size:13.5px;}}
+.prof .rv{{font-size:12.5px;white-space:normal;text-align:right;line-height:1.25;max-width:64%;}} .prof .pc{{white-space:nowrap;display:block;}}
 .pc{{font-family:Inter,sans-serif;font-size:11px;font-weight:500;color:#9FD8F2;margin-left:4px;}}
 .note{{font-size:9.5px;color:#8FA9CC;margin-top:3px;}}
 .cells{{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;}}
@@ -10110,7 +10162,7 @@ body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exa
 .g-heat .panel{{background:#FFF;padding:4px;}}
 .g-heat .panel img{{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;border-radius:4px;}}
 .gcol>.card{{flex-basis:0;}}
-.g-spider{{flex:1;}}
+.g-spider{{flex:1;justify-content:center;}}
 .gt{{font-size:12.5px;color:#FFF;margin-bottom:8px;}}
 .gt b{{font-weight:700;}}
 .panel{{background:#FFF;border-radius:4px;padding:6px;}}
@@ -10147,11 +10199,10 @@ body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exa
   <div class="right">
     <div class="sect">GRAPH</div>
     <div class="graph">
-      <div class="pcard">{photo}</div>
-      <div class="gcol">{prof_card}</div>
-      <div class="gcol">{forces_cards}</div>
-      <div style="grid-column:1 / span 2;display:flex;min-height:0;">{heat_card}</div>
-      <div class="gcol">{spider_card}</div>
+      <div class="pcard" style="grid-column:1;grid-row:1;">{photo}</div>
+      <div class="gcol" style="grid-column:2;grid-row:1;">{prof_card}</div>
+      <div class="gcol" style="grid-column:3;grid-row:1 / span 2;">{forces_cards}{spider_card}</div>
+      <div style="grid-column:1 / span 2;grid-row:2;display:flex;min-height:0;">{heat_card}</div>
     </div>
   </div>
 </div>
@@ -10216,7 +10267,9 @@ def _aggregate_match_reports(selected_rows: list, player: str, gps_match_df) -> 
             "adversaire": _r.get("adversaire") or _ctx.get("adversaire", ""),
             "journee": _r.get("journee") or _ctx.get("journee", ""),
             "saison": _r.get("saison", ""),
-            "score": f"{_ctx.get('score_pfc', '?')} – {_ctx.get('score_adv', '?')}",
+            # Score saisi (matchs Bepro sans Sportscode), sinon buts tagués dans Sportscode
+            "score": (_r["tac_obj"].get("score") or "").replace("-", " – ")
+                     or f"{_ctx.get('score_pfc', '?')} – {_ctx.get('score_adv', '?')}",
             "lieu": _ctx.get("lieu", ""),
             "competition": _ctx.get("competition", ""),
             "date": _r.get("date"),
@@ -13689,6 +13742,45 @@ def _importer_un_csv(service, nom: str, contenu: bytes, typ: str, remplacer: boo
     return True, " · ".join(x for x in [f"{_verbe} ({os.path.relpath(chemin, DATA_FOLDER)})", drive_msg] if x)
 
 
+def render_scores_bepro():
+    """Score des matchs Bepro (Bepro n'exporte que les actions du Paris FC, donc pas les buts
+    adverses ; le site de la FFF bloque les accès automatiques). Affiché dans l'en-tête du
+    rapport individuel des matchs Bepro sans fichier Sportscode."""
+    try:
+        bepro = _load_bepro_cached(_bepro_folder_signature())
+    except Exception:
+        bepro = {}
+    if not bepro:
+        return
+    scores = load_scores_matchs()
+    st.markdown("**⚽ Scores des matchs Bepro** — Paris FC en premier (ex. `2-1`)")
+    lignes = []
+    for v in sorted(bepro.values(), key=lambda v: v["info"]["date"] or pd.Timestamp(0), reverse=True):
+        info = v["info"]
+        if info.get("date") is None:
+            continue
+        m_ = re.search(r"U(\d{2})", info.get("home", "") + " " + info.get("away", ""))
+        cle = f"{info['date']:%Y-%m-%d}|U{m_.group(1) if m_ else ''}"
+        lignes.append({"Clé": cle, "Date": info["date"].strftime("%d/%m/%Y"),
+                       "Match": f"{info['home']} vs {info['away']}", "Score PFC-ADV": scores.get(cle, "")})
+    ed = st.data_editor(pd.DataFrame(lignes), hide_index=True, width="stretch", key="scores_bepro_ed",
+                        disabled=["Clé", "Date", "Match"], column_config={"Clé": None})
+    if st.button("💾 Enregistrer les scores", key="scores_bepro_save"):
+        ok = True
+        for _, r in ed.iterrows():
+            sc = str(r["Score PFC-ADV"] or "").strip().replace("–", "-").replace(" ", "")
+            if sc and not re.fullmatch(r"\d{1,2}-\d{1,2}", sc):
+                st.error(f"{r['Match']} : score « {r['Score PFC-ADV']} » invalide (format 2-1).")
+                ok = False
+                continue
+            if sc:
+                scores[r["Clé"]] = sc
+            else:
+                scores.pop(r["Clé"], None)
+        if ok and save_scores_matchs(scores):
+            st.success("Scores enregistrés.")
+
+
 def render_import_bepro():
     """Dépôt des exports Bepro (Stats → Télécharger → « JSON des Raw Event ») : le zip est
     vérifié (lisible, date et équipes dans le nom), copié dans data/bepro et, si
@@ -13898,6 +13990,7 @@ def render_import_csv():
 
     st.divider()
     render_import_bepro()
+    render_scores_bepro()
 
     st.divider()
     st.subheader("🔁 Fichiers en double")

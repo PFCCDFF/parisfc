@@ -38,6 +38,42 @@ import pandas as pd
 
 BEPRO_FOLDER = os.path.join("data", "bepro")
 
+# Joueuses exportées sans nom par Bepro (« Player 4 ») : (date du match, n° de maillot) → nom
+# au format Bepro « Prénom Nom ». Complétable sans toucher au code via data/bepro_noms.json :
+# {"2026-09-27|4": "Chloe Niama Mahoukou"}.
+BEPRO_JOUEUSES_SANS_NOM = {("2026-09-27", "4"): "Chloe Niama Mahoukou"}
+_SANS_NOM = re.compile(r"(player\s*\d+|\d+\s*player)", re.IGNORECASE)
+
+
+def _noms_manquants() -> dict:
+    out = dict(BEPRO_JOUEUSES_SANS_NOM)
+    try:
+        with open(os.path.join("data", "bepro_noms.json"), encoding="utf-8") as f:
+            for k, v in json.load(f).items():
+                d, n = str(k).split("|", 1)
+                out[(d.strip(), n.strip())] = str(v).strip()
+    except Exception:
+        pass
+    return out
+
+
+def nommer_joueuses_sans_nom(df: pd.DataFrame, date) -> pd.DataFrame:
+    """Remplace « Player 4 » par le nom connu pour ce match et ce numéro, s'il existe."""
+    if df is None or df.empty or date is None:
+        return df
+    table = _noms_manquants()
+    d = pd.Timestamp(date).strftime("%Y-%m-%d")
+    mask = df["player"].astype(str).str.strip().str.fullmatch(_SANS_NOM.pattern, case=False)
+    if mask.any():
+        df = df.copy()
+        df.loc[mask, "player"] = [table.get((d, str(sh).strip()), p)
+                                  for p, sh in zip(df.loc[mask, "player"], df.loc[mask, "shirt"])]
+    return df
+
+
+def est_sans_nom(name: str) -> bool:
+    return bool(_SANS_NOM.fullmatch(str(name or "").strip()))
+
 _SVG_W, _SVG_H = 100.0, 68.0
 
 # Ballons touchés/joués (même règle que le tagging Sportscode, compute_tactical_stats) :
@@ -163,7 +199,9 @@ def load_bepro_folder(folder: str = BEPRO_FOLDER) -> Dict[str, dict]:
         if not ev:
             continue
         name = chosen[0]
-        out[name] = {"info": parse_bepro_filename(name), "key": key, "df": bepro_events_frame(ev, name)}
+        info = parse_bepro_filename(name)
+        out[name] = {"info": info, "key": key,
+                     "df": nommer_joueuses_sans_nom(bepro_events_frame(ev, name), info.get("date"))}
     return out
 
 
@@ -213,6 +251,30 @@ def match_player_name(player: str, bepro_names) -> Optional[str]:
     surname = _norm(str(player).split()[0]) if str(player).split() else ""
     hits = [n for n in names if surname and surname in _norm(n).split()]
     return hits[0] if len(hits) == 1 else None
+
+
+# ── Temps de jeu ─────────────────────────────────────────────────────────────
+
+def bepro_minutes(df: pd.DataFrame, player: str, marge_min: float = 5.0) -> float:
+    """Temps joué estimé depuis l'export (minutes), match par match puis cumulé : début du
+    match si la 1re action a lieu dans les `marge_min` premières minutes, sinon minute de
+    la 1re action (entrée en jeu) ; fin du match si la dernière action a lieu dans les
+    `marge_min` dernières minutes, sinon minute de la dernière action (sortie). Plus proche
+    du temps affiché sur Bepro que le temps GPS (présence sur le terrain)."""
+    if df is None or df.empty:
+        return 0.0
+    total = 0.0
+    for _mid, g in df.groupby("match_id") if "match_id" in df.columns else [("", df)]:
+        t = pd.to_numeric(g["time_ms"], errors="coerce").dropna()
+        tp = pd.to_numeric(g.loc[g["player"] == player, "time_ms"], errors="coerce").dropna()
+        if t.empty or tp.empty:
+            continue
+        debut, fin = t.min(), t.max()
+        a, b = tp.min(), tp.max()
+        start = debut if a - debut <= marge_min * 60000 else a
+        end = fin if fin - b <= marge_min * 60000 else b
+        total += max(0.0, (end - start) / 60000.0)
+    return round(total, 1)
 
 
 # ── Statistiques ─────────────────────────────────────────────────────────────
@@ -296,13 +358,20 @@ def compute_bepro_player_stats(df: pd.DataFrame, player: str) -> dict:
                     s["aer_ok" if won else "aer_ko"] += 1
                 else:  # Physical Duels, Loose Ball Duels, duels sans type (fautes)
                     s["sol_ok" if won else "sol_ko"] += 1
+            elif en == "Tackles":
+                # Tacle = duel défensif au sol (comme dans les indicateurs, bepro_kpi_inputs)
+                won = out.startswith("Tackle Succeeded")
+                s["duels_gagnes" if won else "duels_perdus"] += 1
+                s["sol_ok" if won else "sol_ko"] += 1
         touche = bool(names & TOUCH_EVENTS) or any(
             ev["event_name"] == "Duels" and (ev.get("property") or {}).get("Outcome") == "Succeeded"
             for ev in r["events"])
         if touche:
             s["ballons"] += 1
-        if has_ball and r["x"] is not None:
-            locs.append({"x": r["x"], "y": r["y"]})
+            # Heatmap = mêmes actions que « ballons joués » (sinon plus de ballons localisés
+            # que de ballons joués : réceptions, récupérations… comptées en plus)
+            if r["x"] is not None:
+                locs.append({"x": r["x"], "y": r["y"]})
         if lost:
             s["pertes"] += 1
 
@@ -311,6 +380,7 @@ def compute_bepro_player_stats(df: pd.DataFrame, player: str) -> dict:
     s["pass_breakdown"] = pb
     s["nom_bepro"] = name
     s["n_matchs_bepro"] = int(d["match_id"].nunique()) if "match_id" in d.columns else 1
+    s["temps_jeu_min"] = bepro_minutes(df, name)
     return s
 
 

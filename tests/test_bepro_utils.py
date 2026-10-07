@@ -103,7 +103,7 @@ class TestStats(unittest.TestCase):
         # Ballons joués : passe, tir, interception, dribble ou duel gagné (2 passes,
         # réception+dribble, tir, duel aérien gagné) ; le duel perdu est exclu
         self.assertEqual(s["ballons"], 5)
-        self.assertEqual(len(s["locs"]), 4)
+        self.assertEqual(len(s["locs"]), 5)   # heatmap = mêmes actions que ballons joués
         # Ballons perdus : passe ratée + dribble raté
         self.assertEqual(s["pertes"], 2)
 
