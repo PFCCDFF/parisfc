@@ -10072,7 +10072,6 @@ def build_tactical_report_html(
         heat_card = (
             f'<div class="gcard g-heat"><div class="gt"><b>Heatmap</b> · avec ballon</div>'
             + (f'<div class="panel"><img src="{_hm}"/></div>'
-               f'<div class="gn">{len(locs)} ballons localisés</div>'
                if _hm else '<div class="gn">Aucune localisation disponible.</div>')
             + '</div>'
         )
@@ -10148,13 +10147,13 @@ body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exa
 .rl{{font-size:12.5px;color:#E6EEF8;}}
 .rs{{font-size:9.5px;color:#8FA9CC;margin-left:4px;}}
 .rv{{font-family:Unbounded,sans-serif;font-size:15.5px;font-weight:700;color:#FFF;white-space:nowrap;}}
-.prof .rv{{font-size:12.5px;white-space:normal;text-align:right;line-height:1.25;max-width:64%;}} .prof .pc{{white-space:nowrap;display:block;}}
+.prof{{overflow:hidden;}} .prof .rv{{font-size:13px;white-space:normal;text-align:right;line-height:1.25;max-width:68%;}} .prof .pc{{white-space:nowrap;display:block;}}
 .pc{{font-family:Inter,sans-serif;font-size:11px;font-weight:500;color:#9FD8F2;margin-left:4px;}}
 .note{{font-size:9.5px;color:#8FA9CC;margin-top:3px;}}
 .cells{{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;}}
 .cl{{font-size:10.5px;color:#E6EEF8;line-height:1.25;min-height:26px;}}
 .cv{{font-family:Unbounded,sans-serif;font-size:15px;font-weight:700;color:#FFF;margin-top:2px;}}
-.graph{{display:grid;grid-template-columns:minmax(0,.72fr) minmax(0,1.08fr) minmax(0,1fr);grid-template-rows:1fr auto;gap:12px;flex:1;min-height:0;}}
+.graph{{display:grid;grid-template-columns:minmax(0,.72fr) minmax(0,1.08fr) minmax(0,1fr);grid-template-rows:minmax(0,.9fr) minmax(0,1.1fr);gap:12px;flex:1;min-height:0;}}
 .gcol{{display:flex;flex-direction:column;gap:10px;min-height:0;}}
 .gcard{{background:rgba(12,40,92,.48);border:1px solid rgba(255,255,255,.16);border-top:3px solid #1FA8E0;border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;min-height:0;}}
 .g-heat{{flex:1;}}
@@ -10162,7 +10161,7 @@ body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exa
 .g-heat .panel{{background:#FFF;padding:4px;}}
 .g-heat .panel img{{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;border-radius:4px;}}
 .gcol>.card{{flex-basis:0;}}
-.g-spider{{flex:1;justify-content:center;}}
+.g-spider{{flex:1;}} .g-spider .panel{{margin:auto 0;}}
 .gt{{font-size:12.5px;color:#FFF;margin-bottom:8px;}}
 .gt b{{font-weight:700;}}
 .panel{{background:#FFF;border-radius:4px;padding:6px;}}
@@ -10197,12 +10196,11 @@ body{{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exa
     </div>
   </div>
   <div class="right">
-    <div class="sect">GRAPH</div>
     <div class="graph">
       <div class="pcard" style="grid-column:1;grid-row:1;">{photo}</div>
-      <div class="gcol" style="grid-column:2;grid-row:1;">{prof_card}</div>
-      <div class="gcol" style="grid-column:3;grid-row:1 / span 2;">{forces_cards}{spider_card}</div>
+      <div class="gcol" style="grid-column:2 / span 2;grid-row:1;">{prof_card}</div>
       <div style="grid-column:1 / span 2;grid-row:2;display:flex;min-height:0;">{heat_card}</div>
+      <div class="gcol" style="grid-column:3;grid-row:2;">{forces_cards}{spider_card}</div>
     </div>
   </div>
 </div>
