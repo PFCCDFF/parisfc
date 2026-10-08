@@ -5680,6 +5680,41 @@ def get_bepro_kpi_scores(match_rows: list, player: str, gps_match_df=None) -> di
         return {}
 
 
+def get_compo_minutes(pfc_kpi_all, player: str, match_rows: list) -> Optional[float]:
+    """Temps de jeu d'après la composition codée dans Sportscode (colonne « Temps de jeu (en
+    minutes) » des KPI, calculée par create_data) — méthode d'avant le GPS, utilisée en repli
+    quand un match n'a ni GPS ni Bepro (ex. FC Mantois J3 U23). Temps EFFECTIF (séquences
+    taguées) : ~50' pour un match complet. Somme sur les matchs sélectionnés, None si absent."""
+    if pfc_kpi_all is None or not isinstance(pfc_kpi_all, pd.DataFrame) or pfc_kpi_all.empty \
+            or "Player" not in pfc_kpi_all.columns or "Temps de jeu (en minutes)" not in pfc_kpi_all.columns:
+        return None
+    _names = pfc_kpi_all["Player"].astype(str)
+    _target = nettoyer_nom_joueuse(player or "")
+    df = pfc_kpi_all[_names.apply(nettoyer_nom_joueuse) == _target]
+    if df.empty:
+        _tk = nom_tokens(player or "")
+        df = pfc_kpi_all[_names.apply(lambda n: len(nom_tokens(n) & _tk) >= 2)]
+    if df.empty or "Date" not in df.columns:
+        return None
+    _dts = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce").dt.normalize()
+    total, n = 0.0, 0
+    for r in match_rows:
+        d = pd.to_datetime(r.get("date"), errors="coerce")
+        if pd.isna(d):
+            continue
+        m_ = df[_dts == d.normalize()]
+        if len(m_) > 1 and r.get("adversaire") and "Adversaire" in m_.columns:
+            _an = normalize_str(r.get("adversaire"))
+            m2 = m_[m_["Adversaire"].astype(str).apply(lambda a: _an in normalize_str(a) or normalize_str(a) in _an)]
+            if not m2.empty:
+                m_ = m2
+        if not m_.empty:
+            v = pd.to_numeric(m_["Temps de jeu (en minutes)"].iloc[0], errors="coerce")
+            if pd.notna(v) and v > 0:
+                total += float(v); n += 1
+    return round(total, 1) if n else None
+
+
 def report_kpi_scores(pfc_kpi_all, player: str, match_rows: list, gps_match_df=None) -> dict:
     """Indicateurs de l'araignée du rapport individuel : Bepro si tous les matchs sélectionnés
     ont un export Bepro (même source que les stats techniques), sinon Sportscode (pfc_kpi)."""
@@ -9865,6 +9900,7 @@ def build_tactical_report_html(
     kpi_scores: dict = None,
     tactic_dfs: list = None,
     bepro_stats: dict = None,
+    temps_compo: float = None,
 ) -> str:
     """Rapport de match individuel A4 paysage (v5, charte navy) :
     1. Identité (nom, date de naissance, pied fort, postes 1/2) + contexte (adversaire/score
@@ -9999,10 +10035,17 @@ def build_tactical_report_html(
             tps_sub += f" · moy. {int(round(tps / n_gps))} min"
     # Matchs Bepro : temps joué Bepro (entrée → sortie d'après les actions), plus proche de
     # ce que les joueuses voient sur Bepro que le temps de présence GPS.
+    _tps_compo = False
     if bepro_stats and bepro_stats.get("temps_jeu_min"):
         tps = float(bepro_stats["temps_jeu_min"])
         tps_txt = _fmt_int(tps)
         tps_sub = "Temps joué · Bepro" if n_matchs <= 1 else f"Cumul Bepro · {n_matchs} matchs · moy. {int(round(tps / n_matchs))} min"
+    elif (tps is None or not tps) and temps_compo:
+        # Ni GPS ni Bepro : temps effectif d'après la composition Sportscode (méthode d'avant)
+        tps = float(temps_compo)
+        tps_txt = _fmt_int(tps)
+        tps_sub = "Temps effectif · composition Sportscode"
+        _tps_compo = True
 
     # ── Contexte match ────────────────────────────────────────────────────────
     adversaire = mi.get("adversaire", "") or ""
@@ -10073,7 +10116,7 @@ def build_tactical_report_html(
     gen = ""
     if True:
         gen += row("Temps de jeu", f"{tps_txt}'" if tps is not None else "—")
-        if n_matchs > 1:
+        if n_matchs > 1 or _tps_compo:
             gen += f'<div class="note">{tps_sub}</div>'
     if _show("Buts", "Passes décisives"):
         gen += row("Buts / Passes décisives", f"{t_but} / {assists}")
@@ -10808,6 +10851,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                         gps_match_df=gps_match_df,
                         player_info=get_player_demographics(sel_tac_player),
                         kpi_scores=report_kpi_scores(st.session_state.get("pfc_kpi_all"), sel_tac_player, [sel_row], gps_match_df),
+                        temps_compo=get_compo_minutes(st.session_state.get("pfc_kpi_all"), sel_tac_player, [sel_row]),
                         bepro_stats=_bepro_ok(get_bepro_stats_for_matches([sel_row], sel_tac_player)),
                     )
                     st.iframe(html_report, height=820)
@@ -12495,6 +12539,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             photo_b64=_pb64, match_info=_mi, selected_indicators=_mr_selected_indicators,
                             player_info=get_player_demographics(_sp),
                             kpi_scores=report_kpi_scores(st.session_state.get("pfc_kpi_all"), _sp, _srs, _gps_match_df),
+                            temps_compo=get_compo_minutes(st.session_state.get("pfc_kpi_all"), _sp, _srs),
                             tactic_dfs=[r["tac_obj"].get("df") for r in _srs] if len(_srs) > 1 else None,
                             bepro_stats=_bepro_ok(get_bepro_stats_for_matches(_srs, _sp)))
                         _html_js = json.dumps(_html).replace('</script', '<\\/script')
