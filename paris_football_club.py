@@ -106,6 +106,12 @@ PERMISSIONS_FILENAME = "Classeurs permissions streamlit.xlsx"
 EDF_JOUEUSES_FILENAME = "EDF_Joueuses.xlsx"
 PASSERELLE_FILENAME = "Liste Joueuses Passerelles.xlsx"
 DONNEES_JOUEUSES_FILENAME = "Données joueuses.xlsx"  # fiche administrative de tout l'effectif (data/)
+FICHES_JOUEUSES_PATH = os.path.join("data", "fiches_joueuses.json")  # fiches modifiées dans Gestion (prioritaires)
+POSTES_JOUEUSES = ["Gardienne de But", "Défenseure Centrale Droit", "Défenseure Centrale Gauche",
+                   "Latérale Droit", "Latérale Gauche", "Milieu Défensif", "Milieu Offensive Droit",
+                   "Milieu Offensive Gauche", "Attaquante", "Attaquante Excentrée Droit",
+                   "Attaquante Excentrée Gauche"]
+LATERALITES = ["Droitière", "Gauchère", "Ambidextre"]
 REFERENTIEL_FILENAME = "Noms Prénoms Paris FC.xlsx"
 TEMPS_JEU_RESCUE_FILENAME = "SuiviPerformanceJoueuse.xlsx"  # sauvetage temps de jeu (feuille SuiviMatch) quand le CSV tactique n'a pas de ligne d'équipe exploitable
 OBJECTIFS_EVAL_FILENAME = "Evaluations Objectifs.csv"  # Export CSV du Google Sheet lié au Forms
@@ -9589,6 +9595,41 @@ def _load_donnees_joueuses(path: str, _mtime: float) -> dict:
     return out
 
 
+def load_fiches_joueuses() -> dict:
+    """Fiches saisies dans Gestion → Fiches joueuses : {"NOM Prénom": {"ddn", "pied", "poste1",
+    "poste2"}}. Prioritaires sur « Données joueuses.xlsx » et sur les passerelles."""
+    try:
+        with open(FICHES_JOUEUSES_PATH, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def save_fiches_joueuses(fiches: dict) -> bool:
+    try:
+        os.makedirs(os.path.dirname(FICHES_JOUEUSES_PATH), exist_ok=True)
+        with open(FICHES_JOUEUSES_PATH, "w", encoding="utf-8") as f:
+            json.dump(fiches, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        _warn(f"Fiches joueuses : enregistrement impossible → {e}")
+        return False
+
+
+def _poste_canonique(v: str) -> str:
+    """Ramène un poste saisi à la main au libellé de POSTES_JOUEUSES (« Défenseure Central
+    Droit » → « Défenseure Centrale Droit ») ; "" si non reconnaissable (« Défen »)."""
+    v = str(v or "").strip()
+    if not v:
+        return ""
+    if v in POSTES_JOUEUSES:
+        return v
+    from difflib import get_close_matches
+    _n = {normalize_str(p): p for p in POSTES_JOUEUSES}
+    m_ = get_close_matches(normalize_str(v), list(_n), n=1, cutoff=0.88)
+    return _n[m_[0]] if m_ else ""
+
+
 def get_player_demographics(player: str) -> dict:
     """Date de naissance, pied fort, postes 1/2 de la joueuse.
     Source principale : « Données joueuses.xlsx » (tout l'effectif) ; complément : fichier
@@ -9609,6 +9650,18 @@ def get_player_demographics(player: str) -> dict:
             data.update(_load_donnees_joueuses(_dj, os.path.getmtime(_dj)))  # prioritaire
     except Exception:
         pass
+    # Fiches modifiées dans l'app (Gestion → Fiches joueuses) : prioritaires sur les fichiers
+    for _k, _f in load_fiches_joueuses().items():
+        _vals = {"Date de naissance": _f.get("ddn", ""), "Pied Fort": _f.get("pied", ""),
+                 "Poste 1": _f.get("poste1", ""), "Poste 2": _f.get("poste2", "")}
+        _kn = nettoyer_nom_joueuse(_k)
+        _hit = next((dk for dk, dv in data.items()
+                     if nettoyer_nom_joueuse(f"{dv.get('Nom', '')} {dv.get('Prénom', '')}") == _kn
+                     or nettoyer_nom_joueuse(dk) == _kn), None)
+        if _hit:
+            data[_hit] = {**data[_hit], **_vals}
+        else:
+            data[_k] = {"Nom": _k, "Prénom": "", **_vals}
     if not data:
         return info
     target = nettoyer_nom_joueuse(player or "")
@@ -13762,6 +13815,113 @@ def _importer_un_csv(service, nom: str, contenu: bytes, typ: str, remplacer: boo
     return True, " · ".join(x for x in [f"{_verbe} ({os.path.relpath(chemin, DATA_FOLDER)})", drive_msg] if x)
 
 
+def joueuses_saison(tac_files: list) -> list:
+    """Joueuses actives sur la saison en cours : effectif de « Données joueuses.xlsx », fiches
+    déjà saisies dans l'app, et joueuses vues dans les matchs de la saison (Sportscode, Bepro).
+    Une seule entrée par joueuse (variantes d'orthographe rattachées, cf. sous_ensemble_flou)."""
+    from gps_compilation import sous_ensemble_flou
+    _t = pd.Timestamp.today()
+    _y = _t.year if _t.month >= 7 else _t.year - 1
+    _code = f"{_y % 100:02d}{(_y + 1) % 100:02d}"
+    noms = []
+    try:
+        _dj = os.path.join(DATA_FOLDER, DONNEES_JOUEUSES_FILENAME)
+        if not os.path.exists(_dj):
+            _dj = find_local_file_by_normalized_name(DATA_FOLDER, DONNEES_JOUEUSES_FILENAME) or ""
+        if _dj and os.path.exists(_dj):
+            noms += [f"{v['Nom']} {v['Prénom']}".strip() for v in _load_donnees_joueuses(_dj, os.path.getmtime(_dj)).values()]
+    except Exception:
+        pass
+    noms += list(load_fiches_joueuses().keys())
+    try:
+        _matchs = [t for t in tac_files if _code in str(t.get("filename", ""))] + bepro_only_matches(tac_files)
+    except Exception:
+        _matchs = [t for t in tac_files if _code in str(t.get("filename", ""))]
+    for t in _matchs:
+        df = t.get("df")
+        if df is None or "Row" not in df.columns:
+            continue
+        _rows = df["Row"].dropna().astype(str).unique()
+        # Noms d'équipe (« Angers sco », « Red Star ») : adversaire du match, Teamersaire,
+        # et équipes des lignes « Transition def <équipe> ».
+        _equipes = {normalize_str(t.get("adversaire") or "")}
+        _equipes |= {normalize_str(r.replace("Transition def", "")) for r in _rows if r.startswith("Transition def")}
+        if "Teamersaire" in df.columns:
+            _equipes |= {normalize_str(x.split(",")[0]) for x in df["Teamersaire"].dropna().astype(str).unique()}
+        _equipes.discard("")
+        noms += [r for r in _rows
+                 if looks_like_player(r) and len(r.split()) >= 2 and normalize_str(r) not in _equipes
+                 and not any(k in r for k in ["Transition", "Carton", "Paris FC", "Sortie", "def "])]
+    out = []
+    for n in noms:
+        n = " ".join(str(n).split())
+        tk = nettoyer_nom_joueuse(n).split()
+        if not tk:
+            continue
+        if any(nettoyer_nom_joueuse(o) == nettoyer_nom_joueuse(n)
+               or sous_ensemble_flou(tk, nettoyer_nom_joueuse(o).split())
+               or sous_ensemble_flou(nettoyer_nom_joueuse(o).split(), tk) for o in out):
+            continue
+        out.append(n)
+    return sorted(out, key=lambda x: nettoyer_nom_joueuse(x))
+
+
+def render_fiches_joueuses():
+    """Gestion → Fiches joueuses : date de naissance, latéralité et postes des joueuses de la
+    saison, modifiables directement. Enregistrées dans data/fiches_joueuses.json, prioritaires
+    sur « Données joueuses.xlsx » pour les rapports individuels."""
+    st.subheader("📝 Fiches joueuses — saison en cours")
+    st.caption("Modifier directement dans le tableau puis « Enregistrer ». Les fiches enregistrées ici sont "
+               "prioritaires sur « Données joueuses.xlsx » du Drive et s'appliquent tout de suite aux rapports.")
+    try:
+        noms = joueuses_saison(get_tactical_files())
+    except Exception as e:
+        st.error(f"Liste des joueuses indisponible : {e}")
+        return
+    lignes = []
+    for n in noms:
+        d = get_player_demographics(n)
+        _dob = pd.to_datetime(d.get("ddn", ""), dayfirst=True, errors="coerce")
+        _pied = d.get("pied", "") if d.get("pied", "") in LATERALITES else ""
+        lignes.append({"Joueuse": n, "Date de naissance": _dob.date() if pd.notna(_dob) else None,
+                       "Latéralité": _pied or None,
+                       "Poste 1": _poste_canonique(d.get("poste1", "")) or None,
+                       "Poste 2": _poste_canonique(d.get("poste2", "")) or None})
+    df0 = pd.DataFrame(lignes)
+    _manq = int(df0[["Date de naissance", "Latéralité", "Poste 1"]].isna().any(axis=1).sum()) if not df0.empty else 0
+    st.markdown(f"**{len(df0)} joueuses** · {_manq} fiche(s) incomplète(s)")
+    ed = st.data_editor(
+        df0, hide_index=True, width="stretch", key="fiches_joueuses_ed", disabled=["Joueuse"],
+        column_config={
+            "Date de naissance": st.column_config.DateColumn(format="DD/MM/YYYY"),
+            "Latéralité": st.column_config.SelectboxColumn(options=LATERALITES),
+            "Poste 1": st.column_config.SelectboxColumn(options=POSTES_JOUEUSES),
+            "Poste 2": st.column_config.SelectboxColumn(options=POSTES_JOUEUSES),
+        })
+    c1, c2 = st.columns([1, 1])
+    if c1.button("💾 Enregistrer les fiches", type="primary", key="fiches_joueuses_save"):
+        fiches = load_fiches_joueuses()
+        n_mod = 0
+        for (_, a), (_, b) in zip(df0.iterrows(), ed.iterrows()):
+            if all((pd.isna(a[c]) and pd.isna(b[c])) or a[c] == b[c] for c in df0.columns):
+                continue
+            _ddn = pd.to_datetime(b["Date de naissance"], errors="coerce")
+            fiches[b["Joueuse"]] = {
+                "ddn": _ddn.strftime("%d/%m/%Y") if pd.notna(_ddn) else "",
+                "pied": b["Latéralité"] or "", "poste1": b["Poste 1"] or "", "poste2": b["Poste 2"] or ""}
+            n_mod += 1
+        if n_mod and save_fiches_joueuses(fiches):
+            st.success(f"{n_mod} fiche(s) enregistrée(s).")
+        elif not n_mod:
+            st.info("Aucune modification.")
+    _x = io.BytesIO()
+    with pd.ExcelWriter(_x, engine="openpyxl") as _w:
+        ed.to_excel(_w, index=False, sheet_name="Fiches joueuses")
+    c2.download_button("⬇️ Télécharger (Excel)", _x.getvalue(), file_name="Fiches joueuses.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       key="fiches_joueuses_dl")
+
+
 def render_scores_bepro():
     """Score des matchs Bepro (Bepro n'exporte que les actions du Paris FC, donc pas les buts
     adverses ; le site de la FFF bloque les accès automatiques). Affiché dans l'en-tête du
@@ -14291,7 +14451,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
         if not check_permission(user_profile, "all", permissions):
             st.warning("⛔ Accès réservé aux administrateurs.")
         else:
-            tab_ref, tab_perms, tab_jouеuses, tab_admin, tab_passerelles, tab_import = st.tabs(["📋 Référentiel joueuses", "🔐 Profils & permissions", "👥 Joueuses", "🛠️ Administration", "📋 Passerelles", "📥 Import"])
+            tab_ref, tab_perms, tab_jouеuses, tab_fiches, tab_admin, tab_passerelles, tab_import = st.tabs(["📋 Référentiel joueuses", "🔐 Profils & permissions", "👥 Joueuses", "📝 Fiches joueuses", "🛠️ Administration", "📋 Passerelles", "📥 Import"])
+
+            with tab_fiches:
+                render_fiches_joueuses()
 
             with tab_import:
                 render_import_csv()
