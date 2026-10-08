@@ -13921,6 +13921,50 @@ def render_fiches_joueuses():
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        key="fiches_joueuses_dl")
 
+    # ── Photo de la joueuse ──────────────────────────────────────────────────
+    st.divider()
+    st.markdown("**📷 Photo**")
+    st.caption("Choisir la joueuse puis déposer sa photo (JPG, PNG ou HEIC d'iPhone). Elle est redressée, "
+               "convertie et associée à la joueuse en priorité sur les photos du Drive.")
+    pc1, pc2 = st.columns([1, 2])
+    with pc1:
+        _pj = st.selectbox("Joueuse", noms, key="fiches_photo_joueuse")
+        _cur = find_photo_for_player(
+            _pj, concordance=st.session_state.get("photo_concordance") or get_photo_concordance(),
+            photos_index=st.session_state.get("photos_index") or build_photos_index_local()) if _pj else None
+        _cur_b = load_photo_bytes(_cur) if _cur else None
+        if _cur_b:
+            st.image(_cur_b, width=160, caption=os.path.basename(_cur))
+        else:
+            st.info("Aucune photo pour cette joueuse.")
+    with pc2:
+        _up = st.file_uploader("Nouvelle photo", type=["jpg", "jpeg", "png", "heic", "heif", "webp"],
+                               key=f"fiches_photo_up_{st.session_state.get('_fiches_photo_n', 0)}")
+        if _up is not None and _pj:
+            try:
+                from PIL import Image as _PI, ImageOps as _PIO
+                if _up.name.lower().endswith((".heic", ".heif")):
+                    import pillow_heif
+                    pillow_heif.register_heif_opener()
+                _im = _PI.open(io.BytesIO(_up.getvalue()))
+                _im = _PIO.exif_transpose(_im).convert("RGB")  # orientation du téléphone
+                _im.thumbnail((800, 800))
+                _buf = io.BytesIO()
+                _im.save(_buf, format="JPEG", quality=90, optimize=True)
+                st.image(_buf.getvalue(), width=160, caption="Aperçu")
+                if st.button(f"💾 Enregistrer la photo de {_pj}", type="primary", key="fiches_photo_save"):
+                    # Nom propre à la fiche : jamais écrasé par la sync des photos du Drive
+                    _fn = "fiche_" + re.sub(r"[^A-Za-z0-9]+", "_", normalize_name_raw(_pj)).strip("_") + ".jpg"
+                    os.makedirs(PHOTOS_FOLDER, exist_ok=True)
+                    with open(os.path.join(PHOTOS_FOLDER, _fn), "wb") as _f:
+                        _f.write(_buf.getvalue())
+                    set_manual_photo(_pj, _fn)
+                    st.session_state["_fiches_photo_n"] = st.session_state.get("_fiches_photo_n", 0) + 1
+                    st.success(f"Photo de {_pj} enregistrée.")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Image illisible : {e}")
+
 
 def render_scores_bepro():
     """Score des matchs Bepro (Bepro n'exporte que les actions du Paris FC, donc pas les buts
