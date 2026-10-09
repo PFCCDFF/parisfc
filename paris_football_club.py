@@ -108,6 +108,8 @@ EDF_JOUEUSES_FILENAME = "EDF_Joueuses.xlsx"
 PASSERELLE_FILENAME = "Liste Joueuses Passerelles.xlsx"
 DONNEES_JOUEUSES_FILENAME = "Données joueuses.xlsx"  # fiche administrative de tout l'effectif (data/)
 FICHES_JOUEUSES_PATH = os.path.join("data", "fiches_joueuses.json")  # fiches modifiées dans Gestion (prioritaires)
+TROMBI_PATH = os.path.join("data", "trombi_joueuses.json")      # joueuses de la saison (trombinoscope importé)
+TROMBI_PHOTOS_FOLDER = os.path.join("data", "photos_trombi")    # photos extraites du trombinoscope
 POSTES_JOUEUSES = ["Gardienne de But", "Défenseure Centrale Droit", "Défenseure Centrale Gauche",
                    "Latérale Droit", "Latérale Gauche", "Milieu Défensif", "Milieu Offensive Droit",
                    "Milieu Offensive Gauche", "Attaquante", "Attaquante Excentrée Droit",
@@ -164,6 +166,8 @@ def _parquet_cache_is_valid() -> bool:
                 for f in files:
                     if f.endswith((".csv", ".xlsx", ".xls")) and not f.startswith("_cache"):
                         mtimes.append(os.path.getmtime(os.path.join(root, f)))
+        if os.path.exists(TROMBI_PATH):   # le trombi complète le référentiel des noms
+            mtimes.append(os.path.getmtime(TROMBI_PATH))
         latest_src = max(mtimes, default=0)
         return cache_ts >= latest_src
     except Exception:
@@ -1175,6 +1179,8 @@ def nettoyer_nom_joueuse(nom):
         .replace("Ä", "A")
         .replace("Ç", "C")
     )
+    # Autres accents (Ë, Ü, Û, Ñ…) : « KOUTASSILA Noëllie » doit valoir « KOUTASSILA NOELLIE »
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
     s = " ".join(s.split())
 
     # Déduplication : "NOM PRENOM NOM PRENOM" → "NOM PRENOM"
@@ -1804,6 +1810,78 @@ def set_manual_photo(player_name: str, filename: str) -> None:
     st.session_state["photo_manual_mapping"] = mapping
 
 
+_TROMBI_MEMO: Dict[str, Any] = {"mtime": None, "data": []}
+
+
+def load_trombi() -> List[Dict[str, str]]:
+    """Joueuses du trombinoscope importé : [{nom, prenom, categorie, photo}] (mémo par mtime)."""
+    try:
+        mt = os.path.getmtime(TROMBI_PATH)
+    except OSError:
+        return []
+    if _TROMBI_MEMO["mtime"] != mt:
+        try:
+            with open(TROMBI_PATH, "r", encoding="utf-8") as f:
+                _TROMBI_MEMO["data"] = json.load(f).get("joueuses", [])
+        except Exception:
+            _TROMBI_MEMO["data"] = []
+        _TROMBI_MEMO["mtime"] = mt
+    return _TROMBI_MEMO["data"]
+
+
+def save_trombi(joueuses: list, saison: str = "") -> int:
+    """Enregistre les joueuses du trombi (sortie de trombi_utils.joueuses_trombi) : photos en
+    JPEG sur fond blanc dans TROMBI_PHOTOS_FOLDER + liste JSON. Remplace le trombi précédent."""
+    from trombi_utils import image_vignette_jpeg
+    os.makedirs(TROMBI_PHOTOS_FOLDER, exist_ok=True)
+    for _f in os.listdir(TROMBI_PHOTOS_FOLDER):
+        if _f.lower().endswith(".jpg"):
+            os.remove(os.path.join(TROMBI_PHOTOS_FOLDER, _f))
+    liste = []
+    for j in joueuses:
+        fichier = re.sub(r"[^A-Za-z0-9]+", "_", nettoyer_nom_joueuse(f"{j['nom']} {j.get('prenom') or ''}")).strip("_") + ".jpg"
+        _write_bytes_atomic(os.path.join(TROMBI_PHOTOS_FOLDER, fichier), image_vignette_jpeg(j["image"]))
+        liste.append({"nom": j["nom"], "prenom": j.get("prenom") or "", "categorie": j["categorie"], "photo": fichier})
+    _write_bytes_atomic(TROMBI_PATH, json.dumps({"saison": saison, "joueuses": liste},
+                                                ensure_ascii=False, indent=1).encode("utf-8"))
+    return len(liste)
+
+
+def trouver_joueuse_trombi(player_name: str) -> Optional[Dict[str, str]]:
+    """Joueuse du trombi correspondant à un nom (exact, ou mêmes mots dans un autre ordre / en plus)."""
+    cible = nettoyer_nom_joueuse(player_name or "")
+    if not cible:
+        return None
+    toks = set(cible.split())
+    meilleure = None
+    for j in load_trombi():
+        k = nettoyer_nom_joueuse(f"{j['nom']} {j['prenom']}")
+        if k == cible:
+            return j
+        kt = set(k.split())
+        if len(toks) == len(kt) == 2 and len(toks & kt) == 1 and SequenceMatcher(
+                None, next(iter(toks - kt)), next(iter(kt - toks))).ratio() >= 0.85:
+            meilleure = meilleure or j      # NOM Prénom avec une faute (MICHAUD LORCA / LORCAS)
+        elif len(toks & kt) >= 2:
+            # Mots en plus/en moins (« NIAMA MAHOUKOU Chloé » / « NIAMA Chloé ») ou une seule
+            # faute de frappe sur le mot restant (DESMAREST / DEMAREST POUPLET Léonie)
+            reste_a, reste_b = toks - kt, kt - toks
+            # (au plus UN mot en plus : « SIDIBE OUMOU PERTZING YAME » = deux joueuses, pas de photo)
+            if ((not reste_a or not reste_b) and len(reste_a | reste_b) <= 1) or (
+                    len(reste_a) == len(reste_b) == 1
+                    and SequenceMatcher(None, next(iter(reste_a)), next(iter(reste_b))).ratio() >= 0.8):
+                meilleure = meilleure or j
+    return meilleure
+
+
+def get_trombi_photo_path(player_name: str) -> Optional[str]:
+    j = trouver_joueuse_trombi(player_name)
+    if not j or not j.get("photo"):
+        return None
+    p = os.path.join(TROMBI_PHOTOS_FOLDER, j["photo"])
+    return p if os.path.exists(p) else None
+
+
 def get_manual_photo_path(player_name: str) -> Optional[str]:
     """
     Retourne le chemin photo du mapping manuel si disponible.
@@ -2002,6 +2080,11 @@ def find_photo_for_player(
     manual = get_manual_photo_path(player_name)
     if manual:
         return manual
+
+    # --- Passe 0 bis : trombinoscope de la saison (photo officielle, maillot bleu) ---
+    trombi = get_trombi_photo_path(player_name)
+    if trombi:
+        return trombi
 
     # --- Passe 1 : concordance référentiel ---
     if concordance:
@@ -3091,6 +3174,16 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], 
 
     ref = ref[ref["CANON"].astype(str).str.strip().ne("")].copy()
     ref_set = set(ref["CANON"].dropna().unique().tolist())
+
+    # Complété par le trombinoscope de la saison : joueuses absentes du référentiel Excel.
+    # Une joueuse déjà présente sous une autre orthographe (≥ 2 mots communs, ex. DESMAREST /
+    # DEMAREST POUPLET Léonie) n'est pas dupliquée.
+    _ref_toks = [set(c.split()) for c in ref_set]
+    for _j in load_trombi():
+        _c = normalize_name_raw(f"{_j['nom']} {_j['prenom']}")
+        if _c and _c not in ref_set and not any(len(set(_c.split()) & _t) >= 2 for _t in _ref_toks):
+            ref_set.add(_c)
+            _ref_toks.append(set(_c.split()))
 
     alias_to_canon: Dict[str, str] = {}
     tokenkey_to_canon: Dict[str, str] = {}
@@ -13761,6 +13854,61 @@ def render_scores_bepro():
             st.success("Scores enregistrés.")
 
 
+def render_import_trombi():
+    """Dépôt du trombinoscope Excel de la saison : noms officiels + catégorie + photos
+    (maillot bleu prioritaire). Complète le référentiel « Noms Prénoms » et devient la source
+    de photos prioritaire (après les photos choisies à la main dans Fiches joueuses)."""
+    from trombi_utils import extraire_trombi, joueuses_trombi
+    st.subheader("🖼️ Trombinoscope de la saison")
+    _actuel = load_trombi()
+    if _actuel:
+        st.caption(f"Trombinoscope en place : {len(_actuel)} joueuses. Déposer le nouveau fichier le remplace.")
+    _cle = f"import_trombi_upl_{st.session_state.get('_import_trombi_n', 0)}"
+    up = st.file_uploader("Trombinoscope (.xlsx)", type=["xlsx"], key=_cle)
+    if not up:
+        return
+    try:
+        entrees = extraire_trombi(up.getvalue())
+    except Exception as e:
+        st.error(f"Fichier illisible : {e}")
+        return
+    joueuses = joueuses_trombi(entrees)
+    sans_nom = [e["feuille"] for e in entrees if not e.get("nom")]
+    if not joueuses:
+        st.error("Aucune photo associée à un nom n'a été trouvée dans ce fichier.")
+        return
+    ref_path = find_local_file_by_normalized_name(DATA_FOLDER, REFERENTIEL_FILENAME) or ""
+    try:
+        _ref = read_excel_auto(ref_path) if ref_path else pd.DataFrame()
+        _ref = list(_ref.values())[0] if isinstance(_ref, dict) else _ref
+        _ref_toks = [set(normalize_name_raw(f"{a} {b}").split()) for a, b in zip(_ref["NOM"], _ref["Prénom"])]
+    except Exception:
+        _ref_toks = []
+    lignes = []
+    for j in joueuses:
+        t = set(normalize_name_raw(f"{j['nom']} {j.get('prenom') or ''}").split())
+        lignes.append({"Catégorie": j["categorie"], "NOM": j["nom"], "Prénom": j.get("prenom") or "",
+                       "Tenue": j["tenue"],
+                       "Référentiel": "✓" if any(len(t & r) >= 2 for r in _ref_toks) else "ajoutée"})
+    st.write(f"**{len(joueuses)} joueuses** trouvées "
+             f"({', '.join(f'{c} : {n}' for c, n in pd.Series([j['categorie'] for j in joueuses]).value_counts().sort_index().items())}).")
+    if sans_nom:
+        st.warning(f"{len(sans_nom)} photo(s) sans nom ignorée(s).")
+    _cols = st.columns(8)
+    for i, j in enumerate(joueuses[:8]):
+        _cols[i].image(j["image"], caption=f"{j['nom']} {j.get('prenom') or ''}", width="stretch")
+    st.dataframe(pd.DataFrame(lignes), hide_index=True, width="stretch")
+    if st.button("💾 Enregistrer le trombinoscope", key="import_trombi_save", type="primary"):
+        _saison = re.search(r"20\d{2}\s*[-/]\s*20\d{2}", up.name)
+        n = save_trombi(joueuses, saison=_saison.group(0) if _saison else "")
+        # Référentiel et photos recalculés : caches de données + concordance photos
+        st.cache_data.clear()
+        st.session_state.pop("photo_concordance", None)
+        st.session_state.pop("photos_index", None)
+        st.session_state["_import_trombi_n"] = st.session_state.get("_import_trombi_n", 0) + 1
+        st.success(f"{n} joueuses enregistrées. Les données seront recalculées au prochain affichage.")
+
+
 def render_import_bepro():
     """Dépôt des exports Bepro (Stats → Télécharger → « JSON des Raw Event ») : le zip est
     vérifié (lisible, date et équipes dans le nom), copié dans data/bepro et, si
@@ -13971,6 +14119,9 @@ def render_import_csv():
     st.divider()
     render_import_bepro()
     render_scores_bepro()
+
+    st.divider()
+    render_import_trombi()
 
     st.divider()
     st.subheader("🔁 Fichiers en double")

@@ -69,6 +69,8 @@ def nettoyer_nom_joueuse(nom):
         .replace("Ï", "I").replace("Ô", "O").replace("Ö", "O")
         .replace("Â", "A").replace("Ä", "A").replace("Ç", "C")
     )
+    # Autres accents (Ë, Ü, Û, Ñ…) : même correctif que paris_football_club.py
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
     s = " ".join(s.split())
 
     # Déduplication : "NOM PRENOM NOM PRENOM" → "NOM PRENOM"
