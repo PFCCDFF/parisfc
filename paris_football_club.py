@@ -7902,7 +7902,10 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
                 df_work = df_pm1
 
     # 2) Fallback par adversaire + journée dans __match_label / __adversaire / __journee
-    if df_work.empty and match_label:
+    # UNIQUEMENT si le match n'a pas de date : sinon un match sans GPS (ex. Sarcelles J2 U23
+    # 19/09/2026) récupérait le GPS d'un autre match contre le même adversaire (U18 J09 Sarcelles
+    # 17/01/2026) ou de même numéro de journée.
+    if df_work.empty and match_label and (md is None or pd.isna(md)):
         ml_norm = normalize_str(str(match_label))
         # Chercher adversaire et journée extraits du label (ex: "25/26 · U19N · J02 · OL Lyonnes")
         _adv_tokens = set()
