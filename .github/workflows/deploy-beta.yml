@@ -1,0 +1,24 @@
+name: Deploy beta
+
+# Déploie la branche beta sur le service séparé parisfc-beta (/opt/parisfc-beta,
+# port 8502, servi sur /cdff-beta/). La prod (main → parisfc.service) n'est pas touchée.
+on:
+  push:
+    branches: [beta]
+
+jobs:
+  deploy-beta:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy beta to server
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /opt/parisfc-beta
+            git fetch origin beta
+            git checkout beta
+            git reset --hard origin/beta
+            systemctl restart parisfc-beta

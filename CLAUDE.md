@@ -15,6 +15,7 @@ App Streamlit pour le centre de formation féminin du Paris FC (suivi GPS, taggi
 - `charge_entrainement.py` — calculs et UI du suivi de charge (% référence match, ACWR EWMA, microcycle), affiché dans l'onglet Laboratoire via `render_laboratoire_charge()`.
 - `bepro_utils.py` — lecture des exports Bepro « JSON des Raw Event » (zip déposé dans `data/bepro` via Gestion → Import, ou sync Drive si `DRIVE_BEPRO_FOLDER_ID` est renseigné) : coordonnées ramenées au repère des rapports, correspondance des noms, stats individuelles. Quand tous les matchs sélectionnés ont un export Bepro, le rapport de match individuel prend ses stats techniques et sa heatmap dans Bepro (score, poste et GPS restent Sportscode/GPS) ; sans dépendance Streamlit (`tests/test_bepro_utils.py`).
 - `sql/` — migrations SQL appliquées manuellement sur Supabase (pas d'outil de migration).
+- `perf_v2.py` / `perf_v2_data.py` — **branche `beta` uniquement** : Interface Performance v2 (onglets Match · Entraînement · Monitoring · Synthèse). `perf_v2.py` = composants Streamlit appelés depuis `render_performance_page()`, qui lui passe son propre module (`sys.modules[__name__]`) pour réutiliser ses fonctions sans import circulaire. `perf_v2_data.py` = calculs purs (bien-être Hooper/McLean + z-score 28 j, sRPE Foster, monotonie/contrainte, ACWR EWMA, agrégations de bilan), testés dans `tests/test_perf_v2_data.py`. Nouvelles tables Supabase lues/écrites par l'app : `wellness_quotidien`, `rpe_seance`, `seances_contenu` + bucket Storage `seances` (`sql/2026-10-09_interface_performance_v2.sql`).
 
 ### Repères dans `paris_football_club.py`
 
@@ -59,6 +60,7 @@ Pas de linter/formatter configuré dans ce repo (pas de `ruff`, etc.) — ne pas
 - Secrets GitHub Actions requis sur le repo : `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`.
 - Plusieurs clones locaux du même repo existent chez différents contributeurs (même remote `PFCCDFF/parisfc`) — toujours passer par `git pull`/`git push`, ne jamais copier des fichiers d'un clone à l'autre.
 - Ne pas confondre avec **paris-fc-charge**, une application différente (autre remote GitHub, autre codebase/architecture views+utils) qui partage juste le même pattern de déploiement.
+- **Branche `beta`** : `.github/workflows/deploy-beta.yml` déploie chaque push sur `beta` vers un 4ᵉ service `parisfc-beta.service` (`/opt/parisfc-beta`, port 8502, `/cdff-beta/`, variable `PARISFC_BETA=1` qui affiche le bandeau BÊTA). Installation : `deploy/INSTALL_BETA.md`. Même projet Supabase que la prod.
 - Sur le VPS, trois services Streamlit distincts tournent (`parisfc.service`, `apl.service`, `portal.service`) — l'app de ce repo correspond à `parisfc.service` (`/opt/parisfc`, port 8501, servi derrière nginx sur `/cdff/`).
 
 ## Architecture — pièges connus

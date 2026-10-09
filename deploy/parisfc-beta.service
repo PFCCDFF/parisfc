@@ -1,0 +1,19 @@
+# /etc/systemd/system/parisfc-beta.service — app bêta (branche beta)
+# Copier ExecStart/User depuis parisfc.service si votre unité prod diffère
+# (systemctl cat parisfc), en changeant seulement le dossier, le port et le baseUrlPath.
+[Unit]
+Description=Paris FC — Streamlit BETA (Interface Performance v2)
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/opt/parisfc-beta
+Environment=PARISFC_BETA=1
+ExecStart=/opt/parisfc-beta/venv/bin/streamlit run paris_football_club.py \
+    --server.port 8502 --server.address 127.0.0.1 \
+    --server.baseUrlPath cdff-beta --server.headless true
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -8,6 +8,7 @@
 
 import os
 import io
+import sys
 import re
 import csv
 import shutil
@@ -37,6 +38,7 @@ from streamlit_option_menu import option_menu
 from mplsoccer import PyPizza, Radar, FontManager, grid
 import plotly.graph_objects as go
 import plotly.express as px
+import perf_v2 as _perf_v2  # Interface Performance v2 (branche beta)
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -11658,7 +11660,14 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
         role = get_user_role(user_profile, permissions)
 
     st.header("🏆 Performance")
+    _perf_v2.render_beta_banner()
     _saison_sel = st.session_state.get("selected_saison", "Toutes les saisons")
+    _app_mod = sys.modules[__name__]
+    _effectif_v2 = _perf_v2.roster(_app_mod, pfc_kpi_all)
+    _saison_bornes_v2 = (None, None)
+    if re.fullmatch(r"\d{4}", str(_saison_sel or "")):
+        _a1 = 2000 + int(str(_saison_sel)[:2])
+        _saison_bornes_v2 = (date(_a1, 7, 1), date(_a1 + 1, 6, 30))
 
     # ── Données partagées (une seule fois) ─────────────────────────────────
     _gps_match_df = st.session_state.get("gps_match_df", pd.DataFrame())
@@ -11679,11 +11688,15 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     _pgps_name = _perf_player
     _df_player = pd.DataFrame()
 
-    # ── 4 onglets internes ─────────────────────────────────────────────────
-    _tab_matchs, _tab_entrainement, _tab_suivi = st.tabs([
-        "⚽ Matchs",
+    # ── Interface Performance v2 : 4 onglets ───────────────────────────────
+    # Match (rapports collectifs / individuels) · Entraînement (séances, contenu,
+    # présence) · Monitoring (charge, bien-être, RPE, tendances match) ·
+    # Synthèse (bilans de période, fiche bilan, évaluations, objectifs).
+    _tab_matchs, _tab_entrainement, _tab_suivi, _tab_synthese = st.tabs([
+        "⚽ Match",
         "🏋️ Entraînement",
-        "📊 Suivi de la performance",
+        "📈 Monitoring",
+        "🧾 Synthèse",
     ])
 
     # ══════════════════════════════════
@@ -11694,7 +11707,12 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
         _CAL_JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
 
-        _ent_sub_seances, _ent_sub_presence = st.tabs(["📅 Séances", "✅ Présence"])
+        _ent_sub_liste, _ent_sub_seances, _ent_sub_contenu, _ent_sub_presence = st.tabs(
+            ["📋 Toutes les séances", "📅 Calendrier GPS", "📝 Contenu de séance", "✅ Présence"])
+        with _ent_sub_liste:
+            _perf_v2.render_liste_seances(_app_mod, _gps_raw_df, _saison_bornes_v2)
+        with _ent_sub_contenu:
+            _perf_v2.render_contenu_seance(_app_mod, user_profile, role, _gps_raw_df)
         with _ent_sub_seances:
             _gr_cal = ensure_date_column(_gps_raw_df) if _gps_raw_df is not None and not _gps_raw_df.empty else pd.DataFrame()
             _gr_cal = _gr_cal[_gr_cal["DATE"].notna()].copy() if not _gr_cal.empty else _gr_cal
@@ -12066,7 +12084,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     # TAB 1 — MATCHS
     # ══════════════════════════════════
     with _tab_matchs:
-        _mat_collectif, _mat_individuel = st.tabs(["🤝 Performance Collective", "🎯 Performance Individuelle"])
+        _mat_collectif, _mat_individuel = st.tabs(["🤝 Rapport collectif", "🎯 Rapports individuels"])
 
         with _mat_collectif:
             if not _tac_files:
@@ -12591,9 +12609,39 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     key="perf_gps_player_sel"
                 )
 
-        _st_seances, _st_match, _st_charge, _st_params, _st_fiche, _suivi_eval, _st_objectifs = st.tabs([
-            "🏃 Séances", "⚽ Match", "⚖️ Charge", "⚙️ Paramètres", "📋 Fiche Bilan", "📝 Évaluations", "🎯 Objectifs"
+        _st_charge, _st_seances, _st_bien_etre, _st_rpe, _st_match_coll, _st_match, _st_params = st.tabs([
+            "⚖️ Charge globale (GPS)", "🏃 Charge par séance (GPS)", "💚 Bien-être", "🔥 RPE & charge interne",
+            "🤝 Matchs — collectif", "🎯 Matchs — individuel", "⚙️ Paramètres",
         ])
+
+    # Joueuse de l'effectif correspondant à la sélection GPS (noms différents
+    # selon la source) — sert aux vues bien-être / RPE / tendance individuelle.
+    _joueuse_v2 = player_name if (role == ROLE_JOUEUSE and player_name) else (
+        _perf_v2.meilleur_nom(_app_mod, _pgps, _effectif_v2) if _pgps else None) or (
+        _effectif_v2[0] if _effectif_v2 else None)
+    with _st_bien_etre:
+        _perf_v2.render_bien_etre(_app_mod, role, _joueuse_v2, user_profile, _effectif_v2)
+    with _st_rpe:
+        _perf_v2.render_rpe(_app_mod, role, _joueuse_v2, user_profile, _effectif_v2)
+    with _st_match_coll:
+        if role == ROLE_JOUEUSE:
+            st.info("Accès réservé au staff.")
+        else:
+            _perf_v2.render_tendances_collectives(_app_mod, _tac_files, _gps_match_df)
+    with _st_match:
+        _st_match_tendance = st.container()
+    with _st_match_tendance:
+        _perf_v2.render_tendance_individuelle(_app_mod, pfc_kpi_all, _joueuse_v2)
+        st.divider()
+        st.markdown("#### 🛰️ Données physiques en match (GPS)")
+
+    with _tab_synthese:
+        _syn_bilan, _st_fiche, _suivi_eval, _st_objectifs = st.tabs([
+            "🧾 Bilan de période", "📋 Fiche Bilan", "📝 Évaluations", "🎯 Objectifs",
+        ])
+    with _syn_bilan:
+        _perf_v2.render_synthese(_app_mod, role, player_name, pfc_kpi_all, _gps_raw_df, _gps_match_df,
+                                 _tac_files, _effectif_v2)
 
     with _suivi_eval:
         if role == ROLE_JOUEUSE:
