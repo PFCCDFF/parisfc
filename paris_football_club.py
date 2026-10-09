@@ -13,6 +13,8 @@ import csv
 import shutil
 import threading
 import functools
+import hmac
+from html import escape as _esc
 import unicodedata
 import warnings
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -34,7 +36,7 @@ matplotlib.use("Agg", force=True)  # Backend non-interactif — nécessaire mais
 import matplotlib.pyplot as plt
 
 from streamlit_option_menu import option_menu
-from mplsoccer import PyPizza, Radar, FontManager, grid
+from mplsoccer import PyPizza, Radar, grid
 import plotly.graph_objects as go
 import plotly.express as px
 from google.oauth2 import service_account
@@ -43,7 +45,6 @@ from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.errors import HttpError
 import time
 import json
-import textwrap
 
 warnings.filterwarnings("ignore")
 
@@ -114,8 +115,6 @@ POSTES_JOUEUSES = ["Gardienne de But", "Défenseure Centrale Droit", "Défenseur
 LATERALITES = ["Droitière", "Gauchère", "Ambidextre"]
 REFERENTIEL_FILENAME = "Noms Prénoms Paris FC.xlsx"
 TEMPS_JEU_RESCUE_FILENAME = "SuiviPerformanceJoueuse.xlsx"  # sauvetage temps de jeu (feuille SuiviMatch) quand le CSV tactique n'a pas de ligne d'équipe exploitable
-OBJECTIFS_EVAL_FILENAME = "Evaluations Objectifs.csv"  # Export CSV du Google Sheet lié au Forms
-DRIVE_OBJECTIFS_FOLDER_ID = ""  # À renseigner : ID du dossier Drive contenant le CSV des évaluations
 OBJECTIFS_FOLDER = "data/objectifs"
 
 # Colonnes "poste" dans les lignes match (lineups)
@@ -1348,7 +1347,6 @@ def extract_season_from_filename(filename: str) -> Optional[str]:
 # =========================
 # NAME NORMALIZATION
 # =========================
-PARTICLES = {"DE", "DU", "DES", "D", "DA", "DI", "DEL", "DELA", "DELLA", "LE", "LA", "LES"}
 
 def strip_accents_upper(s: str) -> str:
     s = "" if s is None else str(s)
@@ -1389,10 +1387,6 @@ def compact_name(s: str) -> str:
     s = strip_accents_upper(s)
     s = re.sub(r"[^A-Z]", "", s)
     return s
-
-def similarity(a: str, b: str) -> float:
-    return SequenceMatcher(None, a, b).ratio()
-
 
 def infer_opponent_from_columns(df: pd.DataFrame, equipe_pfc: str) -> Optional[str]:
     if df is None or df.empty:
@@ -1493,10 +1487,6 @@ def _photo_key_compact(s: str) -> str:
     return re.sub(r"\s+", "", _photo_normalize(s))
 
 # rétrocompat
-def _norm_txt(s: str) -> str:
-    return _photo_key_spaced(s)
-
-
 # ------------------------------------------------------------------
 # GÉNÉRATION DES VARIANTES de nom à partir de NOM + Prénom
 # ------------------------------------------------------------------
@@ -1963,41 +1953,6 @@ def build_photos_index_local() -> Dict[str, str]:
     return idx
 
 
-def photos_get_index(force_sync: bool = False) -> Tuple[Dict[str, str], Dict[str, Any]]:
-    status: Dict[str, Any] = {
-        "local_folder": PHOTOS_FOLDER,
-        "folder_id": PHOTOS_FOLDER_ID,
-        "synced": False,
-        "n_index": 0,
-        "n_local_files": 0,
-        "error": None,
-    }
-    _ensure_photos_folder()
-
-    def _count_local_images() -> int:
-        try:
-            return sum(1 for fn in os.listdir(PHOTOS_FOLDER)
-                       if os.path.splitext(fn)[1].lower() in IMAGE_EXTS)
-        except Exception:
-            return 0
-
-    idx = build_photos_index_local()
-    status["n_local_files"] = _count_local_images()
-    status["n_index"] = len(idx)
-
-    if force_sync or len(idx) == 0:
-        try:
-            sync_photos_from_drive()
-            status["synced"] = True
-        except Exception as e:
-            status["error"] = str(e)
-        idx = build_photos_index_local()
-        status["n_local_files"] = _count_local_images()
-        status["n_index"] = len(idx)
-
-    return idx, status
-
-
 def get_photo_concordance(force_rebuild: bool = False) -> Dict[str, str]:
     """
     Retourne (et met en cache session) la table de concordance canon → photo.
@@ -2110,14 +2065,6 @@ def find_photo_for_player(
 
 
 # Alias rétrocompat
-def find_best_photo_for_player_relaxed(player_name: str, photos_index: Dict[str, str]) -> Optional[str]:
-    concordance = st.session_state.get("photo_concordance", {})
-    return find_photo_for_player(player_name, concordance=concordance, photos_index=photos_index)
-
-def find_best_photo_for_player(player_name: str, photos_index: Dict[str, str]) -> Optional[str]:
-    return find_best_photo_for_player_relaxed(player_name, photos_index)
-
-
 # ------------------------------------------------------------------
 # BLOC AFFICHAGE PHOTO (avec diagnostic)
 # ------------------------------------------------------------------
@@ -2202,39 +2149,6 @@ def _render_photo_picker(player_name: str, canon: str, photos_index: Dict[str, s
             st.rerun()
 
 
-def show_photo_block(player_name: str, location: str = "stats") -> None:
-    c1, c2 = st.columns([1, 4])
-    with c1:
-        force = st.button("🔄 Sync photos", key=f"photos_sync_{location}")
-    with c2:
-        st.caption("Photos synchronisées depuis Google Drive.")
-
-    if force:
-        with st.spinner("Sync + conversion en cours..."):
-            sync_photos_from_drive()
-            ok, fail, errs = reconvert_photos_to_jpeg()
-            if fail > 0:
-                st.warning(f"{fail} fichier(s) non convertible(s) : {', '.join(errs[:3])}")
-            get_photo_concordance(force_rebuild=True)
-            st.session_state["photos_index"] = build_photos_index_local()
-
-    photos_index  = st.session_state.get("photos_index") or build_photos_index_local()
-    concordance   = get_photo_concordance()
-    photo_path    = find_photo_for_player(player_name, concordance=concordance, photos_index=photos_index)
-
-    if photo_path and os.path.exists(photo_path):
-        if safe_show_photo(photo_path, width=170):
-            return
-
-    # Photo non trouvée → placeholder silencieux
-    st.markdown(
-        "<div style='width:170px;height:210px;background:#0C1220;border-radius:4px;"
-        "display:flex;align-items:center;justify-content:center;"
-        "font-size:56px;border:1px solid rgba(0,163,224,0.2);'>👤</div>",
-        unsafe_allow_html=True
-    )
-
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_photo_bytes(path: str) -> Optional[bytes]:
     """
@@ -2265,47 +2179,6 @@ def load_photo_bytes(path: str) -> Optional[bytes]:
         return buf.getvalue()
     except Exception:
         return None
-
-
-def safe_show_photo(path: str, width: int = 160) -> bool:
-    """
-    Affiche une photo de façon sécurisée (gère HEIC, HEIF, PNG, JPG...).
-    Retourne True si affichée, False sinon.
-    """
-    data = load_photo_bytes(path)
-    if data:
-        st.image(data, width=width)
-        return True
-    return False
-
-
-def debug_photo_suggestions(player_name: str, photos_index: dict, topn: int = 8):
-    try:
-        target = normalize_str(player_name)
-        keys = list(photos_index.keys())
-        close = get_close_matches(target, keys, n=topn, cutoff=0.0)
-        out = []
-        for k in close:
-            pth = photos_index.get(k)
-            if pth:
-                out.append(os.path.basename(pth))
-        return out
-    except Exception:
-        return []
-
-
-def _download_drive_binary_to_path(service, file_id: str, out_path: str) -> str:
-    request = service.files().get_media(fileId=file_id)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    fh.seek(0)
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "wb") as f:
-        f.write(fh.read())
-    return out_path
 
 
 # ✅ FIX 4 : sync_photos_from_drive corrigée
@@ -2735,29 +2608,19 @@ def _safe_local_path(filename: str, file_id: str, dest_folder: str = None) -> st
     return os.path.join(target_dir, f"{base_noext}__{file_id[:8]}{ext}")
 
 
-def download_drive_file_to_local(service, file_id: str, file_name: str, mime_type: str) -> str:
-    if mime_type == "application/vnd.google-apps.spreadsheet":
-        request = service.files().export_media(
-            fileId=file_id,
-            mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        file_name = os.path.splitext(file_name)[0] + ".xlsx"
-    else:
-        request = service.files().get_media(fileId=file_id)
+def _tmp_path_unique(final_path: str) -> str:
+    """Fichier temporaire propre au processus/thread : deux syncs simultanées ne s'écrasent pas."""
+    return f"{final_path}.{os.getpid()}.{threading.get_ident()}.tmp"
 
-    final_path = _safe_local_path(file_name, file_id)
 
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request, chunksize=1024 * 1024)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
+def _write_bytes_atomic(final_path: str, data: bytes) -> None:
+    """Écrit puis renomme : un lecteur concurrent (collect_data) ne voit jamais un fichier à moitié écrit."""
+    os.makedirs(os.path.dirname(final_path) or ".", exist_ok=True)
+    tmp = _tmp_path_unique(final_path)
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, final_path)
 
-    fh.seek(0)
-    with open(final_path, "wb") as f:
-        f.write(fh.read())
-
-    return final_path
 
 def download_drive_csv_to_local(service, file_id: str, file_name: str, dest_folder: str = None) -> str:
     request = service.files().get_media(fileId=file_id)
@@ -2773,10 +2636,7 @@ def download_drive_csv_to_local(service, file_id: str, file_name: str, dest_fold
         _, done = downloader.next_chunk()
 
     fh.seek(0)
-    os.makedirs(os.path.dirname(final_path), exist_ok=True)
-    with open(final_path, "wb") as f:
-        f.write(fh.read())
-
+    _write_bytes_atomic(final_path, fh.read())
     return final_path
 
 
@@ -2793,48 +2653,9 @@ def export_sheet_to_csv_local(service, file_id: str, file_name: str, dest_folder
         _, done = downloader.next_chunk()
 
     fh.seek(0)
-    os.makedirs(os.path.dirname(final_path), exist_ok=True)
-    with open(final_path, "wb") as f:
-        f.write(fh.read())
-
+    _write_bytes_atomic(final_path, fh.read())
     return final_path
 
-
-def convert_xls_drive_to_xlsx_local(service, file_id: str, original_name: str) -> str:
-    body = {
-        "name": f"__tmp_convert__{original_name}",
-        "mimeType": "application/vnd.google-apps.spreadsheet",
-        "parents": [DRIVE_GPS_FOLDER_ID],
-    }
-    copied = _execute_with_retry(service.files().copy(
-        fileId=file_id,
-        body=body,
-        supportsAllDrives=True,
-    ))
-    gsheet_id = copied["id"]
-
-    req = service.files().export_media(
-        fileId=gsheet_id,
-        mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, req, chunksize=1024 * 1024)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    fh.seek(0)
-
-    out_name = os.path.splitext(original_name)[0] + ".xlsx"
-    final_path = _safe_local_path(out_name, file_id)
-    with open(final_path, "wb") as f:
-        f.write(fh.read())
-
-    try:
-        _execute_with_retry(service.files().delete(fileId=gsheet_id, supportsAllDrives=True))
-    except Exception:
-        pass
-
-    return final_path
 
 def sync_gps_from_drive_autonomous():
     service = authenticate_google_drive()
@@ -2968,7 +2789,7 @@ def list_files_recursive(service, folder_id: str) -> List[dict]:
 def download_file(service, file_id, file_name, output_folder, mime_type=None, modified_time=None):
     os.makedirs(output_folder, exist_ok=True)
     final_path = os.path.join(output_folder, file_name)
-    tmp_path = final_path + ".tmp"
+    tmp_path = _tmp_path_unique(final_path)
 
     # Fichier déjà présent et non vide → skip, SAUF si modified_time (Drive) prouve
     # qu'une version plus récente existe côté Drive que la copie locale. Avant ce
@@ -2994,7 +2815,7 @@ def download_file(service, file_id, file_name, output_folder, mime_type=None, mo
         )
         if not final_path.lower().endswith(".xlsx"):
             final_path = os.path.splitext(final_path)[0] + ".xlsx"
-            tmp_path = final_path + ".tmp"
+            tmp_path = _tmp_path_unique(final_path)
         # Re-check après renommage xlsx (même logique de fraîcheur que ci-dessus)
         if os.path.exists(final_path) and os.path.getsize(final_path) > 512:
             _stale2 = False
@@ -3142,7 +2963,8 @@ def load_permissions():
                 role = _infer_role(perm_list, player)
 
             permissions[profile] = {
-                "password": str(row.get("Mot de passe", "")).strip(),
+                # Case vide → NaN → "nan" : jamais un mot de passe valide (sinon « nan » ouvre le profil)
+                "password": str(row.get("Mot de passe")).strip() if pd.notna(row.get("Mot de passe")) else "",
                 "permissions": perm_list,
                 "player": player,
                 "role": role,
@@ -3629,32 +3451,6 @@ def load_objectifs_evaluations() -> pd.DataFrame:
     except Exception as e:
         _warn(f"Évaluations objectifs : erreur lecture CSV → {e}")
         return pd.DataFrame()
-
-
-def sync_objectifs_from_drive() -> Tuple[int, int]:
-    """
-    Télécharge le CSV des évaluations depuis Google Drive (dossier DRIVE_OBJECTIFS_FOLDER_ID).
-    Retourne (nb_téléchargés, nb_erreurs).
-    """
-    if not DRIVE_OBJECTIFS_FOLDER_ID:
-        return 0, 0  # Pas encore configuré
-    try:
-        service = _get_drive_service()
-        os.makedirs(OBJECTIFS_FOLDER, exist_ok=True)
-        files = list_files_in_folder(service, DRIVE_OBJECTIFS_FOLDER_ID)
-        ok, err = 0, 0
-        for f in files:
-            if f.get("name", "").endswith(".csv"):
-                try:
-                    _download_file(service, f["id"], f["name"], OBJECTIFS_FOLDER)
-                    ok += 1
-                except Exception as e:
-                    _warn(f"Évaluations : échec téléchargement {f['name']} → {e}")
-                    err += 1
-        return ok, err
-    except Exception as e:
-        _warn(f"Évaluations objectifs : erreur Drive → {e}")
-        return 0, 1
 
 
 # =========================
@@ -4562,6 +4358,11 @@ def parse_apl_csv_individual(df_raw: pd.DataFrame) -> pd.DataFrame:
         })
 
     return pd.DataFrame(rows_out)
+
+
+def load_apl_files() -> pd.DataFrame:
+    # Corps resté orphelin après le return de parse_apl_csv_individual depuis le commit
+    # fd3b884 (11/05/2026) : collect_data appelait une fonction inexistante → APL absent.
     """Charge tous les CSV APL depuis data/ et retourne un DataFrame
     agrégé par profil de poste (moyenne toutes joueuses, tous matchs).
     Compatible avec create_metrics / create_kpis / create_poste.
@@ -5464,10 +5265,18 @@ def sync_gps_match_from_drive() -> Tuple[int, int]:
             if not name.lower().endswith(".csv"):
                 continue
             fid = f["id"]
-            dest = os.path.join(GPS_MATCH_FOLDER, name)
-            if os.path.exists(dest):
-                ok += 1
+            # download_drive_csv_to_local écrit sous « <nom>__<id8>.csv » : tester ce nom-là
+            # (avant : test sur <nom> seul, toujours faux → tout le dossier retéléchargé à
+            # chaque session, ce qui invalidait aussi le cache Parquet).
+            dest = _safe_local_path(name, fid, dest_folder=GPS_MATCH_FOLDER)
+            if os.path.exists(os.path.join(GPS_MATCH_FOLDER, name)):
+                ok += 1          # déposé sous son nom d'origine (Import)
                 continue
+            if os.path.exists(dest):
+                _drive_mt = pd.to_datetime(f.get("modifiedTime"), errors="coerce", utc=True)
+                if pd.isna(_drive_mt) or os.path.getmtime(dest) >= _drive_mt.timestamp():
+                    ok += 1      # déjà à jour
+                    continue
             try:
                 download_drive_csv_to_local(service, fid, name, dest_folder=GPS_MATCH_FOLDER)
                 ok += 1
@@ -5819,23 +5628,6 @@ def parse_tactical_filename(filename: str) -> dict:
         info["adv_norm"]   = normalize_str(adv)
 
     return info
-
-def _adv_similarity(a: str, b: str) -> float:
-    """Score de similarité entre deux noms d'adversaires normalisés."""
-    if not a or not b:
-        return 0.0
-    if a == b:
-        return 1.0
-    # L'un contient l'autre
-    if a in b or b in a:
-        return 0.85
-    # Chevauchement de tokens
-    ta, tb = set(re.findall(r"[a-z0-9]{2,}", a)), set(re.findall(r"[a-z0-9]{2,}", b))
-    if not ta or not tb:
-        return 0.0
-    inter = ta & tb
-    return len(inter) / max(len(ta), len(tb))
-
 
 # ─── ÉVALUATIONS AUTO-MATCH ─────────────────────────────────────────────────
 
@@ -6789,41 +6581,6 @@ def _saison_date_range(selected_saison: str):
     _y1 = 2000 + _a1
     _y2 = _y1 + 1
     return pd.Timestamp(f"{_y1}-07-01"), pd.Timestamp(f"{_y2}-06-30")
-    """Associe un match GPS à son fichier tactique.
-    Priorité : date exacte → (date + adversaire) → (journee + adversaire).
-    Retourne le DataFrame tactique ou None.
-    """
-    gps_date = gps_row.get("date")        # pd.Timestamp ou None
-    gps_adv  = normalize_str(str(gps_row.get("adversaire", "")))
-    gps_j    = str(gps_row.get("journee", "")).lstrip("J").lstrip("0") or ""
-
-    best_score = 0.0
-    best_df = None
-
-    for t in tactical_files:
-        score = 0.0
-        t_date = t.get("date")
-        t_adv  = t.get("adv_norm", "")
-        t_j    = str(t.get("journee", "")).lstrip("0") or ""
-
-        # Date exacte = fort signal
-        if gps_date and t_date and abs((gps_date - t_date).days) <= 1:
-            score += 2.0
-
-        # Adversaire
-        adv_sim = _adv_similarity(gps_adv, t_adv)
-        score += adv_sim * 1.5
-
-        # Journée
-        if gps_j and t_j and gps_j == t_j:
-            score += 0.5
-
-        if score > best_score:
-            best_score = score
-            best_df = t["df"]
-
-    # Seuil minimal : au moins une date ou un adversaire reconnu
-    return best_df if best_score >= 1.5 else None
 
 
 def _filter_player_rows(df_tactic, player_name):
@@ -6985,16 +6742,6 @@ def compute_tactical_stats(df_tactic, player_name):
     stats["nb_pertes"] = stats["pertes"]; stats["nb_dribbles"] = stats["drib_ok"]+stats["drib_ko"]
     stats["nb_duels_def"] = stats["duels_gagnes"]+stats["duels_perdus"]; stats["nb_interceptions"] = stats["interceptions"]
     return stats
-
-
-def _build_all_player_stats(df_tactic):
-    """Calcule les stats pour toutes les joueuses du fichier tactique."""
-    if df_tactic is None or df_tactic.empty or "Row" not in df_tactic.columns:
-        return {}
-    skip = {"START","PFC","HAC",""}
-    players = [r for r in df_tactic["Row"].dropna().unique()
-               if r not in skip and not any(k in str(r) for k in ["Transition","Carton","def "])]
-    return {p: s for p in players for s in [compute_tactical_stats(df_tactic, p)] if s}
 
 
 def _get_match_context(df_tactic):
@@ -7252,17 +6999,6 @@ def compute_collective_report(df_tactic):
         "grid_perte": zone_grid_pct(perte_zones, perte_total),
         "zone_rows": zone_rows, "zone_cols": zone_cols,
     }
-
-
-def _fmt_secs_to_mmss(v):
-    """Convertit un nombre de secondes en 'MM:SS.d'."""
-    try:
-        v = float(v)
-    except Exception:
-        return "—"
-    m = int(v // 60)
-    s = v - m * 60
-    return f"{m}:{s:04.1f}"
 
 
 PFC_LOGO_URL = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
@@ -8826,6 +8562,17 @@ def _warn(msg: str) -> None:
 
 
 
+SYNC_INTERVALLE_MIN_S = 600   # pas plus d'une sync Drive automatique toutes les 10 min (toutes sessions)
+
+
+@st.cache_resource(show_spinner=False)
+def _sync_coordinateur() -> dict:
+    """État de sync partagé par TOUTES les sessions du serveur (cache_resource survit aux
+    reruns et à st.cache_data.clear()). Évite N syncs Drive simultanées qui écrivent dans
+    le même data/ quand plusieurs personnes se connectent en même temps."""
+    return {"lock": threading.Lock(), "en_cours": False, "debut": 0.0, "fin": 0.0}
+
+
 def _run_initial_sync():
     """
     Télécharge depuis Drive et synchronise GPS + Photos.
@@ -9494,64 +9241,6 @@ def _make_match_bar_chart(labels, datasets, title, ylabel, figsize=(9,3.5), stac
         ax.legend(fontsize=8, facecolor="#0C1220", edgecolor="#1A2A3A", labelcolor="#C8D8E8", loc="upper right")
     fig.subplots_adjust(bottom=0.28, top=0.95, left=0.08, right=0.97)
     return fig
-
-
-def get_playing_time_from_gps(gps_match_df, player_canon: str) -> str:
-    """Retourne le temps de jeu en minutes (entier) depuis la colonne Durée_min du fichier GPS match.
-    Durée_min est déjà converti en minutes (depuis H:MM:SS) lors de la standardisation.
-    Retourne "—" si la joueuse ou la donnée est introuvable.
-    """
-    if gps_match_df is None or getattr(gps_match_df, "empty", True) or not player_canon:
-        return "—"
-    if "Durée_min" not in gps_match_df.columns:
-        return "—"
-
-    _p          = nettoyer_nom_joueuse(player_canon)
-    _p_toks     = set(normalize_name_raw(player_canon).split())
-    _p_nom_toks = nom_tokens(player_canon)
-
-    def _matches(val: str) -> bool:
-        v = str(val).strip()
-        if not v or v.lower() in ("nan", "none", ""):
-            return False
-        if nettoyer_nom_joueuse(v) == _p or nom_tokens(v) == _p_nom_toks:
-            return True
-        v_mapped = apply_gps_name_map(v)
-        if nettoyer_nom_joueuse(v_mapped) == _p or nom_tokens(v_mapped) == _p_nom_toks:
-            return True
-        v_toks = set(normalize_name_raw(v).split())
-        common = _p_toks & v_toks
-        return len(common) >= 2 or (len(common) == 1 and (len(_p_toks) == 1 or len(v_toks) == 1))
-
-    try:
-        df = gps_match_df.copy()
-        if "NOM" in df.columns:
-            df = df[df["NOM"].notna() & (df["NOM"].astype(str).str.strip() != "")
-                    & (df["NOM"].astype(str).str.strip().str.lower() != "nan")]
-
-        mask = pd.Series(False, index=df.index)
-        if "Player" in df.columns:
-            mask |= df["Player"].astype(str).apply(_matches)
-        if "NOM" in df.columns:
-            mask |= df["NOM"].astype(str).apply(_matches)
-
-        df_p = df[mask]
-        if df_p.empty:
-            return "—"
-
-        # Si plusieurs lignes, prendre celle avec la plus grande distance (= session complète)
-        if len(df_p) > 1 and "Distance (m)" in df_p.columns:
-            dist = pd.to_numeric(df_p["Distance (m)"], errors="coerce")
-            if dist.notna().any():
-                df_p = df_p.loc[[dist.idxmax()]]
-
-        val = pd.to_numeric(df_p["Durée_min"].iloc[0], errors="coerce")
-        if pd.isna(val) or val <= 0:
-            return "—"
-        return str(int(round(float(val))))
-
-    except Exception:
-        return "—"
 
 
 # ── Rapport de match individuel (v5) — helpers ────────────────────────────────
@@ -10447,6 +10136,10 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
     if player_name and any(nettoyer_nom_joueuse(player_name) == nettoyer_nom_joueuse(p) for p in all_players_m):
         selected_player = player_name
         st.caption(f"Joueuse : **{selected_player}**")
+    elif player_name:
+        # Profil joueuse sans données GPS match : ne pas proposer les autres joueuses
+        st.info("Aucune donnée GPS match trouvée pour ton profil.")
+        return
     else:
         selected_player = st.selectbox("Joueuse", ["Toutes"] + all_players_m, key="gps_match_player_sel")
 
@@ -11680,387 +11373,393 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     _df_player = pd.DataFrame()
 
     # ── 4 onglets internes ─────────────────────────────────────────────────
-    _tab_matchs, _tab_entrainement, _tab_suivi = st.tabs([
-        "⚽ Matchs",
-        "🏋️ Entraînement",
-        "📊 Suivi de la performance",
-    ])
+    # Entraînement = GPS de toute l'équipe + saisie de présence → staff uniquement
+    if role == ROLE_JOUEUSE:
+        _tab_matchs, _tab_suivi = st.tabs(["⚽ Matchs", "📊 Suivi de la performance"])
+        _tab_entrainement = None
+    else:
+        _tab_matchs, _tab_entrainement, _tab_suivi = st.tabs([
+            "⚽ Matchs",
+            "🏋️ Entraînement",
+            "📊 Suivi de la performance",
+        ])
 
     # ══════════════════════════════════
     # TAB — ENTRAÎNEMENT (calendrier des séances)
     # ══════════════════════════════════
-    with _tab_entrainement:
-        _CAL_MOIS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
-                        "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
-        _CAL_JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
+    if _tab_entrainement is not None:
+        with _tab_entrainement:
+            _CAL_MOIS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+                            "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
+            _CAL_JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
 
-        _ent_sub_seances, _ent_sub_presence = st.tabs(["📅 Séances", "✅ Présence"])
-        with _ent_sub_seances:
-            _gr_cal = ensure_date_column(_gps_raw_df) if _gps_raw_df is not None and not _gps_raw_df.empty else pd.DataFrame()
-            _gr_cal = _gr_cal[_gr_cal["DATE"].notna()].copy() if not _gr_cal.empty else _gr_cal
+            _ent_sub_seances, _ent_sub_presence = st.tabs(["📅 Séances", "✅ Présence"])
+            with _ent_sub_seances:
+                _gr_cal = ensure_date_column(_gps_raw_df) if _gps_raw_df is not None and not _gps_raw_df.empty else pd.DataFrame()
+                _gr_cal = _gr_cal[_gr_cal["DATE"].notna()].copy() if not _gr_cal.empty else _gr_cal
 
-            if _gr_cal.empty:
-                st.info("Aucune séance d'entraînement GPS trouvée.")
-            else:
-                _gr_cal["_day"] = _gr_cal["DATE"].dt.normalize().dt.date
-                _seance_days   = set(_gr_cal["_day"].unique())
-                _seance_counts = _gr_cal.groupby("_day")["Player"].nunique().to_dict()
+                if _gr_cal.empty:
+                    st.info("Aucune séance d'entraînement GPS trouvée.")
+                else:
+                    _gr_cal["_day"] = _gr_cal["DATE"].dt.normalize().dt.date
+                    _seance_days   = set(_gr_cal["_day"].unique())
+                    _seance_counts = _gr_cal.groupby("_day")["Player"].nunique().to_dict()
 
-                # ── Navigation année / mois ─────────────────────────────────────
-                _years_avail = sorted({d.year for d in _seance_days})
-                if "_cal_year" not in st.session_state or st.session_state["_cal_year"] not in _years_avail:
-                    st.session_state["_cal_year"] = max(_years_avail)
-                if "_cal_month" not in st.session_state:
-                    _last_day = max(_seance_days)
-                    st.session_state["_cal_month"] = (
-                        _last_day.month if _last_day.year == st.session_state["_cal_year"] else 1
+                    # ── Navigation année / mois ─────────────────────────────────────
+                    _years_avail = sorted({d.year for d in _seance_days})
+                    if "_cal_year" not in st.session_state or st.session_state["_cal_year"] not in _years_avail:
+                        st.session_state["_cal_year"] = max(_years_avail)
+                    if "_cal_month" not in st.session_state:
+                        _last_day = max(_seance_days)
+                        st.session_state["_cal_month"] = (
+                            _last_day.month if _last_day.year == st.session_state["_cal_year"] else 1
+                        )
+
+                    _nc1, _nc2, _nc3, _nc4 = st.columns([1, 2, 3, 1])
+                    with _nc1:
+                        if st.button("◀", key="cal_prev_month", width="stretch"):
+                            _m, _y = st.session_state["_cal_month"] - 1, st.session_state["_cal_year"]
+                            if _m < 1:
+                                _m, _y = 12, _y - 1
+                            st.session_state["_cal_month"], st.session_state["_cal_year"] = _m, _y
+                            st.rerun()
+                    with _nc2:
+                        _year_options = sorted(set(_years_avail) | {st.session_state["_cal_year"]})
+                        st.session_state["_cal_year"] = st.selectbox(
+                            "Année", _year_options,
+                            index=_year_options.index(st.session_state["_cal_year"]),
+                            key="cal_year_sel", label_visibility="collapsed",
+                        )
+                    with _nc3:
+                        st.markdown(
+                            f"<div style='text-align:center;font-family:Oswald,sans-serif;font-size:18px;"
+                            f"font-weight:600;letter-spacing:0.05em;padding-top:6px;color:#FFFFFF'>"
+                            f"{_CAL_MOIS_FR[st.session_state['_cal_month'] - 1]} {st.session_state['_cal_year']}</div>",
+                            unsafe_allow_html=True
+                        )
+                    with _nc4:
+                        if st.button("▶", key="cal_next_month", width="stretch"):
+                            _m, _y = st.session_state["_cal_month"] + 1, st.session_state["_cal_year"]
+                            if _m > 12:
+                                _m, _y = 1, _y + 1
+                            st.session_state["_cal_month"], st.session_state["_cal_year"] = _m, _y
+                            st.rerun()
+
+                    _year, _month = st.session_state["_cal_year"], st.session_state["_cal_month"]
+
+                    # ── Grille calendrier ────────────────────────────────────────────
+                    _calmod.setfirstweekday(_calmod.MONDAY)
+                    _weeks = _calmod.monthcalendar(_year, _month)
+
+                    _hcols = st.columns(7)
+                    for _hc, _lbl in zip(_hcols, _CAL_JOURS_FR):
+                        _hc.markdown(
+                            f"<div style='text-align:center;font-size:11px;color:#6A8090;"
+                            f"font-weight:600;text-transform:uppercase'>{_lbl}</div>",
+                            unsafe_allow_html=True
+                        )
+
+                    for _week in _weeks:
+                        _wcols = st.columns(7)
+                        for _wc, _day in zip(_wcols, _week):
+                            with _wc:
+                                if _day == 0:
+                                    st.write("")
+                                    continue
+                                _d = date(_year, _month, _day)
+                                if _d in _seance_days:
+                                    _is_sel = st.session_state.get("_cal_selected_date") == _d
+                                    _n = _seance_counts.get(_d, 0)
+                                    if st.button(
+                                        f"🟢 {_day}", key=f"cal_day_{_d.isoformat()}",
+                                        type="primary" if _is_sel else "secondary",
+                                        help=f"{_n} joueuse(s)", width="stretch",
+                                    ):
+                                        st.session_state["_cal_selected_date"] = _d
+                                        st.rerun()
+                                else:
+                                    st.markdown(
+                                        f"<div style='text-align:center;padding:8px 0;"
+                                        f"color:#3A4A5A;font-size:14px'>{_day}</div>",
+                                        unsafe_allow_html=True,
+                                    )
+
+                    st.caption("🟢 Jour avec séance GPS — clique sur une date pour voir le détail collectif.")
+
+                    # ── Zoom sur la séance sélectionnée ──────────────────────────────
+                    _sel_date = st.session_state.get("_cal_selected_date")
+                    if _sel_date and _sel_date in _seance_days:
+                        st.divider()
+                        st.markdown(f"#### 📋 Séance collective du {_sel_date.strftime('%d/%m/%Y')}")
+
+                        _day_df = _gr_cal[_gr_cal["_day"] == _sel_date].copy()
+                        if _day_df["Player"].duplicated().any():
+                            _sort_col = "Distance (m)" if "Distance (m)" in _day_df.columns else _day_df.columns[0]
+                            _day_df = _day_df.sort_values(_sort_col, ascending=False).drop_duplicates(subset=["Player"])
+
+                        st.caption(f"👥 {_day_df['Player'].nunique()} joueuse(s) présentes")
+
+                        # Global équipe (somme, ou max pour les métriques de pic type
+                        # vitesse/accél. max) + moyenne par joueuse — mêmes métriques
+                        # et mise en forme que la vue individuelle (MONITORING_*).
+                        _agg_rows = {"Total équipe": {}, "Moyenne / joueuse": {}}
+                        for _col in MONITORING_ALL_COLS:
+                            if _col not in _day_df.columns:
+                                continue
+                            _vals = pd.to_numeric(_day_df[_col], errors="coerce").dropna()
+                            if _vals.empty:
+                                continue
+                            _lbl = MONITORING_ALL_LABELS[_col]
+                            if _col in _MONITORING_DECIMAL_COLS:
+                                _agg_rows["Total équipe"][_lbl] = round(float(_vals.max()), 1)
+                            else:
+                                _agg_rows["Total équipe"][_lbl] = round(float(_vals.sum()), 1)
+                            _agg_rows["Moyenne / joueuse"][_lbl] = round(float(_vals.mean()), 1)
+
+                        if not _agg_rows["Total équipe"]:
+                            st.info("Pas assez de données pour agréger cette séance.")
+                        else:
+                            _agg_df = pd.DataFrame(_agg_rows).T.reset_index().rename(columns={"index": "Indicateur"})
+                            _num_cols_agg = [c for c in _agg_df.columns if c != "Indicateur"]
+                            _fmt_agg = {
+                                MONITORING_ALL_LABELS[c]: "{:" + monitoring_metric_fmt(c) + "}"
+                                for c in MONITORING_ALL_COLS if MONITORING_ALL_LABELS.get(c) in _num_cols_agg
+                            }
+                            styled_agg = (
+                                _agg_df.style
+                                .format(_fmt_agg)
+                                .apply(monitoring_heatmap_styles, subset=_num_cols_agg)
+                            )
+                            st.dataframe(styled_agg, width="stretch", hide_index=True)
+                            st.markdown(MONITORING_HEATMAP_LEGEND, unsafe_allow_html=True)
+                            st.caption(
+                                "Total équipe = somme des joueuses présentes (max pour vitesse max / accél. max) · "
+                                "Moyenne / joueuse = moyenne sur les joueuses présentes."
+                            )
+
+                        with st.expander("Voir le détail par joueuse"):
+                            _detail_cols = ["Player"] + [c for c in MONITORING_ALL_COLS if c in _day_df.columns]
+                            _detail_df = _day_df[_detail_cols].rename(columns={"Player": "Joueuse", **MONITORING_ALL_LABELS})
+                            st.dataframe(_detail_df, width="stretch", hide_index=True)
+
+            with _ent_sub_presence:
+                with st.expander("📋 Effectif (liste des joueuses)"):
+                    _pres_roster_cur = load_presence_roster()
+                    if _pres_roster_cur:
+                        st.caption(f"{len(_pres_roster_cur)} joueuse(s) enregistrée(s) — utilisée(s) pour la saisie de présence.")
+                        st.write(", ".join(_pres_roster_cur))
+                    else:
+                        st.caption(
+                            "Aucune liste chargée pour l'instant — la liste utilisée dans la boîte "
+                            "de dialogue est déduite des données de matchs/GPS existantes. Charge un "
+                            "fichier Excel pour définir explicitement l'effectif (utile pour inclure "
+                            "les nouvelles recrues qui n'ont pas encore de données)."
+                        )
+
+                    _pres_xlsx = st.file_uploader(
+                        "Charger un fichier Excel (une colonne avec le nom des joueuses)",
+                        type=["xlsx", "xls"], key="pres_roster_uploader",
                     )
+                    if _pres_xlsx is not None:
+                        try:
+                            _df_pres_roster = pd.read_excel(_pres_xlsx)
+                            _pres_name_col = None
+                            for _cand in ["Joueuse", "Joueuses", "Nom", "Nom complet", "Nom Prénom", "Player"]:
+                                for _col in _df_pres_roster.columns:
+                                    if str(_col).strip().lower() == _cand.lower():
+                                        _pres_name_col = _col
+                                        break
+                                if _pres_name_col is not None:
+                                    break
+                            if _pres_name_col is None:
+                                _pres_name_col = _df_pres_roster.columns[0]
 
-                _nc1, _nc2, _nc3, _nc4 = st.columns([1, 2, 3, 1])
-                with _nc1:
-                    if st.button("◀", key="cal_prev_month", width="stretch"):
-                        _m, _y = st.session_state["_cal_month"] - 1, st.session_state["_cal_year"]
+                            _pres_new_roster = sorted({
+                                nettoyer_nom_joueuse(v) for v in _df_pres_roster[_pres_name_col].dropna().astype(str)
+                                if str(v).strip()
+                            })
+                            st.success(f"{len(_pres_new_roster)} joueuse(s) détectée(s) dans la colonne « {_pres_name_col} ».")
+                            st.write(", ".join(_pres_new_roster))
+                            if st.button("💾 Enregistrer cette liste", key="pres_roster_save", type="primary"):
+                                if save_presence_roster(_pres_new_roster):
+                                    st.success("Liste enregistrée.")
+                                    st.rerun()
+                                else:
+                                    st.error("Échec de l'enregistrement.")
+                        except Exception as _pres_re:
+                            st.error(f"Impossible de lire ce fichier : {_pres_re}")
+
+                _pres_dates = load_presence_dates()
+                _pres_today = date.today()
+
+                if "_pres_cal_year" not in st.session_state:
+                    st.session_state["_pres_cal_year"] = _pres_today.year
+                if "_pres_cal_month" not in st.session_state:
+                    st.session_state["_pres_cal_month"] = _pres_today.month
+
+                _pnc1, _pnc2, _pnc3, _pnc4 = st.columns([1, 2, 3, 1])
+                with _pnc1:
+                    if st.button("◀", key="pres_cal_prev_month", width="stretch"):
+                        _m, _y = st.session_state["_pres_cal_month"] - 1, st.session_state["_pres_cal_year"]
                         if _m < 1:
                             _m, _y = 12, _y - 1
-                        st.session_state["_cal_month"], st.session_state["_cal_year"] = _m, _y
+                        st.session_state["_pres_cal_month"], st.session_state["_pres_cal_year"] = _m, _y
                         st.rerun()
-                with _nc2:
-                    _year_options = sorted(set(_years_avail) | {st.session_state["_cal_year"]})
-                    st.session_state["_cal_year"] = st.selectbox(
-                        "Année", _year_options,
-                        index=_year_options.index(st.session_state["_cal_year"]),
-                        key="cal_year_sel", label_visibility="collapsed",
+                with _pnc2:
+                    _pres_years_avail = sorted({d.year for d in _pres_dates} | {_pres_today.year, st.session_state["_pres_cal_year"]})
+                    st.session_state["_pres_cal_year"] = st.selectbox(
+                        "Année", _pres_years_avail,
+                        index=_pres_years_avail.index(st.session_state["_pres_cal_year"]),
+                        key="pres_cal_year_sel", label_visibility="collapsed",
                     )
-                with _nc3:
+                with _pnc3:
                     st.markdown(
                         f"<div style='text-align:center;font-family:Oswald,sans-serif;font-size:18px;"
                         f"font-weight:600;letter-spacing:0.05em;padding-top:6px;color:#FFFFFF'>"
-                        f"{_CAL_MOIS_FR[st.session_state['_cal_month'] - 1]} {st.session_state['_cal_year']}</div>",
+                        f"{_CAL_MOIS_FR[st.session_state['_pres_cal_month'] - 1]} {st.session_state['_pres_cal_year']}</div>",
                         unsafe_allow_html=True
                     )
-                with _nc4:
-                    if st.button("▶", key="cal_next_month", width="stretch"):
-                        _m, _y = st.session_state["_cal_month"] + 1, st.session_state["_cal_year"]
+                with _pnc4:
+                    if st.button("▶", key="pres_cal_next_month", width="stretch"):
+                        _m, _y = st.session_state["_pres_cal_month"] + 1, st.session_state["_pres_cal_year"]
                         if _m > 12:
                             _m, _y = 1, _y + 1
-                        st.session_state["_cal_month"], st.session_state["_cal_year"] = _m, _y
+                        st.session_state["_pres_cal_month"], st.session_state["_pres_cal_year"] = _m, _y
                         st.rerun()
 
-                _year, _month = st.session_state["_cal_year"], st.session_state["_cal_month"]
+                _pres_year, _pres_month = st.session_state["_pres_cal_year"], st.session_state["_pres_cal_month"]
 
-                # ── Grille calendrier ────────────────────────────────────────────
                 _calmod.setfirstweekday(_calmod.MONDAY)
-                _weeks = _calmod.monthcalendar(_year, _month)
+                _pres_weeks = _calmod.monthcalendar(_pres_year, _pres_month)
 
-                _hcols = st.columns(7)
-                for _hc, _lbl in zip(_hcols, _CAL_JOURS_FR):
-                    _hc.markdown(
+                _phcols = st.columns(7)
+                for _phc, _plbl in zip(_phcols, _CAL_JOURS_FR):
+                    _phc.markdown(
                         f"<div style='text-align:center;font-size:11px;color:#6A8090;"
-                        f"font-weight:600;text-transform:uppercase'>{_lbl}</div>",
+                        f"font-weight:600;text-transform:uppercase'>{_plbl}</div>",
                         unsafe_allow_html=True
                     )
 
-                for _week in _weeks:
-                    _wcols = st.columns(7)
-                    for _wc, _day in zip(_wcols, _week):
-                        with _wc:
-                            if _day == 0:
+                for _pweek in _pres_weeks:
+                    _pwcols = st.columns(7)
+                    for _pwc, _pday in zip(_pwcols, _pweek):
+                        with _pwc:
+                            if _pday == 0:
                                 st.write("")
                                 continue
-                            _d = date(_year, _month, _day)
-                            if _d in _seance_days:
-                                _is_sel = st.session_state.get("_cal_selected_date") == _d
-                                _n = _seance_counts.get(_d, 0)
-                                if st.button(
-                                    f"🟢 {_day}", key=f"cal_day_{_d.isoformat()}",
-                                    type="primary" if _is_sel else "secondary",
-                                    help=f"{_n} joueuse(s)", width="stretch",
-                                ):
-                                    st.session_state["_cal_selected_date"] = _d
-                                    st.rerun()
-                            else:
-                                st.markdown(
-                                    f"<div style='text-align:center;padding:8px 0;"
-                                    f"color:#3A4A5A;font-size:14px'>{_day}</div>",
-                                    unsafe_allow_html=True,
-                                )
+                            _pd_date = date(_pres_year, _pres_month, _pday)
+                            _has_data = _pd_date in _pres_dates
+                            _is_sel = st.session_state.get("_presence_dialog_date") == _pd_date
+                            if st.button(
+                                f"{'🟢 ' if _has_data else ''}{_pday}", key=f"pres_day_{_pd_date.isoformat()}",
+                                type="primary" if _is_sel else "secondary",
+                                width="stretch",
+                            ):
+                                # Pas de st.rerun() ici : le clic déclenche déjà un rerun naturel,
+                                # et le bloc dialog plus bas relit _presence_dialog_date dans CE
+                                # même rerun — un rerun explicite en plus doublerait juste le coût
+                                # (recalcul de toute la page, onglets compris) sans rien apporter.
+                                st.session_state["_presence_dialog_date"] = _pd_date
+                                st.session_state["_active_dialog_id"] = "presence"
 
-                st.caption("🟢 Jour avec séance GPS — clique sur une date pour voir le détail collectif.")
+                st.caption("🟢 Jour avec présence saisie — clique sur une date pour saisir/modifier la présence.")
 
-                # ── Zoom sur la séance sélectionnée ──────────────────────────────
-                _sel_date = st.session_state.get("_cal_selected_date")
-                if _sel_date and _sel_date in _seance_days:
-                    st.divider()
-                    st.markdown(f"#### 📋 Séance collective du {_sel_date.strftime('%d/%m/%Y')}")
+                _pres_dialog_date = st.session_state.get("_presence_dialog_date")
+                if _pres_dialog_date and st.session_state.get("_active_dialog_id") == "presence":
+                    _pres_all_players = load_presence_roster()
+                    if not _pres_all_players:
+                        # Repli : liste déduite des données de matchs/GPS tant qu'aucun fichier
+                        # Excel n'a été chargé (effectif "📋" ci-dessus).
+                        _ps_pres = st.session_state.get("_player_settings") or load_player_settings()
+                        _pres_all_players = sorted(pfc_kpi_all["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
+                                             if pfc_kpi_all is not None and not pfc_kpi_all.empty else []
+                        _pres_all_players = apply_player_settings(_pres_all_players, _ps_pres)
+                    _pres_date_iso = _pres_dialog_date.isoformat()
 
-                    _day_df = _gr_cal[_gr_cal["_day"] == _sel_date].copy()
-                    if _day_df["Player"].duplicated().any():
-                        _sort_col = "Distance (m)" if "Distance (m)" in _day_df.columns else _day_df.columns[0]
-                        _day_df = _day_df.sort_values(_sort_col, ascending=False).drop_duplicates(subset=["Player"])
+                    def _pres_set_statut(date_iso, nom, statut):
+                        # Callback on_change : s'exécute avant le rerun, donc avant que les
+                        # autres cases de la même ligne ne soient réinstanciées — modifier
+                        # leur session_state ici est valide et impose l'exclusivité mutuelle
+                        # (une seule case cochée par joueuse, comme un bouton radio).
+                        for _s in PRESENCE_STATUTS:
+                            st.session_state[f"pres_cb_{date_iso}_{nom}_{_s}"] = (_s == statut)
 
-                    st.caption(f"👥 {_day_df['Player'].nunique()} joueuse(s) présentes")
-
-                    # Global équipe (somme, ou max pour les métriques de pic type
-                    # vitesse/accél. max) + moyenne par joueuse — mêmes métriques
-                    # et mise en forme que la vue individuelle (MONITORING_*).
-                    _agg_rows = {"Total équipe": {}, "Moyenne / joueuse": {}}
-                    for _col in MONITORING_ALL_COLS:
-                        if _col not in _day_df.columns:
-                            continue
-                        _vals = pd.to_numeric(_day_df[_col], errors="coerce").dropna()
-                        if _vals.empty:
-                            continue
-                        _lbl = MONITORING_ALL_LABELS[_col]
-                        if _col in _MONITORING_DECIMAL_COLS:
-                            _agg_rows["Total équipe"][_lbl] = round(float(_vals.max()), 1)
-                        else:
-                            _agg_rows["Total équipe"][_lbl] = round(float(_vals.sum()), 1)
-                        _agg_rows["Moyenne / joueuse"][_lbl] = round(float(_vals.mean()), 1)
-
-                    if not _agg_rows["Total équipe"]:
-                        st.info("Pas assez de données pour agréger cette séance.")
-                    else:
-                        _agg_df = pd.DataFrame(_agg_rows).T.reset_index().rename(columns={"index": "Indicateur"})
-                        _num_cols_agg = [c for c in _agg_df.columns if c != "Indicateur"]
-                        _fmt_agg = {
-                            MONITORING_ALL_LABELS[c]: "{:" + monitoring_metric_fmt(c) + "}"
-                            for c in MONITORING_ALL_COLS if MONITORING_ALL_LABELS.get(c) in _num_cols_agg
-                        }
-                        styled_agg = (
-                            _agg_df.style
-                            .format(_fmt_agg)
-                            .apply(monitoring_heatmap_styles, subset=_num_cols_agg)
-                        )
-                        st.dataframe(styled_agg, width="stretch", hide_index=True)
-                        st.markdown(MONITORING_HEATMAP_LEGEND, unsafe_allow_html=True)
-                        st.caption(
-                            "Total équipe = somme des joueuses présentes (max pour vitesse max / accél. max) · "
-                            "Moyenne / joueuse = moyenne sur les joueuses présentes."
-                        )
-
-                    with st.expander("Voir le détail par joueuse"):
-                        _detail_cols = ["Player"] + [c for c in MONITORING_ALL_COLS if c in _day_df.columns]
-                        _detail_df = _day_df[_detail_cols].rename(columns={"Player": "Joueuse", **MONITORING_ALL_LABELS})
-                        st.dataframe(_detail_df, width="stretch", hide_index=True)
-
-        with _ent_sub_presence:
-            with st.expander("📋 Effectif (liste des joueuses)"):
-                _pres_roster_cur = load_presence_roster()
-                if _pres_roster_cur:
-                    st.caption(f"{len(_pres_roster_cur)} joueuse(s) enregistrée(s) — utilisée(s) pour la saisie de présence.")
-                    st.write(", ".join(_pres_roster_cur))
-                else:
-                    st.caption(
-                        "Aucune liste chargée pour l'instant — la liste utilisée dans la boîte "
-                        "de dialogue est déduite des données de matchs/GPS existantes. Charge un "
-                        "fichier Excel pour définir explicitement l'effectif (utile pour inclure "
-                        "les nouvelles recrues qui n'ont pas encore de données)."
-                    )
-
-                _pres_xlsx = st.file_uploader(
-                    "Charger un fichier Excel (une colonne avec le nom des joueuses)",
-                    type=["xlsx", "xls"], key="pres_roster_uploader",
-                )
-                if _pres_xlsx is not None:
-                    try:
-                        _df_pres_roster = pd.read_excel(_pres_xlsx)
-                        _pres_name_col = None
-                        for _cand in ["Joueuse", "Joueuses", "Nom", "Nom complet", "Nom Prénom", "Player"]:
-                            for _col in _df_pres_roster.columns:
-                                if str(_col).strip().lower() == _cand.lower():
-                                    _pres_name_col = _col
-                                    break
-                            if _pres_name_col is not None:
-                                break
-                        if _pres_name_col is None:
-                            _pres_name_col = _df_pres_roster.columns[0]
-
-                        _pres_new_roster = sorted({
-                            nettoyer_nom_joueuse(v) for v in _df_pres_roster[_pres_name_col].dropna().astype(str)
-                            if str(v).strip()
-                        })
-                        st.success(f"{len(_pres_new_roster)} joueuse(s) détectée(s) dans la colonne « {_pres_name_col} ».")
-                        st.write(", ".join(_pres_new_roster))
-                        if st.button("💾 Enregistrer cette liste", key="pres_roster_save", type="primary"):
-                            if save_presence_roster(_pres_new_roster):
-                                st.success("Liste enregistrée.")
-                                st.rerun()
-                            else:
-                                st.error("Échec de l'enregistrement.")
-                    except Exception as _pres_re:
-                        st.error(f"Impossible de lire ce fichier : {_pres_re}")
-
-            _pres_dates = load_presence_dates()
-            _pres_today = date.today()
-
-            if "_pres_cal_year" not in st.session_state:
-                st.session_state["_pres_cal_year"] = _pres_today.year
-            if "_pres_cal_month" not in st.session_state:
-                st.session_state["_pres_cal_month"] = _pres_today.month
-
-            _pnc1, _pnc2, _pnc3, _pnc4 = st.columns([1, 2, 3, 1])
-            with _pnc1:
-                if st.button("◀", key="pres_cal_prev_month", width="stretch"):
-                    _m, _y = st.session_state["_pres_cal_month"] - 1, st.session_state["_pres_cal_year"]
-                    if _m < 1:
-                        _m, _y = 12, _y - 1
-                    st.session_state["_pres_cal_month"], st.session_state["_pres_cal_year"] = _m, _y
-                    st.rerun()
-            with _pnc2:
-                _pres_years_avail = sorted({d.year for d in _pres_dates} | {_pres_today.year, st.session_state["_pres_cal_year"]})
-                st.session_state["_pres_cal_year"] = st.selectbox(
-                    "Année", _pres_years_avail,
-                    index=_pres_years_avail.index(st.session_state["_pres_cal_year"]),
-                    key="pres_cal_year_sel", label_visibility="collapsed",
-                )
-            with _pnc3:
-                st.markdown(
-                    f"<div style='text-align:center;font-family:Oswald,sans-serif;font-size:18px;"
-                    f"font-weight:600;letter-spacing:0.05em;padding-top:6px;color:#FFFFFF'>"
-                    f"{_CAL_MOIS_FR[st.session_state['_pres_cal_month'] - 1]} {st.session_state['_pres_cal_year']}</div>",
-                    unsafe_allow_html=True
-                )
-            with _pnc4:
-                if st.button("▶", key="pres_cal_next_month", width="stretch"):
-                    _m, _y = st.session_state["_pres_cal_month"] + 1, st.session_state["_pres_cal_year"]
-                    if _m > 12:
-                        _m, _y = 1, _y + 1
-                    st.session_state["_pres_cal_month"], st.session_state["_pres_cal_year"] = _m, _y
-                    st.rerun()
-
-            _pres_year, _pres_month = st.session_state["_pres_cal_year"], st.session_state["_pres_cal_month"]
-
-            _calmod.setfirstweekday(_calmod.MONDAY)
-            _pres_weeks = _calmod.monthcalendar(_pres_year, _pres_month)
-
-            _phcols = st.columns(7)
-            for _phc, _plbl in zip(_phcols, _CAL_JOURS_FR):
-                _phc.markdown(
-                    f"<div style='text-align:center;font-size:11px;color:#6A8090;"
-                    f"font-weight:600;text-transform:uppercase'>{_plbl}</div>",
-                    unsafe_allow_html=True
-                )
-
-            for _pweek in _pres_weeks:
-                _pwcols = st.columns(7)
-                for _pwc, _pday in zip(_pwcols, _pweek):
-                    with _pwc:
-                        if _pday == 0:
-                            st.write("")
-                            continue
-                        _pd_date = date(_pres_year, _pres_month, _pday)
-                        _has_data = _pd_date in _pres_dates
-                        _is_sel = st.session_state.get("_presence_dialog_date") == _pd_date
-                        if st.button(
-                            f"{'🟢 ' if _has_data else ''}{_pday}", key=f"pres_day_{_pd_date.isoformat()}",
-                            type="primary" if _is_sel else "secondary",
-                            width="stretch",
-                        ):
-                            # Pas de st.rerun() ici : le clic déclenche déjà un rerun naturel,
-                            # et le bloc dialog plus bas relit _presence_dialog_date dans CE
-                            # même rerun — un rerun explicite en plus doublerait juste le coût
-                            # (recalcul de toute la page, onglets compris) sans rien apporter.
-                            st.session_state["_presence_dialog_date"] = _pd_date
-                            st.session_state["_active_dialog_id"] = "presence"
-
-            st.caption("🟢 Jour avec présence saisie — clique sur une date pour saisir/modifier la présence.")
-
-            _pres_dialog_date = st.session_state.get("_presence_dialog_date")
-            if _pres_dialog_date and st.session_state.get("_active_dialog_id") == "presence":
-                _pres_all_players = load_presence_roster()
-                if not _pres_all_players:
-                    # Repli : liste déduite des données de matchs/GPS tant qu'aucun fichier
-                    # Excel n'a été chargé (effectif "📋" ci-dessus).
-                    _ps_pres = st.session_state.get("_player_settings") or load_player_settings()
-                    _pres_all_players = sorted(pfc_kpi_all["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
-                                         if pfc_kpi_all is not None and not pfc_kpi_all.empty else []
-                    _pres_all_players = apply_player_settings(_pres_all_players, _ps_pres)
-                _pres_date_iso = _pres_dialog_date.isoformat()
-
-                def _pres_set_statut(date_iso, nom, statut):
-                    # Callback on_change : s'exécute avant le rerun, donc avant que les
-                    # autres cases de la même ligne ne soient réinstanciées — modifier
-                    # leur session_state ici est valide et impose l'exclusivité mutuelle
-                    # (une seule case cochée par joueuse, comme un bouton radio).
-                    for _s in PRESENCE_STATUTS:
-                        st.session_state[f"pres_cb_{date_iso}_{nom}_{_s}"] = (_s == statut)
-
-                @st.dialog(f"Présence du {_pres_dialog_date.strftime('%d/%m/%Y')}")
-                def _presence_dialog():
-                    _existing = load_presence_for_date(_pres_date_iso)
-                    if st.session_state.get("_presence_extra_names_date") != _pres_date_iso:
-                        st.session_state["_presence_extra_names"] = [
-                            n for n in _existing.keys() if n not in _pres_all_players
-                        ]
-                        st.session_state["_presence_extra_names_date"] = _pres_date_iso
-                        # (Ré)initialise les cases à cocher pour cette date à partir des
-                        # données existantes (une seule fois par ouverture de dialog).
-                        for _n in list(_pres_all_players) + st.session_state["_presence_extra_names"]:
-                            _def = _existing.get(_n, "Présente")
-                            for _s in PRESENCE_STATUTS:
-                                st.session_state[f"pres_cb_{_pres_date_iso}_{_n}_{_s}"] = (_s == _def)
-
-                    _roster = list(_pres_all_players)
-                    for _n in st.session_state["_presence_extra_names"]:
-                        if _n not in _roster:
-                            _roster.append(_n)
-
-                    st.caption(f"{len(_roster)} joueuse(s)")
-                    _statuts = {}
-                    _PRES_CB_PER_ROW = 3
-                    for _nom in _roster:
-                        st.markdown(f"**{_nom}**")
-                        for _row_start in range(0, len(PRESENCE_STATUTS), _PRES_CB_PER_ROW):
-                            _row_statuts = PRESENCE_STATUTS[_row_start:_row_start + _PRES_CB_PER_ROW]
-                            _cb_cols = st.columns(_PRES_CB_PER_ROW)
-                            for _cbc, _s in zip(_cb_cols, _row_statuts):
-                                with _cbc:
-                                    st.checkbox(
-                                        PRESENCE_STATUTS_SHORT[_s],
-                                        key=f"pres_cb_{_pres_date_iso}_{_nom}_{_s}",
-                                        on_change=_pres_set_statut, args=(_pres_date_iso, _nom, _s),
-                                    )
-                        _statuts[_nom] = next(
-                            (_s for _s in PRESENCE_STATUTS
-                             if st.session_state.get(f"pres_cb_{_pres_date_iso}_{_nom}_{_s}")),
-                            "Présente"
-                        )
-
-                    st.divider()
-                    _padd1, _padd2 = st.columns([3, 1])
-                    with _padd1:
-                        _pres_new_name = st.text_input("Ajouter une joueuse", key=f"pres_new_name_{_pres_date_iso}")
-                    with _padd2:
-                        st.markdown("<div style='height:1.75em'></div>", unsafe_allow_html=True)
-                        if st.button("➕ Ajouter", key=f"pres_add_name_{_pres_date_iso}", width="stretch"):
-                            _clean_name = _pres_new_name.strip()
-                            if _clean_name and _clean_name not in _roster:
-                                st.session_state["_presence_extra_names"].append(_clean_name)
+                    @st.dialog(f"Présence du {_pres_dialog_date.strftime('%d/%m/%Y')}")
+                    def _presence_dialog():
+                        _existing = load_presence_for_date(_pres_date_iso)
+                        if st.session_state.get("_presence_extra_names_date") != _pres_date_iso:
+                            st.session_state["_presence_extra_names"] = [
+                                n for n in _existing.keys() if n not in _pres_all_players
+                            ]
+                            st.session_state["_presence_extra_names_date"] = _pres_date_iso
+                            # (Ré)initialise les cases à cocher pour cette date à partir des
+                            # données existantes (une seule fois par ouverture de dialog).
+                            for _n in list(_pres_all_players) + st.session_state["_presence_extra_names"]:
+                                _def = _existing.get(_n, "Présente")
                                 for _s in PRESENCE_STATUTS:
-                                    st.session_state[f"pres_cb_{_pres_date_iso}_{_clean_name}_{_s}"] = (_s == "Présente")
-                                st.rerun()
+                                    st.session_state[f"pres_cb_{_pres_date_iso}_{_n}_{_s}"] = (_s == _def)
 
-                    st.divider()
-                    _pb1, _pb2 = st.columns(2)
-                    with _pb1:
-                        if st.button("💾 Enregistrer", type="primary", key=f"pres_save_{_pres_date_iso}", width="stretch"):
-                            if save_presence(_pres_date_iso, _statuts):
+                        _roster = list(_pres_all_players)
+                        for _n in st.session_state["_presence_extra_names"]:
+                            if _n not in _roster:
+                                _roster.append(_n)
+
+                        st.caption(f"{len(_roster)} joueuse(s)")
+                        _statuts = {}
+                        _PRES_CB_PER_ROW = 3
+                        for _nom in _roster:
+                            st.markdown(f"**{_nom}**")
+                            for _row_start in range(0, len(PRESENCE_STATUTS), _PRES_CB_PER_ROW):
+                                _row_statuts = PRESENCE_STATUTS[_row_start:_row_start + _PRES_CB_PER_ROW]
+                                _cb_cols = st.columns(_PRES_CB_PER_ROW)
+                                for _cbc, _s in zip(_cb_cols, _row_statuts):
+                                    with _cbc:
+                                        st.checkbox(
+                                            PRESENCE_STATUTS_SHORT[_s],
+                                            key=f"pres_cb_{_pres_date_iso}_{_nom}_{_s}",
+                                            on_change=_pres_set_statut, args=(_pres_date_iso, _nom, _s),
+                                        )
+                            _statuts[_nom] = next(
+                                (_s for _s in PRESENCE_STATUTS
+                                 if st.session_state.get(f"pres_cb_{_pres_date_iso}_{_nom}_{_s}")),
+                                "Présente"
+                            )
+
+                        st.divider()
+                        _padd1, _padd2 = st.columns([3, 1])
+                        with _padd1:
+                            _pres_new_name = st.text_input("Ajouter une joueuse", key=f"pres_new_name_{_pres_date_iso}")
+                        with _padd2:
+                            st.markdown("<div style='height:1.75em'></div>", unsafe_allow_html=True)
+                            if st.button("➕ Ajouter", key=f"pres_add_name_{_pres_date_iso}", width="stretch"):
+                                _clean_name = _pres_new_name.strip()
+                                if _clean_name and _clean_name not in _roster:
+                                    st.session_state["_presence_extra_names"].append(_clean_name)
+                                    for _s in PRESENCE_STATUTS:
+                                        st.session_state[f"pres_cb_{_pres_date_iso}_{_clean_name}_{_s}"] = (_s == "Présente")
+                                    st.rerun()
+
+                        st.divider()
+                        _pb1, _pb2 = st.columns(2)
+                        with _pb1:
+                            if st.button("💾 Enregistrer", type="primary", key=f"pres_save_{_pres_date_iso}", width="stretch"):
+                                if save_presence(_pres_date_iso, _statuts):
+                                    st.session_state.pop("_presence_dialog_date", None)
+                                    st.session_state.pop("_presence_extra_names", None)
+                                    st.session_state.pop("_presence_extra_names_date", None)
+                                    st.session_state.pop("_active_dialog_id", None)
+                                    st.rerun()
+                                else:
+                                    st.error("Échec de l'enregistrement (Supabase indisponible ?).")
+                        with _pb2:
+                            if st.button("Annuler", key=f"pres_cancel_{_pres_date_iso}", width="stretch"):
                                 st.session_state.pop("_presence_dialog_date", None)
                                 st.session_state.pop("_presence_extra_names", None)
                                 st.session_state.pop("_presence_extra_names_date", None)
                                 st.session_state.pop("_active_dialog_id", None)
                                 st.rerun()
-                            else:
-                                st.error("Échec de l'enregistrement (Supabase indisponible ?).")
-                    with _pb2:
-                        if st.button("Annuler", key=f"pres_cancel_{_pres_date_iso}", width="stretch"):
-                            st.session_state.pop("_presence_dialog_date", None)
-                            st.session_state.pop("_presence_extra_names", None)
-                            st.session_state.pop("_presence_extra_names_date", None)
-                            st.session_state.pop("_active_dialog_id", None)
-                            st.rerun()
 
-                _presence_dialog()
+                    _presence_dialog()
 
     # ══════════════════════════════════
     # TAB 1 — MATCHS
@@ -12581,9 +12280,15 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
             # Sélecteur joueuse — modifiable indépendamment du contrôle global
             _def_idx = _all_gps_p.index(_pgps_default) if _pgps_default in _all_gps_p else 0
 
-            if role == ROLE_JOUEUSE and _pgps_default:
-                _pgps = _pgps_default
-                st.caption(f"Joueuse : **{_pgps}**")
+            if role == ROLE_JOUEUSE:
+                # Jamais de repli sur une autre joueuse (_all_gps_p[0]) ni de sélecteur
+                _pgps = (_pgps_name if _pgps_name in _all_gps_p else next(
+                    (p for p in _all_gps_p if nom_tokens(p) & nom_tokens(_perf_player or "")), None)
+                    if _perf_player else None)
+                if _pgps:
+                    st.caption(f"Joueuse : **{_pgps}**")
+                else:
+                    st.info("Aucune donnée GPS trouvée pour ton profil.")
             elif _all_gps_p:
                 _pgps = st.selectbox(
                     "Joueuse", _all_gps_p,
@@ -12650,7 +12355,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             f"<div style='background:#0C1220;border-left:2px solid #00A3E0;border-radius:2px;"
                             f"padding:8px 14px;margin-bottom:6px;'>"
                             f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
-                            f"<span style='color:#C8D8E8;font-size:13.5px;'>{_row['objectif']}</span>{_badge}"
+                            f"<span style='color:#C8D8E8;font-size:13.5px;'>{_esc(str(_row['objectif']))}</span>{_badge}"
                             f"</div></div>",
                             unsafe_allow_html=True
                         )
@@ -13568,12 +13273,15 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                     st.markdown(MONITORING_HEATMAP_LEGEND, unsafe_allow_html=True)
 
     with _st_params:
-                    _tpc = []
-                    for _sk in ["kpi_df","pfc_kpi_df"]:
-                        _kdf = st.session_state.get(_sk)
-                        if _kdf is not None and not getattr(_kdf,"empty",True) and "Player" in _kdf.columns:
-                            _tpc += _kdf["Player"].dropna().astype(str).unique().tolist()
-                    render_gps_concordance_ui(_gps_match_df, sorted(set(_tpc)))
+        if role == ROLE_JOUEUSE:
+            st.info("Accès réservé au staff.")
+        else:
+            _tpc = []
+            for _sk in ["pfc_kpi_all", "kpi_df", "pfc_kpi_df"]:
+                _kdf = st.session_state.get(_sk)
+                if _kdf is not None and not getattr(_kdf, "empty", True) and "Player" in _kdf.columns:
+                    _tpc += _kdf["Player"].dropna().astype(str).unique().tolist()
+            render_gps_concordance_ui(_gps_match_df, sorted(set(_tpc)))
 
     # ══════════════════════════════════════
     # TAB — SUIVI (Fiche Bilan, onglet à plat dédié)
@@ -14175,7 +13883,7 @@ def render_import_csv():
             for i, n in enumerate(a_nommer):
                 prop = analyses[n]["proposition"]
                 c = st.columns([2.2, 1.2, 0.8, 1.6, 0.7])
-                c[0].markdown(f"<div style='padding-top:32px'>{n}</div>", unsafe_allow_html=True)
+                c[0].markdown(f"<div style='padding-top:32px'>{_esc(n)}</div>", unsafe_allow_html=True)
                 d = c[1].date_input("Date du match", value=None, format="DD/MM/YYYY", key=f"{_cle}_d{i}")
                 cat = c[2].text_input("Catégorie", value=prop.get("categorie", ""), key=f"{_cle}_c{i}")
                 adv = c[3].text_input("Adversaire", value=prop.get("adversaire", ""), key=f"{_cle}_a{i}")
@@ -14371,9 +14079,9 @@ def _render_nav_menu(user_profile, permissions) -> str:
     role = get_user_role(user_profile, permissions)
 
     if role == ROLE_ADMIN:
-        options = ["Performance", "Programme talent", "Gestion", "Médical", "Recrutement", "Laboratoire"]
+        options = ["Performance", "Programme talent", "Gestion", "Médical", "Laboratoire"]
     elif role == ROLE_STAFF:
-        options = ["Performance", "Programme talent", "Médical", "Recrutement"]
+        options = ["Performance", "Programme talent", "Médical"]
     else:  # ROLE_JOUEUSE
         options = ["Performance"]
 
@@ -14388,8 +14096,6 @@ def _render_nav_menu(user_profile, permissions) -> str:
     if _is_staff_pro and "Staff Pro" in options:
         _default_index = options.index("Staff Pro")
 
-    _base_icons = ["lightning-charge", "people-fill", "heart-pulse", "search"]
-    _all_icons   = ["lightning-charge", "people-fill", "gear-fill", "people-fill", "heart-pulse", "search", "star-fill"]
     # Reconstruire la liste d'icônes en suivant l'ordre des options
     _icon_map = {
         "Laboratoire":        "eyedropper",
@@ -14397,7 +14103,6 @@ def _render_nav_menu(user_profile, permissions) -> str:
         "Programme talent": "people-fill",
         "Gestion":            "gear-fill",
         "Médical":            "heart-pulse",
-        "Recrutement":        "search",
         "Staff Pro":          "star-fill",
     }
     icons = [_icon_map.get(o, "circle") for o in options]
@@ -14444,7 +14149,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
         f"<div style='font-family:Oswald,sans-serif;font-size:11px;font-weight:500;letter-spacing:0.14em;"
         f"text-transform:uppercase;color:#6A8090;padding:0 12px 2px 12px;'>Connecté</div>"
         f"<div style='font-family:Oswald,sans-serif;font-size:20px;font-weight:700;letter-spacing:0.06em;"
-        f"text-transform:uppercase;color:#FFFFFF;padding:0 12px 12px 12px;'>{user_profile}</div>",
+        f"text-transform:uppercase;color:#FFFFFF;padding:0 12px 12px 12px;'>{_esc(str(user_profile))}</div>",
         unsafe_allow_html=True,
     )
 
@@ -14674,6 +14379,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                     st.markdown("**Base de données**")
                     if st.button("🔄 Mettre à jour la base", key="gestion_update_db"):
                         st.session_state["_sync_done"] = False
+                        st.session_state["_sync_force"] = True
+                        st.session_state.pop("_tactical_files_cache", None)
                         st.cache_data.clear()
                         # Invalider le cache Parquet pour forcer le rechargement complet
                         for _cp in [PARQUET_PFC_PATH, PARQUET_GPS_PATH, PARQUET_GPSW_PATH,
@@ -14694,20 +14401,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Erreur sync GPS Match : {e}")
-
-                    if st.button("🔄 Synchroniser objectifs", key="gestion_sync_objectifs"):
-                        with st.spinner("Synchronisation objectifs…"):
-                            try:
-                                ok, err = sync_objectifs_from_drive()
-                                if ok:
-                                    st.success(f"✅ {ok} fichier(s) synchronisé(s).")
-                                    st.rerun()
-                                elif not DRIVE_OBJECTIFS_FOLDER_ID:
-                                    st.info("Renseignez **DRIVE_OBJECTIFS_FOLDER_ID** dans le code pour activer la sync.")
-                                else:
-                                    st.error("Aucun fichier récupéré. Vérifiez l'ID du dossier Drive.")
-                            except Exception as e:
-                                st.error(f"Erreur sync objectifs : {e}")
 
                 with col2:
                     st.markdown("**Photos**")
@@ -14880,7 +14573,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
 
                     # ── Carte Identité — design fiche joueur ────────────────────────
                     # Préparer les données d'affichage
-                    prenom_val  = info.get("Prénom", "") or ""
+                    prenom_val  = _esc(str(info.get("Prénom", "") or ""))
                     nom_val     = info.get("Nom", selected) or selected
                     poste1_val  = info.get("Poste 1", "") or ""
                     poste2_val  = info.get("Poste 2", "") or ""
@@ -14957,7 +14650,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                         <div style='flex:1;min-width:0;'>
                             <div style='color:#00A3E0;font-family:Oswald,sans-serif;font-size:10px;font-weight:500;letter-spacing:0.20em;text-transform:uppercase;margin-bottom:10px;'>Paris FC — Joueuse Passerelle</div>
                             <div style='color:#C8D8E8;font-family:Inter,sans-serif;font-size:26px;font-weight:300;line-height:1;margin-bottom:2px;'>{prenom_val}</div>
-                            <div style='color:#FFFFFF;font-family:Oswald,sans-serif;font-size:36px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;line-height:1;margin-bottom:18px;'>{nom_val.upper()}</div>
+                            <div style='color:#FFFFFF;font-family:Oswald,sans-serif;font-size:36px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;line-height:1;margin-bottom:18px;'>{_esc(str(nom_val).upper())}</div>
                             <div style='margin-bottom:18px;'>{postes_html}</div>
                             <div style='width:32px;height:1px;background:#00A3E0;margin-bottom:14px;opacity:0.5;'></div>
                             {details_html}
@@ -14977,7 +14670,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
 
                     st.divider()
 
-                    tab_stats, tab_obj, tab_edf, tab_gps, tab_medical = st.tabs(["📈 Statistiques", "🎯 Objectifs", "🆚 Comparaison EDF", "🏃 Données physiques (GPS)", "🏥 Médical"])
+                    tab_stats, tab_obj, tab_edf, tab_gps = st.tabs(["📈 Statistiques", "🎯 Objectifs", "🆚 Comparaison EDF", "🏃 Données physiques (GPS)"])
 
                     with tab_obj:
                         # ── Récupération des objectifs depuis le fichier passerelle ──
@@ -15076,18 +14769,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                                 else:
                                     st.caption("⚠️ Format du CSV inattendu — colonnes attendues : Joueuse, Objectif évalué, Note.")
 
-                            # Bouton sync admin
-                            if check_permission(user_profile, "all", permissions):
-                                st.markdown("---")
-                                if st.button("🔄 Sync évaluations objectifs", key="sync_obj_evals"):
-                                    _ok, _err = sync_objectifs_from_drive()
-                                    if _ok:
-                                        st.success(f"{_ok} fichier(s) synchronisé(s).")
-                                        st.rerun()
-                                    elif not DRIVE_OBJECTIFS_FOLDER_ID:
-                                        st.info("Renseignez **DRIVE_OBJECTIFS_FOLDER_ID** dans le code (ligne ~60) pour activer la synchronisation Drive.")
-                                    else:
-                                        st.error("Aucun fichier récupéré. Vérifiez l'ID du dossier Drive.")
 
                     with tab_stats:
                         st.subheader("Statistiques joueuse")
@@ -15462,14 +15143,14 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                                 st.caption("—")
                             for _, _pt_r in _pt_rdv_jour.iterrows():
                                 _pt_c_hex = _pt_couleurs_j.get(_pt_r["joueuse"], "#888")
-                                _pt_nom = "" if _pt_f_sem != _pt_toute_equipe else f"<b>{_pt_r['joueuse']}</b><br>"
-                                _pt_com = f"<br><span style='opacity:.7'>{_pt_r['commentaire']}</span>" if pd.notna(_pt_r["commentaire"]) else ""
+                                _pt_nom = "" if _pt_f_sem != _pt_toute_equipe else f"<b>{_esc(str(_pt_r['joueuse']))}</b><br>"
+                                _pt_com = f"<br><span style='opacity:.7'>{_esc(str(_pt_r['commentaire']))}</span>" if pd.notna(_pt_r["commentaire"]) else ""
                                 st.markdown(
                                     f"<div style='background:{_pt_c_hex}22;border-left:3px solid {_pt_c_hex};"
                                     f"padding:4px 6px;margin-bottom:5px;border-radius:4px;"
                                     f"font-size:0.8em;line-height:1.25'>{_pt_nom}"
-                                    f"{_pt_r['type'] or _pt_r['categorie']}"
-                                    f"<br><span style='opacity:.6;font-size:.9em'>{_pt_r['categorie']}</span>"
+                                    f"{_esc(str(_pt_r['type'] or _pt_r['categorie']))}"
+                                    f"<br><span style='opacity:.6;font-size:.9em'>{_esc(str(_pt_r['categorie']))}</span>"
                                     f"{_pt_com}</div>",
                                     unsafe_allow_html=True,
                                 )
@@ -16224,7 +15905,9 @@ def main():
             password = st.text_input("Mot de passe", type="password")
             submitted = st.form_submit_button("Valider")
             if submitted:
-                if username in permissions and password == permissions[username]["password"]:
+                _pwd_attendu = permissions.get(username, {}).get("password", "") if username else ""
+                if _pwd_attendu and _pwd_attendu.lower() != "nan" and password \
+                        and hmac.compare_digest(password.encode("utf-8"), _pwd_attendu.encode("utf-8")):
                     st.session_state.authenticated = True
                     st.session_state.user_profile = username
                     st.rerun()
@@ -16254,27 +15937,44 @@ def main():
         if _has_local_data:
             # Données locales présentes → sync en arrière-plan (non bloquante)
             if not st.session_state.get("_sync_thread_started"):
-                import threading
-                def _bg_sync():
-                    # ⚠️ Ce thread n'a PAS de ScriptRunContext — écrire dans
-                    # st.session_state depuis ici est non fiable (cf. warnings
-                    # "missing ScriptRunContext"). On utilise un fichier sur
-                    # disque comme signal, lu ensuite par le thread principal
-                    # (qui a le bon contexte) pour faire le nettoyage de cache.
-                    try:
-                        _run_initial_sync()
-                    except Exception:
-                        pass
-                    finally:
-                        try:
-                            with open(SYNC_SIGNAL_PATH, "w") as _f:
-                                _f.write(str(datetime.now().timestamp()))
-                        except Exception:
-                            pass
-                _t = threading.Thread(target=_bg_sync, daemon=True, name="pfc_bg_sync")
-                _t.start()
-                st.session_state["_sync_thread_started"] = True
-                st.session_state["_sync_pending"] = True
+                _coord = _sync_coordinateur()
+                _force = st.session_state.pop("_sync_force", False)   # bouton « Mettre à jour la base »
+                with _coord["lock"]:
+                    _now = time.time()
+                    if _coord["en_cours"]:
+                        _lancer = False      # une sync tourne déjà (autre session) : attendre son signal
+                    elif not _force and _now - _coord["fin"] < SYNC_INTERVALLE_MIN_S:
+                        _lancer = None       # sync récente : données déjà à jour
+                    else:
+                        _lancer = True
+                        _coord["en_cours"], _coord["debut"] = True, _now
+                if _lancer is None:
+                    st.session_state["_sync_done"] = True
+                else:
+                    if _lancer:
+                        def _bg_sync():
+                            # ⚠️ Ce thread n'a PAS de ScriptRunContext — écrire dans
+                            # st.session_state depuis ici est non fiable. Fin de sync signalée
+                            # par fichier, lu par le thread principal de chaque session.
+                            # Le cache global est vidé UNE fois, à la fin de _run_initial_sync.
+                            try:
+                                _run_initial_sync()
+                            except Exception:
+                                logging.exception("Sync Drive en arrière-plan échouée")
+                            finally:
+                                try:
+                                    _write_bytes_atomic(SYNC_SIGNAL_PATH, str(time.time()).encode())
+                                except Exception:
+                                    logging.exception("Écriture du signal de sync échouée")
+                                with _coord["lock"]:
+                                    _coord["en_cours"], _coord["fin"] = False, time.time()
+                        _t = threading.Thread(target=_bg_sync, daemon=True, name="pfc_bg_sync")
+                        _t.start()
+                    st.session_state["_sync_thread_started"] = True
+                    st.session_state["_sync_pending"] = True
+                    # Seul un signal POSTÉRIEUR au début de cette sync compte (avant : le signal
+                    # laissé par une sync précédente vidait le cache de tous dès la connexion).
+                    st.session_state["_sync_t0"] = _coord["debut"]
         else:
             # Première installation : sync bloquante nécessaire
             with st.spinner("⏳ Première synchronisation Drive…"):
@@ -16297,13 +15997,12 @@ def main():
             except Exception:
                 _signal_ts = None
 
-        if _signal_ts is not None and _signal_ts != st.session_state.get("_last_sync_signal_seen"):
-            # Sync terminée → nettoyage complet du cache, sans bloquer l'affichage
-            st.session_state["_last_sync_signal_seen"] = _signal_ts
+        if _signal_ts is not None and _signal_ts > st.session_state.get("_sync_t0", 0.0):
+            # Sync terminée (cache global déjà vidé par la sync) → caches de session seulement
             st.session_state["_sync_pending"] = False
             st.session_state["_sync_thread_started"] = False
             st.session_state["_sync_done"] = True
-            st.cache_data.clear()
+            st.session_state.pop("_tactical_files_cache", None)
         else:
             st.sidebar.caption("🔄 Mise à jour Drive en cours…")
 

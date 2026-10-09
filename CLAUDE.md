@@ -39,7 +39,6 @@ streamlit run paris_football_club.py
 
 # Installer les dépendances
 pip install -r requirements.txt
-pip install python-dotenv   # requis par sync_drive_to_supabase.py mais absent de requirements.txt
 
 # Lancer les tests (unittest, pas pytest)
 python3 -m unittest discover -s tests -v
