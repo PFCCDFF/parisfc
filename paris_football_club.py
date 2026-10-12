@@ -4990,27 +4990,28 @@ def parse_gps_v2_sections(path: str) -> dict:
     if len(_non_blank) >= 2 and len(_non_blank[0]) >= 5:
         out["header"] = dict(zip([c.strip() for c in _non_blank[0]], _non_blank[1]))
 
-    _start = None
-    for i, r in enumerate(rows):
-        if len(r) == 1 and r[0].strip() == "Effective Metrics":
-            _start = i + 1
-            break
-    if _start is None:
-        return out
-
-    _end = len(rows)
-    for i in range(_start, len(rows)):
-        if len(rows[i]) == 1 and rows[i][0].strip() in _GPS_V2_SECTION_MARKERS:
-            _end = i
-            break
-
-    _block = [r for r in rows[_start:_end] if not _is_blank(r)]
-    if len(_block) < 2:
-        return out
-    _cols = [c.strip() for c in _block[0]]
-    _n = len(_cols)
-    _data = [(r[:_n] + [""] * (_n - len(r))) if len(r) < _n else r[:_n] for r in _block[1:]]
-    out["Effective Metrics"] = pd.DataFrame(_data, columns=_cols)
+    # « Global Metrics » sert de repli quand « Effective Metrics » est vide/à zéro (export
+    # INDIVIDUAL_MATCH sans périodes, ex. GUILLET Anna 10/10/2026), comme gps_compilation.
+    for _section in ("Effective Metrics", "Global Metrics"):
+        _start = None
+        for i, r in enumerate(rows):
+            if len(r) == 1 and r[0].strip() == _section:
+                _start = i + 1
+                break
+        if _start is None:
+            continue
+        _end = len(rows)
+        for i in range(_start, len(rows)):
+            if len(rows[i]) == 1 and rows[i][0].strip() in _GPS_V2_SECTION_MARKERS:
+                _end = i
+                break
+        _block = [r for r in rows[_start:_end] if not _is_blank(r)]
+        if len(_block) < 2:
+            continue
+        _cols = [c.strip() for c in _block[0]]
+        _n = len(_cols)
+        _data = [(r[:_n] + [""] * (_n - len(r))) if len(r) < _n else r[:_n] for r in _block[1:]]
+        out[_section] = pd.DataFrame(_data, columns=_cols)
     return out
 
 
@@ -5027,6 +5028,10 @@ def standardize_gps_v2_export(path: str, filename: str) -> pd.DataFrame:
     Acc_4/Dec_4 n'existent pas dans ce format : laissés absents plutôt qu'inventés."""
     sections = parse_gps_v2_sections(path)
     eff = sections.get("Effective Metrics")
+    _glob = sections.get("Global Metrics")
+    if (eff is None or eff.empty
+            or pd.to_numeric(eff.get("Distance (m)", pd.Series(dtype=str)), errors="coerce").fillna(0).sum() == 0):
+        eff = _glob   # temps effectif non calculé par le capteur → métriques globales
     if eff is None or eff.empty:
         return pd.DataFrame()
 
@@ -5119,10 +5124,10 @@ def parse_gps_v2_header_name(name: str) -> dict:
 def is_gps_match_file(filename: str) -> bool:
     """Détecte un fichier GPS de match : U19_, U17_, J0x_, vs _, - _, etc."""
     fn = normalize_str(filename)
-    match_patterns = ["u19", "u17", "u16", "u15", "_j0", "_j1", "_j2", " vs ", "match", "contre"]
+    match_patterns = ["u23", "u20", "u19", "u18", "u17", "u16", "u15", "_j0", "_j1", "_j2", " vs ", "match", "contre"]
     # NB : "gf1" retiré des indices de séance — c'est le préfixe générique de TOUS
     # les exports GPS bruts (matchs compris), pas un signal spécifique séance.
-    seance_patterns = ["seance", "séance", "entrainement", "entraînement"]
+    seance_patterns = ["seance", "séance", "entrainement", "entraînement", "training"]
     has_match = any(p in fn for p in match_patterns)
     has_seance = any(p in fn for p in seance_patterns)
     return has_match and not has_seance
@@ -5321,6 +5326,11 @@ def load_gps_match(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon,
               "Acc_2","Acc_3","Acc_4","Dec_2","Dec_3","Dec_4","Acc_max","#accel/decel"]:
         if c in result.columns:
             result[c] = pd.to_numeric(result[c], errors="coerce")
+    # Ancien format (GF1) : pas de colonne Acc/Déc cumulée → même définition que le nouveau
+    # format (AD2 = accélérations > 2 m/s² + décélérations > 2 m/s², vérifié : 164 + 96 = 260).
+    if "Acc_2" in result.columns and "Dec_2" in result.columns:
+        _ad2 = result["Acc_2"] + result["Dec_2"]
+        result["#accel/decel"] = result["#accel/decel"].fillna(_ad2) if "#accel/decel" in result.columns else _ad2
 
     result["DATE"] = pd.to_datetime(result.get("DATE", pd.NaT), errors="coerce")
 
@@ -6564,7 +6574,7 @@ def load_tactical_files() -> list:
         if full not in _files_to_keep:
             continue
         try:
-            df = read_csv_auto(full)
+            df = nettoyer_tags_sportscode(read_csv_auto(full))
             # Vérification : doit avoir Timeline et Row (colonnes Sportscode).
             # "Action" n'existe que si des lignes joueuses ont été taguées : un
             # match taggé uniquement collectivement (PFC / adversaire / transitions,
@@ -6849,7 +6859,7 @@ def _get_match_context(df_tactic):
            "adversaire": (adv_m.group(1) or adv_m.group(2) or "ADV").strip() if adv_m else "ADV"}
     if not pfc.empty:
         ctx["lieu"]         = pfc["Lieu"].dropna().apply(lambda x: x.split(",")[0].strip()).iloc[0] if "Lieu" in pfc.columns and not pfc["Lieu"].dropna().empty else ""
-        ctx["journee"]      = str(pfc["Journée"].dropna().apply(lambda x: str(x).split(",")[0]).iloc[0]) if "Journée" in pfc.columns and not pfc["Journée"].dropna().empty else ""
+        ctx["journee"]      = re.sub(r"\.0$", "", str(pfc["Journée"].dropna().apply(lambda x: str(x).split(",")[0]).iloc[0]).strip()) if "Journée" in pfc.columns and not pfc["Journée"].dropna().empty else ""
         ctx["competition"]  = pfc["Compétition"].dropna().apply(lambda x: x.split(",")[0].strip()).iloc[0] if "Compétition" in pfc.columns and not pfc["Compétition"].dropna().empty else ""
         ctx["systeme"]      = pfc["Système de Jeu PFC"].dropna().apply(lambda x: x.split(",")[0].strip()).mode().iloc[0] if "Système de Jeu PFC" in pfc.columns and not pfc["Système de Jeu PFC"].dropna().empty else ""
         # Teamersaire est multi-valeurs (« Sarcelles, AAS SARCELLES, AAS SARCELLES ») : prendre
@@ -7820,6 +7830,43 @@ def get_gps_match_summary_for_player(gps_match_df: pd.DataFrame,
         return None
     return out
 
+def nettoyer_tags_sportscode(df: pd.DataFrame) -> pd.DataFrame:
+    """Valeurs multi-tags avec un premier tag vide (« , MT1 », « , Couloir Droit » : export
+    Sportscode du 10/10/2026, Fontainebleau) → « MT1 ». Sans ça, tous les lecteurs qui prennent
+    le premier tag (split(",")[0]) voient une valeur vide (possession par mi-temps à 0 %…)."""
+    for c in df.columns:
+        if df[c].dtype == object:
+            s = df[c]
+            m = s.astype(str).str.match(r"^\s*,")
+            if m.any():
+                df.loc[m, c] = s[m].astype(str).str.replace(r"^[\s,]+", "", regex=True).replace("", np.nan)
+    return df
+
+
+_GPS_GF1_EN_FR = {
+    "Sensor": "Capteur", "Player No.": "Numéro de joueur", "Player Name": "Nom de joueur",
+    "Time Played": "Temps joué", "HID Distance (>13 km/h)": "Distance HID (>13 km/h)",
+    "HID Distance (>19 km/h)": "Distance HID (>19 km/h)", "Max Speed (km/h)": "Vitesse max (km/h)",
+    "Max Acceleration (m/s²)": "Accélération maximale (m/s²)",
+}
+
+
+def traduire_colonnes_gps_en(df: pd.DataFrame) -> pd.DataFrame:
+    """Exports GF1 en anglais (« Player Name », « Time Played »… : Game_Report U23, U23 Paris FC -
+    EFPF 10/10/2026, certaines séances) → en-têtes français attendus par le reste de l'app."""
+    if "Player Name" not in df.columns or "Activity Date" not in df.columns:
+        return df
+    ren = {}
+    for c in df.columns:
+        if c in _GPS_GF1_EN_FR:
+            ren[c] = _GPS_GF1_EN_FR[c]
+        elif str(c).startswith("Distance Speed Range ("):
+            ren[c] = "Distance par plage de vitesse (" + str(c)[len("Distance Speed Range ("):]
+        elif str(c).startswith("# of Decelerations ("):
+            ren[c] = "# of Decélerations (" + str(c)[len("# of Decelerations ("):]   # orthographe du format FR
+    return df.rename(columns=ren)
+
+
 def read_csv_auto(path: str) -> pd.DataFrame:
     encodings = ["utf-8-sig", "utf-8", "latin1"]
     seps = [",", ";", "\t"]
@@ -7832,7 +7879,7 @@ def read_csv_auto(path: str) -> pd.DataFrame:
                     df = pd.read_csv(path, encoding=enc, sep=sep, on_bad_lines=bad_lines)
                     if df.shape[1] == 1 and sep != "\t":
                         break  # mauvais séparateur, tenter le suivant
-                    return df
+                    return traduire_colonnes_gps_en(df)
                 except Exception as e:
                     last_err = e
                     if bad_lines == "error":
@@ -8926,7 +8973,7 @@ def collect_data(selected_season=None):
             categorie = parts[4]
             date = parts[5]
 
-            data = pd.read_csv(path)
+            data = nettoyer_tags_sportscode(pd.read_csv(path))
             if "Row" not in data.columns:
                 continue
 

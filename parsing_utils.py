@@ -431,8 +431,8 @@ def standardize_gps_v2_export(path: str, filename: str) -> pd.DataFrame:
 def is_gps_match_file(filename: str) -> bool:
     """Détecte un fichier GPS de match (par opposition à une séance)."""
     fn = normalize_str(filename)
-    match_patterns = ["u19", "u17", "u16", "u15", "_j0", "_j1", "_j2", " vs ", "match", "contre"]
-    seance_patterns = ["seance", "séance", "entrainement", "entraînement"]
+    match_patterns = ["u23", "u20", "u19", "u18", "u17", "u16", "u15", "_j0", "_j1", "_j2", " vs ", "match", "contre"]
+    seance_patterns = ["seance", "séance", "entrainement", "entraînement", "training"]
     has_match = any(p in fn for p in match_patterns)
     has_seance = any(p in fn for p in seance_patterns)
     return has_match and not has_seance
