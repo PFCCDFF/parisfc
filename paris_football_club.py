@@ -13631,7 +13631,23 @@ def _drive_deposer_csv(service, dossier_id: str, nom: str, contenu: bytes,
     return f["id"], "créé"
 
 
-def _importer_un_csv(service, nom: str, contenu: bytes, typ: str, remplacer: bool = False) -> Tuple[bool, str]:
+def _drive_renommer(service, dossier_id: str, ancien: str, nouveau: str, contenu: bytes) -> Optional[str]:
+    """Renomme (et met à jour) un fichier du dossier Drive. None si l'ancien n'y est pas."""
+    from googleapiclient.http import MediaIoBaseUpload
+    nom_q = ancien.replace("\\", "\\\\").replace("'", "\\'")
+    q = f"'{dossier_id}' in parents and name = '{nom_q}' and trashed = false"
+    ex = _execute_with_retry(service.files().list(q=q, fields="files(id)", supportsAllDrives=True,
+                                                  includeItemsFromAllDrives=True)).get("files", [])
+    if not ex:
+        return None
+    media = MediaIoBaseUpload(io.BytesIO(contenu), mimetype="text/csv", resumable=False)
+    _execute_with_retry(service.files().update(fileId=ex[0]["id"], body={"name": nouveau}, media_body=media,
+                                               fields="id", supportsAllDrives=True))
+    return ex[0]["id"]
+
+
+def _importer_un_csv(service, nom: str, contenu: bytes, typ: str, remplacer: bool = False,
+                     ancien_nom: Optional[str] = None) -> Tuple[bool, str]:
     """Drive d'abord (source unique), puis copie locale nommée comme par la sync :
     GPS → <nom>__<id8>.csv (_safe_local_path), tactique → data/<nom>.
     remplacer=True : nouvelle version d'un fichier existant (même nom) — contenu écrasé
@@ -13641,8 +13657,17 @@ def _importer_un_csv(service, nom: str, contenu: bytes, typ: str, remplacer: boo
     fid, drive_msg = None, ""
     if service is not None and dossier_drive:
         try:
-            fid, statut = _drive_deposer_csv(service, dossier_drive, nom, contenu, remplacer=remplacer)
-            drive_msg = {"créé": "déposé sur le Drive", "remplacé": "remplacé sur le Drive"}.get(
+            if ancien_nom and typ == "Tactique":
+                # Correction de nom (journée, catégorie…) : le fichier Drive est renommé, sinon
+                # la sync réimporterait l'ancien nom et le match apparaîtrait en double.
+                fid = _drive_renommer(service, dossier_drive, ancien_nom, nom, contenu)
+                statut = "renommé" if fid else None
+                if not fid:
+                    fid, statut = _drive_deposer_csv(service, dossier_drive, nom, contenu, remplacer=True)
+            else:
+                fid, statut = _drive_deposer_csv(service, dossier_drive, nom, contenu, remplacer=remplacer)
+            drive_msg = {"créé": "déposé sur le Drive", "remplacé": "remplacé sur le Drive",
+                         "renommé": f"renommé sur le Drive (ancien : {ancien_nom})"}.get(
                 statut, "déjà sur le Drive (même nom, non écrasé)")
         except HttpError as e:
             drive_msg = ("⚠️ Drive en lecture seule pour l'app : enregistré sur le serveur uniquement"
@@ -13655,12 +13680,14 @@ def _importer_un_csv(service, nom: str, contenu: bytes, typ: str, remplacer: boo
     else:
         from import_csv import empreinte
         chemin = _safe_local_path(nom, fid or empreinte(contenu), dest_folder=dossier_local)
-    if os.path.exists(chemin) and not remplacer:
+    if os.path.exists(chemin) and not remplacer and not ancien_nom:
         return False, " · ".join(x for x in [f"déjà présent sur le serveur ({os.path.basename(chemin)})", drive_msg] if x)
-    _verbe = "remplacé" if os.path.exists(chemin) else "importé"
-    os.makedirs(os.path.dirname(chemin) or ".", exist_ok=True)
-    with open(chemin, "wb") as f:
-        f.write(contenu)
+    _verbe = "remplacé" if os.path.exists(chemin) else ("renommé" if ancien_nom else "importé")
+    _write_bytes_atomic(chemin, contenu)
+    if ancien_nom and typ == "Tactique":
+        _ancien = os.path.join(dossier_local, ancien_nom)
+        if os.path.abspath(_ancien) != os.path.abspath(chemin) and os.path.exists(_ancien):
+            os.remove(_ancien)
     return True, " · ".join(x for x in [f"{_verbe} ({os.path.relpath(chemin, DATA_FOLDER)})", drive_msg] if x)
 
 
@@ -13971,8 +13998,9 @@ def render_import_bepro():
 
 
 def render_import_csv():
-    from import_csv import (TYPES, analyser_fichier, blocages_import, cle_match_tactique, empreinte,
-                            lister_doublons, nom_standard_tactique)
+    from import_csv import (TYPES, analyser_fichier, blocages_import, categorie_valide, cle_match_tactique,
+                            empreinte, lister_doublons, nom_standard_tactique, retagger_sportscode,
+                            tags_sportscode)
 
     st.subheader("📥 Importer des CSV")
     st.caption("Exports de la plateforme GPS (séances, matchs) ou fichiers tactiques Sportscode (PFC_VS_…). "
@@ -14023,31 +14051,53 @@ def render_import_csv():
 
         # Exports Sportscode bruts : l'app ne lit un fichier tactique que sous le nom
         # standard PFC_VS_… daté (parse_tactical_filename) → date du match obligatoire.
-        noms_finaux = {}
+        noms_finaux, retags = {}, {}
         a_nommer = [n for n, a in analyses.items() if a["a_nommer"]]
         if a_nommer:
             st.markdown("**✏️ Exports Sportscode à nommer** — la date du match est obligatoire ; "
                         "catégorie, adversaire et journée sont pré-remplis depuis la Timeline.")
             for i, n in enumerate(a_nommer):
                 prop = analyses[n]["proposition"]
-                c = st.columns([2.2, 1.2, 0.8, 1.6, 0.7])
+                _tags = tags_sportscode(par_contenu[n])
+                c = st.columns([2.0, 1.2, 0.8, 1.4, 0.7, 1.2])
                 c[0].markdown(f"<div style='padding-top:32px'>{_esc(n)}</div>", unsafe_allow_html=True)
                 d = c[1].date_input("Date du match", value=None, format="DD/MM/YYYY", key=f"{_cle}_d{i}")
-                cat = c[2].text_input("Catégorie", value=prop.get("categorie", ""), key=f"{_cle}_c{i}")
+                cat = c[2].text_input("Catégorie", value=prop.get("categorie", ""), key=f"{_cle}_c{i}",
+                                      help="U19, U23… (Régionale 1 = U23)")
                 adv = c[3].text_input("Adversaire", value=prop.get("adversaire", ""), key=f"{_cle}_a{i}")
                 jr = c[4].text_input("Journée", value=prop.get("journee", ""), key=f"{_cle}_j{i}")
+                comp = c[5].text_input("Compétition", value=_tags.get("competition", ""), key=f"{_cle}_k{i}",
+                                       help="Tag « Compétition » du fichier, affiché dans les rapports.")
                 if analyses[n]["alerte"]:
                     st.warning(analyses[n]["alerte"])
-                if d and cat.strip() and adv.strip():
+                if cat.strip() and not categorie_valide(cat):
+                    st.warning(f"Catégorie « {cat} » non reconnue : saisir U19, U23… (Régionale 1 = U23).")
+                if d and cat.strip() and adv.strip() and categorie_valide(cat):
                     noms_finaux[n] = nom_standard_tactique(d, cat, adv, jr)
                     st.caption(f"→ enregistré sous : `{noms_finaux[n]}`")
+                    # Tags restés sur ceux du modèle Sportscode (ex. « D1 Arkema », journée 1) :
+                    # alignés sur la saisie, sinon les rapports affichent une autre journée.
+                    _jr_diff = jr.strip().isdigit() and _tags.get("journee") and _tags["journee"] != str(int(jr))
+                    _cp_diff = comp.strip() and comp.strip() != _tags.get("competition", "")
+                    if _jr_diff or _cp_diff:
+                        _det = " · ".join(x for x in [
+                            f"Journée {_tags['journee']} → {int(jr)}" if _jr_diff else "",
+                            f"Compétition « {_tags['competition']} » → « {comp.strip()} »" if _cp_diff else ""] if x)
+                        if st.checkbox(f"Corriger les tags du fichier ({_det})", value=True, key=f"{_cle}_t{i}"):
+                            retags[n] = (jr.strip() if _jr_diff else "", comp.strip() if _cp_diff else "")
                 else:
                     st.caption("⚠️ Renseigner la date du match (et vérifier catégorie / adversaire).")
 
         # Garde-fous : un doublon exact est refusé ; un fichier qui masquerait un autre match
         # est refusé, sauf remplacement explicite (nouvelle version du même match, ex. export
         # enrichi des actions individuelles) — enregistré alors sous le nom de l'ancien fichier.
-        blocages, remplacements = {}, set()
+        blocages, remplacements, renommages = {}, set(), {}
+        _tac_infos = {}
+        for _p in tactiques.values():
+            try:
+                _tac_infos[_p] = parse_tactical_filename(os.path.basename(_p)) or {}
+            except Exception:
+                _tac_infos[_p] = {}
         for _, r in a_importer.iterrows():
             n = r["Fichier"]
             if r["Type"] in _IMPORT_DEST and (analyses[n]["valide"] or n in noms_finaux):
@@ -14059,6 +14109,26 @@ def render_import_csv():
                     # réimporté après ajout des actions individuelles : même nom standard).
                     _autre = tactiques.get(_k) if _k else None
                 _identique = existants.get(empreinte(par_contenu[n]))
+                if r["Type"] == "Tactique" and not (_autre and not _identique):
+                    # Même match déjà importé sous un AUTRE nom (journée ou catégorie erronée) :
+                    # remplacement avec le nom corrigé (fichier Drive renommé, ancien supprimé).
+                    _pi = parse_tactical_filename(_final) or {}
+                    _cands = [p for p, inf in _tac_infos.items()
+                              if os.path.basename(p) != _final and inf.get("date") is not None
+                              and inf.get("date") == _pi.get("date")
+                              and (not inf.get("adv_norm") or not _pi.get("adv_norm")
+                                   or inf["adv_norm"] in _pi["adv_norm"] or _pi["adv_norm"] in inf["adv_norm"])]
+                    if _identique and _identique in _tac_infos and os.path.basename(_identique) != _final \
+                            and _identique not in _cands:
+                        _cands.append(_identique)
+                    for _p in _cands[:1]:
+                        if st.checkbox(f"✏️ Remplacer « {os.path.basename(_p)} » par ce fichier, sous le nom corrigé "
+                                       f"« {_final} »", key=f"{_cle}_ren_{n}",
+                                       help="Même match importé avec une erreur de nom : l'ancien fichier est renommé "
+                                            "sur le Drive et supprimé du serveur — pas de doublon."):
+                            renommages[n] = os.path.basename(_p)
+                    if n in renommages:
+                        continue
                 if _autre and not _identique:
                     _nom_autre = os.path.basename(_autre)
                     if st.checkbox(f"♻️ Remplacer « {_nom_autre} » par cette nouvelle version ({n})",
@@ -14103,8 +14173,14 @@ def render_import_csv():
                 if (typ == "Tactique") != (detecte.get(nom) == "Tactique"):
                     st.error(f"{nom} : type « {typ} » incompatible avec le contenu ({detecte.get(nom)}), ignoré.")
                     continue
-                ok, msg = _importer_un_csv(service, noms_finaux.get(nom, nom), par_nom[nom].getvalue(), typ,
-                                           remplacer=nom in remplacements)
+                _contenu = par_nom[nom].getvalue()
+                if nom in retags:
+                    try:
+                        _contenu = retagger_sportscode(_contenu, *retags[nom])
+                    except Exception as e:
+                        st.warning(f"{nom} : tags non corrigés ({e}).")
+                ok, msg = _importer_un_csv(service, noms_finaux.get(nom, nom), _contenu, typ,
+                                           remplacer=nom in remplacements, ancien_nom=renommages.get(nom))
                 n_ok += ok
                 (st.success if ok else st.warning)(f"{nom} : {msg}")
             if n_ok:

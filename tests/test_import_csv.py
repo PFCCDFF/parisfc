@@ -133,5 +133,30 @@ class TestDoublons(unittest.TestCase):
         self.assertFalse(t[vieux])
 
 
+
+class TestNommageEtTags(unittest.TestCase):
+    def test_categorie_standard(self):
+        self.assertEqual(ic.categorie_standard("u19"), "U19")
+        self.assertEqual(ic.categorie_standard("U23F"), "U23")
+        for saisie in ("REGIONALE 1", "Régionale 1", "R1", "r1f"):
+            self.assertEqual(ic.categorie_standard(saisie), "U23", saisie)
+        self.assertFalse(ic.categorie_valide("Seniors"))
+
+    def test_nom_standard_sans_espace_dans_la_categorie(self):
+        # « REGIONALE 1 » donnait « …_REGIONALE 1_… » : adversaire illisible (Fontainebleau, 10/10/2026)
+        self.assertEqual(ic.nom_standard_tactique("2026-10-10", "REGIONALE 1", "Fontainebleau", "4"),
+                         "PFC_VS_ 2627 U23F Fontainebleau_J4_U23_10-10-2026.csv")
+
+    def test_retagger_journee_et_competition(self):
+        csv = ("Timeline;Row;Journée;Compétition;Action\n"
+               "J5 R1F;Fontainebleau;1;D1 Arkema;Tir\n"
+               "J5 R1F;PFC;;;Passe\n").encode("utf-8")
+        self.assertEqual(ic.tags_sportscode(csv), {"journee": "1", "competition": "D1 Arkema"})
+        out = ic.retagger_sportscode(csv, journee="4", competition="Régional 1")
+        self.assertEqual(ic.tags_sportscode(out), {"journee": "4", "competition": "Régional 1"})
+        lignes = out.decode("utf-8").splitlines()
+        self.assertEqual(lignes[2], "J5 R1F;PFC;;;Passe")   # cellules vides et autres colonnes intactes
+
+
 if __name__ == "__main__":
     unittest.main()

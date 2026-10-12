@@ -14,6 +14,7 @@ Types gérés et dossier local de destination (mêmes dossiers que la sync Drive
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import re
 import tempfile
@@ -96,12 +97,74 @@ def infos_sportscode(df: pd.DataFrame) -> tuple[dict, str]:
     return prop, alerte
 
 
+# Équipe engagée en Régionale 1 = U23 (fichiers « PFC_VS_ 2627 U23F … _U23_ ») : une saisie
+# « REGIONALE 1 » / « R1 » cassait la lecture du nom (espace → adversaire vide, 10/10/2026).
+_CATEGORIES_ALIAS = {"R1": "U23", "R1F": "U23", "REGIONALE1": "U23", "REGIONAL1": "U23",
+                     "REGIONALE1F": "U23", "REGIONAL1F": "U23"}
+
+
+def categorie_standard(categorie: str) -> str:
+    """« u19 » → U19 ; « Régionale 1 », « R1 » → U23 ; jamais d'espace (séparateur du nom)."""
+    import unicodedata
+    c = "".join(ch for ch in unicodedata.normalize("NFKD", str(categorie or "")) if not unicodedata.combining(ch))
+    c = re.sub(r"\s+", "", c).upper()
+    c = _CATEGORIES_ALIAS.get(c, c)
+    return c[:-1] if re.fullmatch(r"U\d{2}F", c) else c
+
+
+def categorie_valide(categorie: str) -> bool:
+    return bool(re.fullmatch(r"U\d{2}", categorie_standard(categorie)))
+
+
+def tags_sportscode(contenu: bytes) -> dict:
+    """Valeurs majoritaires des colonnes Journée / Compétition d'un export Sportscode."""
+    try:
+        df = _lire_csv_texte(contenu)[0]
+    except Exception:
+        return {"journee": "", "competition": ""}
+    out = {}
+    for col, cle in (("Journée", "journee"), ("Compétition", "competition")):
+        v = df[col].astype(str).str.split(",").str[0].str.strip() if col in df.columns else pd.Series(dtype=str)
+        v = v[v != ""]
+        val = v.mode().iloc[0] if len(v) else ""
+        if cle == "journee":
+            try:
+                val = str(int(float(val)))
+            except ValueError:
+                pass
+        out[cle] = val
+    return out
+
+
+def _lire_csv_texte(contenu: bytes):
+    for enc in ("utf-8-sig", "latin-1"):
+        try:
+            texte = contenu.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    premiere = texte.split("\n", 1)[0]
+    sep = ";" if premiere.count(";") > premiere.count(",") else ","
+    return pd.read_csv(io.StringIO(texte), sep=sep, dtype=str, keep_default_na=False), sep, enc
+
+
+def retagger_sportscode(contenu: bytes, journee: str = "", competition: str = "") -> bytes:
+    """Réécrit les cellules non vides des colonnes Journée / Compétition (tags restés sur ceux
+    du modèle Sportscode, ex. « D1 Arkema » / 1 pour un match R1 J4). Le reste est inchangé."""
+    df, sep, enc = _lire_csv_texte(contenu)
+    if str(journee).strip().isdigit() and "Journée" in df.columns:
+        df.loc[df["Journée"].str.strip() != "", "Journée"] = str(int(journee))
+    if str(competition).strip() and "Compétition" in df.columns:
+        df.loc[df["Compétition"].str.strip() != "", "Compétition"] = str(competition).strip()
+    return df.to_csv(sep=sep, index=False).encode(enc if enc != "latin-1" else "latin-1")
+
+
 def nom_standard_tactique(date, categorie: str, adversaire: str, journee: str = "") -> str:
     """Nom reconnu par l'app (is_tactical_file / parse_tactical_filename) :
     « PFC_VS_ 2627 U23F FC Mantois_J3_U23_27-09-2026.csv »."""
     d = pd.Timestamp(date)
     y = d.year if d.month >= 7 else d.year - 1
-    cat = categorie.strip().upper()
+    cat = categorie_standard(categorie)
     adv = re.sub(r'[\\/:*?"<>|_]+', " ", adversaire).strip()
     adv = " ".join(adv.split())
     j = f"_J{int(journee)}" if str(journee).strip().isdigit() else ""
