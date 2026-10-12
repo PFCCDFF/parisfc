@@ -3797,9 +3797,18 @@ def players_shots(joueurs):
     df["__shots"] = df["Action"].astype(str).apply(lambda s: s.count("Tir"))
 
     if "Tir" in df.columns:
-        tir_txt = df["Tir"].astype(str)
-        df["__on_target"] = tir_txt.apply(lambda s: s.count("Tir Cadré") + s.count("But"))
-        df["__goals"] = tir_txt.apply(lambda s: s.count("But"))
+        # « But » qualifie un tir cadré : « Tir Cadré, But » (avec Action « Tir, Tir ») = UN tir
+        # cadré, pas deux tirs / deux tirs cadrés (Fontainebleau 10/10/2026). Le nombre de tirs
+        # suit les issues de la colonne Tir quand elle est renseignée.
+        def _issues(c):
+            t = [x.strip() for x in str(c).split(",")] if pd.notna(c) else []
+            cad, but = t.count("Tir Cadré"), t.count("But")
+            cadres = cad + max(0, but - cad)
+            return cadres, cadres + t.count("Tir Non Cadré") + t.count("Tir Contré"), but
+        _iss = df["Tir"].apply(_issues)
+        df["__on_target"] = _iss.str[0]
+        df["__shots"] = np.where(_iss.str[1] > 0, _iss.str[1], df["__shots"])
+        df["__goals"] = _iss.str[2]
     else:
         df["__on_target"] = 0
         df["__goals"] = 0
@@ -6783,7 +6792,10 @@ def compute_tactical_stats(df_tactic, player_name):
     tir_rows = d[d["Tir"].notna()] if "Tir" in d.columns else d.iloc[0:0]
     all_tir = [a.strip() for cell in tir_rows["Tir"].dropna() for a in str(cell).split(",")] if "Tir" in tir_rows.columns else []
     stats["tirs_tot"]    = len(tir_rows)
-    stats["tirs_cadres"] = all_tir.count("Tir Cadré") + all_tir.count("But")
+    # Par action : « Tir Cadré, But » est UN tir cadré (avant : compté deux fois, d'où plus de
+    # tirs cadrés que de tirs — ISHIZAKA Saki, Fontainebleau 10/10/2026)
+    stats["tirs_cadres"] = int(tir_rows["Tir"].dropna().astype(str).apply(
+        lambda c: bool({x.strip() for x in c.split(",")} & {"Tir Cadré", "But"})).sum()) if len(tir_rows) else 0
     stats["tirs_buts"]   = all_tir.count("But")
 
     # PERTES / BALLONS
