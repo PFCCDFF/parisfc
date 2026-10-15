@@ -148,6 +148,19 @@ def _lire_csv_texte(contenu: bytes):
     return pd.read_csv(io.StringIO(texte), sep=sep, dtype=str, keep_default_na=False), sep, enc
 
 
+def lignes_collectives(contenu: bytes) -> int:
+    """Nombre de lignes d'équipe « PFC » (tagage collectif) d'un export Sportscode. Un fichier
+    individuel seul n'en a aucune : il ne doit pas remplacer un fichier qui en a sans
+    confirmation (Fontainebleau 12/10/2026 : rapport collectif perdu)."""
+    try:
+        df = _lire_csv_texte(contenu)[0]
+    except Exception:
+        return 0
+    if "Row" not in df.columns:
+        return 0
+    return int((df["Row"].astype(str).str.strip().str.upper() == "PFC").sum())
+
+
 def retagger_sportscode(contenu: bytes, journee: str = "", competition: str = "") -> bytes:
     """Réécrit les cellules non vides des colonnes Journée / Compétition (tags restés sur ceux
     du modèle Sportscode, ex. « D1 Arkema » / 1 pour un match R1 J4). Le reste est inchangé."""

@@ -158,5 +158,12 @@ class TestNommageEtTags(unittest.TestCase):
         self.assertEqual(lignes[2], "J5 R1F;PFC;;;Passe")   # cellules vides et autres colonnes intactes
 
 
+    def test_lignes_collectives(self):
+        collectif = "Timeline,Row,Action\nM,PFC,\nM,Fontainebleau,\nM,DOSSO Nakhim,Passe\n".encode("utf-8-sig")
+        individuel = "Timeline,Row,Action\nM,DOSSO Nakhim,Passe\nM,START,\n".encode("utf-8")
+        self.assertEqual(ic.lignes_collectives(collectif), 1)
+        self.assertEqual(ic.lignes_collectives(individuel), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

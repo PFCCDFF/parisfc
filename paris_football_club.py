@@ -14058,8 +14058,8 @@ def render_import_bepro():
 
 def render_import_csv():
     from import_csv import (TYPES, analyser_fichier, blocages_import, categorie_valide, cle_match_tactique,
-                            empreinte, lister_doublons, nom_standard_tactique, retagger_sportscode,
-                            tags_sportscode)
+                            empreinte, lignes_collectives, lister_doublons, nom_standard_tactique,
+                            retagger_sportscode, tags_sportscode)
 
     st.subheader("📥 Importer des CSV")
     st.caption("Exports de la plateforme GPS (séances, matchs) ou fichiers tactiques Sportscode (PFC_VS_…). "
@@ -14157,6 +14157,24 @@ def render_import_csv():
                 _tac_infos[_p] = parse_tactical_filename(os.path.basename(_p)) or {}
             except Exception:
                 _tac_infos[_p] = {}
+        def _confirme_perte_collectif(n, ancien_chemin) -> bool:
+            """Garde-fou : un fichier sans tagage collectif (lignes « PFC ») qui remplacerait un
+            fichier qui en a ferait disparaître le rapport collectif du match."""
+            try:
+                with open(ancien_chemin, "rb") as _fh:
+                    _avant = lignes_collectives(_fh.read())
+            except Exception:
+                return True
+            if not _avant or lignes_collectives(par_contenu[n]):
+                return True
+            st.warning(f"⚠️ {n} ne contient aucune ligne collective (PFC / adversaire), alors que "
+                       f"« {os.path.basename(ancien_chemin)} » en a {_avant} : le remplacer ferait "
+                       "disparaître le rapport collectif de ce match (possession, entrées dans le dernier "
+                       "1/3, zones…). Pour ajouter des actions individuelles, utiliser un export Sportscode "
+                       "contenant les deux tagages, ou un fichier fusionné.")
+            return st.checkbox("Je confirme : remplacer quand même (le rapport collectif sera perdu)",
+                               key=f"{_cle}_perte_{n}")
+
         for _, r in a_importer.iterrows():
             n = r["Fichier"]
             if r["Type"] in _IMPORT_DEST and (analyses[n]["valide"] or n in noms_finaux):
@@ -14180,22 +14198,40 @@ def render_import_csv():
                     if _identique and _identique in _tac_infos and os.path.basename(_identique) != _final \
                             and _identique not in _cands:
                         _cands.append(_identique)
+                    _ren_non_confirme = False
                     for _p in _cands[:1]:
                         if st.checkbox(f"✏️ Remplacer « {os.path.basename(_p)} » par ce fichier, sous le nom corrigé "
                                        f"« {_final} »", key=f"{_cle}_ren_{n}",
                                        help="Même match importé avec une erreur de nom : l'ancien fichier est renommé "
                                             "sur le Drive et supprimé du serveur — pas de doublon."):
-                            renommages[n] = os.path.basename(_p)
+                            if _confirme_perte_collectif(n, _p):
+                                renommages[n] = os.path.basename(_p)
+                            else:
+                                _ren_non_confirme = True
                     if n in renommages:
+                        continue
+                    if _ren_non_confirme:
+                        blocages[n] = ["remplacement non confirmé (le rapport collectif serait perdu)"]
                         continue
                 if _autre and not _identique:
                     _nom_autre = os.path.basename(_autre)
-                    if st.checkbox(f"♻️ Remplacer « {_nom_autre} » par cette nouvelle version ({n})",
-                                   key=f"{_cle}_rpl_{n}",
-                                   help="Même match (journée, catégorie, date) : la nouvelle version prend la place de "
-                                        "l'ancienne, sous le même nom de fichier — pas de doublon."):
+                    _coche = st.checkbox(f"♻️ Remplacer « {_nom_autre} » par cette nouvelle version ({n})",
+                                         key=f"{_cle}_rpl_{n}",
+                                         help="Même match (journée, catégorie, date) : la nouvelle version prend la place de "
+                                              "l'ancienne, sous le même nom de fichier — pas de doublon.")
+                    if _coche and _confirme_perte_collectif(n, _autre):
                         noms_finaux[n] = _nom_autre
                         remplacements.add(n)
+                        continue
+                    if not _coche and _nom_autre == _final:
+                        # Même nom qu'un fichier en place : sans « Remplacer », rien ne serait importé
+                        # (avant : simple avertissement « déjà présent » après coup, facile à manquer).
+                        blocages[n] = [f"un fichier du même nom est déjà en place : cocher « ♻️ Remplacer » "
+                                       "pour importer cette nouvelle version"]
+                        st.error(f"⛔ {n} ne sera pas importé : " + blocages[n][0] + ".")
+                        continue
+                    if _coche:
+                        blocages[n] = ["remplacement non confirmé (le rapport collectif serait perdu)"]
                         continue
                 raisons = blocages_import(_final, r["Type"], par_contenu[n], existants,
                                           tactiques, parse_tactical_filename)
