@@ -101,6 +101,11 @@ PHOTOS_FOLDER_ID = DRIVE_PHOTOS_FOLDER_ID  # alias rétro-compat
 PHOTOS_FOLDER = "data/photos"
 PHOTO_MAPPING_PATH = "data/photo_mapping.json"  # mapping manuel persistant : canon → filename
 GPS_NAME_MAP_PATH  = "data/gps_name_map.json"   # concordance GPS nom → nom canonique tactique
+# Noms saisis dans les capteurs GPS qui ne ressemblent pas au vrai nom (le fuzzy matching ne peut
+# pas les rattacher) : nom capteur → nom canonique. Complète data/gps_name_map.json (Paramètres).
+ALIAS_NOMS_GPS = {
+    "X CHRISTY": "MAALOUF CHRISTY",   # balise saisie « Christy X » (15/10/2026)
+}
 
 # Fichiers attendus
 PERMISSIONS_FILENAME = "Classeurs permissions streamlit.xlsx"
@@ -3269,6 +3274,13 @@ def build_referentiel_players(ref_path: str) -> Tuple[Set[str], Dict[str, str], 
             prenom = toks[-1]
             alias_to_canon[normalize_name_raw(f"{nom} {prenom[0]}")] = canon
             alias_to_canon[normalize_name_raw(f"{nom} {prenom[0]}.")] = canon
+
+    # Alias explicites (noms de balise GPS sans rapport avec le vrai nom) : code + Paramètres.
+    for _brut, _vrai in {**ALIAS_NOMS_GPS, **load_gps_name_map()}.items():
+        _canon = normalize_name_raw(_vrai)
+        if _canon in ref_set:
+            alias_to_canon[normalize_name_raw(_brut)] = _canon
+            alias_to_canon[normalize_name_raw(" ".join(reversed(str(_brut).split())))] = _canon
 
     return ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon, first_to_canons, last_to_canons
 
