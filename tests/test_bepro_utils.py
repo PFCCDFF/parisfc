@@ -148,5 +148,19 @@ class TestDossier(unittest.TestCase):
             self.assertEqual(len(B.find_bepro_match(bp, "2026-09-12", "HAC", "U19")), 2)
 
 
+
+class TestNomsParMaillot(unittest.TestCase):
+    def test_noms_faux_remplaces_pour_le_paris_fc_seulement(self):
+        import pandas as pd
+        from bepro_utils import nommer_joueuses_sans_nom
+        df = pd.DataFrame({"team": ["Paris FC U19 Féminines", "Paris FC U19 Féminines", "AJ Auxerre Féminines", "Paris FC U19 Féminines"],
+                           "player": ["K. Diarra", "Player 7", "K. Diarra", "Inconnue"],
+                           "shirt": ["2", "7", "2", "99"]})
+        out = nommer_joueuses_sans_nom(df, "2026-10-07")
+        self.assertEqual(out["player"].tolist(), ["Sharlie Yerro", "Kadidia Traore", "K. Diarra", "Inconnue"])
+        # autre match : rien ne change
+        self.assertEqual(nommer_joueuses_sans_nom(df, "2026-09-12")["player"].tolist(), df["player"].tolist())
+
+
 if __name__ == "__main__":
     unittest.main()

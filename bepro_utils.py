@@ -42,6 +42,20 @@ BEPRO_FOLDER = os.path.join("data", "bepro")
 # au format Bepro « Prénom Nom ». Complétable sans toucher au code via data/bepro_noms.json :
 # {"2026-09-27|4": "Chloe Niama Mahoukou"}.
 BEPRO_JOUEUSES_SANS_NOM = {("2026-09-27", "4"): "Chloe Niama Mahoukou"}
+
+# Matchs dont Bepro a exporté des noms FAUX pour le Paris FC : (date, n° de maillot) → vrai nom
+# (« Prénom Nom »), appliqué à toutes les joueuses du Paris FC de ce match, nommées ou non.
+# Challenge Espoirs LFFP Paris FC - AJ Auxerre du 07/10/2026 : liste corrigée par Olivier
+# (export Stats Bepro, n° 7 « B. Guppillote » = Kadidia Traoré ; n° 10 = joueuse pro).
+BEPRO_NOMS_PAR_MAILLOT = {
+    ("2026-10-07", n): nom for n, nom in {
+        "1": "Clélia Ducreux", "2": "Sharlie Yerro", "3": "Saki Ishizaka", "4": "Malya Gaba",
+        "5": "Sergyna Loubli", "6": "Dissya Minyemeck", "7": "Kadidia Traore", "8": "Nakhim Dosso",
+        "9": "Christy Maalouf", "10": "Kenza Roche Dufour", "11": "Karla Torres", "12": "Hawa Sangare",
+        "13": "Sylia Renai", "14": "Ely Guppillotte Bulver", "15": "Noellie Koutassila",
+        "17": "Nessma Mouradi", "18": "Adela Sinani",
+    }.items()
+}
 _SANS_NOM = re.compile(r"(player\s*\d+|\d+\s*player)", re.IGNORECASE)
 
 
@@ -58,7 +72,8 @@ def _noms_manquants() -> dict:
 
 
 def nommer_joueuses_sans_nom(df: pd.DataFrame, date) -> pd.DataFrame:
-    """Remplace « Player 4 » par le nom connu pour ce match et ce numéro, s'il existe."""
+    """Remplace « Player 4 » par le nom connu pour ce match et ce numéro, s'il existe ; pour les
+    matchs de BEPRO_NOMS_PAR_MAILLOT, remplace aussi les noms faux des joueuses du Paris FC."""
     if df is None or df.empty or date is None:
         return df
     table = _noms_manquants()
@@ -68,6 +83,13 @@ def nommer_joueuses_sans_nom(df: pd.DataFrame, date) -> pd.DataFrame:
         df = df.copy()
         df.loc[mask, "player"] = [table.get((d, str(sh).strip()), p)
                                   for p, sh in zip(df.loc[mask, "player"], df.loc[mask, "shirt"])]
+    if any(k[0] == d for k in BEPRO_NOMS_PAR_MAILLOT):
+        pfc = df["team"].astype(str).map(_norm).str.contains("paris")
+        cles = list(zip([d] * len(df), df["shirt"].astype(str).str.strip()))
+        connu = pfc & pd.Series([c in BEPRO_NOMS_PAR_MAILLOT for c in cles], index=df.index)
+        if connu.any():
+            df = df.copy()
+            df.loc[connu, "player"] = [BEPRO_NOMS_PAR_MAILLOT[c] for c, k in zip(cles, connu) if k]
     return df
 
 
