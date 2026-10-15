@@ -49,7 +49,7 @@ SCHEMA = {
 
 METRICS = {
     "Distance totale": ["distance_m"],
-    "Distance > 13 km/h": ["p3_m", "p4_m", "p5_m", "p6_m"],
+    "Distance > 15 km/h": ["p4_m", "p5_m", "p6_m"],
     "Distance > 19 km/h (HSR)": ["p5_m", "p6_m"],
     "Sprint > 23 km/h": ["p6_m"],
     "Accél. + décél. > 3 m/s²": ["acc3", "dec3"],
@@ -230,16 +230,18 @@ def _daily_chart(sess: pd.DataFrame, g: pd.DataFrame, metric: str) -> go.Figure:
     return fig
 
 
-def render_charge_tab(df: pd.DataFrame) -> None:
-    st.subheader("Suivi de la charge d'entraînement")
+def _filtres(df: pd.DataFrame, cle: str = "lab"):
+    """Options de filtrage communes (indicateur, effectif, lignes ajoutées / suspectes) et
+    données préparées. Utilisé par le Laboratoire et par Performance → Suivi → Charge."""
     c1, c2, c3, c4 = st.columns([2, 2, 1.3, 1.3])
-    metric = c1.selectbox("Indicateur", list(METRICS), index=2)
+    metric = c1.selectbox("Indicateur", list(METRICS), index=2, key=f"{cle}_metric")
     equipes = sorted(df["equipe"].dropna().unique())
     equipe = c2.multiselect("Équipe / groupe (définit l'effectif)", equipes, default=[e for e in equipes if e.startswith("U19")] or equipes[:1],
-                            help="Joueuses ayant au moins une session dans ces équipes/groupes. Leur charge inclut toutes leurs sessions, quel que soit le groupe.")
-    inclure_ajouts = c3.toggle("Lignes ajoutées à la main", value=True,
+                            help="Joueuses ayant au moins une session dans ces équipes/groupes. Leur charge inclut toutes leurs sessions, quel que soit le groupe.",
+                            key=f"{cle}_equipe")
+    inclure_ajouts = c3.toggle("Lignes ajoutées à la main", value=True, key=f"{cle}_ajouts",
                                help="Lignes sans date ni capteur ajoutées en fin de fichier (souvent des estimations).")
-    exclure = c4.toggle("Exclure lignes suspectes", value=False)
+    exclure = c4.toggle("Exclure lignes suspectes", value=False, key=f"{cle}_suspects")
 
     d = prepare_sessions(df, inclure_ajouts, exclure)
     daily = daily_load(d, metric)
@@ -252,44 +254,60 @@ def render_charge_tab(df: pd.DataFrame) -> None:
     # (ex. une U19 qui s'entraîne en GF1 et joue en U19).
     effectif = sorted(x[x.equipe.isin(equipe)].joueuse.unique())
     xe = x[x.joueuse.isin(effectif)]
+    return metric, equipe, d, daily, weekly, ref, x, effectif, xe
+
+
+def render_equipe_semaine(df: pd.DataFrame, cle: str = "suivi_charge") -> None:
+    """Contenu « Équipe — semaine » seul, avec ses options de filtrage."""
+    metric, equipe, d, daily, weekly, ref, x, effectif, xe = _filtres(df, cle)
+    _equipe_semaine(xe, weekly, metric, cle)
+
+
+def _equipe_semaine(xe, weekly, metric, cle):
+    sem_dispo = sorted(xe.date.dt.to_period("W-SUN").dt.start_time.unique())
+    if not sem_dispo:
+        st.info("Aucune session pour cette sélection."); return
+    nb = xe.assign(s=lambda t: t.date.dt.to_period("W-SUN").dt.start_time).groupby("s").session_id.nunique()
+    defaut = nb[nb >= 3].index.max() if (nb >= 3).any() else sem_dispo[-1]
+    sem = st.select_slider("Semaine (lundi)", options=sem_dispo, value=defaut,
+                           format_func=lambda t: pd.Timestamp(t).strftime("%d/%m/%y"), key=f"{cle}_semaine")
+    sem = pd.Timestamp(sem)
+    joueuses = sorted(xe[(xe.date >= sem - pd.Timedelta(days=28)) & (xe.date < sem + pd.Timedelta(days=7))].joueuse.unique())
+    w = weekly[(weekly.semaine == sem) & (weekly.joueuse.isin(joueuses))].copy()
+    w["Zone ACWR"] = w.acwr_fin.map(lambda v: zone(v)[0])
+    w["Alertes"] = w.apply(alertes, axis=1)
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Joueuses avec données", f"{int((w.sessions > 0).sum())} / {len(w)}")
+    k2.metric("Charge médiane", f"{w[w.sessions > 0].charge_pct.median():.0f} % match" if (w.sessions > 0).any() else "–",
+              help="Joueuses ayant au moins une session GPS dans la semaine")
+    k3.metric("En zone de risque", int((w.acwr_fin >= 1.5).sum()))
+    k4.metric("En sous-charge", int((w.acwr_fin < 0.8).sum()))
+    tab = w[["joueuse", "sessions", "matchs", "charge_pct", "var_pct", "acwr_fin", "Zone ACWR", "monotonie", "Alertes"]].rename(columns={
+        "joueuse": "Joueuse", "sessions": "Sessions", "matchs": "Matchs", "charge_pct": "Charge (% match)",
+        "var_pct": "Δ vs S-1 (%)", "acwr_fin": "ACWR", "monotonie": "Monotonie"}).sort_values("ACWR", ascending=False)
+    _show(tab, {"Charge (% match)": _f("{:.0f}"), "Δ vs S-1 (%)": _f("{:+.0f}"), "ACWR": _f("{:.2f}"), "Monotonie": _f("{:.1f}")}, couleur_acwr="ACWR")
+    # heatmap 8 dernières semaines
+    last = [s for s in sem_dispo if s <= sem][-8:]
+    h = weekly[weekly.semaine.isin(last) & weekly.joueuse.isin(joueuses)].pivot(index="joueuse", columns="semaine", values="charge_pct")
+    if len(h):
+        fig = go.Figure(go.Heatmap(z=h.values, x=[pd.Timestamp(c).strftime("%d/%m") for c in h.columns], y=h.index,
+                                   colorscale="Blues", colorbar_title="% match", hovertemplate="%{y}<br>Sem. %{x}<br>%{z:.0f} % d'un match<extra></extra>",
+                                   text=np.where(np.isnan(h.values), "", np.round(np.nan_to_num(h.values)).astype(int).astype(str)),
+                                   texttemplate="%{text}"))
+        fig.update_layout(title=f"{metric} — charge hebdomadaire (% d'un match), 8 dernières semaines",
+                          height=max(300, 26 * len(h)), margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(fig, width="stretch", key=f"{cle}_heatmap")
+
+
+def render_charge_tab(df: pd.DataFrame) -> None:
+    st.subheader("Suivi de la charge d'entraînement")
+    metric, equipe, d, daily, weekly, ref, x, effectif, xe = _filtres(df, "lab")
 
     tab_eq, tab_j, tab_s, tab_q = st.tabs(["Équipe — semaine", "Joueuse", "Séance", "Qualité des données"])
 
     # ---------------- Équipe
     with tab_eq:
-        sem_dispo = sorted(xe.date.dt.to_period("W-SUN").dt.start_time.unique())
-        if not sem_dispo:
-            st.info("Aucune session pour cette sélection."); return
-        nb = xe.assign(s=lambda t: t.date.dt.to_period("W-SUN").dt.start_time).groupby("s").session_id.nunique()
-        defaut = nb[nb >= 3].index.max() if (nb >= 3).any() else sem_dispo[-1]
-        sem = st.select_slider("Semaine (lundi)", options=sem_dispo, value=defaut,
-                               format_func=lambda t: pd.Timestamp(t).strftime("%d/%m/%y"))
-        sem = pd.Timestamp(sem)
-        joueuses = sorted(xe[(xe.date >= sem - pd.Timedelta(days=28)) & (xe.date < sem + pd.Timedelta(days=7))].joueuse.unique())
-        w = weekly[(weekly.semaine == sem) & (weekly.joueuse.isin(joueuses))].copy()
-        w["Zone ACWR"] = w.acwr_fin.map(lambda v: zone(v)[0])
-        w["Alertes"] = w.apply(alertes, axis=1)
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Joueuses avec données", f"{int((w.sessions > 0).sum())} / {len(w)}")
-        k2.metric("Charge médiane", f"{w[w.sessions > 0].charge_pct.median():.0f} % match" if (w.sessions > 0).any() else "–",
-                  help="Joueuses ayant au moins une session GPS dans la semaine")
-        k3.metric("En zone de risque", int((w.acwr_fin >= 1.5).sum()))
-        k4.metric("En sous-charge", int((w.acwr_fin < 0.8).sum()))
-        tab = w[["joueuse", "sessions", "matchs", "charge_pct", "var_pct", "acwr_fin", "Zone ACWR", "monotonie", "Alertes"]].rename(columns={
-            "joueuse": "Joueuse", "sessions": "Sessions", "matchs": "Matchs", "charge_pct": "Charge (% match)",
-            "var_pct": "Δ vs S-1 (%)", "acwr_fin": "ACWR", "monotonie": "Monotonie"}).sort_values("ACWR", ascending=False)
-        _show(tab, {"Charge (% match)": _f("{:.0f}"), "Δ vs S-1 (%)": _f("{:+.0f}"), "ACWR": _f("{:.2f}"), "Monotonie": _f("{:.1f}")}, couleur_acwr="ACWR")
-        # heatmap 8 dernières semaines
-        last = [s for s in sem_dispo if s <= sem][-8:]
-        h = weekly[weekly.semaine.isin(last) & weekly.joueuse.isin(joueuses)].pivot(index="joueuse", columns="semaine", values="charge_pct")
-        if len(h):
-            fig = go.Figure(go.Heatmap(z=h.values, x=[pd.Timestamp(c).strftime("%d/%m") for c in h.columns], y=h.index,
-                                       colorscale="Blues", colorbar_title="% match", hovertemplate="%{y}<br>Sem. %{x}<br>%{z:.0f} % d'un match<extra></extra>",
-                                       text=np.where(np.isnan(h.values), "", np.round(np.nan_to_num(h.values)).astype(int).astype(str)),
-                                       texttemplate="%{text}"))
-            fig.update_layout(title=f"{metric} — charge hebdomadaire (% d'un match), 8 dernières semaines",
-                              height=max(300, 26 * len(h)), margin=dict(l=10, r=10, t=40, b=10))
-            st.plotly_chart(fig, width="stretch")
+        _equipe_semaine(xe, weekly, metric, "lab")
 
     # ---------------- Joueuse
     with tab_j:

@@ -13246,23 +13246,22 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                             st.divider()
 
-                            # ── Tableau détaillé ───────────────────────────
-                            st.markdown("##### Tableau détaillé")
-                            _tbl_ch = _weekly_disp[[
-                                "Label_semaine", "CHARGE_semaine",
-                                "Aigu_RA", "Chronique_RA", "ACWR_RA",
-                                "Aigu_EWMA", "Chronique_EWMA", "ACWR_EWMA"
-                            ]].copy()
-                            _tbl_ch.columns = [
-                                "Semaine", "Charge (UA)",
-                                "Aigu RA", "Chronique RA", "ACWR RA",
-                                "Aigu EWMA", "Chronique EWMA", "ACWR EWMA"
-                            ]
-                            for _c in ["Charge (UA)", "Aigu RA", "Chronique RA", "Aigu EWMA", "Chronique EWMA"]:
-                                _tbl_ch[_c] = _tbl_ch[_c].apply(lambda v: f"{v:.1f}" if not pd.isna(v) else "—")
-                            for _c in ["ACWR RA", "ACWR EWMA"]:
-                                _tbl_ch[_c] = _tbl_ch[_c].apply(lambda v: f"{v:.2f}" if not pd.isna(v) else "—")
-                            st.dataframe(_tbl_ch.reset_index(drop=True), width="stretch", hide_index=True)
+                            # ── Équipe — semaine (contenu de Laboratoire → Équipe — semaine) ──
+                            # Remplace l'ancien tableau détaillé (charge / ACWR RA-EWMA par semaine).
+                            st.markdown("##### Équipe — semaine")
+                            if role == ROLE_JOUEUSE:
+                                st.caption("Vue équipe réservée au staff.")
+                            else:
+                                try:
+                                    _df_lab = charger_sessions_charge(_empreinte_dossiers_gps())
+                                except Exception as _e_lab:
+                                    _df_lab = None
+                                    st.error(f"Compilation GPS impossible : {_e_lab}")
+                                if _df_lab is None or _df_lab.empty:
+                                    st.info("Aucune donnée GPS compilée.")
+                                else:
+                                    from charge_entrainement import render_equipe_semaine
+                                    render_equipe_semaine(_df_lab, "suivi_charge")
 
                             st.info(
                                 "**Interprétation** : La charge utilisée est basée sur la Distance (proxy) ou le produit RPE × Durée (UA). "
