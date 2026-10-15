@@ -12448,8 +12448,10 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     key="perf_gps_player_sel"
                 )
 
-        _st_seances, _st_match, _st_charge, _st_params, _st_fiche, _suivi_eval, _st_objectifs = st.tabs([
-            "🏃 Séances", "⚽ Match", "⚖️ Charge", "⚙️ Paramètres", "📋 Fiche Bilan", "📝 Évaluations", "🎯 Objectifs"
+        (_st_seance, _st_semaine, _st_periode, _st_match, _st_charge, _st_params, _st_fiche,
+         _suivi_eval, _st_objectifs) = st.tabs([
+            "🏃 Séance", "📅 Semaine", "🗓️ Période", "⚽ Match", "⚖️ Charge", "⚙️ Paramètres",
+            "📋 Fiche Bilan", "📝 Évaluations", "🎯 Objectifs"
         ])
 
     with _suivi_eval:
@@ -12633,105 +12635,26 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     # Brutes/Global/Microcycle. Si _pgps est vide (pas de données GPS ou
     # pas de joueuse résolue), les checks internes affichent déjà les
     # messages "aucune donnée" appropriés.
-    with _st_seances:
-                    _dr = _gr[_gr["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)].copy()
-                    _dr = ensure_date_column(_dr)
-                    _dr = _dr[_dr["DATE"].notna()].sort_values("DATE")
-
-                    if _dr.empty:
-                        st.info("Aucune séance GPS pour cette joueuse.")
-                    else:
-                        _seance_dates = sorted(_dr["DATE"].dt.normalize().unique())
-                        _norm_dates = [pd.Timestamp(d).date() for d in _seance_dates]
-
-                        if st.session_state.get("_seances_last_player") != _pgps:
-                            st.session_state["_seances_idx"] = len(_seance_dates) - 1
-                            st.session_state["_seances_last_player"] = _pgps
-                        _s_idx = max(0, min(len(_seance_dates) - 1,
-                                             st.session_state.get("_seances_idx", len(_seance_dates) - 1)))
-
-                        _cdate_s, _cprev_s, _cnext_s = st.columns([3, 1, 1])
-                        with _cdate_s:
-                            _sel_date_s = st.date_input(
-                                "Date de la séance",
-                                value=_norm_dates[_s_idx],
-                                min_value=_norm_dates[0],
-                                max_value=_norm_dates[-1],
-                                key="perf_seances_date",
-                            )
-                        if _sel_date_s in _norm_dates:
-                            st.session_state["_seances_idx"] = _norm_dates.index(_sel_date_s)
-                            _s_idx = st.session_state["_seances_idx"]
-                        with _cprev_s:
-                            st.markdown("<div style='height:1.75em'></div>", unsafe_allow_html=True)
-                            if st.button("← Préc.", disabled=_s_idx == 0, key="seances_prev"):
-                                st.session_state["_seances_idx"] = _s_idx - 1
-                                st.rerun()
-                        with _cnext_s:
-                            st.markdown("<div style='height:1.75em'></div>", unsafe_allow_html=True)
-                            if st.button("Suiv. →", disabled=_s_idx >= len(_seance_dates) - 1, key="seances_next"):
-                                st.session_state["_seances_idx"] = _s_idx + 1
-                                st.rerun()
-
-                        _ref_date_s = pd.Timestamp(_seance_dates[_s_idx])
-                        _day_rows_s = _dr[_dr["DATE"].dt.normalize() == _ref_date_s]
-
-                        if len(_day_rows_s) > 1 and "__source_file" in _day_rows_s.columns:
-                            _srcs_s = sorted(_day_rows_s["__source_file"].dropna().astype(str).unique())
-                            _src_choice_s = st.selectbox(
-                                "Séance (plusieurs le même jour)", _srcs_s, key="perf_seances_src"
-                            )
-                            _day_rows_s = _day_rows_s[_day_rows_s["__source_file"].astype(str) == _src_choice_s]
-
-                        _row_s = _day_rows_s.iloc[0] if not _day_rows_s.empty else pd.Series(dtype=float)
-
-                        st.markdown(f"**Séance du {_ref_date_s.strftime('%d/%m/%Y')}**")
-                        _team_ref_s = monitoring_team_reference(_gr, _ref_date_s)
-
-                        _cat_cols_s = st.columns(len(MONITORING_METRICS))
-                        for _col_ui_s, (_cat_name_s, _cat_metrics_s) in zip(_cat_cols_s, MONITORING_METRICS.items()):
-                            with _col_ui_s:
-                                st.markdown(
-                                    f"<div style='color:{MONITORING_CATEGORY_COLORS[_cat_name_s]};"
-                                    f"font-weight:600;font-size:13px;margin-bottom:4px'>{_cat_name_s}</div>",
-                                    unsafe_allow_html=True
-                                )
-                                for _col_key_s, _col_label_s in _cat_metrics_s.items():
-                                    if _col_key_s not in _row_s.index:
-                                        continue
-                                    _v_s = pd.to_numeric(_row_s.get(_col_key_s), errors="coerce")
-                                    _dec_s = 1 if _col_key_s in _MONITORING_DECIMAL_COLS else 0
-                                    _ref_v_s = (_team_ref_s.get(_col_key_s)
-                                                if not _team_ref_s.empty else None)
-                                    _delta_s = None
-                                    if _ref_v_s is not None and pd.notna(_ref_v_s) and pd.notna(_v_s):
-                                        _delta_s = round(float(_v_s) - float(_ref_v_s), 1)
-                                        if _delta_s == 0:
-                                            _delta_s = None
-                                    st.metric(
-                                        _col_label_s,
-                                        f"{_v_s:.{_dec_s}f}" if pd.notna(_v_s) else "—",
-                                        delta=_delta_s,
-                                        help=(f"Moy. équipe : {_ref_v_s:.{_dec_s}f}"
-                                              if _ref_v_s is not None and pd.notna(_ref_v_s) else None),
-                                    )
-
-                        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-                        st.markdown("**Profil vs moyenne équipe**")
-                        if not _team_ref_s.empty:
-                            _fig_profile_s = monitoring_profile_bars(_row_s, _team_ref_s, "moyenne équipe")
-                            if _fig_profile_s:
-                                st.plotly_chart(_fig_profile_s, width="stretch")
-                                st.caption("Base 100 = moyenne équipe du jour | valeur brute sur chaque barre")
-                            else:
-                                st.info("Pas assez de données pour calculer le profil vs équipe.")
-                        else:
-                            st.info("Aucune donnée équipe disponible pour cette date (référence).")
-
-                        with st.expander("Voir les données détaillées"):
-                            _sc_raw = [c for c in ["DATE", "Distance (m)", "Distance HID (>13 km/h)",
-                                "Sprints_23", "Vitesse max (km/h)", "CHARGE", "RPE"] if c in _dr.columns]
-                            st.dataframe(_dr[_sc_raw], width="stretch")
+    # ── Séance / Semaine / Période : onglets des vues U19 de l'app d'Emma (suivi_gps.py),
+    # alimentés par les GPS locaux ; liste des joueuses = Gestion → Fiches joueuses.
+    import suivi_gps as _sv
+    from gps_compilation import sous_ensemble_flou as _sv_sef
+    _sv_df = _sv.construire_donnees_suivi(_gps_raw_df if _gps_raw_df is not None else pd.DataFrame(),
+                                          _gps_match_df if _gps_match_df is not None else pd.DataFrame())
+    _sv_cle = ("_sv_noms_gestion", len(get_tactical_files()))
+    if st.session_state.get("_sv_noms_cle") != _sv_cle:
+        st.session_state["_sv_noms_gestion"] = joueuses_saison(get_tactical_files())
+        st.session_state["_sv_noms_cle"] = _sv_cle
+    _sv_roster = _sv.rattacher_roster(st.session_state["_sv_noms_gestion"], _sv_df, nettoyer_nom_joueuse, _sv_sef)
+    _sv_defaut = _sv.rattacher_roster([_pgps], _sv_df, nettoyer_nom_joueuse, _sv_sef).get(_pgps) if _pgps else None
+    _sv_fixe = None
+    if role == ROLE_JOUEUSE:
+        # Profil joueuse : vue individuelle seule, sur elle-même (pas de vue équipe).
+        _sv_moi = player_name or _pgps or ""
+        _sv_fixe = (_sv_moi, _sv.rattacher_roster([_sv_moi], _sv_df, nettoyer_nom_joueuse, _sv_sef).get(_sv_moi))
+    for _sv_tab, _sv_onglet in ((_st_seance, "seance"), (_st_semaine, "semaine"), (_st_periode, "periode")):
+        with _sv_tab:
+            _sv.render_onglet(_sv_onglet, _sv_df, _sv_roster, joueuse_fixe=_sv_fixe, defaut=_sv_defaut)
 
     with _st_match:
                     # ── Données GPS match pour la joueuse ─────────────────
