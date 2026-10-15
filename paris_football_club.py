@@ -417,30 +417,56 @@ def save_presence_roster(players: list) -> bool:
         return False
 
 
+PRESENCE_ABSENCES = [st_ for st_ in PRESENCE_STATUTS if st_ != "Présente"]
+RPE_TABLE_SQL = "sql/2026-10-15_presence_rpe.sql"
+
+
+def _presence_select_all(query_builder) -> list:
+    """Lecture paginée (plafond PostgREST de 1000 lignes, piège n°7)."""
+    rows, debut = [], 0
+    while True:
+        lot = query_builder.order("date").order("joueuse").range(debut, debut + 999).execute().data or []
+        rows += lot
+        if len(lot) < 1000:
+            return rows
+        debut += 1000
+
+
 @st.cache_data(ttl=60)
 def load_presence_dates() -> set:
-    """Dates (set d'objets date) ayant au moins une ligne de présence enregistrée
-    — sert à marquer le calendrier. Retourne un set vide si Supabase n'est pas
-    configuré ou si la table n'existe pas encore."""
+    """Dates (set d'objets date) ayant au moins une saisie RPE / présence — marque le
+    calendrier. Set vide si Supabase n'est pas configuré ou si la table n'existe pas."""
     _sb = get_supabase_client()
     if _sb is None:
         return set()
     try:
-        _res = _sb.table("presence_entrainement").select("date").execute()
-        return {pd.to_datetime(r["date"]).date() for r in _res.data}
+        _rows = _presence_select_all(_sb.table("presence_entrainement").select("date,joueuse"))
+        return {pd.to_datetime(r["date"]).date() for r in _rows}
     except Exception:
         return set()
 
 
+def presence_table_disponible() -> Tuple[bool, str]:
+    """(True, "") si la table presence_entrainement (avec la colonne rpe) est accessible."""
+    _sb = get_supabase_client()
+    if _sb is None:
+        return False, "Supabase n'est pas configuré pour l'app."
+    try:
+        _sb.table("presence_entrainement").select("joueuse,rpe").limit(1).execute()
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
 @st.cache_data(ttl=60)
 def load_presence_for_date(date_iso: str) -> dict:
-    """{joueuse: statut} pour une date donnée (clé ISO 'YYYY-MM-DD')."""
+    """{joueuse: {"statut": …, "rpe": int|None}} pour une date (clé ISO 'YYYY-MM-DD')."""
     _sb = get_supabase_client()
     if _sb is None:
         return {}
     try:
-        _res = _sb.table("presence_entrainement").select("joueuse,statut").eq("date", date_iso).execute()
-        return {r["joueuse"]: r["statut"] for r in _res.data}
+        _res = _sb.table("presence_entrainement").select("joueuse,statut,rpe").eq("date", date_iso).execute()
+        return {r["joueuse"]: {"statut": r["statut"], "rpe": r.get("rpe")} for r in _res.data}
     except Exception:
         return {}
 
@@ -453,32 +479,42 @@ def load_presence_rate(joueuse: str):
     if _sb is None or not joueuse:
         return None
     try:
-        _res = _sb.table("presence_entrainement").select("statut").eq("joueuse", joueuse).execute()
-        if not _res.data:
+        _rows = _presence_select_all(_sb.table("presence_entrainement").select("date,joueuse,statut").eq("joueuse", joueuse))
+        if not _rows:
             return None
-        _total = len(_res.data)
-        _presentes = sum(1 for r in _res.data if r["statut"] in PRESENCE_STATUTS_PRESENTE)
-        return round(100.0 * _presentes / _total, 1)
+        _presentes = sum(1 for r in _rows if r["statut"] in PRESENCE_STATUTS_PRESENTE)
+        return round(100.0 * _presentes / len(_rows), 1)
     except Exception:
         return None
 
 
-def save_presence(date_iso: str, statuts: dict) -> bool:
-    """Upsert une ligne par joueuse pour la date donnée (on_conflict=joueuse,date),
-    puis invalide les caches de lecture ci-dessus."""
+def save_presence_rpe(date_iso: str, saisies: dict, auteur: str = "") -> Tuple[bool, str]:
+    """Enregistre la saisie du jour : {joueuse: RPE (int 1-10) ou motif d'absence (str)}.
+    RPE → statut « Présente ». Joueuse remise à « — » → sa ligne du jour est supprimée."""
     _sb = get_supabase_client()
     if _sb is None:
-        return False
+        return False, "Supabase n'est pas configuré pour l'app."
     try:
-        _rows = [{"joueuse": _nom, "date": date_iso, "statut": _statut} for _nom, _statut in statuts.items()]
+        _rows, _a_supprimer = [], []
+        for _nom, _val in saisies.items():
+            if _val is None:
+                _a_supprimer.append(_nom)
+            elif isinstance(_val, int):
+                _rows.append({"joueuse": _nom, "date": date_iso, "statut": "Présente", "rpe": _val,
+                              "saisi_par": auteur, "updated_at": datetime.now(timezone.utc).isoformat()})
+            else:
+                _rows.append({"joueuse": _nom, "date": date_iso, "statut": _val, "rpe": None,
+                              "saisi_par": auteur, "updated_at": datetime.now(timezone.utc).isoformat()})
         if _rows:
             _sb.table("presence_entrainement").upsert(_rows, on_conflict="joueuse,date").execute()
+        if _a_supprimer:
+            _sb.table("presence_entrainement").delete().eq("date", date_iso).in_("joueuse", _a_supprimer).execute()
         load_presence_dates.clear()
         load_presence_for_date.clear()
         load_presence_rate.clear()
-        return True
-    except Exception:
-        return False
+        return True, ""
+    except Exception as e:
+        return False, str(e)
 
 
 OBJECTIFS_CATEGORIE_LABELS = {
@@ -11545,7 +11581,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
             _CAL_JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
 
-            _ent_sub_seances, _ent_sub_presence = st.tabs(["📅 Séances", "✅ Présence"])
+            _ent_sub_seances, _ent_sub_rpe = st.tabs(["📅 Séances", "📝 RPE"])
             with _ent_sub_seances:
                 _gr_cal = ensure_date_column(_gps_raw_df) if _gps_raw_df is not None and not _gps_raw_df.empty else pd.DataFrame()
                 _gr_cal = _gr_cal[_gr_cal["DATE"].notna()].copy() if not _gr_cal.empty else _gr_cal
@@ -11694,18 +11730,17 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             _detail_df = _day_df[_detail_cols].rename(columns={"Player": "Joueuse", **MONITORING_ALL_LABELS})
                             st.dataframe(_detail_df, width="stretch", hide_index=True)
 
-            with _ent_sub_presence:
+            with _ent_sub_rpe:
                 with st.expander("📋 Effectif (liste des joueuses)"):
                     _pres_roster_cur = load_presence_roster()
                     if _pres_roster_cur:
-                        st.caption(f"{len(_pres_roster_cur)} joueuse(s) enregistrée(s) — utilisée(s) pour la saisie de présence.")
+                        st.caption(f"{len(_pres_roster_cur)} joueuse(s) enregistrée(s) — utilisée(s) pour la saisie RPE.")
                         st.write(", ".join(_pres_roster_cur))
                     else:
                         st.caption(
-                            "Aucune liste chargée pour l'instant — la liste utilisée dans la boîte "
-                            "de dialogue est déduite des données de matchs/GPS existantes. Charge un "
-                            "fichier Excel pour définir explicitement l'effectif (utile pour inclure "
-                            "les nouvelles recrues qui n'ont pas encore de données)."
+                            "Aucune liste chargée : la saisie reprend les joueuses du trombinoscope "
+                            "(groupe choisi ci-dessous). Charge un fichier Excel pour définir "
+                            "explicitement l'effectif."
                         )
 
                     _pres_xlsx = st.file_uploader(
@@ -11740,6 +11775,22 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                     st.error("Échec de l'enregistrement.")
                         except Exception as _pres_re:
                             st.error(f"Impossible de lire ce fichier : {_pres_re}")
+
+                _rpe_ok, _rpe_err = presence_table_disponible()
+                if not _rpe_ok:
+                    st.error("La table Supabase de saisie RPE / présence n'existe pas encore : exécuter "
+                             f"`{RPE_TABLE_SQL}` dans l'éditeur SQL de Supabase. Aucune saisie ne peut être "
+                             "enregistrée d'ici là.")
+                    st.caption(f"Détail : {_rpe_err[:200]}")
+                _rpe_trombi = load_trombi()
+                _rpe_groupes = sorted({j["categorie"] for j in _rpe_trombi})
+                _rpe_groupe = None
+                if not load_presence_roster() and _rpe_groupes:
+                    _rpe_groupe = st.segmented_control(
+                        "Groupe", _rpe_groupes + ["Tous"], key="rpe_groupe", required=True,
+                        default="U19" if "U19" in _rpe_groupes else _rpe_groupes[0])
+                st.caption("Échelle de Borg (questionnaire sRPE) : ressenti de charge de la séance, "
+                           "de 1 « Extrêmement facile » à 10 « Extrêmement difficile ».")
 
                 _pres_dates = load_presence_dates()
                 _pres_today = date.today()
@@ -11814,68 +11865,54 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 st.session_state["_presence_dialog_date"] = _pd_date
                                 st.session_state["_active_dialog_id"] = "presence"
 
-                st.caption("🟢 Jour avec présence saisie — clique sur une date pour saisir/modifier la présence.")
+                st.caption("🟢 Jour avec RPE saisie — clique sur une date pour saisir ou modifier la RPE de chaque joueuse.")
 
                 _pres_dialog_date = st.session_state.get("_presence_dialog_date")
                 if _pres_dialog_date and st.session_state.get("_active_dialog_id") == "presence":
                     _pres_all_players = load_presence_roster()
                     if not _pres_all_players:
-                        # Repli : liste déduite des données de matchs/GPS tant qu'aucun fichier
-                        # Excel n'a été chargé (effectif "📋" ci-dessus).
-                        _ps_pres = st.session_state.get("_player_settings") or load_player_settings()
-                        _pres_all_players = sorted(pfc_kpi_all["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
-                                             if pfc_kpi_all is not None and not pfc_kpi_all.empty else []
-                        _pres_all_players = apply_player_settings(_pres_all_players, _ps_pres)
+                        if _rpe_trombi:
+                            _pres_all_players = sorted({
+                                nettoyer_nom_joueuse(f"{j['nom']} {j['prenom']}") for j in _rpe_trombi
+                                if _rpe_groupe in (None, "Tous") or j["categorie"] == _rpe_groupe})
+                        else:
+                            _pres_all_players = sorted({nettoyer_nom_joueuse(n) for n in joueuses_saison(get_tactical_files())})
                     _pres_date_iso = _pres_dialog_date.isoformat()
+                    _RPE_CHOIX = ["—"] + list(range(1, 11)) + PRESENCE_ABSENCES
 
-                    def _pres_set_statut(date_iso, nom, statut):
-                        # Callback on_change : s'exécute avant le rerun, donc avant que les
-                        # autres cases de la même ligne ne soient réinstanciées — modifier
-                        # leur session_state ici est valide et impose l'exclusivité mutuelle
-                        # (une seule case cochée par joueuse, comme un bouton radio).
-                        for _s in PRESENCE_STATUTS:
-                            st.session_state[f"pres_cb_{date_iso}_{nom}_{_s}"] = (_s == statut)
+                    def _rpe_libelle(v):
+                        if v == "—":
+                            return "— non renseigné"
+                        if isinstance(v, int):
+                            return {1: "1 · Extrêmement facile", 10: "10 · Extrêmement difficile"}.get(v, str(v))
+                        return "Absente" if v == "Absente" else f"Absente · {v}"
 
-                    @st.dialog(f"Présence du {_pres_dialog_date.strftime('%d/%m/%Y')}")
-                    def _presence_dialog():
+                    @st.dialog(f"RPE du {_pres_dialog_date.strftime('%d/%m/%Y')}", width="large")
+                    def _rpe_dialog():
                         _existing = load_presence_for_date(_pres_date_iso)
                         if st.session_state.get("_presence_extra_names_date") != _pres_date_iso:
                             st.session_state["_presence_extra_names"] = [
-                                n for n in _existing.keys() if n not in _pres_all_players
-                            ]
+                                n for n in _existing if n not in _pres_all_players]
                             st.session_state["_presence_extra_names_date"] = _pres_date_iso
-                            # (Ré)initialise les cases à cocher pour cette date à partir des
-                            # données existantes (une seule fois par ouverture de dialog).
                             for _n in list(_pres_all_players) + st.session_state["_presence_extra_names"]:
-                                _def = _existing.get(_n, "Présente")
-                                for _s in PRESENCE_STATUTS:
-                                    st.session_state[f"pres_cb_{_pres_date_iso}_{_n}_{_s}"] = (_s == _def)
-
-                        _roster = list(_pres_all_players)
-                        for _n in st.session_state["_presence_extra_names"]:
-                            if _n not in _roster:
-                                _roster.append(_n)
-
-                        st.caption(f"{len(_roster)} joueuse(s)")
-                        _statuts = {}
-                        _PRES_CB_PER_ROW = 3
-                        for _nom in _roster:
-                            st.markdown(f"**{_nom}**")
-                            for _row_start in range(0, len(PRESENCE_STATUTS), _PRES_CB_PER_ROW):
-                                _row_statuts = PRESENCE_STATUTS[_row_start:_row_start + _PRES_CB_PER_ROW]
-                                _cb_cols = st.columns(_PRES_CB_PER_ROW)
-                                for _cbc, _s in zip(_cb_cols, _row_statuts):
-                                    with _cbc:
-                                        st.checkbox(
-                                            PRESENCE_STATUTS_SHORT[_s],
-                                            key=f"pres_cb_{_pres_date_iso}_{_nom}_{_s}",
-                                            on_change=_pres_set_statut, args=(_pres_date_iso, _nom, _s),
-                                        )
-                            _statuts[_nom] = next(
-                                (_s for _s in PRESENCE_STATUTS
-                                 if st.session_state.get(f"pres_cb_{_pres_date_iso}_{_nom}_{_s}")),
-                                "Présente"
-                            )
+                                _e = _existing.get(_n)
+                                _v = "—" if not _e else (int(_e["rpe"]) if _e.get("rpe") is not None
+                                                         else (_e["statut"] if _e["statut"] in PRESENCE_ABSENCES else "—"))
+                                st.session_state[f"rpe_sel_{_pres_date_iso}_{_n}"] = _v
+                        _roster = list(_pres_all_players) + [n for n in st.session_state["_presence_extra_names"]
+                                                              if n not in _pres_all_players]
+                        st.caption(f"{len(_roster)} joueuse(s) · RPE de 1 à 10, ou motif d'absence.")
+                        _saisies = {}
+                        _cols = st.columns(2)
+                        for _i, _nom in enumerate(_roster):
+                            with _cols[_i % 2]:
+                                _v = st.selectbox(_nom, _RPE_CHOIX, format_func=_rpe_libelle,
+                                                  key=f"rpe_sel_{_pres_date_iso}_{_nom}")
+                                _saisies[_nom] = None if _v == "—" else _v
+                        _nb_rpe = sum(isinstance(v, int) for v in _saisies.values())
+                        _nb_abs = sum(isinstance(v, str) for v in _saisies.values())
+                        st.caption(f"{_nb_rpe} RPE · {_nb_abs} absente(s) · "
+                                   f"{len(_roster) - _nb_rpe - _nb_abs} non renseignée(s)")
 
                         st.divider()
                         _padd1, _padd2 = st.columns([3, 1])
@@ -11884,34 +11921,34 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         with _padd2:
                             st.markdown("<div style='height:1.75em'></div>", unsafe_allow_html=True)
                             if st.button("➕ Ajouter", key=f"pres_add_name_{_pres_date_iso}", width="stretch"):
-                                _clean_name = _pres_new_name.strip()
+                                _clean_name = nettoyer_nom_joueuse(_pres_new_name.strip())
                                 if _clean_name and _clean_name not in _roster:
                                     st.session_state["_presence_extra_names"].append(_clean_name)
-                                    for _s in PRESENCE_STATUTS:
-                                        st.session_state[f"pres_cb_{_pres_date_iso}_{_clean_name}_{_s}"] = (_s == "Présente")
+                                    st.session_state[f"rpe_sel_{_pres_date_iso}_{_clean_name}"] = "—"
                                     st.rerun()
 
                         st.divider()
                         _pb1, _pb2 = st.columns(2)
                         with _pb1:
-                            if st.button("💾 Enregistrer", type="primary", key=f"pres_save_{_pres_date_iso}", width="stretch"):
-                                if save_presence(_pres_date_iso, _statuts):
-                                    st.session_state.pop("_presence_dialog_date", None)
-                                    st.session_state.pop("_presence_extra_names", None)
-                                    st.session_state.pop("_presence_extra_names_date", None)
-                                    st.session_state.pop("_active_dialog_id", None)
+                            if st.button("💾 Enregistrer", type="primary", key=f"pres_save_{_pres_date_iso}",
+                                         width="stretch", disabled=not _rpe_ok):
+                                _ok, _err = save_presence_rpe(_pres_date_iso, _saisies,
+                                                              auteur=str(st.session_state.get("user_profile", "")))
+                                if _ok:
+                                    for _k in ("_presence_dialog_date", "_presence_extra_names",
+                                               "_presence_extra_names_date", "_active_dialog_id"):
+                                        st.session_state.pop(_k, None)
                                     st.rerun()
                                 else:
-                                    st.error("Échec de l'enregistrement (Supabase indisponible ?).")
+                                    st.error(f"Échec de l'enregistrement : {_err[:200]}")
                         with _pb2:
                             if st.button("Annuler", key=f"pres_cancel_{_pres_date_iso}", width="stretch"):
-                                st.session_state.pop("_presence_dialog_date", None)
-                                st.session_state.pop("_presence_extra_names", None)
-                                st.session_state.pop("_presence_extra_names_date", None)
-                                st.session_state.pop("_active_dialog_id", None)
+                                for _k in ("_presence_dialog_date", "_presence_extra_names",
+                                           "_presence_extra_names_date", "_active_dialog_id"):
+                                    st.session_state.pop(_k, None)
                                 st.rerun()
 
-                    _presence_dialog()
+                    _rpe_dialog()
 
     # ══════════════════════════════════
     # TAB 1 — MATCHS
