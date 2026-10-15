@@ -11878,14 +11878,16 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         else:
                             _pres_all_players = sorted({nettoyer_nom_joueuse(n) for n in joueuses_saison(get_tactical_files())})
                     _pres_date_iso = _pres_dialog_date.isoformat()
-                    _RPE_CHOIX = ["—"] + list(range(1, 11)) + PRESENCE_ABSENCES
+                    _RPE_CASES = list(range(1, 11)) + ["abs"]
+                    _RPE_MOTIFS = {"Non précisé": "Absente", "Sélection": "Sélection", "Réathlé": "Réathlé",
+                                   "Blessée (Kiné)": "Blessée (Kiné)", "Pro": "Pro"}
 
-                    def _rpe_libelle(v):
-                        if v == "—":
-                            return "— non renseigné"
-                        if isinstance(v, int):
-                            return {1: "1 · Extrêmement facile", 10: "10 · Extrêmement difficile"}.get(v, str(v))
-                        return "Absente" if v == "Absente" else f"Absente · {v}"
+                    def _rpe_cocher(date_iso, nom, case):
+                        # Une seule case par joueuse (comme un bouton radio) ; décocher = non renseigné.
+                        if st.session_state.get(f"rpe_cb_{date_iso}_{nom}_{case}"):
+                            for _c in _RPE_CASES:
+                                if _c != case:
+                                    st.session_state[f"rpe_cb_{date_iso}_{nom}_{_c}"] = False
 
                     @st.dialog(f"RPE du {_pres_dialog_date.strftime('%d/%m/%Y')}", width="large")
                     def _rpe_dialog():
@@ -11895,20 +11897,42 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 n for n in _existing if n not in _pres_all_players]
                             st.session_state["_presence_extra_names_date"] = _pres_date_iso
                             for _n in list(_pres_all_players) + st.session_state["_presence_extra_names"]:
-                                _e = _existing.get(_n)
-                                _v = "—" if not _e else (int(_e["rpe"]) if _e.get("rpe") is not None
-                                                         else (_e["statut"] if _e["statut"] in PRESENCE_ABSENCES else "—"))
-                                st.session_state[f"rpe_sel_{_pres_date_iso}_{_n}"] = _v
+                                _e = _existing.get(_n) or {}
+                                _r = int(_e["rpe"]) if _e.get("rpe") is not None else None
+                                _abs = _r is None and _e.get("statut") in PRESENCE_ABSENCES
+                                for _c in _RPE_CASES:
+                                    st.session_state[f"rpe_cb_{_pres_date_iso}_{_n}_{_c}"] = (
+                                        _c == _r if _c != "abs" else _abs)
+                                st.session_state[f"rpe_motif_{_pres_date_iso}_{_n}"] = next(
+                                    (k for k, v in _RPE_MOTIFS.items() if v == _e.get("statut")), "Non précisé")
                         _roster = list(_pres_all_players) + [n for n in st.session_state["_presence_extra_names"]
                                                               if n not in _pres_all_players]
-                        st.caption(f"{len(_roster)} joueuse(s) · RPE de 1 à 10, ou motif d'absence.")
+                        st.caption(f"{len(_roster)} joueuse(s) · cocher la RPE (1 = extrêmement facile, "
+                                   "10 = extrêmement difficile) ou « Absente » puis le motif.")
+                        _LARG = [2.4] + [0.42] * 10 + [0.9, 1.7]
+                        _ent = st.columns(_LARG, vertical_alignment="bottom")
+                        _ent[0].markdown("**Joueuse**")
+                        for _c, _col in zip(range(1, 11), _ent[1:11]):
+                            _col.markdown(f"<div style='text-align:center;font-weight:700'>{_c}</div>",
+                                          unsafe_allow_html=True)
+                        _ent[11].markdown("**Absente**")
+                        _ent[12].markdown("**Motif**")
                         _saisies = {}
-                        _cols = st.columns(2)
-                        for _i, _nom in enumerate(_roster):
-                            with _cols[_i % 2]:
-                                _v = st.selectbox(_nom, _RPE_CHOIX, format_func=_rpe_libelle,
-                                                  key=f"rpe_sel_{_pres_date_iso}_{_nom}")
-                                _saisies[_nom] = None if _v == "—" else _v
+                        for _nom in _roster:
+                            _lig = st.columns(_LARG, vertical_alignment="center")
+                            _lig[0].markdown(_esc(_nom))
+                            for _c, _col in zip(_RPE_CASES, _lig[1:12]):
+                                _col.checkbox(str(_c), key=f"rpe_cb_{_pres_date_iso}_{_nom}_{_c}",
+                                              label_visibility="collapsed",
+                                              on_change=_rpe_cocher, args=(_pres_date_iso, _nom, _c))
+                            _coche = next((_c for _c in _RPE_CASES
+                                           if st.session_state.get(f"rpe_cb_{_pres_date_iso}_{_nom}_{_c}")), None)
+                            if _coche == "abs":
+                                _m = _lig[12].selectbox("Motif", list(_RPE_MOTIFS), label_visibility="collapsed",
+                                                        key=f"rpe_motif_{_pres_date_iso}_{_nom}")
+                                _saisies[_nom] = _RPE_MOTIFS[_m]
+                            else:
+                                _saisies[_nom] = _coche
                         _nb_rpe = sum(isinstance(v, int) for v in _saisies.values())
                         _nb_abs = sum(isinstance(v, str) for v in _saisies.values())
                         st.caption(f"{_nb_rpe} RPE · {_nb_abs} absente(s) · "
@@ -11924,7 +11948,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 _clean_name = nettoyer_nom_joueuse(_pres_new_name.strip())
                                 if _clean_name and _clean_name not in _roster:
                                     st.session_state["_presence_extra_names"].append(_clean_name)
-                                    st.session_state[f"rpe_sel_{_pres_date_iso}_{_clean_name}"] = "—"
+                                    for _c in _RPE_CASES:
+                                        st.session_state[f"rpe_cb_{_pres_date_iso}_{_clean_name}_{_c}"] = False
                                     st.rerun()
 
                         st.divider()
