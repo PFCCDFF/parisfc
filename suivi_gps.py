@@ -298,11 +298,12 @@ def _indiv_seance(perso, team_df, nom, gid):
 
 def _indiv_semaine(perso, team_df, nom, gid):
     weeks = sorted(perso["week"].unique(), reverse=True)
-    selected_day = st.date_input("Choisir une date dans la semaine", value=perso["session_date"].max().date(),
-                                 min_value=perso["session_date"].min().date(),
-                                 max_value=perso["session_date"].max().date(),
-                                 format="DD/MM/YYYY", key="sv_ind_sem_date")
-    sel_week = pd.Timestamp(selected_day).strftime("%G-S%V")
+    # Même sélecteur que la vue équipe : agenda hebdo (◀ / Aller au / ▶ / Dernière séance) ;
+    # seule la semaine affichée compte ici.
+    seances = perso.assign(_sid=perso["session_id"].astype(str)).drop_duplicates("_sid")
+    _, lundi = agenda_seances(seances, "sv_ind_sem", contexte=gid, detail=detail_distance)
+    selected_day = lundi
+    sel_week = pd.Timestamp(lundi).strftime("%G-S%V")
     df_week = perso[perso["week"] == sel_week]
     team_week = team_df[team_df["week"] == sel_week]
     if df_week.empty:
