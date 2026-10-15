@@ -493,6 +493,24 @@ def load_presence_rate(joueuse: str):
         return None
 
 
+@st.cache_data(ttl=60)
+def load_rpe_joueuse(joueuse: str) -> pd.DataFrame:
+    """RPE saisies pour une joueuse (onglet Entraînement → RPE) : colonnes DATE, RPE."""
+    _sb = get_supabase_client()
+    if _sb is None or not joueuse:
+        return pd.DataFrame(columns=["DATE", "RPE"])
+    try:
+        _rows = _presence_select_all(_sb.table("presence_entrainement").select("date,joueuse,rpe")
+                                     .eq("joueuse", nettoyer_nom_joueuse(joueuse)).not_.is_("rpe", "null"))
+    except Exception:
+        return pd.DataFrame(columns=["DATE", "RPE"])
+    d = pd.DataFrame(_rows)
+    if d.empty:
+        return pd.DataFrame(columns=["DATE", "RPE"])
+    return pd.DataFrame({"DATE": pd.to_datetime(d["date"]).dt.normalize(),
+                         "RPE": pd.to_numeric(d["rpe"], errors="coerce")}).dropna()
+
+
 def save_presence_rpe(date_iso: str, saisies: dict, auteur: str = "") -> Tuple[bool, str]:
     """Enregistre la saisie du jour : {joueuse: RPE (int 1-10) ou motif d'absence (str)}.
     RPE → statut « Présente ». Joueuse remise à « — » → sa ligne du jour est supprimée."""
@@ -517,6 +535,7 @@ def save_presence_rpe(date_iso: str, saisies: dict, auteur: str = "") -> Tuple[b
         load_presence_dates.clear()
         load_presence_for_date.clear()
         load_presence_rate.clear()
+        load_rpe_joueuse.clear()
         return True, ""
     except Exception as e:
         return False, str(e)
@@ -8153,7 +8172,7 @@ def compute_gps_weekly_metrics(df_gps: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def compute_acwr(gps_raw: pd.DataFrame, player_name: str) -> pd.DataFrame:
+def compute_acwr(gps_raw: pd.DataFrame, player_name: str, rpe: pd.DataFrame = None) -> pd.DataFrame:
     """Calcule l'ACWR hebdomadaire selon deux modèles pour une joueuse.
 
     Modèle 1 — Rolling Average (Gabbett 2016) :
@@ -8188,8 +8207,26 @@ def compute_acwr(gps_raw: pd.DataFrame, player_name: str) -> pd.DataFrame:
     df = df[df["DATE"].notna()].copy()
     df["DATE"] = pd.to_datetime(df["DATE"]).dt.normalize()
 
-    # Construire la colonne CHARGE si absente
-    if "CHARGE" not in df.columns and "RPE" in df.columns and "Durée_min" in df.columns:
+    if rpe is not None:
+        # Charge interne (sRPE, Foster) : RPE saisie (Entraînement → RPE) × durée de la séance.
+        # Durée = GPS de la joueuse ce jour-là ; à défaut (pas de balise), durée médiane de
+        # l'équipe ce jour-là. Jour sans RPE = 0 (comme un jour de repos).
+        if rpe.empty:
+            return pd.DataFrame()
+        _eq = ensure_date_column(gps_raw.copy())
+        _eq = _eq[_eq["DATE"].notna()]
+        _eq["DATE"] = pd.to_datetime(_eq["DATE"]).dt.normalize()
+        _dur_eq = (_eq.assign(_d=pd.to_numeric(_eq.get("Durée_min"), errors="coerce"))
+                   .groupby(["DATE", "Player"])["_d"].sum().groupby("DATE").median())
+        _dur_j = df.assign(_d=pd.to_numeric(df.get("Durée_min"), errors="coerce")).groupby("DATE")["_d"].sum(min_count=1)
+        r = rpe.groupby("DATE")["RPE"].mean().to_frame()
+        r["DUREE"] = _dur_j.reindex(r.index)
+        r["DUREE"] = r["DUREE"].fillna(_dur_eq.reindex(r.index))
+        r = r[r["DUREE"].notna() & (r["DUREE"] > 0)]
+        if r.empty:
+            return pd.DataFrame()
+        df = pd.DataFrame({"DATE": r.index, "CHARGE": (r["RPE"] * r["DUREE"]).values})
+    elif "CHARGE" not in df.columns and "RPE" in df.columns and "Durée_min" in df.columns:
         df["CHARGE"] = (
             pd.to_numeric(df["RPE"], errors="coerce").fillna(0) *
             pd.to_numeric(df["Durée_min"], errors="coerce").fillna(0)
@@ -13155,8 +13192,23 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     if _gr is None or _gr.empty:
                         st.info("Aucune donnée GPS brute disponible.")
                     else:
-                        _weekly_acwr = compute_acwr(_gr, _pgps)
-                        if _weekly_acwr.empty:
+                        # Gabbett / Murray partent de la sRPE (charge interne) ; la charge externe
+                        # (distance GPS) reste disponible.
+                        _mode_ch = st.segmented_control(
+                            "Charge utilisée pour l'ACWR",
+                            ["Charge externe (distance GPS)", "Avec la RPE (sRPE = RPE × durée)"],
+                            default="Charge externe (distance GPS)", required=True, key="perf_charge_mode")
+                        _avec_rpe = _mode_ch.startswith("Avec")
+                        _unite_ch = "UA" if _avec_rpe else "m"
+                        _weekly_acwr = compute_acwr(_gr, _pgps, rpe=load_rpe_joueuse(_pgps) if _avec_rpe else None)
+                        if _avec_rpe:
+                            st.caption("sRPE (Foster) = RPE saisie dans Entraînement → 📝 RPE × durée GPS de la séance "
+                                       "(durée médiane de l'équipe si la joueuse n'avait pas de balise). "
+                                       "Les jours sans RPE (matchs compris s'ils ne sont pas saisis) comptent 0.")
+                        if _weekly_acwr.empty and _avec_rpe:
+                            st.info("Aucune RPE saisie pour cette joueuse (Entraînement → 📝 RPE) : "
+                                    "pas de charge interne à afficher.")
+                        elif _weekly_acwr.empty:
                             st.info(
                                 "Pas de données de charge disponibles pour cette joueuse. "
                                 "Vérifiez que les colonnes RPE et Durée_min (ou CHARGE ou Distance) "
@@ -13221,7 +13273,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             st.markdown("##### Dernière semaine de la période")
                             _rc1, _rc2, _rc3 = st.columns(3)
                             _rc1.metric("📅 Semaine", _last["Label_semaine"])
-                            _rc2.metric("📦 Charge totale (UA)", f"{_last['CHARGE_semaine']:.0f}")
+                            _rc2.metric(f"📦 Charge totale ({_unite_ch})", f"{_last['CHARGE_semaine']:.0f}")
                             _rc3.metric("📊 Zone globale", _zone_label(_last["ACWR_EWMA"]))
 
                             _rc4, _rc5, _rc6, _rc7 = st.columns(4)
@@ -13263,7 +13315,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                                 _ax1_ch.bar(_x_ch, _charges_ch, color="#1A3A5C", alpha=0.6,
                                             label="Charge hebdo", zorder=2, width=0.6)
-                                _ax1_ch.set_ylabel("Charge (UA)", color="#6A8090", fontsize=9)
+                                _ax1_ch.set_ylabel(f"Charge ({_unite_ch})", color="#6A8090", fontsize=9)
                                 _ax1_ch.tick_params(axis="y", colors="#6A8090", labelsize=8)
                                 _ax1_ch.tick_params(axis="x", colors="#C8D8E8", labelsize=8)
                                 _ax1_ch.set_xticks(_x_ch)
