@@ -1,0 +1,9 @@
+# Thème aux couleurs de la charte des rapports individuels (navy / bleu ciel).
+# Colore aussi ce que la feuille de style de l'app ne peut pas atteindre (tableaux,
+# menus déroulants, champs de saisie, calendriers).
+[theme]
+base = "dark"
+primaryColor = "#1FA8E0"
+backgroundColor = "#0A2453"
+secondaryBackgroundColor = "#102E64"
+textColor = "#E6EEF8"

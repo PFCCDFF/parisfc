@@ -6374,7 +6374,7 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
         with col_rad:
           with MPL_LOCK:
             fig_r, ax_r = plt.subplots(figsize=(4.5, 4.5), subplot_kw=dict(polar=True), dpi=90)
-            fig_r.patch.set_facecolor("#08090D"); ax_r.set_facecolor("#0C1220")
+            fig_r.patch.set_facecolor("#061A40"); ax_r.set_facecolor("#0E2B5E")
             N = len(dim_keys)
             angles = [n / float(N) * 2 * math.pi for n in range(N)] + [0]
 
@@ -6384,17 +6384,17 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
                 ax.fill(angles, v, alpha=alpha_fill, color=color)
 
             if n_c > 0:
-                _plot_radar(ax_r, moy_c.tolist(), "#00A3E0", f"Coach (n={n_c})", 0.15)
+                _plot_radar(ax_r, moy_c.tolist(), "#1FA8E0", f"Coach (n={n_c})", 0.15)
             if n_j > 0:
                 _plot_radar(ax_r, moy_j.tolist(), "#FFD700", f"Joueuse (n={n_j})", 0.15)
 
             ax_r.set_xticks(angles[:-1])
             ax_r.set_xticklabels(dim_labels, size=8, color="#C8D8E8")
             ax_r.set_ylim(0, 5); ax_r.set_yticks([1,2,3,4,5])
-            ax_r.set_yticklabels(["1","2","3","4","5"], size=7, color="#6A8090")
-            ax_r.spines["polar"].set_color("#1A2A3A"); ax_r.grid(color="#1A2A3A", linewidth=0.8)
+            ax_r.set_yticklabels(["1","2","3","4","5"], size=7, color="#9FB8D8")
+            ax_r.spines["polar"].set_color("#2A4A7A"); ax_r.grid(color="#2A4A7A", linewidth=0.8)
             ax_r.legend(loc="upper right", bbox_to_anchor=(1.35, 1.15), fontsize=8,
-                        facecolor="#0C1220", edgecolor="#1A2A3A", labelcolor="#C8D8E8")
+                        facecolor="#0E2B5E", edgecolor="#2A4A7A", labelcolor="#C8D8E8")
             fig_r.tight_layout(); st.pyplot(fig_r, width="stretch"); plt.close(fig_r)
 
         with col_ec:
@@ -6408,22 +6408,22 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
                 c_coach  = f"{vc:.2f}" if not math.isnan(vc) else "—"
                 c_joueur = f"{vj:.2f}" if not math.isnan(vj) else "—"
                 if math.isnan(ecart):
-                    c_ecart, c_color = "—", "#6A8090"
+                    c_ecart, c_color = "—", "#9FB8D8"
                 elif ecart > 0.3:
                     c_ecart, c_color = f"−{abs(ecart):.1f}", "#EF4444"  # coach < joueuse → surestimation
                 elif ecart < -0.3:
                     c_ecart, c_color = f"+{abs(ecart):.1f}", "#10B981"   # coach > joueuse → sous-estimation
                 else:
-                    c_ecart, c_color = f"≈{ecart:+.1f}", "#6A8090"
+                    c_ecart, c_color = f"≈{ecart:+.1f}", "#9FB8D8"
                 st.markdown(
                     f"<div style='display:flex;align-items:center;justify-content:space-between;"
-                    f"padding:6px 0;border-bottom:1px solid #1A2A3A;font-size:12px;'>"
+                    f"padding:6px 0;border-bottom:1px solid #2A4A7A;font-size:12px;'>"
                     f"<span style='color:#C8D8E8;width:110px;'>{lbl}</span>"
-                    f"<span style='color:#00A3E0;width:50px;text-align:center;'>C: {c_coach}</span>"
+                    f"<span style='color:#1FA8E0;width:50px;text-align:center;'>C: {c_coach}</span>"
                     f"<span style='color:#FFD700;width:50px;text-align:center;'>J: {c_joueur}</span>"
                     f"<span style='color:{c_color};font-weight:700;width:50px;text-align:right;'>{c_ecart}</span>"
                     f"</div>", unsafe_allow_html=True)
-            st.markdown("<div style='font-size:10px;color:#6A8090;margin-top:8px;'>"
+            st.markdown("<div style='font-size:10px;color:#9FB8D8;margin-top:8px;'>"
                         "🔵 Coach · 🟡 Joueuse · Écart = Coach − Joueuse<br>"
                         "<span style='color:#10B981'>+</span> joueuse se sous-estime · "
                         "<span style='color:#EF4444'>−</span> joueuse se surestime</div>",
@@ -6436,12 +6436,12 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
             st.markdown("#### 📈 Évolution des écarts par match")
             fig_ev, axes = plt.subplots(2, 1, figsize=(11, 6), dpi=90,
                                         gridspec_kw={"height_ratios": [2, 1]})
-            fig_ev.patch.set_facecolor("#08090D")
+            fig_ev.patch.set_facecolor("#061A40")
 
             ax1, ax2 = axes
-            for ax in axes: ax.set_facecolor("#08090D")
+            for ax in axes: ax.set_facecolor("#061A40")
 
-            colors_dim = ["#00A3E0","#4db8e8","#FFD700","#38BDF8","#10B981","#F59E0B"]
+            colors_dim = ["#1FA8E0","#4db8e8","#FFD700","#38BDF8","#10B981","#F59E0B"]
             x = list(range(len(matches_c)))
             xlabels = (matches_c["date"].dt.strftime("%d/%m") + "\n" + matches_c["adversaire"]).tolist()
 
@@ -6457,30 +6457,30 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
                                  linewidth=1, markersize=3, alpha=0.5)
 
             ax1.set_ylim(0.5, 5.5); ax1.set_yticks([1,2,3,4,5])
-            ax1.set_ylabel("Note /5", color="#6A8090", fontsize=9)
-            ax1.yaxis.grid(True, color="#1A2A3A", linewidth=0.5, alpha=0.7)
-            ax1.tick_params(colors="#6A8090", labelsize=8)
+            ax1.set_ylabel("Note /5", color="#9FB8D8", fontsize=9)
+            ax1.yaxis.grid(True, color="#2A4A7A", linewidth=0.5, alpha=0.7)
+            ax1.tick_params(colors="#9FB8D8", labelsize=8)
             ax1.set_xticks([]); ax1.set_axisbelow(True)
             for sp in ["top","right"]: ax1.spines[sp].set_visible(False)
-            for sp in ["bottom","left"]: ax1.spines[sp].set_color("#1A2A3A")
-            ax1.legend(fontsize=7, facecolor="#0C1220", edgecolor="#1A2A3A",
+            for sp in ["bottom","left"]: ax1.spines[sp].set_color("#2A4A7A")
+            ax1.legend(fontsize=7, facecolor="#0E2B5E", edgecolor="#2A4A7A",
                        labelcolor="#C8D8E8", loc="upper right", ncol=3)
-            ax1.set_title("— Coach  ·  -- Joueuse (Feuille 1)", color="#6A8090", fontsize=8, loc="left")
+            ax1.set_title("— Coach  ·  -- Joueuse (Feuille 1)", color="#9FB8D8", fontsize=8, loc="left")
 
             # Écart global par match (score_global_c - score_global_j de Feuille 1)
             if "score_global_c" in matches_c.columns and "score_global" in matches_c.columns:
                 ecarts = (matches_c["score_global_c"] - matches_c["score_global"]).tolist()
-                bar_colors = ["#10B981" if e > 0.2 else "#EF4444" if e < -0.2 else "#6A8090" for e in ecarts]
-                ax2.bar(x, ecarts, color=bar_colors, edgecolor="#08090D", linewidth=0.5)
+                bar_colors = ["#10B981" if e > 0.2 else "#EF4444" if e < -0.2 else "#9FB8D8" for e in ecarts]
+                ax2.bar(x, ecarts, color=bar_colors, edgecolor="#061A40", linewidth=0.5)
                 ax2.axhline(0, color="#C8D8E8", linewidth=0.8, alpha=0.5)
-                ax2.set_ylabel("Écart moy.", color="#6A8090", fontsize=8)
+                ax2.set_ylabel("Écart moy.", color="#9FB8D8", fontsize=8)
                 ax2.set_ylim(-2.5, 2.5)
             ax2.set_xticks(x); ax2.set_xticklabels(xlabels, rotation=0, ha="center", fontsize=7, color="#C8D8E8")
-            ax2.tick_params(colors="#6A8090", labelsize=7)
-            ax2.yaxis.grid(True, color="#1A2A3A", linewidth=0.5, alpha=0.7)
+            ax2.tick_params(colors="#9FB8D8", labelsize=7)
+            ax2.yaxis.grid(True, color="#2A4A7A", linewidth=0.5, alpha=0.7)
             ax2.set_axisbelow(True)
             for sp in ["top","right"]: ax2.spines[sp].set_visible(False)
-            for sp in ["bottom","left"]: ax2.spines[sp].set_color("#1A2A3A")
+            for sp in ["bottom","left"]: ax2.spines[sp].set_color("#2A4A7A")
 
             fig_ev.subplots_adjust(bottom=0.18, top=0.95, left=0.06, right=0.98, hspace=0.08)
             st.pyplot(fig_ev, width="stretch"); plt.close(fig_ev)
@@ -6558,7 +6558,7 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
                   with MPL_LOCK:
                     st.markdown("**Heatmap des écarts (Coach − Joueuse)**")
                     fig_h, ax_h = plt.subplots(figsize=(5, max(3, len(ecart_mat)*0.45+1)), dpi=90)
-                    fig_h.patch.set_facecolor("#08090D"); ax_h.set_facecolor("#08090D")
+                    fig_h.patch.set_facecolor("#061A40"); ax_h.set_facecolor("#061A40")
                     mat = ecart_mat[ec_cols].values.astype(float)
                     import matplotlib.colors as mcolors
                     cmap = plt.cm.RdYlGn
@@ -6573,10 +6573,10 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
                             v = mat[i,j]
                             if not math.isnan(v):
                                 ax_h.text(j, i, f"{v:+.1f}", ha="center", va="center",
-                                          fontsize=7, color="#08090D", fontweight="bold")
+                                          fontsize=7, color="#061A40", fontweight="bold")
                     cb = plt.colorbar(im, ax=ax_h, fraction=0.03, pad=0.04)
-                    cb.ax.tick_params(colors="#6A8090", labelsize=7)
-                    cb.set_label("Coach − Joueuse", color="#6A8090", fontsize=7)
+                    cb.ax.tick_params(colors="#9FB8D8", labelsize=7)
+                    cb.set_label("Coach − Joueuse", color="#9FB8D8", fontsize=7)
                     fig_h.tight_layout(); st.pyplot(fig_h, width="stretch"); plt.close(fig_h)
                 else:
                     st.info("Pas assez de paires Coach/Joueuse pour calculer les écarts.")
@@ -7222,7 +7222,7 @@ def _draw_collective_pitch(ax, half=False, light=False):
     """Dessine un terrain vertical simplifié (attaque vers le haut) sur l'axe donné.
     Si half=True, ne dessine que la moitié offensive (du rond central à la ligne de but adverse).
     light=True : fond blanc / lignes sombres (panneaux blancs des rapports charte v5)."""
-    ax.set_facecolor("#FFFFFF" if light else "#08090D")
+    ax.set_facecolor("#FFFFFF" if light else "#061A40")
     line_c = "#1B1B1B" if light else "#1E2D40"
     y_min = 50 if half else 0
     ax.set_xlim(0, 68); ax.set_ylim(y_min, 100)
@@ -7246,7 +7246,7 @@ def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 2.6), dpi=90, li
     _pmax = max(_pg, _pc, _pd, 0.0001)
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    fig.patch.set_facecolor("#FFFFFF" if light else "#08090D")
+    fig.patch.set_facecolor("#FFFFFF" if light else "#061A40")
     _draw_collective_pitch(ax, half=True, light=light)
     _arrow_c = "#1FA8E0" if light else "#FFA06E"  # bleu charte en version claire (rapport collectif)
 
@@ -7271,8 +7271,8 @@ def build_entree_tiers_figure(entree_tiers: dict, figsize=(3.4, 2.6), dpi=90, li
 def build_zone_heatmap_figure(grid, rows_lbl, cols_lbl, title, cmap_name, figsize=(4, 5.6), dpi=90, light=False):
     """Vraie carte de chaleur (dégradé lissé, sans grille de carrés) superposée à un terrain vertical."""
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
-    fig.patch.set_facecolor("#FFFFFF" if light else "#08090D")
-    ax.set_facecolor("#FFFFFF" if light else "#08090D")
+    fig.patch.set_facecolor("#FFFFFF" if light else "#061A40")
+    ax.set_facecolor("#FFFFFF" if light else "#061A40")
 
     arr = np.array(grid, dtype=float)
     vmax = max(arr.max(), 1)
@@ -7313,7 +7313,7 @@ def render_collective_report(report: dict, gps_stats: dict = None, match_info: d
             '\'<style>@page{size:A4 landscape;margin:0}body{margin:0;background:#0A2453}</style>\'+'
             '\'</head><body>\'+_h+\'</body></html>\');'
             'w.document.close();setTimeout(()=>w.print(),800);}</script>'
-            '<button onclick="prColl()" style="background:#00A3E0;color:#060F1A;border:none;'
+            '<button onclick="prColl()" style="background:#1FA8E0;color:#061A40;border:none;'
             'border-radius:4px;padding:8px 18px;font-family:Oswald,sans-serif;'
             'font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px;">'
             '\U0001f5a8\ufe0f Exporter en PDF (A4 paysage)</button>')
@@ -8421,7 +8421,7 @@ def monitoring_heatmap_styles(column):
 
 MONITORING_HEATMAP_LEGEND = (
     "<div style='display:flex;align-items:center;gap:14px;flex-wrap:wrap;"
-    "margin:2px 0 6px 0;font-size:12px;color:#6A8090'>"
+    "margin:2px 0 6px 0;font-size:12px;color:#9FB8D8'>"
     "<span>Intensité couleur = valeur (clair → foncé)</span>"
     "<span><span style='color:#7E57C2'>■</span> distance/volume</span>"
     "<span><span style='color:#12A150'>■</span> 0-13 km/h</span>"
@@ -9262,13 +9262,13 @@ def create_individual_radar(df: pd.DataFrame):
 
     pizza = PyPizza(
         params=available,
-        background_color="#08090D",
-        straight_line_color="#1A2A3A",
-        last_circle_color="#00A3E0",
+        background_color="#061A40",
+        straight_line_color="#2A4A7A",
+        last_circle_color="#1FA8E0",
         straight_line_lw=0.8,
         last_circle_lw=1.5,
         other_circle_lw=0.6,
-        other_circle_color="#1A2A3A",
+        other_circle_color="#2A4A7A",
     )
 
     fig, ax = pizza.make_pizza(
@@ -9276,7 +9276,7 @@ def create_individual_radar(df: pd.DataFrame):
         figsize=(7, 7),
         slice_colors=slice_colors,
         value_colors=["#FFFFFF"] * len(available),
-        kwargs_slices=dict(edgecolor="#08090D", linewidth=1.5),
+        kwargs_slices=dict(edgecolor="#061A40", linewidth=1.5),
         kwargs_params=dict(
             color="#C8D8E8",
             fontsize=7,
@@ -9288,8 +9288,8 @@ def create_individual_radar(df: pd.DataFrame):
             fontsize=8,
             fontweight="bold",
             bbox=dict(
-                edgecolor="#00A3E0",
-                facecolor="#0C1220",
+                edgecolor="#1FA8E0",
+                facecolor="#0E2B5E",
                 boxstyle="round,pad=0.25",
                 lw=0.8,
             ),
@@ -9308,7 +9308,7 @@ def create_individual_radar(df: pd.DataFrame):
         circ = patches.Circle((0, 0), r, transform=ax.transData._b, color=col, alpha=alpha, zorder=0)
         ax.add_artist(circ)
 
-    center = patches.Circle((0, 0), 4.0, transform=ax.transData._b, color="#08090D", zorder=10)
+    center = patches.Circle((0, 0), 4.0, transform=ax.transData._b, color="#061A40", zorder=10)
     ax.add_artist(center)
 
     fig.subplots_adjust(top=0.92, bottom=0.14, left=0.05, right=0.95)
@@ -9330,7 +9330,7 @@ def create_individual_radar(df: pd.DataFrame):
         fig.text(_lx, 0.03, "●", color=_fc, fontsize=11, ha="left", va="bottom", transform=fig.transFigure)
         fig.text(_lx + 0.035, 0.03, _fl, color="#C8D8E8", fontsize=8.5, ha="left", va="bottom", transform=fig.transFigure)
 
-    fig.set_facecolor("#08090D")
+    fig.set_facecolor("#061A40")
 
     # Calculer forces/axes pour affichage externe (hors figure)
     vals = []
@@ -9393,32 +9393,32 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
 
     fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111)
-    fig.patch.set_facecolor("#08090D")
-    ax.set_facecolor("#08090D")
+    fig.patch.set_facecolor("#061A40")
+    ax.set_facecolor("#061A40")
 
     radar.setup_axis(ax=ax, facecolor="None")
-    radar.draw_circles(ax=ax, facecolor="#0C1220", edgecolor="#1A2A3A", lw=1.0)
+    radar.draw_circles(ax=ax, facecolor="#0E2B5E", edgecolor="#2A4A7A", lw=1.0)
 
     radar.draw_radar_compare(
         v1,
         v2,
         ax=ax,
-        kwargs_radar={"facecolor": "#00A3E0", "alpha": 0.50, "edgecolor": "#00A3E0", "lw": 2.5},
+        kwargs_radar={"facecolor": "#1FA8E0", "alpha": 0.50, "edgecolor": "#1FA8E0", "lw": 2.5},
         kwargs_compare={"facecolor": "#003189", "alpha": 0.55, "edgecolor": "#FFFFFF", "lw": 1.5},
     )
 
-    radar.draw_range_labels(ax=ax, fontsize=10, color="#6A8090")
+    radar.draw_range_labels(ax=ax, fontsize=10, color="#9FB8D8")
     radar.draw_param_labels(ax=ax, fontsize=12, color="#C8D8E8")
 
     # Titre discret centré tout en haut
     fig.text(0.5, 0.978, "COMPARAISON  ·  0 – 100", ha="center", va="top",
-             fontsize=11, color="#6A8090", fontweight="normal")
+             fontsize=11, color="#9FB8D8", fontweight="normal")
     # Séparateur
     from matplotlib.lines import Line2D
     fig.add_artist(Line2D([0.03, 0.97], [0.960, 0.960], transform=fig.transFigure,
-                          color="#1A2A3A", linewidth=0.8))
+                          color="#2A4A7A", linewidth=0.8))
     # Noms bien espacés en dessous, plus petits pour éviter tout chevauchement
-    fig.text(0.03, 0.955, f"\u25cf  {p1}", ha="left", va="top", fontsize=13, color="#00A3E0", fontweight="bold")
+    fig.text(0.03, 0.955, f"\u25cf  {p1}", ha="left", va="top", fontsize=13, color="#1FA8E0", fontweight="bold")
     fig.text(0.97, 0.955, f"{p2}  \u25cf", ha="right", va="top", fontsize=13, color="#4A7FFF", fontweight="bold")
 
     delta = pd.Series(v1 - v2, index=available)
@@ -9441,7 +9441,7 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
     fig.text(0.5, 0.11, f"✅ Avantages {p1} vs {p2} : {txt_pos}", ha="center", va="center", fontsize=11.5, color="#C8D8E8")
     fig.text(0.5, 0.075, f"⚠️ Axes d'amélioration {p1} vs {p2} : {txt_neg}", ha="center", va="center", fontsize=11.5, color="#C8D8E8")
 
-    fig.text(0.98, 0.02, "Δ = (profil A - profil B)", ha="right", va="bottom", fontsize=9, color="#6A8090")
+    fig.text(0.98, 0.02, "Δ = (profil A - profil B)", ha="right", va="bottom", fontsize=9, color="#9FB8D8")
     fig.set_dpi(90)  # DPI réduit pour rendu plus rapide
 
     return fig
@@ -9451,8 +9451,8 @@ def create_comparison_radar(df, player1_name=None, player2_name=None, exclude_cr
 def _make_match_bar_chart(labels, datasets, title, ylabel, figsize=(9,3.5), stacked=False):
     """Crée un graphique matplotlib barres groupées ou empilées."""
     fig, ax = plt.subplots(figsize=figsize, dpi=90)
-    fig.patch.set_facecolor("#08090D")
-    ax.set_facecolor("#08090D")
+    fig.patch.set_facecolor("#061A40")
+    ax.set_facecolor("#061A40")
 
     n = len(labels)
     x = range(n)
@@ -9462,24 +9462,24 @@ def _make_match_bar_chart(labels, datasets, title, ylabel, figsize=(9,3.5), stac
     for i, (data, label, color) in enumerate(datasets):
         vals = [float(v) if v is not None and str(v) not in ("nan","") else 0.0 for v in data]
         if stacked:
-            ax.bar(x, vals, width, label=label, color=color, bottom=bottom, edgecolor="#08090D", linewidth=0.5)
+            ax.bar(x, vals, width, label=label, color=color, bottom=bottom, edgecolor="#061A40", linewidth=0.5)
             bottom = [b + v for b, v in zip(bottom, vals)]
         else:
             offset = (i - len(datasets)/2 + 0.5) * width
-            ax.bar([xi + offset for xi in x], vals, width, label=label, color=color, edgecolor="#08090D", linewidth=0.5)
+            ax.bar([xi + offset for xi in x], vals, width, label=label, color=color, edgecolor="#061A40", linewidth=0.5)
 
     ax.set_xticks(list(x))
     ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=9, color="#C8D8E8")
-    ax.set_ylabel(ylabel, color="#6A8090", fontsize=9)
-    ax.tick_params(colors="#6A8090", labelsize=9)
-    ax.spines["bottom"].set_color("#1A2A3A")
-    ax.spines["left"].set_color("#1A2A3A")
+    ax.set_ylabel(ylabel, color="#9FB8D8", fontsize=9)
+    ax.tick_params(colors="#9FB8D8", labelsize=9)
+    ax.spines["bottom"].set_color("#2A4A7A")
+    ax.spines["left"].set_color("#2A4A7A")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.yaxis.grid(True, color="#1A2A3A", linewidth=0.5, alpha=0.7)
+    ax.yaxis.grid(True, color="#2A4A7A", linewidth=0.5, alpha=0.7)
     ax.set_axisbelow(True)
     if len(datasets) > 1:
-        ax.legend(fontsize=8, facecolor="#0C1220", edgecolor="#1A2A3A", labelcolor="#C8D8E8", loc="upper right")
+        ax.legend(fontsize=8, facecolor="#0E2B5E", edgecolor="#2A4A7A", labelcolor="#C8D8E8", loc="upper right")
     fig.subplots_adjust(bottom=0.28, top=0.95, left=0.08, right=0.97)
     return fig
 
@@ -10369,11 +10369,11 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
     if gps_match is None or (hasattr(gps_match, "empty") and gps_match.empty):
         st.info("Aucun fichier GPS match détecté.")
         st.markdown(
-            "<div style='background:#0C1220;border:1px solid rgba(0,163,224,0.2);border-radius:4px;padding:16px;'>"
-            "<div style='font-family:Oswald,sans-serif;font-size:13px;color:#6A8090;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;'>Comment ajouter des matchs ?</div>"
+            "<div style='background:#0E2B5E;border:1px solid rgba(0,163,224,0.2);border-radius:4px;padding:16px;'>"
+            "<div style='font-family:Oswald,sans-serif;font-size:13px;color:#9FB8D8;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px;'>Comment ajouter des matchs ?</div>"
             "<div style='font-family:Inter,sans-serif;font-size:13px;color:#C8D8E8;line-height:1.7;'>"
             "Placez vos fichiers CSV GPS match dans le dossier Drive GPS.<br>"
-            "Format attendu : <code style='color:#00A3E0;'>U19_2_J02_Paris_FC_-_OL_Lyonnes_25_01_26.csv</code>"
+            "Format attendu : <code style='color:#1FA8E0;'>U19_2_J02_Paris_FC_-_OL_Lyonnes_25_01_26.csv</code>"
             "</div></div>",
             unsafe_allow_html=True,
         )
@@ -10433,8 +10433,8 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
         hid19_vals = _col("Distance HID (>19 km/h)")
 
         fig, ax1 = plt.subplots(figsize=(9, 3.8), dpi=90)
-        fig.patch.set_facecolor("#08090D")
-        ax1.set_facecolor("#08090D")
+        fig.patch.set_facecolor("#061A40")
+        ax1.set_facecolor("#061A40")
 
         x = list(range(len(labels)))
         w_tot  = 0.55   # barre Distance totale (large, en fond)
@@ -10442,14 +10442,14 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
 
         # Distance totale — axe gauche
         ax1.bar(x, dist_vals, w_tot, label="Distance totale", color="#1E3A5F",
-                edgecolor="#08090D", linewidth=0.5, zorder=2)
+                edgecolor="#061A40", linewidth=0.5, zorder=2)
 
         # Axe droit pour HID
         ax2 = ax1.twinx()
         ax2.bar([xi + w_hid*0.6 for xi in x], hid13_vals, w_hid,
-                label="HID >13", color="#4db8e8", edgecolor="#08090D", linewidth=0.5, zorder=3)
+                label="HID >13", color="#4db8e8", edgecolor="#061A40", linewidth=0.5, zorder=3)
         ax2.bar([xi + w_hid*0.6 + w_hid for xi in x], hid19_vals, w_hid,
-                label="HID >19", color="#00A3E0", edgecolor="#08090D", linewidth=0.5, zorder=3)
+                label="HID >19", color="#1FA8E0", edgecolor="#061A40", linewidth=0.5, zorder=3)
 
         # Ligne % HID>13 sur axe gauche (en %)
         ax3 = ax1.twinx()
@@ -10464,29 +10464,29 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
 
         # Styling axes
         for spine in ["bottom","left","top"]:
-            ax1.spines[spine].set_color("#1A2A3A")
+            ax1.spines[spine].set_color("#2A4A7A")
         ax1.spines["right"].set_visible(False)
         ax1.spines["top"].set_visible(False)
-        ax2.spines["right"].set_color("#1A2A3A")
+        ax2.spines["right"].set_color("#2A4A7A")
         ax2.spines["top"].set_visible(False)
         ax2.spines["left"].set_visible(False)
         ax2.spines["bottom"].set_visible(False)
 
         ax1.set_xticks(x)
         ax1.set_xticklabels(labels, rotation=30, ha="right", fontsize=9, color="#C8D8E8")
-        ax1.set_ylabel("Distance totale (m)", color="#6A8090", fontsize=9)
+        ax1.set_ylabel("Distance totale (m)", color="#9FB8D8", fontsize=9)
         ax2.set_ylabel("Distance HID (m)", color="#4db8e8", fontsize=9)
-        ax1.tick_params(colors="#6A8090", labelsize=9)
+        ax1.tick_params(colors="#9FB8D8", labelsize=9)
         ax2.tick_params(axis="y", colors="#4db8e8", labelsize=9)
-        ax1.yaxis.grid(True, color="#1A2A3A", linewidth=0.5, alpha=0.7)
+        ax1.yaxis.grid(True, color="#2A4A7A", linewidth=0.5, alpha=0.7)
         ax1.set_axisbelow(True)
 
         # Légende combinée
         h1, l1 = ax1.get_legend_handles_labels()
         h2, l2 = ax2.get_legend_handles_labels()
         h3, l3 = ax3.get_legend_handles_labels()
-        ax1.legend(h1+h2+h3, l1+l2+l3, fontsize=7, facecolor="#0C1220",
-                   edgecolor="#1A2A3A", labelcolor="#C8D8E8", loc="upper left")
+        ax1.legend(h1+h2+h3, l1+l2+l3, fontsize=7, facecolor="#0E2B5E",
+                   edgecolor="#2A4A7A", labelcolor="#C8D8E8", loc="upper left")
 
         fig.subplots_adjust(bottom=0.28, top=0.95, left=0.10, right=0.86)
         st.pyplot(fig, width="stretch")
@@ -10497,15 +10497,15 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
       with MPL_LOCK:
         st.markdown("#### ⚡ Sprints & Vitesse max")
         fig2, ax2 = plt.subplots(figsize=(9, 3.5))
-        fig2.patch.set_facecolor("#08090D")
-        ax2.set_facecolor("#08090D")
+        fig2.patch.set_facecolor("#061A40")
+        ax2.set_facecolor("#061A40")
         fig2.set_dpi(90)
         x = list(range(len(labels)))
         w = 0.35
         if "Sprints_23" in dm.columns:
-            ax2.bar([xi - w/2 for xi in x], _col("Sprints_23"), w, label="Sprints >23", color="#00A3E0", edgecolor="#08090D")
+            ax2.bar([xi - w/2 for xi in x], _col("Sprints_23"), w, label="Sprints >23", color="#1FA8E0", edgecolor="#061A40")
         if "Sprints_25" in dm.columns:
-            ax2.bar([xi + w/2 for xi in x], _col("Sprints_25"), w, label="Sprints >25", color="#FFFFFF", edgecolor="#08090D")
+            ax2.bar([xi + w/2 for xi in x], _col("Sprints_25"), w, label="Sprints >25", color="#FFFFFF", edgecolor="#061A40")
         ax2b = ax2.twinx()
         if "Vitesse max (km/h)" in dm.columns:
             vmax_vals = dm["Vitesse max (km/h)"].fillna(0).tolist()
@@ -10514,19 +10514,19 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
                 ax2b.annotate(f"{v:.1f}", (xi, v), textcoords="offset points", xytext=(0,7),
                               ha="center", fontsize=8, color="#FFD700")
             ax2b.set_ylabel("km/h", color="#FFD700", fontsize=9)
-            ax2b.tick_params(colors="#6A8090")
-            ax2b.spines["right"].set_color("#1A2A3A")
+            ax2b.tick_params(colors="#9FB8D8")
+            ax2b.spines["right"].set_color("#2A4A7A")
         for spine in ["bottom","left","top","right"]:
-            ax2.spines[spine].set_color("#1A2A3A")
+            ax2.spines[spine].set_color("#2A4A7A")
         ax2.spines["top"].set_visible(False)
         ax2.set_xticks(x); ax2.set_xticklabels(labels, rotation=30, ha="right", fontsize=9, color="#C8D8E8")
-        ax2.set_ylabel("Nb sprints", color="#6A8090", fontsize=9)
-        ax2.tick_params(colors="#6A8090")
-        ax2.yaxis.grid(True, color="#1A2A3A", linewidth=0.5, alpha=0.7)
+        ax2.set_ylabel("Nb sprints", color="#9FB8D8", fontsize=9)
+        ax2.tick_params(colors="#9FB8D8")
+        ax2.yaxis.grid(True, color="#2A4A7A", linewidth=0.5, alpha=0.7)
         ax2.set_axisbelow(True)
         lines1, labs1 = ax2.get_legend_handles_labels()
         lines2, labs2 = ax2b.get_legend_handles_labels()
-        ax2.legend(lines1+lines2, labs1+labs2, fontsize=8, facecolor="#0C1220", edgecolor="#1A2A3A", labelcolor="#C8D8E8")
+        ax2.legend(lines1+lines2, labs1+labs2, fontsize=8, facecolor="#0E2B5E", edgecolor="#2A4A7A", labelcolor="#C8D8E8")
         fig2.subplots_adjust(bottom=0.28, top=0.95, left=0.08, right=0.93)
         st.pyplot(fig2, width="stretch")
         plt.close(fig2)
@@ -10534,12 +10534,12 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
     # ── Plages de vitesse (stacked) ────────────────────────────────
     st.markdown("#### 🏃 Répartition des plages de vitesse")
     speed_data = [
-        ("V_0_7",   "0-7 km/h",    "#1A2A3A"),
+        ("V_0_7",   "0-7 km/h",    "#2A4A7A"),
         ("V_7_13",  "7-13 km/h",   "#1E3A5F"),
         ("V_13_15", "13-15 km/h",  "#2A5A8F"),
         ("V_15_19", "15-19 km/h",  "#3A80C0"),
         ("V_19_23", "19-23 km/h",  "#50A0D8"),
-        ("V_23_25", "23-25 km/h",  "#00A3E0"),
+        ("V_23_25", "23-25 km/h",  "#1FA8E0"),
         ("V_sup25", ">25 km/h",    "#FFFFFF"),
     ]
     avail_speed = [(k,l,c) for k,l,c in speed_data if k in dm.columns]
@@ -10555,7 +10555,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
     st.markdown("#### 🔀 Accélérations & Décélérations")
     ad_data = [
         ("Acc_2", "Acc >2 m/s²", "#1A6090"),
-        ("Acc_3", "Acc >3 m/s²", "#00A3E0"),
+        ("Acc_3", "Acc >3 m/s²", "#1FA8E0"),
         ("Acc_4", "Acc >4 m/s²", "#80D4F0"),
         ("Dec_2", "Déc >2 m/s²", "#902020"),
         ("Dec_3", "Déc >3 m/s²", "#D04040"),
@@ -10959,17 +10959,17 @@ def build_fiche_bilan_html(player_name: str,
             _rdr = Radar(_radar_labels, [0]*_n_ax, [100]*_n_ax, num_rings=4,
                          ring_width=1, center_circle_radius=1)
             _fig_r, _ax_r = _rdr.setup_axis(figsize=(4, 4))
-            _fig_r.patch.set_facecolor("#060F1A")
-            _ax_r.set_facecolor("#060F1A")
+            _fig_r.patch.set_facecolor("#061A40")
+            _ax_r.set_facecolor("#061A40")
             _rdr.draw_circles(_ax_r, facecolor="#0C1A28", edgecolor="#1E2D40")
             _rdr.draw_radar(_radar_vals, _ax_r,
-                            kwargs_radar={"facecolor":"#00A3E0","alpha":0.4},
-                            kwargs_rings={"facecolor":"#00A3E0","alpha":0.2})
-            _rdr.draw_range_labels(_ax_r, fontsize=6, color="#6A8090")
+                            kwargs_radar={"facecolor":"#1FA8E0","alpha":0.4},
+                            kwargs_rings={"facecolor":"#1FA8E0","alpha":0.2})
+            _rdr.draw_range_labels(_ax_r, fontsize=6, color="#9FB8D8")
             _rdr.draw_param_labels(_ax_r, fontsize=8, color="#C8D8E8")
             _buf_r = _io.BytesIO()
             _fig_r.savefig(_buf_r, format="png", dpi=130, bbox_inches="tight",
-                           facecolor="#060F1A")
+                           facecolor="#061A40")
             _buf_r.seek(0)
             radar_b64 = "data:image/png;base64," + _b64f.b64encode(_buf_r.read()).decode()
             _plt_f.close(_fig_r)
@@ -10977,7 +10977,7 @@ def build_fiche_bilan_html(player_name: str,
             pass
 
     # ── Helpers HTML ──────────────────────────────────────────────────────
-    def _kpi_circle(val, label, color="#00A3E0", size=70):
+    def _kpi_circle(val, label, color="#1FA8E0", size=70):
         v = _n(val)
         pct_arc = int((v or 0))
         return (
@@ -11001,7 +11001,7 @@ def build_fiche_bilan_html(player_name: str,
         return (f"<div style='height:{height}px;background:#1E2D40;border-radius:3px;overflow:hidden'>"
                 f"<div style='width:{pct}%;height:{height}px;background:{color};border-radius:3px'></div></div>")
 
-    def _stat_row(label, val, unit="", color="#00A3E0", max_val=100):
+    def _stat_row(label, val, unit="", color="#1FA8E0", max_val=100):
         vstr = _fmt(_n(val), 1 if isinstance(val, float) else 0, unit)
         return (f"<div style='margin-bottom:8px'>"
                 f"<div style='display:flex;justify-content:space-between;margin-bottom:2px'>"
@@ -11010,7 +11010,7 @@ def build_fiche_bilan_html(player_name: str,
                 f"{_bar_h(_n(val), max_val, color)}"
                 f"</div>")
 
-    def _minmaxmoy(label, mn, my, mx, color="#00A3E0"):
+    def _minmaxmoy(label, mn, my, mx, color="#1FA8E0"):
         _mn = _fmt(_n(mn), 0); _my = _fmt(_n(my), 1); _mx = _fmt(_n(mx), 0)
         fill_w = int((_n(my) or 0)/(_n(mx) or 1)*100) if _n(mx) else 0
         return (
@@ -11027,7 +11027,7 @@ def build_fiche_bilan_html(player_name: str,
             f"</div></div>"
         )
 
-    def _section(title, color="#00A3E0"):
+    def _section(title, color="#1FA8E0"):
         return (f"<div style='font-size:8px;font-weight:700;color:{color};"
                 f"text-transform:uppercase;letter-spacing:.12em;"
                 f"border-left:3px solid {color};padding-left:6px;"
@@ -11043,12 +11043,12 @@ def build_fiche_bilan_html(player_name: str,
 
     photo_html = ""
     if photo_b64:
-        photo_html = f"<img src='{photo_b64}' style='width:70px;height:70px;border-radius:50%;object-fit:cover;border:2px solid #00A3E0'>"
+        photo_html = f"<img src='{photo_b64}' style='width:70px;height:70px;border-radius:50%;object-fit:cover;border:2px solid #1FA8E0'>"
     else:
         initials = "".join(w[0] for w in player_name.split()[:2]).upper()
         photo_html = (f"<div style='width:70px;height:70px;border-radius:50%;background:#0C1A28;"
-                      f"border:2px solid #00A3E0;display:flex;align-items:center;justify-content:center;"
-                      f"font-size:22px;font-weight:700;color:#00A3E0'>{initials}</div>")
+                      f"border:2px solid #1FA8E0;display:flex;align-items:center;justify-content:center;"
+                      f"font-size:22px;font-weight:700;color:#1FA8E0'>{initials}</div>")
 
     # ── Registre des données personnelles (source Google Drive) ──────────
     _PLAYER_REGISTRY = {
@@ -11119,7 +11119,7 @@ def build_fiche_bilan_html(player_name: str,
         if not medical_visits_total and not _health_curve_b64:
             _med_html = f'''<div class="panel">
       {_section("Espace Santé", "#E24B4A")}
-      <div style="color:#6A8090;font-size:11px">Aucune donnée de santé enregistrée.</div>
+      <div style="color:#9FB8D8;font-size:11px">Aucune donnée de santé enregistrée.</div>
     </div>'''
         else:
             _med_donut_img = f'<img src="{_med_donut_b64}" style="max-width:100%;display:block;margin:0 auto">' if _med_donut_b64 else ""
@@ -11138,7 +11138,7 @@ def build_fiche_bilan_html(player_name: str,
 @page {{ size: A4 portrait; margin: 0; }}
 * {{ box-sizing:border-box; margin:0; padding:0; }}
 html,body {{
-  background:#060F1A !important;
+  background:#061A40 !important;
   color:#C8D8E8;
   font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;
   font-size:10px;
@@ -11146,7 +11146,7 @@ html,body {{
   print-color-adjust:exact !important;
 }}
 .page {{
-  background:#060F1A !important;
+  background:#061A40 !important;
   width:210mm; min-height:297mm;
   padding:8mm 10mm 8mm 10mm;
   display:grid;
@@ -11169,7 +11169,7 @@ html,body {{
 .val-big {{
   font-size:28px; font-weight:700; color:#E8F4FF; line-height:1;
 }}
-.label-sm {{ font-size:8px; color:#6A8090; text-transform:uppercase; letter-spacing:.08em; }}
+.label-sm {{ font-size:8px; color:#9FB8D8; text-transform:uppercase; letter-spacing:.08em; }}
 .badge {{
   background:#0A2E18; color:#22C55E; font-size:9px; font-weight:700;
   padding:3px 10px; border-radius:20px; border:1px solid #1D9E75;
@@ -11182,7 +11182,7 @@ html,body {{
   <div style="display:flex;align-items:center;gap:10px">
     {photo_html}
     <div>
-      <div style="font-size:8px;color:#00A3E0;font-weight:700;letter-spacing:.15em;text-transform:uppercase">Fiche Performance</div>
+      <div style="font-size:8px;color:#1FA8E0;font-weight:700;letter-spacing:.15em;text-transform:uppercase">Fiche Performance</div>
       <div style="font-size:20px;font-weight:700;color:#E8F4FF;line-height:1.1">{nom}</div>
       <div style="font-size:14px;color:#8A9BB0">{prenom}</div>
     </div>
@@ -11195,7 +11195,7 @@ html,body {{
   </div>
   <div style="text-align:right">
     <div class="label-sm" style="margin-bottom:4px">Matchs analysés</div>
-    <div style="font-size:24px;font-weight:700;color:#00A3E0">{n_matchs}</div>
+    <div style="font-size:24px;font-weight:700;color:#1FA8E0">{n_matchs}</div>
     <div class="label-sm" style="margin-top:4px">Tps moy. <span style="color:#C8D8E8">{_fmt(tps_gps or tps_moy,0)} min</span></div>
   </div>
 </div>
@@ -11209,7 +11209,7 @@ html,body {{
       {_section("Indicateurs Tactiques")}
       {"<img src='"+radar_b64+"' style='width:100%;border-radius:4px'>" if radar_b64 else "<div style='height:160px;display:flex;align-items:center;justify-content:center;color:#4A6070'>Données insuffisantes</div>"}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:6px">
-        {"".join(f"<div style='display:flex;justify-content:space-between;font-size:9px'><span style='color:#8A9BB0'>{l}</span><span style='color:#00A3E0;font-weight:700'>{_fmt(v,0)}</span></div>" for l,v in zip(_radar_all_labels, _radar_all_vals) if l in _sel)}
+        {"".join(f"<div style='display:flex;justify-content:space-between;font-size:9px'><span style='color:#8A9BB0'>{l}</span><span style='color:#1FA8E0;font-weight:700'>{_fmt(v,0)}</span></div>" for l,v in zip(_radar_all_labels, _radar_all_vals) if l in _sel)}
       </div>
     </div>
   </div>
@@ -11220,7 +11220,7 @@ html,body {{
     <div class="panel">
       {_section("Indicateurs Techniques")}
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">
-        {_kpi_circle(passes_ok_pct, "Passes réussies", "#00A3E0") if "Passes réussies" in _sel else ""}
+        {_kpi_circle(passes_ok_pct, "Passes réussies", "#1FA8E0") if "Passes réussies" in _sel else ""}
         {_kpi_circle(dribbles_ok_pct, "Dribbles réussis", "#7F77DD") if "Dribbles réussis" in _sel else ""}
         {_kpi_circle(tirs_cadres_pct, "Tirs cadrés", "#EF9F27") if "Tirs cadrés" in _sel else ""}
       </div>
@@ -11229,7 +11229,7 @@ html,body {{
         {f'<div><div class="val-big" style="font-size:20px;color:#5DCAA5">{int(passes_dec)}</div><div class="label-sm">Passes déc.</div></div>' if "Passes déc." in _sel else ""}
         {f'<div><div class="val-big" style="font-size:20px;color:#378ADD">{int(passes_1t)}</div><div class="label-sm">Passe 1/3</div></div>' if "Passe 1/3" in _sel else ""}
       </div>
-      <div style="font-size:9px;color:#6A8090;margin-bottom:4px">% passes réussies par type</div>
+      <div style="font-size:9px;color:#9FB8D8;margin-bottom:4px">% passes réussies par type</div>
       {_stat_row("Passes courtes", _n(_mean("Technique 2")), "%", "#378ADD", 100) if "Passes courtes" in _sel else ""}
       {_stat_row("Passes longues", _n(_mean("Technique 3")), "%", "#7F77DD", 100) if "Passes longues" in _sel else ""}
     </div>
@@ -11250,27 +11250,27 @@ html,body {{
     <div class="panel" style="flex:1">
       {_section("Indicateurs Athlétiques", "#1D9E75")}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
-        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+        {f'''<div style="background:#061A40;border-radius:6px;padding:8px;text-align:center">
           <div class="val-big" style="font-size:18px;color:#1D9E75">{_fmt(dist_moy,0)}</div>
           <div class="label-sm">Endurance (m)</div>
         </div>''' if "Endurance (m)" in _sel else ""}
-        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+        {f'''<div style="background:#061A40;border-radius:6px;padding:8px;text-align:center">
           <div class="val-big" style="font-size:18px;color:#5DCAA5">{_fmt(hid_moy,0)}</div>
           <div class="label-sm">Intensité (m)</div>
         </div>''' if "Intensité (m)" in _sel else ""}
-        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+        {f'''<div style="background:#061A40;border-radius:6px;padding:8px;text-align:center">
           <div class="val-big" style="font-size:18px;color:#EF9F27">{_fmt(spr_moy,0)}</div>
           <div class="label-sm">Sprint (nb)</div>
         </div>''' if "Sprint (nb)" in _sel else ""}
-        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+        {f'''<div style="background:#061A40;border-radius:6px;padding:8px;text-align:center">
           <div class="val-big" style="font-size:18px;color:#E24B4A">{_fmt(vmax_max,1)}</div>
           <div class="label-sm">Vitesse max (km/h)</div>
         </div>''' if "Vitesse max (km/h)" in _sel else ""}
-        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+        {f'''<div style="background:#061A40;border-radius:6px;padding:8px;text-align:center">
           <div class="val-big" style="font-size:18px;color:#378ADD">{_fmt(freq_moy,1)}</div>
           <div class="label-sm">Fréquence (m/min)</div>
         </div>''' if "Fréquence (m/min)" in _sel else ""}
-        {f'''<div style="background:#060F1A;border-radius:6px;padding:8px;text-align:center">
+        {f'''<div style="background:#061A40;border-radius:6px;padding:8px;text-align:center">
           <div class="val-big" style="font-size:18px;color:#B57EDC">{_fmt(taux_presence,1,"%")}</div>
           <div class="label-sm">Taux de présence</div>
         </div>''' if "Taux de présence" in _sel else ""}
@@ -11421,7 +11421,7 @@ def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
     def _kcard(label, val_str, unit, sub="", delta=""):
         return (f"<div style='background:#0C1A28;border:1px solid #1E2D40;border-radius:8px;"
                 f"padding:11px 13px'>"
-                f"<div style='font-size:8px;color:#6A8090;text-transform:uppercase;"
+                f"<div style='font-size:8px;color:#9FB8D8;text-transform:uppercase;"
                 f"letter-spacing:.1em;margin-bottom:5px'>{label}</div>"
                 f"<div style='font-size:24px;font-weight:700;color:#E8F4FF;"
                 f"line-height:1;margin-bottom:3px'>{val_str}</div>"
@@ -11455,10 +11455,10 @@ def build_gps_match_report_html(row: dict, avg: dict, player_name: str,
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
-@page {{ size: A4 portrait; margin: 0; background: #060F1A; }}
+@page {{ size: A4 portrait; margin: 0; background: #061A40; }}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
 html, body {{
-  background: #060F1A !important;
+  background: #061A40 !important;
   color: #C8D8E8;
   font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
   font-size: 10px;
@@ -11467,16 +11467,16 @@ html, body {{
   color-adjust: exact !important;
 }}
 .page {{
-  background: #060F1A !important;
+  background: #061A40 !important;
   padding: 14mm 14mm 10mm 14mm;
   min-height: 297mm;
   width: 210mm;
 }}
 .kpi-grid {{ display: grid; grid-template-columns: repeat(5,1fr); gap: 8px; margin-bottom: 12px; }}
 .section {{
-  font-size: 8.5px; font-weight: 700; color: #00A3E0;
+  font-size: 8.5px; font-weight: 700; color: #1FA8E0;
   text-transform: uppercase; letter-spacing: .12em;
-  border-left: 3px solid #00A3E0; padding-left: 7px;
+  border-left: 3px solid #1FA8E0; padding-left: 7px;
   margin: 12px 0 7px;
 }}
 .panel {{ background: #0C1A28 !important; border: 1px solid #1E2D40; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }}
@@ -11491,12 +11491,12 @@ table {{ width: 100%; border-collapse: collapse; }}
             display:flex;align-items:center;justify-content:space-between">
   <div>
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:5px">
-      <div style="width:4px;height:28px;background:#00A3E0;border-radius:2px;flex-shrink:0"></div>
+      <div style="width:4px;height:28px;background:#1FA8E0;border-radius:2px;flex-shrink:0"></div>
       <div>
         <div style="font-size:19px;font-weight:700;color:#E8F4FF;letter-spacing:-.01em">
           {player_display}
         </div>
-        <div style="font-size:10px;color:#6A8090;margin-top:1px">
+        <div style="font-size:10px;color:#9FB8D8;margin-top:1px">
           Rapport physique de match
         </div>
       </div>
@@ -11538,16 +11538,16 @@ table {{ width: 100%; border-collapse: collapse; }}
 <div class="section">Distance par plage de vitesse</div>
 <img src="{_chart}" style="width:100%;border-radius:8px;display:block;border:1px solid #1E2D40">
 <div style="display:flex;gap:12px;margin-top:5px;margin-bottom:2px;flex-wrap:wrap">
-  <span style="font-size:8px;color:#6A8090;display:flex;align-items:center;gap:4px">
+  <span style="font-size:8px;color:#9FB8D8;display:flex;align-items:center;gap:4px">
     <span style="width:10px;height:8px;background:#2D6A8F;border-radius:2px;display:inline-block"></span>Récupération (0–7)
   </span>
-  <span style="font-size:8px;color:#6A8090;display:flex;align-items:center;gap:4px">
+  <span style="font-size:8px;color:#9FB8D8;display:flex;align-items:center;gap:4px">
     <span style="width:10px;height:8px;background:#1D9E75;border-radius:2px;display:inline-block"></span>Aérobie (7–15)
   </span>
-  <span style="font-size:8px;color:#6A8090;display:flex;align-items:center;gap:4px">
+  <span style="font-size:8px;color:#9FB8D8;display:flex;align-items:center;gap:4px">
     <span style="width:10px;height:8px;background:#EF9F27;border-radius:2px;display:inline-block"></span>Haute intensité (15–19)
   </span>
-  <span style="font-size:8px;color:#6A8090;display:flex;align-items:center;gap:4px">
+  <span style="font-size:8px;color:#9FB8D8;display:flex;align-items:center;gap:4px">
     <span style="width:10px;height:8px;background:#E24B4A;border-radius:2px;display:inline-block"></span>Sprint (>23)
   </span>
 </div>
@@ -11704,7 +11704,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     _hcols = st.columns(7)
                     for _hc, _lbl in zip(_hcols, _CAL_JOURS_FR):
                         _hc.markdown(
-                            f"<div style='text-align:center;font-size:11px;color:#6A8090;"
+                            f"<div style='text-align:center;font-size:11px;color:#9FB8D8;"
                             f"font-weight:600;text-transform:uppercase'>{_lbl}</div>",
                             unsafe_allow_html=True
                         )
@@ -11900,7 +11900,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 _phcols = st.columns(7)
                 for _phc, _plbl in zip(_phcols, _CAL_JOURS_FR):
                     _phc.markdown(
-                        f"<div style='text-align:center;font-size:11px;color:#6A8090;"
+                        f"<div style='text-align:center;font-size:11px;color:#9FB8D8;"
                         f"font-weight:600;text-transform:uppercase'>{_plbl}</div>",
                         unsafe_allow_html=True
                     )
@@ -12256,7 +12256,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             plt.close(fig_r)
                             st.markdown(
                                 f"<div style='font-size:12px;color:#C8D8E8;margin-top:4px;'>✅ <b>Forces :</b> {_top_txt}</div>"
-                                f"<div style='font-size:12px;color:#6A8090;margin-top:2px;'>⚠️ <b>Axes :</b> {_low_txt}</div>",
+                                f"<div style='font-size:12px;color:#9FB8D8;margin-top:2px;'>⚠️ <b>Axes :</b> {_low_txt}</div>",
                                 unsafe_allow_html=True
                             )
 
@@ -12267,7 +12267,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                              ("Finition","Finition"),("Créativité","Créativité")]
                     _avail_kpis = [(l,c) for l,c in _kpis if c in aggregated.columns]
                     if _avail_kpis:
-                        st.markdown("<div style='font-family:Oswald,sans-serif;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6A8090;margin-bottom:8px;'>KPIs</div>", unsafe_allow_html=True)
+                        st.markdown("<div style='font-family:Oswald,sans-serif;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#9FB8D8;margin-bottom:8px;'>KPIs</div>", unsafe_allow_html=True)
                         _kc = st.columns(min(3, len(_avail_kpis)))
                         for _i, (_col_ui, (lbl, col)) in enumerate(zip(_kc * 2, _avail_kpis)):
                             _kpi_val = aggregated[col].iloc[0]
@@ -12281,7 +12281,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                    ("MO","Milieu offensif"),("ATT","Attaquant")]
                     _avail_postes = [(l,c) for l,c in _postes_def if c in aggregated.columns]
                     if _avail_postes:
-                        st.markdown("<div style='font-family:Oswald,sans-serif;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6A8090;margin-bottom:8px;'>Postes</div>", unsafe_allow_html=True)
+                        st.markdown("<div style='font-family:Oswald,sans-serif;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#9FB8D8;margin-bottom:8px;'>Postes</div>", unsafe_allow_html=True)
                         _pc = st.columns(min(3, len(_avail_postes)))
                         for _i, (_cu, (lbl, col)) in enumerate(zip(_pc * 2, _avail_postes)):
                             _poste_val = aggregated[col].iloc[0]
@@ -12527,7 +12527,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 '\'<style>@page{size:A4 landscape;margin:0}body{margin:0;background:#0A2453}</style>\'+'
                                 '\'</head><body>\'+_h+\'</body></html>\');'
                                 'w.document.close();setTimeout(()=>w.print(),800);}</script>'
-                                '<button onclick="pr()" style="background:#00A3E0;color:#060F1A;border:none;'
+                                '<button onclick="pr()" style="background:#1FA8E0;color:#061A40;border:none;'
                                 'border-radius:4px;padding:8px 18px;font-family:Oswald,sans-serif;'
                                 'font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px;">'
                                 '\U0001f5a8\ufe0f Imprimer / A4</button>')
@@ -12619,18 +12619,18 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                     def _obj_statut_badge(statut, statut_label):
                         if statut_label:
-                            return f"<span style='background:#1A2A3A;color:#6A8090;border-radius:3px;padding:2px 7px;font-size:11px;font-weight:600;'>{statut_label}</span>"
+                            return f"<span style='background:#2A4A7A;color:#9FB8D8;border-radius:3px;padding:2px 7px;font-size:11px;font-weight:600;'>{statut_label}</span>"
                         if statut is None or (isinstance(statut, float) and pd.isna(statut)):
                             return ""
                         _s = int(statut)
                         _colors = {1: "#EF4444", 2: "#F4830A", 3: "#FFD700", 4: "#84CC16", 5: "#22C55E"}
-                        _c = _colors.get(_s, "#6A8090")
+                        _c = _colors.get(_s, "#9FB8D8")
                         return f"<span style='background:{_c}22;color:{_c};border:1px solid {_c}55;border-radius:3px;padding:2px 7px;font-size:11px;font-weight:700;'>{_s}/5</span>"
 
                     def _render_objectif_row(_row, show_statut=False):
                         _badge = _obj_statut_badge(_row.get("statut"), _row.get("statut_label")) if show_statut else ""
                         st.markdown(
-                            f"<div style='background:#0C1220;border-left:2px solid #00A3E0;border-radius:2px;"
+                            f"<div style='background:#0E2B5E;border-left:2px solid #1FA8E0;border-radius:2px;"
                             f"padding:8px 14px;margin-bottom:6px;'>"
                             f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
                             f"<span style='color:#C8D8E8;font-size:13.5px;'>{_esc(str(_row['objectif']))}</span>{_badge}"
@@ -13000,8 +13000,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                         _sp_labels_c = [l for _,l,_ in _sp_avail]
                                         _sp_colors = [col for _,_,col in _sp_avail]
                                         _fig_sp, _ax_sp = _plt_m.subplots(figsize=(8, 2.8))
-                                        _fig_sp.patch.set_facecolor("#08090D")
-                                        _ax_sp.set_facecolor("#0C1220")
+                                        _fig_sp.patch.set_facecolor("#061A40")
+                                        _ax_sp.set_facecolor("#0E2B5E")
                                         _bars = _ax_sp.bar(_sp_labels_c, _sp_vals,
                                                            color=_sp_colors, alpha=0.85, width=0.6)
                                         for _b, _v in zip(_bars, _sp_vals):
@@ -13010,11 +13010,11 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                                             _b.get_height()+_sp_max*0.02,
                                                             f"{_v:.0f}", ha="center", va="bottom",
                                                             color="#C8D8E8", fontsize=8)
-                                        _ax_sp.set_ylabel("Distance (m)", color="#6A8090", fontsize=9)
-                                        _ax_sp.set_xlabel("Plage de vitesse (km/h)", color="#6A8090", fontsize=9)
+                                        _ax_sp.set_ylabel("Distance (m)", color="#9FB8D8", fontsize=9)
+                                        _ax_sp.set_xlabel("Plage de vitesse (km/h)", color="#9FB8D8", fontsize=9)
                                         _ax_sp.tick_params(colors="#C8D8E8", labelsize=8)
                                         for spine in _ax_sp.spines.values():
-                                            spine.set_edgecolor("#1A2A3A")
+                                            spine.set_edgecolor("#2A4A7A")
                                         _fig_sp.tight_layout()
                                         st.markdown("##### Répartition par plage de vitesse")
                                         st.pyplot(_fig_sp, width="stretch")
@@ -13102,7 +13102,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                             'setTimeout(function(){w.print();},800);}'
                                             '</script>'
                                             '<button onclick="printGpsReport()" '
-                                            'style="background:#00A3E0;color:#060F1A;border:none;'
+                                            'style="background:#1FA8E0;color:#061A40;border:none;'
                                             'border-radius:4px;padding:8px 20px;'
                                             'font-family:Oswald,sans-serif;font-size:13px;'
                                             'font-weight:700;cursor:pointer;letter-spacing:.05em">'
@@ -13157,15 +13157,15 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                             figsize=(min(4 * _n_kpis, 16), 4),
                                             squeeze=False
                                         )
-                                        _fig_c.patch.set_facecolor("#08090D")
-                                        _bar_colors = ["#00A3E0","#7B84FF","#FF6B6B","#FFA06E",
+                                        _fig_c.patch.set_facecolor("#061A40")
+                                        _bar_colors = ["#1FA8E0","#7B84FF","#FF6B6B","#FFA06E",
                                                        "#2FB8FF","#5DCAA5","#FAC775"]
 
                                         for _ki, (col, lbl, unit, agg) in enumerate(
                                             [(c,l,u,a) for c,l,u,a in _avail_kpis if l in _sel_kpis]
                                         ):
                                             _ax = _axes[0][_ki]
-                                            _ax.set_facecolor("#0C1220")
+                                            _ax.set_facecolor("#0E2B5E")
                                             _vals = []
                                             for _lbl in _sel_labels:
                                                 _r = _gm_sel[_gm_sel["_label"] == _lbl]
@@ -13195,7 +13195,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                                                  color="#C8D8E8", fontsize=7)
                                             _ax.tick_params(axis="y", colors="#C8D8E8", labelsize=7)
                                             for spine in _ax.spines.values():
-                                                spine.set_edgecolor("#1A2A3A")
+                                                spine.set_edgecolor("#2A4A7A")
 
                                         _fig_c.tight_layout()
                                         st.pyplot(_fig_c, width="stretch")
@@ -13323,24 +13323,24 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             with MPL_LOCK:
                                 _fig_w = max(9, len(_x_ch) * 1.1)
                                 _fig_ch, _ax1_ch = _plt_acwr.subplots(figsize=(_fig_w, 3.8))
-                                _fig_ch.patch.set_facecolor("#0C1220")
-                                _ax1_ch.set_facecolor("#0C1220")
+                                _fig_ch.patch.set_facecolor("#0E2B5E")
+                                _ax1_ch.set_facecolor("#0E2B5E")
 
                                 _ax1_ch.bar(_x_ch, _charges_ch, color="#1A3A5C", alpha=0.6,
                                             label="Charge hebdo", zorder=2, width=0.6)
-                                _ax1_ch.set_ylabel(f"Charge ({_unite_ch})", color="#6A8090", fontsize=9)
-                                _ax1_ch.tick_params(axis="y", colors="#6A8090", labelsize=8)
+                                _ax1_ch.set_ylabel(f"Charge ({_unite_ch})", color="#9FB8D8", fontsize=9)
+                                _ax1_ch.tick_params(axis="y", colors="#9FB8D8", labelsize=8)
                                 _ax1_ch.tick_params(axis="x", colors="#C8D8E8", labelsize=8)
                                 _ax1_ch.set_xticks(_x_ch)
                                 _ax1_ch.set_xticklabels(_labels_ch, rotation=30, ha="right",
                                                          fontsize=8.5, color="#C8D8E8")
-                                _ax1_ch.spines[:].set_color("#1A2A3A")
+                                _ax1_ch.spines[:].set_color("#2A4A7A")
 
                                 _ax2_ch = _ax1_ch.twinx()
-                                _ax2_ch.set_facecolor("#0C1220")
+                                _ax2_ch.set_facecolor("#0E2B5E")
                                 _ax2_ch.set_ylabel("ACWR", color="#C8D8E8", fontsize=9)
                                 _ax2_ch.tick_params(axis="y", colors="#C8D8E8", labelsize=8)
-                                _ax2_ch.spines[:].set_color("#1A2A3A")
+                                _ax2_ch.spines[:].set_color("#2A4A7A")
 
                                 _ax2_ch.axhspan(0.8, 1.3, color="#22C55E", alpha=0.08, zorder=1)
                                 _ax2_ch.axhline(0.8, color="#22C55E", lw=0.8, ls="--", alpha=0.5)
@@ -13348,11 +13348,11 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                                 _ax2_ch.plot(_x_ch, _acwr_ra, color="#F4830A", lw=2,
                                              marker="o", ms=5, label="ACWR RA (Gabbett)", zorder=5)
-                                _ax2_ch.plot(_x_ch, _acwr_ew, color="#00A3E0", lw=2,
+                                _ax2_ch.plot(_x_ch, _acwr_ew, color="#1FA8E0", lw=2,
                                              marker="s", ms=5, label="ACWR EWMA (Murray)", zorder=5)
 
                                 for _xi, (_ra, _ew) in enumerate(zip(_acwr_ra, _acwr_ew)):
-                                    for _val, _col in [(_ra, "#F4830A"), (_ew, "#00A3E0")]:
+                                    for _val, _col in [(_ra, "#F4830A"), (_ew, "#1FA8E0")]:
                                         if not pd.isna(_val):
                                             _fc = "#22C55E" if 0.8 <= _val <= 1.3 else ("#EF4444" if _val > 1.3 else "#3B82F6")
                                             _ax2_ch.scatter(_xi, _val, color=_fc, edgecolors=_col,
@@ -13366,13 +13366,13 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 _handles_ch = [
                                     _mpatches_acwr.Patch(color="#1A3A5C", alpha=0.8, label="Charge hebdo"),
                                     _plt_acwr.Line2D([0],[0], color="#F4830A", lw=2, marker="o", ms=5, label="ACWR RA (Gabbett)"),
-                                    _plt_acwr.Line2D([0],[0], color="#00A3E0", lw=2, marker="s", ms=5, label="ACWR EWMA (Murray)"),
+                                    _plt_acwr.Line2D([0],[0], color="#1FA8E0", lw=2, marker="s", ms=5, label="ACWR EWMA (Murray)"),
                                     _mpatches_acwr.Patch(color="#22C55E", alpha=0.15, label="Zone optimale (0.8–1.3)"),
                                 ]
                                 _ax2_ch.legend(handles=_handles_ch, loc="upper center",
                                                bbox_to_anchor=(0.5, 1.14), ncol=4,
-                                               fontsize=7.5, facecolor="#0C1220",
-                                               edgecolor="#1A2A3A", labelcolor="#C8D8E8")
+                                               fontsize=7.5, facecolor="#0E2B5E",
+                                               edgecolor="#2A4A7A", labelcolor="#C8D8E8")
 
                                 _fig_ch.tight_layout(rect=[0, 0, 1, 0.96])
                                 st.pyplot(_fig_ch, width="stretch")
@@ -14105,7 +14105,7 @@ def _afficher_rapport_imprimable(html_rapport: str, cle: str) -> None:
             '\'<style>@page{size:A4 landscape;margin:0}body{margin:0;background:#0A2453}</style>\'+'
             '\'</head><body>\'+_h+\'</body></html>\');'
             'w.document.close();setTimeout(()=>w.print(),800);}</script>'
-            '<button onclick="pr()" style="background:#00A3E0;color:#060F1A;border:none;'
+            '<button onclick="pr()" style="background:#1FA8E0;color:#061A40;border:none;'
             'border-radius:4px;padding:8px 18px;font-family:Oswald,sans-serif;'
             'font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px;">'
             '\U0001f5a8\ufe0f Imprimer / A4</button>')
@@ -14807,7 +14807,7 @@ def _render_nav_menu(user_profile, permissions) -> str:
             orientation="vertical",
             styles={
                 "container": {"padding": "6px 4px !important", "background-color": "transparent"},
-                "icon": {"color": "#00A3E0", "font-size": "16px"},
+                "icon": {"color": "#1FA8E0", "font-size": "16px"},
                 "nav-link": {
                     "font-size": "13px", "font-family": "Oswald, sans-serif",
                     "font-weight": "500", "letter-spacing": "0.07em", "text-transform": "uppercase",
@@ -14815,8 +14815,8 @@ def _render_nav_menu(user_profile, permissions) -> str:
                     "border-radius": "3px", "color": "#C8D8E8",
                 },
                 "nav-link-selected": {
-                    "background-color": "#00A3E0",
-                    "color": "#08090D", "font-weight": "600",
+                    "background-color": "#1FA8E0",
+                    "color": "#061A40", "font-weight": "600",
                 },
             },
         )
@@ -14829,7 +14829,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
     _sb.markdown(
         "<div style='display:flex;flex-direction:column;align-items:center;padding:24px 0 16px 0;border-bottom:1px solid rgba(0,163,224,0.15);margin-bottom:8px;'>"
         "<img src='https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png' style='width:90px;height:90px;object-fit:contain;'>"
-        "<div style='font-family:Oswald,sans-serif;font-size:9px;font-weight:500;letter-spacing:0.18em;text-transform:uppercase;color:#6A8090;margin-top:10px;'>Centre de Formation F&eacute;minin</div>"
+        "<div style='font-family:Oswald,sans-serif;font-size:9px;font-weight:500;letter-spacing:0.18em;text-transform:uppercase;color:#9FB8D8;margin-top:10px;'>Centre de Formation F&eacute;minin</div>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -14837,7 +14837,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
     player_name = get_player_for_profile(user_profile, permissions)
     _sb.markdown(
         f"<div style='font-family:Oswald,sans-serif;font-size:11px;font-weight:500;letter-spacing:0.14em;"
-        f"text-transform:uppercase;color:#6A8090;padding:0 12px 2px 12px;'>Connecté</div>"
+        f"text-transform:uppercase;color:#9FB8D8;padding:0 12px 2px 12px;'>Connecté</div>"
         f"<div style='font-family:Oswald,sans-serif;font-size:20px;font-weight:700;letter-spacing:0.06em;"
         f"text-transform:uppercase;color:#FFFFFF;padding:0 12px 12px 12px;'>{_esc(str(user_profile))}</div>",
         unsafe_allow_html=True,
@@ -15299,11 +15299,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                                 st.session_state[_cache_key] = photo_b64
 
                     # Badges postes
-                    def _badge(txt, color="#00A3E0"):
+                    def _badge(txt, color="#1FA8E0"):
                         return f"<span style='background:transparent;color:{color};padding:3px 10px;border-radius:2px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;margin-right:8px;border:1px solid {color};font-family:Oswald,sans-serif;'>{txt}</span>"
 
                     postes_html = ""
-                    if poste1_val: postes_html += _badge(poste1_val, "#00A3E0")
+                    if poste1_val: postes_html += _badge(poste1_val, "#1FA8E0")
                     if poste2_val: postes_html += _badge(poste2_val, "#6ECFEF")
 
                     pied_icon  = "🦶 " + pied_val if pied_val else ""
@@ -15312,7 +15312,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
 
                     details_lines = [x for x in [ddn_str, taille_str, pied_icon] if x]
                     details_html = "".join(
-                        f"<div style='color:#6A8090;font-size:13px;margin-top:7px;font-family:Inter,sans-serif;letter-spacing:0.04em;'>{d}</div>"
+                        f"<div style='color:#9FB8D8;font-size:13px;margin-top:7px;font-family:Inter,sans-serif;letter-spacing:0.04em;'>{d}</div>"
                         for d in details_lines
                     )
 
@@ -15320,16 +15320,16 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                         f"<img src='{photo_b64}' style='width:160px;height:200px;object-fit:cover;object-position:top;"
                         f"border-radius:4px;box-shadow:0 0 0 1px rgba(0,163,224,0.3),0 8px 32px rgba(0,0,0,0.6);display:block;'/>"
                         if photo_b64 else
-                        "<div style='width:160px;height:200px;background:#0C1220;border-radius:4px;"
+                        "<div style='width:160px;height:200px;background:#0E2B5E;border-radius:4px;"
                         "display:flex;align-items:center;justify-content:center;"
                         "font-size:56px;border:1px solid rgba(0,163,224,0.2);'>👤</div>"
                     )
 
                     card_html = f"""
                     <div style='
-                        background: #0C1220;
+                        background: #0E2B5E;
                         border: 1px solid rgba(0,163,224,0.2);
-                        border-top: 2px solid #00A3E0;
+                        border-top: 2px solid #1FA8E0;
                         border-radius: 4px;
                         padding: 28px 32px;
                         display: flex;
@@ -15344,11 +15344,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                         </div>
                         <!-- Infos -->
                         <div style='flex:1;min-width:0;'>
-                            <div style='color:#00A3E0;font-family:Oswald,sans-serif;font-size:10px;font-weight:500;letter-spacing:0.20em;text-transform:uppercase;margin-bottom:10px;'>Paris FC — Joueuse Passerelle</div>
+                            <div style='color:#1FA8E0;font-family:Oswald,sans-serif;font-size:10px;font-weight:500;letter-spacing:0.20em;text-transform:uppercase;margin-bottom:10px;'>Paris FC — Joueuse Passerelle</div>
                             <div style='color:#C8D8E8;font-family:Inter,sans-serif;font-size:26px;font-weight:300;line-height:1;margin-bottom:2px;'>{prenom_val}</div>
                             <div style='color:#FFFFFF;font-family:Oswald,sans-serif;font-size:36px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;line-height:1;margin-bottom:18px;'>{_esc(str(nom_val).upper())}</div>
                             <div style='margin-bottom:18px;'>{postes_html}</div>
-                            <div style='width:32px;height:1px;background:#00A3E0;margin-bottom:14px;opacity:0.5;'></div>
+                            <div style='width:32px;height:1px;background:#1FA8E0;margin-bottom:14px;opacity:0.5;'></div>
                             {details_html}
                         </div>
                     </div>
@@ -15381,9 +15381,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                             # ── Affichage des objectifs texte ──
                             for _onum, _otxt in _objectifs:
                                 st.markdown(
-                                    f"<div style='background:#0C1220; border-left:2px solid #00A3E0; "
+                                    f"<div style='background:#0E2B5E; border-left:2px solid #1FA8E0; "
                                     f"border-radius:2px; padding:12px 16px; margin-bottom:8px; color:#C8D8E8; font-size:15px;'>"
-                                    f"<span style='color:#00A3E0; font-family:Oswald,sans-serif; font-weight:600; font-size:11px; text-transform:uppercase; "
+                                    f"<span style='color:#1FA8E0; font-family:Oswald,sans-serif; font-weight:600; font-size:11px; text-transform:uppercase; "
                                     f"letter-spacing:0.12em;'>{_onum}</span><br/><span style='font-size:15px;font-family:Inter,sans-serif;'>{_otxt}</span></div>",
                                     unsafe_allow_html=True
                                 )
@@ -15427,8 +15427,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                                                     # Jauge matplotlib (demi-cercle)
                                                     import numpy as _np
                                                     _gfig, _gax = plt.subplots(figsize=(3.5, 2.2), subplot_kw=dict(aspect="equal"))
-                                                    _gfig.patch.set_facecolor("#08090D")
-                                                    _gax.set_facecolor("#08090D")
+                                                    _gfig.patch.set_facecolor("#061A40")
+                                                    _gax.set_facecolor("#061A40")
                                                     _gfig.set_dpi(90)
                                                     # Zones de couleur
                                                     for _start, _end, _col in [(0,2,"#3A1010"),(2,3.5,"#3A2A00"),(3.5,5,"#003A50")]:
@@ -15439,22 +15439,22 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                                                                   color=_col, align="center")
                                                     # Arc de fond
                                                     _theta_bg = _np.linspace(_np.pi, 0, 200)
-                                                    _gax.plot(_np.cos(_theta_bg)*0.85, _np.sin(_theta_bg)*0.85, color="#1A2A3A", lw=8)
+                                                    _gax.plot(_np.cos(_theta_bg)*0.85, _np.sin(_theta_bg)*0.85, color="#2A4A7A", lw=8)
                                                     # Arc valeur
                                                     _theta_v = _np.linspace(_np.pi, _np.pi*(1 - _moy/5), 200)
-                                                    _gax.plot(_np.cos(_theta_v)*0.85, _np.sin(_theta_v)*0.85, color="#00A3E0", lw=8)
+                                                    _gax.plot(_np.cos(_theta_v)*0.85, _np.sin(_theta_v)*0.85, color="#1FA8E0", lw=8)
                                                     # Aiguille
                                                     _angle = _np.pi*(1 - _moy/5)
                                                     _gax.annotate("", xy=(_np.cos(_angle)*0.7, _np.sin(_angle)*0.7),
-                                                                  xytext=(0,0), arrowprops=dict(arrowstyle="-|>", color="#00A3E0", lw=2))
+                                                                  xytext=(0,0), arrowprops=dict(arrowstyle="-|>", color="#1FA8E0", lw=2))
                                                     # Texte valeur
                                                     _gax.text(0, -0.15, f"{_moy:.2f}/5", ha="center", va="center",
-                                                              fontsize=16, fontweight="bold", color="#00A3E0")
+                                                              fontsize=16, fontweight="bold", color="#1FA8E0")
                                                     _gax.text(0, -0.45, f"{_onum}", ha="center", va="center",
                                                               fontsize=9, color="#C8D8E8", fontfamily="monospace")
                                                     _short_txt = _otxt[:35]+"…" if len(_otxt)>35 else _otxt
                                                     _gax.text(0, -0.65, _short_txt, ha="center", va="center",
-                                                              fontsize=7, color="#6A8090")
+                                                              fontsize=7, color="#9FB8D8")
                                                     _gax.set_xlim(-1.1, 1.1)
                                                     _gax.set_ylim(-0.8, 1.1)
                                                     _gax.axis("off")
@@ -16056,7 +16056,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                 _mhcols = st.columns(7)
                 for _mhc, _mlbl in zip(_mhcols, _MED_JOURS_FR):
                     _mhc.markdown(
-                        f"<div style='text-align:center;font-size:11px;color:#6A8090;"
+                        f"<div style='text-align:center;font-size:11px;color:#9FB8D8;"
                         f"font-weight:600;text-transform:uppercase'>{_mlbl}</div>",
                         unsafe_allow_html=True
                     )
@@ -16323,264 +16323,140 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
 # =========================
 # MAIN
 # =========================
+# =========================
+# CHARTE GRAPHIQUE DE L'APP — reprise des rapports individuels (v5)
+# Fond #0A2453 + plan de Paris en filigrane, bandeaux #061A40 soulignés #1FA8E0,
+# cartes translucides arrondies, titres Unbounded, texte Inter.
+# =========================
+FOND_APP_PATH = os.path.join("assets", "fond_app.jpg")
+
+
+@functools.lru_cache(maxsize=1)
+def _fond_app_uri() -> str:
+    try:
+        import base64 as _b64fa
+        with open(FOND_APP_PATH, "rb") as f:
+            return "data:image/jpeg;base64," + _b64fa.b64encode(f.read()).decode()
+    except Exception:
+        return ""
+
+
+_CSS_APP = """
+@import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;800&family=Inter:wght@300;400;500;600;700&display=swap');
+:root {
+    --pfc-page:   #0A2453;
+    --pfc-bande:  #061A40;
+    --pfc-blue:   #1FA8E0;
+    --pfc-blue2:  #9FD8F2;
+    --pfc-white:  #FFFFFF;
+    --pfc-text:   #E6EEF8;
+    --pfc-muted:  #9FB8D8;
+    --pfc-border: rgba(255, 255, 255, 0.16);
+    --pfc-card:   rgba(16, 46, 100, 0.42);
+    --pfc-card2:  rgba(12, 40, 92, 0.55);
+}
+/* ── Fond général : navy + plan de Paris en filigrane (comme les rapports) ── */
+.stApp {
+    background: linear-gradient(rgba(10,36,83,0.86), rgba(10,36,83,0.93)), url("__FOND__") center / cover fixed, var(--pfc-page) !important;
+    font-family: 'Inter', sans-serif;
+    color: var(--pfc-text);
+}
+[data-testid="stHeader"] { background: transparent !important; }
+.main .block-container { background: transparent !important; padding: 1.5rem 2.5rem 3rem 2.5rem !important; max-width: 1440px; }
+/* ── Sidebar = bandeau des rapports ── */
+[data-testid="stSidebar"] { background: var(--pfc-bande) !important; border-right: 2px solid var(--pfc-blue) !important; }
+[data-testid="stSidebar"] * { color: var(--pfc-text) !important; }
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+    font-family: 'Unbounded', sans-serif !important; font-weight: 700 !important; color: var(--pfc-white) !important;
+}
+/* ── Boutons = pastilles ── */
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+    background: var(--pfc-blue) !important; color: var(--pfc-bande) !important; border: none !important;
+    border-radius: 999px !important; font-family: 'Inter', sans-serif !important; font-weight: 700 !important;
+    font-size: 13px !important; letter-spacing: 0.04em !important; padding: 8px 20px !important; transition: all 0.18s ease !important;
+}
+.stButton > button:hover, .stDownloadButton > button:hover, .stFormSubmitButton > button:hover {
+    background: #4CC0EE !important; transform: translateY(-1px) !important; box-shadow: 0 4px 16px rgba(31,168,224,0.35) !important;
+}
+.stButton > button[kind="secondary"], .stButton > button[kind="tertiary"] {
+    background: transparent !important; color: var(--pfc-blue2) !important; border: 1.5px solid var(--pfc-blue) !important;
+}
+/* ── Onglets ── */
+.stTabs [data-baseweb="tab-list"] { background: transparent !important; border-bottom: 1px solid var(--pfc-border) !important; gap: 0 !important; }
+.stTabs [data-baseweb="tab"] {
+    background: transparent !important; color: var(--pfc-muted) !important; font-family: 'Inter', sans-serif !important;
+    font-weight: 700 !important; font-size: 12.5px !important; letter-spacing: 0.12em !important; text-transform: uppercase !important;
+    padding: 10px 20px !important; border-bottom: 3px solid transparent !important;
+}
+.stTabs [data-baseweb="tab"]:hover { color: var(--pfc-blue) !important; }
+.stTabs [aria-selected="true"] { color: var(--pfc-white) !important; border-bottom: 3px solid var(--pfc-blue) !important; }
+.stTabs [data-baseweb="tab-panel"] { background: transparent !important; padding-top: 1.6rem !important; }
+/* ── Métriques = cartes des rapports ── */
+[data-testid="stMetric"] {
+    background: var(--pfc-card) !important; border: 1px solid var(--pfc-border) !important;
+    border-top: 3px solid var(--pfc-blue) !important; border-radius: 12px !important; padding: 14px 18px !important;
+}
+[data-testid="stMetric"] label, [data-testid="stMetricLabel"] {
+    color: var(--pfc-blue) !important; font-family: 'Inter', sans-serif !important; font-size: 10.5px !important;
+    font-weight: 700 !important; letter-spacing: 0.14em !important; text-transform: uppercase !important;
+}
+[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    color: var(--pfc-white) !important; font-family: 'Unbounded', sans-serif !important; font-size: 24px !important; font-weight: 700 !important;
+}
+/* ── Champs de saisie ── */
+.stSelectbox > div > div, .stMultiSelect > div > div, .stTextInput > div > div > input,
+.stDateInput > div > div > input, .stNumberInput input, .stTextArea textarea {
+    background: rgba(6, 26, 64, 0.75) !important; color: var(--pfc-white) !important;
+    border: 1px solid var(--pfc-border) !important; border-radius: 8px !important;
+}
+.stSelectbox svg, .stMultiSelect svg { fill: var(--pfc-blue) !important; }
+/* ── Tableaux, expanders, conteneurs à bordure ── */
+.stDataFrame, [data-testid="stDataFrame"] { border: 1px solid var(--pfc-border) !important; border-radius: 12px !important; overflow: hidden !important; }
+[data-testid="stExpander"] details, .streamlit-expanderHeader {
+    background: var(--pfc-card) !important; border: 1px solid var(--pfc-border) !important; border-radius: 12px !important;
+}
+[data-testid="stExpander"] summary p, .streamlit-expanderHeader p {
+    font-family: 'Inter', sans-serif !important; font-weight: 700 !important; letter-spacing: 0.06em !important; color: var(--pfc-text) !important;
+}
+[data-testid="stVerticalBlockBorderWrapper"] { border-color: var(--pfc-border) !important; border-radius: 12px !important; }
+/* ── Titres : noms en Unbounded, sections en capitales bleu ciel (comme « STATISTIQUES ») ── */
+h1, h2 { font-family: 'Unbounded', sans-serif !important; font-weight: 800 !important; color: var(--pfc-white) !important; letter-spacing: 0.01em !important; }
+h1 { font-size: 1.9rem !important; }
+h2 { font-size: 1.45rem !important; border-bottom: 2px solid var(--pfc-blue); padding-bottom: 8px; }
+h3 { font-family: 'Inter', sans-serif !important; font-size: 1.05rem !important; font-weight: 700 !important;
+     letter-spacing: 0.16em !important; text-transform: uppercase !important; color: var(--pfc-blue) !important; }
+h4, h5 { font-family: 'Inter', sans-serif !important; font-weight: 700 !important; color: var(--pfc-white) !important; }
+/* ── Alertes ── */
+.stAlert, [data-testid="stAlert"] { background: var(--pfc-card2) !important; border-radius: 12px !important; border-left: 3px solid var(--pfc-blue) !important; color: var(--pfc-text) !important; }
+hr { border-color: var(--pfc-border) !important; margin: 1rem 0 !important; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--pfc-bande); }
+::-webkit-scrollbar-thumb { background: rgba(31,168,224,0.6); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--pfc-blue); }
+.stCaption, [data-testid="stCaptionContainer"] { color: var(--pfc-muted) !important; font-size: 12px !important; }
+/* ── Menu (option_menu) ── */
+.nav-link { border-radius: 999px !important; margin: 2px 6px !important; font-family: 'Inter', sans-serif !important; font-size: 13.5px !important;
+            font-weight: 600 !important; letter-spacing: 0.06em !important; text-transform: uppercase !important; color: var(--pfc-text) !important; }
+.nav-link:hover { background: rgba(31,168,224,0.14) !important; }
+.nav-link-selected { background: var(--pfc-blue) !important; color: var(--pfc-bande) !important; font-weight: 700 !important; }
+.nav-link-selected .icon { color: var(--pfc-bande) !important; }
+"""
+
+
 def main():
     st.set_page_config(page_title="Paris FC - Centre de Formation Féminin", layout="wide")
 
     st.markdown(
-        """
-    <style>
-    /* ═══════════════════════════════════════════════
-       PARIS FC — CHARTE GRAPHIQUE OFFICIELLE 2025
-       Fond noir   : #08090D  |  Bleu ciel : #00A3E0
-       Bleu foncé  : #0C1B33  |  Blanc     : #FFFFFF
-       Gris texte  : #A8B8C8
-    ═══════════════════════════════════════════════ */
-
-    @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap');
-
-    :root {
-        --pfc-black:  #08090D;
-        --pfc-dark:   #0C1220;
-        --pfc-navy:   #0C1B33;
-        --pfc-blue:   #00A3E0;
-        --pfc-blue2:  #007AB8;
-        --pfc-white:  #FFFFFF;
-        --pfc-text:   #C8D8E8;
-        --pfc-muted:  #6A8090;
-        --pfc-border: rgba(0, 163, 224, 0.18);
-        --pfc-card:   rgba(12, 18, 32, 0.9);
-    }
-
-    /* ── Fond général ── */
-    .stApp {
-        background-color: var(--pfc-black) !important;
-        font-family: 'Inter', sans-serif;
-        color: var(--pfc-text);
-    }
-    /* Lueur bleue subtile en haut */
-    .stApp::before {
-        content: '';
-        position: fixed;
-        top: 0; left: 0; right: 0;
-        height: 400px;
-        background: radial-gradient(ellipse 70% 40% at 50% 0%, rgba(0,163,224,0.10) 0%, transparent 80%);
-        pointer-events: none;
-        z-index: 0;
-    }
-
-    /* ── Contenu principal ── */
-    .main .block-container {
-        background: transparent !important;
-        padding: 1.5rem 2.5rem 3rem 2.5rem !important;
-        max-width: 1440px;
-    }
-
-    /* ── Sidebar ── */
-    [data-testid="stSidebar"] {
-        background: var(--pfc-dark) !important;
-        border-right: 1px solid var(--pfc-border) !important;
-    }
-    [data-testid="stSidebar"] * { color: var(--pfc-text) !important; }
-    [data-testid="stSidebar"] h1,
-    [data-testid="stSidebar"] h2,
-    [data-testid="stSidebar"] h3 {
-        font-family: 'Oswald', sans-serif !important;
-        font-weight: 600 !important;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: var(--pfc-white) !important;
-    }
-
-    /* ── Boutons ── */
-    .stButton > button {
-        background: var(--pfc-blue) !important;
-        color: var(--pfc-black) !important;
-        border: none !important;
-        border-radius: 3px !important;
-        font-family: 'Oswald', sans-serif !important;
-        font-weight: 600 !important;
-        font-size: 13px !important;
-        letter-spacing: 0.10em !important;
-        text-transform: uppercase !important;
-        padding: 9px 20px !important;
-        transition: all 0.18s ease !important;
-    }
-    .stButton > button:hover {
-        background: #22BBEE !important;
-        transform: translateY(-1px) !important;
-        box-shadow: 0 4px 16px rgba(0,163,224,0.35) !important;
-    }
-
-    /* ── Onglets ── */
-    .stTabs [data-baseweb="tab-list"] {
-        background: transparent !important;
-        border-bottom: 1px solid var(--pfc-border) !important;
-        gap: 0 !important;
-    }
-    .stTabs [data-baseweb="tab"] {
-        background: transparent !important;
-        color: var(--pfc-muted) !important;
-        font-family: 'Oswald', sans-serif !important;
-        font-weight: 500 !important;
-        font-size: 14px !important;
-        letter-spacing: 0.08em !important;
-        text-transform: uppercase !important;
-        padding: 10px 22px !important;
-        border-bottom: 2px solid transparent !important;
-        transition: color 0.15s !important;
-    }
-    .stTabs [data-baseweb="tab"]:hover { color: var(--pfc-blue) !important; }
-    .stTabs [aria-selected="true"] {
-        color: var(--pfc-white) !important;
-        border-bottom: 2px solid var(--pfc-blue) !important;
-    }
-    .stTabs [data-baseweb="tab-panel"] {
-        background: transparent !important;
-        padding-top: 1.8rem !important;
-    }
-
-    /* ── Métriques ── */
-    [data-testid="stMetric"] {
-        background: var(--pfc-card) !important;
-        border: 1px solid var(--pfc-border) !important;
-        border-top: 2px solid var(--pfc-blue) !important;
-        border-radius: 4px !important;
-        padding: 18px 22px !important;
-    }
-    [data-testid="stMetric"] label {
-        color: var(--pfc-muted) !important;
-        font-family: 'Oswald', sans-serif !important;
-        font-size: 11px !important;
-        letter-spacing: 0.12em !important;
-        text-transform: uppercase !important;
-    }
-    [data-testid="stMetric"] [data-testid="stMetricValue"] {
-        color: var(--pfc-white) !important;
-        font-family: 'Oswald', sans-serif !important;
-        font-size: 30px !important;
-        font-weight: 600 !important;
-    }
-
-    /* ── Selectbox / inputs ── */
-    .stSelectbox > div > div,
-    .stMultiselect > div > div,
-    .stTextInput > div > div > input,
-    .stDateInput > div > div > input {
-        background: var(--pfc-card) !important;
-        color: var(--pfc-white) !important;
-        border: 1px solid var(--pfc-border) !important;
-        border-radius: 3px !important;
-    }
-    .stSelectbox svg, .stMultiselect svg { fill: var(--pfc-blue) !important; }
-
-    /* ── DataFrames ── */
-    .stDataFrame {
-        border: 1px solid var(--pfc-border) !important;
-        border-radius: 4px !important;
-        overflow: hidden !important;
-    }
-    .stDataFrame table {
-        color: var(--pfc-text) !important;
-        background: var(--pfc-card) !important;
-    }
-    .stDataFrame thead th {
-        background: rgba(0,163,224,0.12) !important;
-        color: var(--pfc-blue) !important;
-        font-family: 'Oswald', sans-serif !important;
-        font-size: 11px !important;
-        letter-spacing: 0.10em !important;
-        text-transform: uppercase !important;
-        border-bottom: 1px solid var(--pfc-border) !important;
-    }
-    .stDataFrame tbody tr:hover td {
-        background: rgba(0,163,224,0.07) !important;
-    }
-
-    /* ── Expanders ── */
-    .streamlit-expanderHeader {
-        background: var(--pfc-card) !important;
-        border: 1px solid var(--pfc-border) !important;
-        border-radius: 4px !important;
-        color: var(--pfc-text) !important;
-        font-family: 'Oswald', sans-serif !important;
-        font-weight: 500 !important;
-        letter-spacing: 0.06em !important;
-        text-transform: uppercase !important;
-        font-size: 13px !important;
-    }
-    .streamlit-expanderContent {
-        background: rgba(12,18,32,0.7) !important;
-        border: 1px solid var(--pfc-border) !important;
-        border-top: none !important;
-        border-radius: 0 0 4px 4px !important;
-    }
-
-    /* ── Titres ── */
-    h1, h2, h3 {
-        font-family: 'Oswald', sans-serif !important;
-        font-weight: 600 !important;
-        letter-spacing: 0.05em !important;
-        text-transform: uppercase !important;
-        color: var(--pfc-white) !important;
-    }
-    h1 { font-size: 2.2rem !important; }
-    h2 { font-size: 1.6rem !important; border-bottom: 1px solid var(--pfc-border); padding-bottom: 8px; }
-    h3 { font-size: 1.2rem !important; color: var(--pfc-blue) !important; }
-
-    /* ── Alerts ── */
-    .stAlert {
-        background: var(--pfc-card) !important;
-        border-radius: 3px !important;
-        border-left: 3px solid var(--pfc-blue) !important;
-        color: var(--pfc-text) !important;
-    }
-
-    /* ── Divider ── */
-    hr { border-color: var(--pfc-border) !important; margin: 1rem 0 !important; }
-
-    /* ── Scrollbar ── */
-    ::-webkit-scrollbar { width: 5px; height: 5px; }
-    ::-webkit-scrollbar-track { background: var(--pfc-black); }
-    ::-webkit-scrollbar-thumb { background: var(--pfc-blue2); border-radius: 2px; }
-    ::-webkit-scrollbar-thumb:hover { background: var(--pfc-blue); }
-
-    /* ── Caption ── */
-    .stCaption, [data-testid="stCaptionContainer"] {
-        color: var(--pfc-muted) !important;
-        font-size: 12px !important;
-    }
-
-    /* ── Option menu (sidebar nav) ── */
-    .nav-link {
-        border-radius: 3px !important;
-        margin: 1px 6px !important;
-        font-family: 'Oswald', sans-serif !important;
-        font-size: 14px !important;
-        font-weight: 500 !important;
-        letter-spacing: 0.07em !important;
-        text-transform: uppercase !important;
-        color: var(--pfc-text) !important;
-        transition: background 0.12s !important;
-    }
-    .nav-link:hover { background: rgba(0,163,224,0.12) !important; }
-    .nav-link-selected {
-        background: var(--pfc-blue) !important;
-        color: var(--pfc-black) !important;
-        font-weight: 600 !important;
-    }
-    .nav-link-selected .icon { color: var(--pfc-black) !important; }
-    </style>
-    """,
+        "<style>" + _CSS_APP.replace("__FOND__", _fond_app_uri()) + "</style>",
         unsafe_allow_html=True,
     )
 
     st.markdown(
-        "<div style='background:#08090D;border-bottom:1px solid rgba(0,163,224,0.2);padding:0.8rem 2rem;margin:-1.5rem -2.5rem 1.5rem -2.5rem;display:flex;align-items:center;justify-content:center;gap:1.5rem;position:relative;overflow:hidden;'>"
-        "<div style='position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,#00A3E0,transparent);'></div>"
+        "<div style='background:#061A40;border-bottom:2px solid #1FA8E0;border-radius:12px;padding:0.8rem 2rem;margin:-0.5rem 0 1.5rem 0;display:flex;align-items:center;justify-content:center;gap:1.5rem;position:relative;overflow:hidden;'>"
         "<img src='https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png' alt='Paris FC' style='width:52px;height:52px;object-fit:contain;flex-shrink:0;position:relative;z-index:1;'>"
         "<div style='position:relative;z-index:1;text-align:center;'>"
-        "<div style='font-family:Oswald,sans-serif;font-size:22px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;line-height:1;color:#FFFFFF;'>Centre de Formation F&eacute;minin</div>"
-        "<div style='font-family:Inter,sans-serif;font-size:11px;font-weight:300;letter-spacing:0.16em;color:#00A3E0;margin-top:5px;text-transform:uppercase;'>Analyse &amp; Suivi des Joueuses</div>"
+        "<div style='font-family:Unbounded,sans-serif;font-size:21px;font-weight:800;letter-spacing:0.02em;line-height:1;color:#FFFFFF;'>Centre de Formation F&eacute;minin</div>"
+        "<div style='font-family:Inter,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.18em;color:#1FA8E0;margin-top:6px;text-transform:uppercase;'>Analyse &amp; Suivi des Joueuses</div>"
         "</div></div>",
         unsafe_allow_html=True,
     )
