@@ -10045,7 +10045,9 @@ def build_tactical_report_html(
             _score_html = f'<span class="sc">{_sp[0]}</span> - <span class="sc">{_sp[1]}</span>'
         else:
             _score_html = "vs"
-        _adv_logo = _team_logo_html(adversaire, size=30) if adversaire else ""
+        # Recrutement : pas de logo d'équipe (le rapprochement par nom d'adversaire donnait
+        # le logo d'un autre club, ex. OL) — seul le logo Paris FC de l'en-tête reste.
+        _adv_logo = _team_logo_html(adversaire, size=30) if adversaire and not mi.get("sans_logos") else ""
         _sub = " · ".join(p for p in [f"J{journee}" if journee else "", competition] if p)
         ctx_html = (f'<div class="hm" style="display:flex;align-items:center;gap:8px;justify-content:flex-end;">'
                     f'<span>{_esc(mi.get("equipe") or "Paris FC")} {_score_html} {adversaire or "Adversaire"}'
@@ -14284,7 +14286,7 @@ def render_recrutement(pfc_kpi_all=None):
         kpi["_n"] = len(scores)
     m0 = matchs[sel[0]]
     mi = {"equipe": j.get("club") or nom_aff, "n_matchs": len(dfs), "match_lines": lignes,
-          "label": "Recrutement · joueuse suivie",
+          "label": "Recrutement · joueuse suivie", "sans_logos": True,
           "radar_note": ("Percentiles vs " + base.replace(" joueuses du centre au poste", " joueuses du centre,"))
                         if base else "Percentiles vs centre de formation"}
     if len(dfs) == 1:
