@@ -14097,20 +14097,307 @@ def kpi_joueuse_suivie(df: pd.DataFrame, nom: str, minutes: float, pfc_kpi_all: 
     return {k: float(ligne[k]) for k in REPORT_SPIDER_KPIS if k in ligne and pd.notna(ligne[k])}, base
 
 
-def _afficher_rapport_imprimable(html_rapport: str, cle: str) -> None:
+# ── Fiche d'observation qualitative (modèle « Fiche d'observation joueuse » Paris FC Academy)
+OBS_CRITERES = {
+    "Technique": ["Qualité 1ère touche", "Technique sous pression", "Qualité de passe", "Conduite de balle",
+                  "Duel 1c1", "Jeu long", "Finition", "Jeu de tête"],
+    "Tactique": ["1ère intention vers l'avant", "Prise d'information", "Utilisation des espaces", "Placement défensif",
+                 "Connexion partenaires", "Lecture du jeu", "Replacement défensif"],
+    "Physique": ["Vitesse", "Explosivité", "Endurance", "Répétition des efforts", "Force / Duel", "Pilotage des appuis"],
+    "Mental": ["Écoute", "Concentration", "Engagement", "Résilience après erreur", "Communication", "Leadership",
+               "Gestion de la pression"],
+}
+OBS_ICONES = {"Technique": "⚽", "Tactique": "✳️", "Physique": "🏃", "Mental": "🧠"}
+# Postes du terrain de la fiche : (code, libellé, x %, y %) — attaque vers le haut
+OBS_POSTES = [("AT", "Avant-centre", 50, 9), ("AG", "Ailier gauche", 15, 21), ("AD", "Ailier droite", 85, 21),
+              ("MO", "Milieu offensif", 50, 33), ("MCG", "Milieu centre", 32, 46), ("MCD", "Milieu centre", 68, 46),
+              ("DG", "Latérale gauche", 12, 61), ("DD", "Latérale droite", 88, 61), ("DCG", "Défense centrale", 35, 70),
+              ("DCD", "Défense centrale", 65, 70), ("GB", "Gardienne", 50, 84)]
+OBS_POTENTIEL = ["Non retenue", "À suivre", "Potentiel régional", "Potentiel national", "Haut potentiel à signer"]
+OBS_RECO = ["Prioritaire", "À suivre", "Revoir", "Non prioritaire"]
+OBS_ECHELLE = {5: "Excellent", 4: "Très bon", 3: "Bon", 2: "À renforcer", 1: "Faible"}
+
+
+def obs_moyennes(notes: dict) -> dict:
+    """Moyenne /5 de chaque bloc (critères notés seulement)."""
+    out = {}
+    for bloc, items in OBS_CRITERES.items():
+        v = [notes.get(f"{bloc}|{i}") for i in items if notes.get(f"{bloc}|{i}")]
+        out[bloc] = round(sum(v) / len(v), 1) if v else None
+    return out
+
+
+def _obs_radar_svg(moy: dict, taille: int = 190) -> str:
+    """Radar 4 axes (Mental en haut, Tactique à droite, Physique en bas, Technique à gauche)."""
+    marge = 78   # place des libellés à gauche / à droite
+    c, r = taille / 2, taille / 2 - 26
+    axes = [("Mental", 0, -1), ("Tactique", 1, 0), ("Physique", 0, 1), ("Technique", -1, 0)]
+    grille = "".join(
+        f'<polygon points="{" ".join(f"{c + dx * r * k / 5:.1f},{c + dy * r * k / 5:.1f}" for _, dx, dy in axes)}" '
+        f'fill="none" stroke="rgba(255,255,255,{0.35 if k == 5 else 0.14})" stroke-width="1"/>' for k in range(1, 6))
+    rayons = "".join(f'<line x1="{c}" y1="{c}" x2="{c + dx * r}" y2="{c + dy * r}" stroke="rgba(255,255,255,.18)"/>'
+                     for _, dx, dy in axes)
+    pts = " ".join(f"{c + dx * r * (moy.get(n) or 0) / 5:.1f},{c + dy * r * (moy.get(n) or 0) / 5:.1f}" for n, dx, dy in axes)
+    lab = "".join(
+        f'<text x="{c + dx * (r + 8)}" y="{c + dy * (r + 13) + 4}" text-anchor="{"start" if dx > 0 else "end" if dx < 0 else "middle"}" font-size="11.5" font-weight="700" '
+        f'fill="#FFFFFF">{n}{f" {moy[n]:.1f}" if moy.get(n) else ""}</text>' for n, dx, dy in axes)
+    return (f'<svg viewBox="{-marge} 0 {taille + 2 * marge} {taille}" width="100%" style="max-height:{taille}px">{grille}{rayons}'
+            f'<polygon points="{pts}" fill="rgba(31,168,224,.38)" stroke="#1FA8E0" stroke-width="2"/>{lab}</svg>')
+
+
+def _obs_terrain_svg(postes: list) -> str:
+    sel = set(postes or [])
+    principal = postes[0] if postes else None
+    terrain = ('<rect x="2" y="2" width="96" height="96" rx="1.5" fill="#2E7D32" stroke="#FFF" stroke-width=".5"/>'
+               + "".join(f'<rect x="2" y="{2 + i * 9.6}" width="96" height="4.8" fill="rgba(255,255,255,.05)"/>' for i in range(10))
+               + '<line x1="2" y1="50" x2="98" y2="50" stroke="#FFF" stroke-width=".5"/>'
+               '<circle cx="50" cy="50" r="9" fill="none" stroke="#FFF" stroke-width=".5"/>'
+               '<rect x="30" y="2" width="40" height="14" fill="none" stroke="#FFF" stroke-width=".5"/>'
+               '<rect x="30" y="84" width="40" height="14" fill="none" stroke="#FFF" stroke-width=".5"/>')
+    pions = ""
+    for code, lib, x, y in OBS_POSTES:
+        on = code in sel
+        fond = "#1FA8E0" if code == principal else ("#9FD8F2" if on else "#0E2B5E")
+        txt = "#061A40" if on else "#FFFFFF"
+        pions += (f'<circle cx="{x}" cy="{y}" r="4.3" fill="{fond}" stroke="#FFF" stroke-width=".6"/>'
+                  f'<text x="{x}" y="{y + 1.3}" text-anchor="middle" font-size="3.2" font-weight="800" fill="{txt}">{code[:2]}</text>'
+                  f'<text x="{x}" y="{y + 7.4}" text-anchor="middle" font-size="2.5" fill="#FFF" '
+                  f'opacity="{1 if on else .7}">{lib}</text>')
+    return f'<svg viewBox="0 0 100 100" width="100%">{terrain}{pions}</svg>'
+
+
+def build_fiche_observation_html(j: dict, obs: dict, photo_b64: str = "") -> str:
+    """Fiche d'observation imprimable (A4 portrait), charte des rapports (navy / bleu ciel)."""
+    e = _esc
+    notes = obs.get("notes", {})
+    moy = obs_moyennes(notes)
+    nom = " ".join(x for x in [j.get("nom", ""), j.get("prenom", "")] if x)
+    _d = pd.to_datetime(obs.get("date"), errors="coerce")
+    date_txt = _d.strftime("%d/%m/%Y") if pd.notna(_d) else "—"
+    postes_lib = ", ".join(next((f"{l} ({c})" for c, l, *_ in OBS_POSTES if c == p), p) for p in obs.get("postes", []))
+
+    def ligne(lbl, val):
+        return f'<div class="r"><span class="rl">{lbl}</span><span class="rv">{e(str(val)) if val not in (None, "") else "—"}</span></div>'
+
+    def bloc_eval(bloc):
+        rows = ""
+        for it in OBS_CRITERES[bloc]:
+            n = notes.get(f"{bloc}|{it}") or 0
+            ronds = "".join(f'<span class="dot{" on" if k <= n else ""}"></span>' for k in range(1, 6))
+            rows += f'<div class="ev"><span>{e(it)}</span><span class="dots">{ronds}</span></div>'
+        m = moy.get(bloc)
+        return (f'<div class="card"><div class="bt"><span>{OBS_ICONES[bloc]} {bloc.upper()}</span>'
+                f'<span class="sc5">{f"{m:.1f}" if m else "—"} <small>/ 5</small></span></div>{rows}</div>')
+
+    def puces(lst):
+        lst = [x for x in (lst or []) if str(x).strip()] or ["—"]
+        return "".join(f'<div class="pu"><span class="o"></span>{e(x)}</div>' for x in lst)
+
+    def cases(options, choix):
+        return "".join(f'<div class="cb"><span class="box{" on" if o == choix else ""}">{"✓" if o == choix else ""}</span>{e(o)}</div>'
+                       for o in options)
+
+    photo = (f'<img src="{photo_b64}" class="photo"/>' if photo_b64
+             else f'<div class="ph">{e("".join(x[0] for x in nom.split()[:2]).upper())}</div>')
+    adn = "".join(f'<div class="adn"><div class="adt">{v.upper()}</div><div class="adx">{e(obs.get("adn", {}).get(v, "")) or "&nbsp;"}</div></div>'
+                  for v in ("Rigueur", "Excellence", "Engagement"))
+    note20 = obs.get("note20")
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@600;800&family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{background:#020B1F;display:flex;justify-content:center;padding:6px;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+.page{{width:210mm;height:297mm;overflow:hidden;background:{('url(' + _report_background_uri() + ') center/cover,') if _report_background_uri() else ''}#0A2453;
+  font-family:Inter,sans-serif;color:#E6EEF8;display:flex;flex-direction:column}}
+.hdr{{display:flex;align-items:center;gap:14px;padding:10px 20px;background:#061A40;border-bottom:2px solid #1FA8E0}}
+.hdr img{{width:52px;height:52px;object-fit:contain}}
+.tt{{font-family:Unbounded,sans-serif;font-weight:800;font-size:22px;color:#FFF;line-height:1}}
+.st{{font-size:11px;font-weight:700;letter-spacing:2.4px;color:#1FA8E0;margin-top:6px}}
+.hr{{margin-left:auto;text-align:right;font-size:10px;letter-spacing:1.8px;color:#9FB8D8}}
+.body{{padding:9px 14px;display:flex;flex-direction:column;gap:8px;flex:1;min-height:0}}
+.g{{display:grid;gap:8px}}
+.card{{background:rgba(16,46,100,.55);border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:7px 11px}}
+.ct{{font-size:10.5px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:#1FA8E0;margin-bottom:6px}}
+.r{{display:flex;justify-content:space-between;gap:8px;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.09);font-size:11px}}
+.r:last-child{{border-bottom:none}} .rl{{color:#9FB8D8}} .rv{{font-weight:700;color:#FFF;text-align:right}}
+.adn{{flex:1;padding:0 8px;border-left:1px solid rgba(255,255,255,.14)}} .adn:first-child{{border-left:none}}
+.adt{{font-family:Unbounded,sans-serif;font-size:10.5px;font-weight:600;color:#FFF;margin-bottom:5px}} .adx{{font-size:10.5px;line-height:1.35}}
+.quote{{margin-top:10px;font-style:italic;font-size:10px;letter-spacing:1.5px;color:#9FD8F2;text-align:center}}
+.photo{{width:100%;height:100%;object-fit:cover;object-position:top center;border-radius:10px}}
+.ph{{height:100%;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#F2F5FA,#C9D6E8);border-radius:10px;
+  font-family:Unbounded,sans-serif;font-size:40px;font-weight:800;color:#6C84A8}}
+.bt{{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;font-weight:700;letter-spacing:1.4px;color:#1FA8E0;
+  border-bottom:2px solid #1FA8E0;padding-bottom:4px;margin-bottom:4px}}
+.sc5{{font-family:Unbounded,sans-serif;font-size:15px;color:#FFF;letter-spacing:0}} .sc5 small{{font-size:9px;color:#9FB8D8}}
+.ev{{display:flex;justify-content:space-between;align-items:center;font-size:10.3px;padding:1.6px 0}}
+.dots{{display:flex;gap:3px}} .dot{{width:10px;height:10px;border-radius:50%;border:1.4px solid #9FD8F2}} .dot.on{{background:#1FA8E0;border-color:#1FA8E0}}
+.pu{{display:flex;align-items:center;gap:8px;font-size:11px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.09)}}
+.o{{width:11px;height:11px;border-radius:50%;border:1.6px solid #1FA8E0;flex-shrink:0}}
+.cb{{display:flex;align-items:center;gap:8px;font-size:11px;padding:2px 0}}
+.box{{width:13px;height:13px;border:1.6px solid #9FD8F2;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#061A40;font-weight:800}}
+.box.on{{background:#1FA8E0;border-color:#1FA8E0}}
+.n20{{font-family:Unbounded,sans-serif;font-size:30px;font-weight:800;color:#FFF;text-align:center}} .n20 small{{font-size:14px;color:#9FB8D8}}
+.leg{{font-size:9.5px;color:#9FB8D8;line-height:1.5}}
+.txt{{font-size:11px;line-height:1.45;white-space:pre-wrap}}
+.ftr{{display:flex;justify-content:space-between;padding:6px 18px;background:#061A40;font-size:9px;letter-spacing:1.4px;color:#6E88AE}}
+@media print{{body{{padding:0;background:#0A2453}} @page{{size:A4 portrait;margin:0}}}}
+</style></head><body><div class="page">
+<div class="hdr"><img src="https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"/>
+ <div><div class="tt">FICHE D'OBSERVATION</div><div class="st">JOUEUSE · {e(nom.upper())}</div></div>
+ <div class="hr">RIGUEUR | EXCELLENCE | ENGAGEMENT</div></div>
+<div class="body">
+ <div class="g" style="grid-template-columns:1.15fr 1.25fr .8fr">
+  <div class="card"><div class="ct">Informations générales</div>
+   {ligne("Nom - Prénom", nom)}{ligne("Club", j.get("club"))}{ligne("Date", date_txt)}{ligne("Compétition", obs.get("competition"))}
+   {ligne("Adversaire", obs.get("adversaire"))}{ligne("Catégorie", obs.get("categorie"))}{ligne("Poste observé", postes_lib)}
+   {ligne("Pied fort", obs.get("pied") or j.get("pied"))}{ligne("Temps de jeu", f"{obs['minutes']} min" if obs.get("minutes") else "")}
+   {ligne("Observateur", obs.get("observateur"))}</div>
+  <div class="card"><div class="ct">ADN Paris FC</div><div style="display:flex">{adn}</div>
+   <div class="quote">« DES JOUEUSES D'AUJOURD'HUI, LE PARIS FC DE DEMAIN »</div></div>
+  <div class="card" style="padding:6px">{photo}</div>
+ </div>
+ <div class="g" style="grid-template-columns:.95fr 2fr">
+  <div class="card"><div class="ct">Positionnement sur le terrain</div>{_obs_terrain_svg(obs.get("postes", []))}</div>
+  <div class="g" style="grid-template-columns:1fr 1fr">{bloc_eval("Technique")}{bloc_eval("Tactique")}{bloc_eval("Physique")}{bloc_eval("Mental")}</div>
+ </div>
+ <div class="g" style="grid-template-columns:1fr 1fr 1fr">
+  <div class="card"><div class="ct">Radar du profil</div><div style="display:flex;align-items:center;gap:8px">
+   <div style="flex:1">{_obs_radar_svg(moy)}</div>
+   <div class="leg"><b>Légende</b><br>{"<br>".join(f"{k} - {v}" for k, v in OBS_ECHELLE.items())}</div></div></div>
+  <div class="card"><div class="ct">➕ Qualités fortes</div>{puces(obs.get("qualites"))}</div>
+  <div class="card"><div class="ct">📈 Axes de progression</div>{puces(obs.get("axes"))}</div>
+ </div>
+ <div class="g" style="grid-template-columns:.9fr 1.5fr .9fr">
+  <div class="card"><div class="ct">⭐ Potentiel</div>{cases(OBS_POTENTIEL, obs.get("potentiel"))}</div>
+  <div class="card"><div class="ct">Appréciation générale</div><div class="txt">{e(obs.get("appreciation", "")) or "—"}</div></div>
+  <div class="g"><div class="card"><div class="ct">⭐ Note globale</div><div class="n20">{note20 if note20 not in (None, "") else "—"}<small> / 20</small></div></div>
+   <div class="card"><div class="ct">Recommandation</div>{cases(OBS_RECO, obs.get("recommandation"))}</div></div>
+ </div>
+</div>
+<div class="ftr"><span>PARIS FC | CENTRE DE FORMATION</span><span>#PLUSLOINENSEMBLE</span></div>
+</div></body></html>"""
+
+
+def _recrutement_observations(jid, j, nom_aff, _ph):
+    """Fiches d'observation qualitatives d'une joueuse suivie (formulaire + fiche imprimable)."""
+    obs_list = j.get("observations", [])
+    _lib = {o["id"]: f"{pd.to_datetime(o['date']).strftime('%d/%m/%Y') if o.get('date') else '?'} · "
+                     f"{o.get('adversaire') or 'Adversaire ?'} · {o.get('observateur') or ''}" for o in obs_list}
+    c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
+    # Fiche à présélectionner après un enregistrement (le sélecteur ne peut pas être modifié
+    # une fois affiché dans le même passage)
+    if f"_obs_sel_apres_{jid}" in st.session_state:
+        st.session_state[f"obs_sel_{jid}"] = st.session_state.pop(f"_obs_sel_apres_{jid}")
+    choix = c1.selectbox("Fiche", ["__nouvelle__"] + [o["id"] for o in sorted(obs_list, key=lambda o: o.get("date", ""), reverse=True)],
+                         format_func=lambda k: "➕ Nouvelle fiche d'observation" if k == "__nouvelle__" else _lib[k],
+                         key=f"obs_sel_{jid}")
+    o = next((x for x in obs_list if x["id"] == choix), {})
+    if o and c2.button("🗑️ Supprimer", key=f"obs_del_{jid}_{choix}", width="stretch"):
+        st.session_state[f"obs_conf_{jid}"] = choix
+    if st.session_state.get(f"obs_conf_{jid}") == choix and o:
+        st.warning("Supprimer définitivement cette fiche d'observation ?")
+        k1, k2 = st.columns(2)
+        if k1.button("Oui, supprimer", key=f"obs_ok_{jid}_{choix}", type="primary"):
+            d = load_recrutement()
+            d[jid]["observations"] = [x for x in d[jid].get("observations", []) if x["id"] != choix]
+            save_recrutement(d)
+            st.session_state.pop(f"obs_conf_{jid}", None)
+            st.rerun()
+        if k2.button("Annuler", key=f"obs_ko_{jid}_{choix}"):
+            st.session_state.pop(f"obs_conf_{jid}", None)
+            st.rerun()
+
+    with st.expander("✏️ Remplir / modifier la fiche" if o else "✏️ Remplir la fiche", expanded=not o):
+        cle = f"obs_{jid}_{choix}"
+        with st.form(cle):
+            st.markdown("##### Informations générales")
+            a1, a2, a3 = st.columns(3)
+            _d = pd.to_datetime(o.get("date"), errors="coerce")
+            dte = a1.date_input("Date", value=None if pd.isna(_d) else _d.date(), format="DD/MM/YYYY")
+            comp = a2.text_input("Compétition", value=o.get("competition", ""))
+            adv = a3.text_input("Adversaire", value=o.get("adversaire", ""))
+            b1, b2, b3, b4 = st.columns(4)
+            cat = b1.text_input("Catégorie", value=o.get("categorie", ""))
+            _pieds = ["", "Droit", "Gauche", "Ambidextre"]
+            _p0 = o.get("pied") or {"Droitière": "Droit", "Gauchère": "Gauche", "Ambidextre": "Ambidextre"}.get(j.get("pied", ""), "")
+            pied = b2.selectbox("Pied fort", _pieds, index=_pieds.index(_p0) if _p0 in _pieds else 0)
+            mins = b3.number_input("Temps de jeu (min)", 0, 130, value=int(o.get("minutes") or 0))
+            obsv = b4.text_input("Observateur", value=o.get("observateur") or str(st.session_state.get("user_profile", "")))
+            _codes = [c for c, *_ in OBS_POSTES]
+            postes = st.multiselect("Positionnement sur le terrain (le 1er = poste principal)", _codes,
+                                    default=[p for p in o.get("postes", []) if p in _codes],
+                                    format_func=lambda c: next(f"{c} · {l}" for cc, l, *_ in OBS_POSTES if cc == c))
+            st.markdown("##### ADN Paris FC")
+            d1, d2, d3 = st.columns(3)
+            adn = {v: col.text_area(v, value=o.get("adn", {}).get(v, ""), height=80)
+                   for v, col in zip(("Rigueur", "Excellence", "Engagement"), (d1, d2, d3))}
+            st.markdown("##### Évaluation (1 = faible · 3 = bon · 5 = excellent)")
+            notes = {}
+            for ligne_blocs in (("Technique", "Tactique"), ("Physique", "Mental")):
+                cols = st.columns(2)
+                for bloc, col in zip(ligne_blocs, cols):
+                    with col:
+                        st.markdown(f"**{OBS_ICONES[bloc]} {bloc}**")
+                        for it in OBS_CRITERES[bloc]:
+                            k = f"{bloc}|{it}"
+                            v0 = o.get("notes", {}).get(k)
+                            notes[k] = st.radio(it, [1, 2, 3, 4, 5], index=(v0 - 1) if v0 else None, horizontal=True,
+                                                key=f"{cle}_{k}")
+            st.markdown("##### Synthèse")
+            e1, e2 = st.columns(2)
+            qual = [e1.text_input(f"Qualité forte {i + 1}", value=(o.get("qualites") or ["", "", "", ""] + [""] * 4)[i])
+                    for i in range(4)]
+            axes = [e2.text_input(f"Axe de progression {i + 1}", value=(o.get("axes") or [""] * 4 + [""] * 4)[i])
+                    for i in range(4)]
+            f1, f2, f3 = st.columns([1.2, 2, 1.2])
+            pot = f1.radio("Potentiel", OBS_POTENTIEL, index=OBS_POTENTIEL.index(o["potentiel"]) if o.get("potentiel") in OBS_POTENTIEL else None)
+            appr = f2.text_area("Appréciation générale", value=o.get("appreciation", ""), height=170)
+            note20 = f3.number_input("Note globale (/20)", 0.0, 20.0, value=float(o.get("note20") or 0.0), step=0.5,
+                                     help="Laisser à 0 pour la calculer d'après la moyenne des 4 blocs (× 4).")
+            reco = f3.radio("Recommandation", OBS_RECO, index=OBS_RECO.index(o["recommandation"]) if o.get("recommandation") in OBS_RECO else None)
+            if st.form_submit_button("💾 Enregistrer la fiche", type="primary"):
+                if dte is None:
+                    st.error("La date est obligatoire.")
+                else:
+                    import uuid
+                    notes_ok = {k: int(v) for k, v in notes.items() if v}
+                    moy = [m for m in obs_moyennes(notes_ok).values() if m]
+                    fiche = {"id": o.get("id") or uuid.uuid4().hex[:10], "date": dte.isoformat(), "competition": comp.strip(),
+                             "adversaire": adv.strip(), "categorie": cat.strip(), "pied": pied, "minutes": int(mins) or None,
+                             "observateur": obsv.strip(), "postes": postes, "adn": {k: v.strip() for k, v in adn.items()},
+                             "notes": notes_ok, "qualites": [q.strip() for q in qual], "axes": [a.strip() for a in axes],
+                             "potentiel": pot, "appreciation": appr.strip(), "recommandation": reco,
+                             "note20": note20 if note20 else (round(sum(moy) / len(moy) * 4, 1) if moy else None)}
+                    d = load_recrutement()
+                    lst = [x for x in d[jid].get("observations", []) if x["id"] != fiche["id"]] + [fiche]
+                    d[jid]["observations"] = lst
+                    save_recrutement(d)
+                    st.session_state[f"_obs_sel_apres_{jid}"] = fiche["id"]
+                    st.rerun()
+
+    if o:
+        _pb64 = ""
+        if _ph and os.path.exists(_ph):
+            import base64 as _b64o
+            with open(_ph, "rb") as _fh:
+                _pb64 = "data:image/jpeg;base64," + _b64o.b64encode(_fh.read()).decode()
+        _afficher_rapport_imprimable(build_fiche_observation_html(j, o, _pb64), f"obs_{jid}", portrait=True)
+
+
+def _afficher_rapport_imprimable(html_rapport: str, cle: str, portrait: bool = False) -> None:
     _html_js = json.dumps(html_rapport).replace('</script', '<\\/script')
     _pjs = ('<script>function pr(){var w=window.open("","_blank","width=1200,height=900");'
             'var _h=' + _html_js + ';'
             'w.document.write(\'<!DOCTYPE html><html><head><meta charset="utf-8">\'+'
-            '\'<style>@page{size:A4 landscape;margin:0}body{margin:0;background:#0A2453}</style>\'+'
+            '\'<style>@page{size:A4 ' + ("portrait" if portrait else "landscape") + ';margin:0}body{margin:0;background:#0A2453}</style>\'+'
             '\'</head><body>\'+_h+\'</body></html>\');'
             'w.document.close();setTimeout(()=>w.print(),800);}</script>'
             '<button onclick="pr()" style="background:#1FA8E0;color:#061A40;border:none;'
-            'border-radius:4px;padding:8px 18px;font-family:Oswald,sans-serif;'
+            'border-radius:999px;padding:8px 18px;font-family:Inter,sans-serif;'
             'font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px;">'
             '\U0001f5a8\ufe0f Imprimer / A4</button>')
     st.iframe(_pjs, height=55)
-    st.iframe(html_rapport, height=820)
+    st.iframe(html_rapport, height=1150 if portrait else 820)
 
 
 def _dialog_joueuse_suivie(jid=None):
@@ -14209,6 +14496,14 @@ def render_recrutement(pfc_kpi_all=None):
     if st.session_state.get("_rec_dialog") == jid:
         _dialog_joueuse_suivie(jid)
 
+    t_obs, t_match = st.tabs(["📝 Fiches d'observation", "⚽ Matchs codés (Sportscode)"])
+    with t_obs:
+        _recrutement_observations(jid, j, nom_aff, _ph)
+    with t_match:
+        _recrutement_matchs(jid, j, nom_aff, _ph, pfc_kpi_all)
+
+
+def _recrutement_matchs(jid, j, nom_aff, _ph, pfc_kpi_all):
     # Ajouter un match
     with st.expander("➕ Ajouter un match (CSV Sportscode)", expanded=not j.get("matchs")):
         _cle = f"rec_csv_{jid}_{st.session_state.get('rec_csv_n', 0)}"
