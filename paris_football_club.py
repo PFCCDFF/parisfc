@@ -168,6 +168,8 @@ def _parquet_cache_is_valid() -> bool:
             if not os.path.exists(root_dir):
                 continue
             for root, _, files in os.walk(root_dir):
+                if os.path.normpath(root).startswith(os.path.normpath(RECRUT_DIR)):
+                    continue   # fichiers des joueuses suivies : sans effet sur les données du centre
                 for f in files:
                     if f.endswith((".csv", ".xlsx", ".xls")) and not f.startswith("_cache"):
                         mtimes.append(os.path.getmtime(os.path.join(root, f)))
@@ -5278,6 +5280,8 @@ def load_gps_match(ref_set, alias_to_canon, tokenkey_to_canon, compact_to_canon,
         if not os.path.exists(d):
             continue
         for root, _, files in os.walk(d):
+            if os.path.normpath(root).startswith(os.path.normpath(RECRUT_DIR)):
+                continue   # CSV des joueuses suivies (Recrutement)
             for f in files:
                 if not f.lower().endswith(".csv"):
                     continue
@@ -9830,6 +9834,7 @@ def build_tactical_report_html(
     tactic_dfs: list = None,
     bepro_stats: dict = None,
     temps_compo: float = None,
+    temps_saisi: float = None,
 ) -> str:
     """Rapport de match individuel A4 paysage (v5, charte navy) :
     1. Identité (nom, date de naissance, pied fort, postes 1/2) + contexte (adversaire/score
@@ -9969,6 +9974,12 @@ def build_tactical_report_html(
         tps = float(bepro_stats["temps_jeu_min"])
         tps_txt = _fmt_int(tps)
         tps_sub = "Temps joué · Bepro" if n_matchs <= 1 else f"Cumul Bepro · {n_matchs} matchs · moy. {int(round(tps / n_matchs))} min"
+    elif temps_saisi:
+        # Joueuse suivie (Recrutement) : temps de jeu saisi à l'ajout du match.
+        tps = float(temps_saisi)
+        tps_txt = _fmt_int(tps)
+        tps_sub = "Temps de jeu saisi" if n_matchs <= 1 else f"Cumul saisi · {n_matchs} matchs"
+        _tps_compo = True
     elif (tps is None or not tps) and temps_compo:
         # Ni GPS ni Bepro : temps effectif d'après la composition Sportscode (méthode d'avant)
         tps = float(temps_compo)
@@ -10037,7 +10048,7 @@ def build_tactical_report_html(
         _adv_logo = _team_logo_html(adversaire, size=30) if adversaire else ""
         _sub = " · ".join(p for p in [f"J{journee}" if journee else "", competition] if p)
         ctx_html = (f'<div class="hm" style="display:flex;align-items:center;gap:8px;justify-content:flex-end;">'
-                    f'<span>Paris FC {_score_html} {adversaire or "Adversaire"}'
+                    f'<span>{_esc(mi.get("equipe") or "Paris FC")} {_score_html} {adversaire or "Adversaire"}'
                     f'{" · " + date_long if date_long else ""}</span>{_adv_logo}</div>'
                     + (f'<div class="hs">{_sub}</div>' if _sub else ""))
 
@@ -10142,7 +10153,7 @@ def build_tactical_report_html(
         spider_card = (
             f'<div class="gcard g-spider"><div class="gt"><b>Indicateurs tactiques</b> · /100</div>'
             + (f'<div class="panel"><img src="{_sp_b64}"/></div>'
-               f'<div class="gn">Percentiles intra-match{f", moyenne de {_n_k} matchs" if _n_k > 1 else ""}{" · Bepro" if _ks.get("_source") == "Bepro" else ""}</div>'
+               f'<div class="gn">{_esc(mi.get("radar_note") or "Percentiles intra-match")}{f", moyenne de {_n_k} matchs" if _n_k > 1 else ""}{" · Bepro" if _ks.get("_source") == "Bepro" else ""}</div>'
                if _sp_b64 else '<div class="gn">Scores KPI non disponibles pour ce match.</div>')
             + '</div>'
         )
@@ -13988,6 +13999,312 @@ def render_scores_bepro():
             st.success("Scores enregistrés.")
 
 
+# =========================
+# RECRUTEMENT — fiches des joueuses suivies (rapport individuel depuis un CSV Sportscode)
+# =========================
+RECRUT_DIR = os.path.join("data", "recrutement")
+RECRUT_PATH = os.path.join(RECRUT_DIR, "joueuses.json")
+# Familles de poste : population de comparaison des scores KPI (joueuses du centre au même poste)
+FAMILLES_POSTE = {
+    "Gardienne de But": "Gardienne", "Défenseure Centrale Droit": "Centrale", "Défenseure Centrale Gauche": "Centrale",
+    "Latérale Droit": "Latérale", "Latérale Gauche": "Latérale", "Milieu Défensif": "Milieu défensif",
+    "Milieu Offensive Droit": "Milieu offensif", "Milieu Offensive Gauche": "Milieu offensif",
+    "Attaquante": "Attaquante", "Attaquante Excentrée Droit": "Excentrée", "Attaquante Excentrée Gauche": "Excentrée",
+}
+RECRUT_MIN_POPULATION = 8   # lignes-matchs minimum au poste, sinon tout le centre
+
+
+def load_recrutement() -> dict:
+    try:
+        with open(RECRUT_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_recrutement(data: dict) -> None:
+    _write_bytes_atomic(RECRUT_PATH, json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8"))
+
+
+def lire_csv_recrutement(chemin_ou_bytes) -> pd.DataFrame:
+    if isinstance(chemin_ou_bytes, (bytes, bytearray)):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tf:
+            tf.write(chemin_ou_bytes)
+            tmp = tf.name
+        try:
+            return nettoyer_tags_sportscode(read_csv_auto(tmp))
+        finally:
+            os.remove(tmp)
+    return nettoyer_tags_sportscode(read_csv_auto(chemin_ou_bytes))
+
+
+def lignes_joueuses_csv(df: pd.DataFrame) -> list:
+    """Valeurs de Row qui portent des actions individuelles (candidates « la joueuse »)."""
+    if df is None or "Row" not in df.columns:
+        return []
+    d = df[df["Row"].notna()]
+    if "Action" in d.columns:
+        d = d[d["Action"].notna()]
+    vc = d["Row"].astype(str).str.strip().value_counts()
+    return [r for r in vc.index if r.upper() not in ("START", "PFC") and not r.lower().startswith("transition")]
+
+
+def famille_poste(poste: str) -> str:
+    return FAMILLES_POSTE.get(poste or "", "")
+
+
+def _population_poste(pfc_kpi_all: pd.DataFrame, famille: str) -> Tuple[pd.DataFrame, str]:
+    """Lignes-matchs des joueuses du centre de la même famille de poste (poste 1 de la fiche)."""
+    if pfc_kpi_all is None or pfc_kpi_all.empty:
+        return pd.DataFrame(), "aucune référence"
+    if famille:
+        fam = {p: famille_poste(_poste_canonique(get_player_demographics(p).get("poste1", "")))
+               for p in pfc_kpi_all["Player"].dropna().astype(str).unique()}
+        pop = pfc_kpi_all[pfc_kpi_all["Player"].astype(str).map(fam) == famille]
+        if len(pop) >= RECRUT_MIN_POPULATION:
+            return pop, f"{pop['Player'].nunique()} joueuses du centre au poste « {famille} »"
+    return pfc_kpi_all, "toutes les joueuses du centre (trop peu de joueuses au même poste)"
+
+
+def kpi_joueuse_suivie(df: pd.DataFrame, nom: str, minutes: float, pfc_kpi_all: pd.DataFrame,
+                       famille: str) -> Tuple[dict, str]:
+    """Scores KPI (radar du rapport) d'une joueuse suivie sur un match : mêmes stats et formules
+    que les matchs du centre (create_data → par 90 min → create_metrics/create_kpis), percentiles
+    calculés parmi les matchs des joueuses du centre au même poste."""
+    joueurs = df[df["Row"].astype(str).str.strip() == nom].copy()
+    if joueurs.empty or not minutes:
+        return {}, ""
+    joueurs["Row_clean"] = joueurs["Row"].astype(str).apply(nettoyer_nom_equipe)
+    canon = nettoyer_nom_joueuse(nom)
+    duree = pd.DataFrame({"Player": [canon], "Temps de jeu (en minutes)": [float(minutes)]})
+    stats = create_data(pd.DataFrame(), joueurs, False, duration_df=duree)
+    stats = stats[stats["Player"] == canon] if not stats.empty else stats
+    if stats.empty:
+        return {}, ""
+    num = [c for c in stats.columns if pd.api.types.is_numeric_dtype(stats[c]) and c != "Temps de jeu (en minutes)"]
+    stats[num] = stats[num].astype(float)
+    for c in num:
+        if c != "Buts" and "Pourcentage" not in c:
+            stats[c] = stats[c] * 90.0 / float(minutes)
+    pop, base = _population_poste(pfc_kpi_all, famille)
+    cols = [c for c in stats.columns if c in pop.columns] if not pop.empty else list(stats.columns)
+    tout = pd.concat([stats[cols], pop[cols]], ignore_index=True) if not pop.empty else stats[cols].copy()
+    tout = create_kpis(create_metrics(tout))
+    ligne = tout.iloc[0]
+    return {k: float(ligne[k]) for k in REPORT_SPIDER_KPIS if k in ligne and pd.notna(ligne[k])}, base
+
+
+def _afficher_rapport_imprimable(html_rapport: str, cle: str) -> None:
+    _html_js = json.dumps(html_rapport).replace('</script', '<\\/script')
+    _pjs = ('<script>function pr(){var w=window.open("","_blank","width=1200,height=900");'
+            'var _h=' + _html_js + ';'
+            'w.document.write(\'<!DOCTYPE html><html><head><meta charset="utf-8">\'+'
+            '\'<style>@page{size:A4 landscape;margin:0}body{margin:0;background:#0A2453}</style>\'+'
+            '\'</head><body>\'+_h+\'</body></html>\');'
+            'w.document.close();setTimeout(()=>w.print(),800);}</script>'
+            '<button onclick="pr()" style="background:#00A3E0;color:#060F1A;border:none;'
+            'border-radius:4px;padding:8px 18px;font-family:Oswald,sans-serif;'
+            'font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px;">'
+            '\U0001f5a8\ufe0f Imprimer / A4</button>')
+    st.iframe(_pjs, height=55)
+    st.iframe(html_rapport, height=820)
+
+
+def _dialog_joueuse_suivie(jid=None):
+    data = load_recrutement()
+    j = data.get(jid, {}) if jid else {}
+
+    def _fermer():
+        st.session_state.pop("_rec_dialog", None)
+
+    @st.dialog("Modifier la joueuse" if jid else "Nouvelle joueuse suivie", width="large", on_dismiss=_fermer)
+    def _d():
+        c1, c2 = st.columns(2)
+        nom = c1.text_input("Nom", value=j.get("nom", ""), key=f"rec_nom_{jid}")
+        prenom = c2.text_input("Prénom", value=j.get("prenom", ""), key=f"rec_prenom_{jid}")
+        c3, c4 = st.columns(2)
+        club = c3.text_input("Club", value=j.get("club", ""), key=f"rec_club_{jid}")
+        _ddn = pd.to_datetime(j.get("ddn"), errors="coerce")
+        ddn = c4.date_input("Date de naissance", value=None if pd.isna(_ddn) else _ddn.date(),
+                            min_value=date(1990, 1, 1), max_value=date.today(), format="DD/MM/YYYY",
+                            key=f"rec_ddn_{jid}")
+        c5, c6 = st.columns(2)
+        _pieds = [""] + LATERALITES
+        pied = c5.selectbox("Pied fort", _pieds, index=_pieds.index(j.get("pied", "")) if j.get("pied", "") in _pieds else 0,
+                            key=f"rec_pied_{jid}")
+        _postes = [""] + POSTES_JOUEUSES
+        poste = c6.selectbox("Poste", _postes, index=_postes.index(j.get("poste", "")) if j.get("poste", "") in _postes else 0,
+                             key=f"rec_poste_{jid}")
+        photo = st.file_uploader("Photo (facultatif)", type=["jpg", "jpeg", "png", "heic", "webp"], key=f"rec_photo_{jid}")
+        if st.button("💾 Enregistrer", type="primary", disabled=not nom.strip(), key=f"rec_save_{jid}"):
+            import uuid
+            _id = jid or uuid.uuid4().hex[:10]
+            fiche = {**j, "nom": nom.strip().upper(), "prenom": prenom.strip(), "club": club.strip(),
+                     "ddn": ddn.isoformat() if ddn else "", "pied": pied, "poste": poste,
+                     "matchs": j.get("matchs", [])}
+            if photo is not None:
+                from trombi_utils import image_vignette_jpeg
+                try:
+                    if photo.name.lower().endswith(".heic"):
+                        import pillow_heif
+                        pillow_heif.register_heif_opener()
+                    _f = f"{_id}.jpg"
+                    _write_bytes_atomic(os.path.join(RECRUT_DIR, "photos", _f), image_vignette_jpeg(photo.getvalue()))
+                    fiche["photo"] = _f
+                except Exception as e:
+                    st.error(f"Photo illisible : {e}")
+                    return
+            d = load_recrutement()
+            d[_id] = fiche
+            save_recrutement(d)
+            st.session_state["rec_sel"] = _id
+            _fermer()
+            st.rerun()
+    _d()
+
+
+def render_recrutement(pfc_kpi_all=None):
+    """Joueuses suivies : fiche d'identité + matchs codés sous Sportscode → rapport individuel
+    (même format que les joueuses du centre), radar comparé aux joueuses du centre au même poste."""
+    st.header("🔎 Recrutement")
+    data = load_recrutement()
+    c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
+    # Fenêtre ouverte mémorisée (fermée par Enregistrer ou la croix) : elle reste ouverte
+    # pendant la saisie même si un widget relance toute la page.
+    if c2.button("➕ Nouvelle joueuse", width="stretch", key="rec_new"):
+        st.session_state["_rec_dialog"] = "__nouvelle__"
+    if st.session_state.get("_rec_dialog") == "__nouvelle__":
+        _dialog_joueuse_suivie(None)
+    if not data:
+        st.info("Aucune joueuse suivie : clique sur « ➕ Nouvelle joueuse ».")
+        return
+    ids = sorted(data, key=lambda k: (data[k].get("nom", ""), data[k].get("prenom", "")))
+    lib = {k: " ".join(x for x in [data[k].get("nom", ""), data[k].get("prenom", "")] if x)
+           + (f" — {data[k]['club']}" if data[k].get("club") else "") for k in ids}
+    if st.session_state.get("rec_sel") not in ids:
+        st.session_state["rec_sel"] = ids[0]
+    jid = c1.selectbox("Joueuse suivie", ids, format_func=lambda k: lib[k], key="rec_sel")
+    j = data[jid]
+    nom_aff = " ".join(x for x in [j.get("nom", ""), j.get("prenom", "")] if x)
+
+    # Identité
+    ci1, ci2, ci3 = st.columns([1, 3, 1])
+    _ph = os.path.join(RECRUT_DIR, "photos", j.get("photo", "")) if j.get("photo") else ""
+    if _ph and os.path.exists(_ph):
+        ci1.image(_ph, width=120)
+    _age = ""
+    if j.get("ddn"):
+        _d = pd.to_datetime(j["ddn"]); _t = date.today()
+        _age = f" ({_t.year - _d.year - ((_t.month, _t.day) < (_d.month, _d.day))} ans)"
+    ci2.markdown(f"### {_esc(nom_aff)}")
+    ci2.markdown(" · ".join(_esc(x) for x in [j.get("club", ""), j.get("poste", ""),
+                                               f"pied {j['pied'].lower()}" if j.get("pied") else "",
+                                               (pd.to_datetime(j["ddn"]).strftime("%d/%m/%Y") + _age) if j.get("ddn") else ""] if x)
+                 or "—")
+    if ci3.button("✏️ Modifier", width="stretch", key="rec_edit"):
+        st.session_state["_rec_dialog"] = jid
+    if st.session_state.get("_rec_dialog") == jid:
+        _dialog_joueuse_suivie(jid)
+
+    # Ajouter un match
+    with st.expander("➕ Ajouter un match (CSV Sportscode)", expanded=not j.get("matchs")):
+        _cle = f"rec_csv_{jid}_{st.session_state.get('rec_csv_n', 0)}"
+        up = st.file_uploader("CSV Sportscode du match", type=["csv"], key=_cle)
+        if up is not None:
+            try:
+                dfc = lire_csv_recrutement(up.getvalue())
+            except Exception as e:
+                st.error(f"Fichier illisible : {e}")
+                dfc = None
+            cands = lignes_joueuses_csv(dfc) if dfc is not None else []
+            if dfc is not None and not cands:
+                st.error("Aucune ligne joueuse avec des actions dans ce fichier.")
+            elif cands:
+                a1, a2, a3 = st.columns(3)
+                row = a1.selectbox("Ligne de la joueuse dans le fichier", cands, key=f"{_cle}_row")
+                _st = pd.to_numeric(dfc.loc[dfc["Row"].astype(str).str.strip() == row, "Start time"], errors="coerce")
+                _est = int(min(95, max(1, round((_st.max() - _st.min()) / 60)))) if _st.notna().any() else 90
+                dm = a2.date_input("Date du match", value=None, format="DD/MM/YYYY", key=f"{_cle}_date")
+                minutes = a3.number_input("Temps de jeu (min)", 1, 130, value=_est, key=f"{_cle}_min",
+                                          help="Estimé entre sa première et sa dernière action : à corriger si besoin.")
+                b1, b2, b3 = st.columns(3)
+                adv = b1.text_input("Adversaire", key=f"{_cle}_adv")
+                score = b2.text_input("Score (club de la joueuse en premier, ex. 2-1)", key=f"{_cle}_score")
+                comp = b3.text_input("Compétition", key=f"{_cle}_comp",
+                                     value=str(dfc["Timeline"].dropna().iloc[0]) if "Timeline" in dfc.columns and dfc["Timeline"].notna().any() else "")
+                st.caption(f"{(dfc['Row'].astype(str).str.strip() == row).sum()} actions pour « {row} ».")
+                if st.button("💾 Ajouter le match", type="primary", disabled=dm is None, key=f"{_cle}_save"):
+                    import uuid
+                    _f = f"rec_{uuid.uuid4().hex[:12]}.csv"
+                    _write_bytes_atomic(os.path.join(RECRUT_DIR, "csv", _f), up.getvalue())
+                    d = load_recrutement()
+                    d[jid].setdefault("matchs", []).append({
+                        "fichier": _f, "row": row, "date": dm.isoformat(), "adversaire": adv.strip(),
+                        "score": score.strip(), "competition": comp.strip(), "minutes": int(minutes),
+                        "nom_fichier": up.name})
+                    save_recrutement(d)
+                    st.session_state["rec_csv_n"] = st.session_state.get("rec_csv_n", 0) + 1
+                    st.rerun()
+
+    matchs = sorted(j.get("matchs", []), key=lambda m: m.get("date", ""), reverse=True)
+    if not matchs:
+        return
+    st.subheader("Rapport de match")
+    _lib_m = {i: f"{pd.to_datetime(m['date']).strftime('%d/%m/%Y')} · {m.get('adversaire') or 'Adversaire ?'}"
+                 f"{(' · ' + m['score']) if m.get('score') else ''} · {m.get('minutes', '?')}'"
+              for i, m in enumerate(matchs)}
+    sel = st.multiselect("Match(s) — plusieurs = compilation", list(_lib_m), default=[0],
+                         format_func=lambda i: _lib_m[i], key=f"rec_msel_{jid}")
+    if not sel:
+        return
+    dfs, scores, tot_min, lignes = [], [], 0.0, []
+    base = ""
+    pfc_all = pfc_kpi_all if pfc_kpi_all is not None else st.session_state.get("pfc_kpi_all")
+    for i in sel:
+        m = matchs[i]
+        try:
+            d = lire_csv_recrutement(os.path.join(RECRUT_DIR, "csv", m["fichier"]))
+        except Exception as e:
+            st.error(f"{_lib_m[i]} : fichier illisible ({e})")
+            continue
+        sc, base = kpi_joueuse_suivie(d, m["row"], m.get("minutes", 90), pfc_all, famille_poste(j.get("poste", "")))
+        if sc:
+            scores.append(sc)
+        d = d.copy()
+        d.loc[d["Row"].astype(str).str.strip() == m["row"], "Row"] = nom_aff   # nom affiché dans le rapport
+        dfs.append(d)
+        tot_min += float(m.get("minutes") or 0)
+        lignes.append(_lib_m[i])
+    if not dfs:
+        return
+    kpi = {k: float(np.mean([s[k] for s in scores if k in s])) for k in REPORT_SPIDER_KPIS
+           if any(k in s for s in scores)}
+    if kpi:
+        kpi["_n"] = len(scores)
+    m0 = matchs[sel[0]]
+    mi = {"equipe": j.get("club") or nom_aff, "n_matchs": len(dfs), "match_lines": lignes,
+          "label": "Recrutement · joueuse suivie",
+          "radar_note": ("Percentiles vs " + base.replace(" joueuses du centre au poste", " joueuses du centre,"))
+                        if base else "Percentiles vs centre de formation"}
+    if len(dfs) == 1:
+        mi.update({"adversaire": m0.get("adversaire", ""), "score": m0.get("score", ""),
+                   "competition": m0.get("competition", ""), "date": m0.get("date")})
+    _pb64 = ""
+    if _ph and os.path.exists(_ph):
+        import base64 as _b64r
+        with open(_ph, "rb") as _fh:
+            _pb64 = "data:image/jpeg;base64," + _b64r.b64encode(_fh.read()).decode()
+    _ddn_txt = pd.to_datetime(j["ddn"]).strftime("%d/%m/%Y") if j.get("ddn") else ""
+    html_r = build_tactical_report_html(
+        pd.concat(dfs, ignore_index=True), nom_aff, photo_b64=_pb64, match_info=mi,
+        player_info={"ddn": _ddn_txt, "pied": j.get("pied", ""), "poste1": j.get("poste", ""), "poste2": ""},
+        kpi_scores=kpi, tactic_dfs=dfs if len(dfs) > 1 else None, temps_saisi=tot_min)
+    if base:
+        st.caption(f"Radar : percentiles calculés parmi {base}.")
+    _afficher_rapport_imprimable(html_r, f"rec_{jid}")
+
+
 def render_import_trombi():
     """Dépôt du trombinoscope Excel de la saison : noms officiels + catégorie + photos
     (maillot bleu prioritaire). Complète le référentiel « Noms Prénoms » et devient la source
@@ -14449,9 +14766,9 @@ def _render_nav_menu(user_profile, permissions) -> str:
     role = get_user_role(user_profile, permissions)
 
     if role == ROLE_ADMIN:
-        options = ["Performance", "Programme talent", "Gestion", "Médical", "Laboratoire"]
+        options = ["Performance", "Programme talent", "Gestion", "Médical", "Recrutement", "Laboratoire"]
     elif role == ROLE_STAFF:
-        options = ["Performance", "Programme talent", "Médical"]
+        options = ["Performance", "Programme talent", "Médical", "Recrutement"]
     else:  # ROLE_JOUEUSE
         options = ["Performance"]
 
@@ -14474,6 +14791,7 @@ def _render_nav_menu(user_profile, permissions) -> str:
         "Gestion":            "gear-fill",
         "Médical":            "heart-pulse",
         "Staff Pro":          "star-fill",
+        "Recrutement":        "search",
     }
     icons = [_icon_map.get(o, "circle") for o in options]
 
@@ -14611,6 +14929,12 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
     elif page == "Performance":
         render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 player_name, user_profile, permissions, role=role)
+
+    elif page == "Recrutement":
+        if role not in (ROLE_ADMIN, ROLE_STAFF):
+            st.error("Accès réservé au staff.")
+        else:
+            render_recrutement(pfc_kpi_all)
 
     elif page == "Gestion":
         st.header("⚙️ Gestion")
