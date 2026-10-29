@@ -14496,11 +14496,14 @@ def render_recrutement(pfc_kpi_all=None):
     if st.session_state.get("_rec_dialog") == jid:
         _dialog_joueuse_suivie(jid)
 
-    t_obs, t_match = st.tabs(["📝 Fiches d'observation", "⚽ Matchs codés (Sportscode)"])
+    t_obs, t_match, t_rap = st.tabs(["📝 Fiches d'observation", "⚽ Matchs codés (Sportscode)", "📄 Rapport"])
     with t_obs:
         _recrutement_observations(jid, j, nom_aff, _ph)
     with t_match:
         _recrutement_matchs(jid, j, nom_aff, _ph, pfc_kpi_all)
+    with t_rap:
+        _recrutement_rapport(jid, j, nom_aff, _ph, pfc_kpi_all if pfc_kpi_all is not None
+                             else st.session_state.get("pfc_kpi_all"))
 
 
 def _recrutement_matchs(jid, j, nom_aff, _ph, pfc_kpi_all):
@@ -14547,39 +14550,44 @@ def _recrutement_matchs(jid, j, nom_aff, _ph, pfc_kpi_all):
     matchs = sorted(j.get("matchs", []), key=lambda m: m.get("date", ""), reverse=True)
     if not matchs:
         return
-    st.subheader("Rapport de match")
-    _lib_m = {i: f"{pd.to_datetime(m['date']).strftime('%d/%m/%Y')} · {m.get('adversaire') or 'Adversaire ?'}"
-                 f"{(' · ' + m['score']) if m.get('score') else ''} · {m.get('minutes', '?')}'"
-              for i, m in enumerate(matchs)}
-    sel = st.multiselect("Match(s) — plusieurs = compilation", list(_lib_m), default=[0],
-                         format_func=lambda i: _lib_m[i], key=f"rec_msel_{jid}")
-    if not sel:
-        return
-    dfs, scores, tot_min, lignes = [], [], 0.0, []
-    base = ""
-    pfc_all = pfc_kpi_all if pfc_kpi_all is not None else st.session_state.get("pfc_kpi_all")
-    for i in sel:
-        m = matchs[i]
+    st.subheader("Matchs enregistrés")
+    st.dataframe(pd.DataFrame([{
+        "Date": pd.to_datetime(m["date"]).strftime("%d/%m/%Y"), "Adversaire": m.get("adversaire", ""),
+        "Score": m.get("score", ""), "Compétition": m.get("competition", ""), "Temps de jeu": m.get("minutes"),
+        "Fichier": m.get("nom_fichier", "")} for m in matchs]), hide_index=True, width="stretch")
+    st.caption("Les fiches de statistiques se génèrent dans l'onglet 📄 Rapport.")
+
+
+def _libelle_match_recrutement(m: dict) -> str:
+    return (f"{pd.to_datetime(m['date']).strftime('%d/%m/%Y')} · {m.get('adversaire') or 'Adversaire ?'}"
+            f"{(' · ' + m['score']) if m.get('score') else ''} · {m.get('minutes', '?')}'")
+
+
+def _stats_recrutement_html(j: dict, nom_aff: str, photo_b64: str, pfc_kpi_all, matchs_sel: list) -> Tuple[str, str]:
+    """Fiche de statistiques (rapport individuel) d'une joueuse suivie sur un ou plusieurs
+    matchs (cumul). Retourne (html, base de comparaison du radar)."""
+    dfs, scores, tot_min, lignes, base = [], [], 0.0, [], ""
+    for m in matchs_sel:
         try:
             d = lire_csv_recrutement(os.path.join(RECRUT_DIR, "csv", m["fichier"]))
         except Exception as e:
-            st.error(f"{_lib_m[i]} : fichier illisible ({e})")
+            st.error(f"{_libelle_match_recrutement(m)} : fichier illisible ({e})")
             continue
-        sc, base = kpi_joueuse_suivie(d, m["row"], m.get("minutes", 90), pfc_all, famille_poste(j.get("poste", "")))
+        sc, base = kpi_joueuse_suivie(d, m["row"], m.get("minutes", 90), pfc_kpi_all, famille_poste(j.get("poste", "")))
         if sc:
             scores.append(sc)
         d = d.copy()
         d.loc[d["Row"].astype(str).str.strip() == m["row"], "Row"] = nom_aff   # nom affiché dans le rapport
         dfs.append(d)
         tot_min += float(m.get("minutes") or 0)
-        lignes.append(_lib_m[i])
+        lignes.append(_libelle_match_recrutement(m))
     if not dfs:
-        return
+        return "", base
     kpi = {k: float(np.mean([s[k] for s in scores if k in s])) for k in REPORT_SPIDER_KPIS
            if any(k in s for s in scores)}
     if kpi:
         kpi["_n"] = len(scores)
-    m0 = matchs[sel[0]]
+    m0 = matchs_sel[0]
     mi = {"equipe": j.get("club") or nom_aff, "n_matchs": len(dfs), "match_lines": lignes,
           "label": "Recrutement · joueuse suivie", "sans_logos": True,
           "radar_note": ("Percentiles vs " + base.replace(" joueuses du centre au poste", " joueuses du centre,"))
@@ -14587,19 +14595,62 @@ def _recrutement_matchs(jid, j, nom_aff, _ph, pfc_kpi_all):
     if len(dfs) == 1:
         mi.update({"adversaire": m0.get("adversaire", ""), "score": m0.get("score", ""),
                    "competition": m0.get("competition", ""), "date": m0.get("date")})
+    _ddn_txt = pd.to_datetime(j["ddn"]).strftime("%d/%m/%Y") if j.get("ddn") else ""
+    html_r = build_tactical_report_html(
+        pd.concat(dfs, ignore_index=True), nom_aff, photo_b64=photo_b64, match_info=mi,
+        player_info={"ddn": _ddn_txt, "pied": j.get("pied", ""), "poste1": j.get("poste", ""), "poste2": ""},
+        kpi_scores=kpi, tactic_dfs=dfs if len(dfs) > 1 else None, temps_saisi=tot_min)
+    return html_r, base
+
+
+def _recrutement_rapport(jid, j, nom_aff, _ph, pfc_kpi_all):
+    """Choix des documents : fiche(s) d'observation et/ou fiche(s) de statistiques de match
+    (cumulée sur plusieurs matchs, ou une par match)."""
+    obs = sorted(j.get("observations", []), key=lambda o: o.get("date", ""), reverse=True)
+    matchs = sorted(j.get("matchs", []), key=lambda m: m.get("date", ""), reverse=True)
+    if not obs and not matchs:
+        st.info("Aucune fiche d'observation ni match codé pour cette joueuse : commence par l'un des deux onglets.")
+        return
+    c1, c2 = st.columns(2)
+    avec_obs = c1.checkbox("📝 Fiche(s) d'observation", value=bool(obs), disabled=not obs, key=f"rap_obs_{jid}",
+                           help=None if obs else "Aucune fiche d'observation enregistrée.")
+    avec_stats = c2.checkbox("📊 Fiche de statistiques de match", value=bool(matchs), disabled=not matchs,
+                             key=f"rap_stats_{jid}", help=None if matchs else "Aucun match codé enregistré.")
+    obs_sel, m_sel, mode = [], [], "Une fiche cumulée"
+    if avec_obs and obs:
+        _lo = {o["id"]: f"{pd.to_datetime(o['date']).strftime('%d/%m/%Y')} · {o.get('adversaire') or 'Adversaire ?'}"
+                        f"{(' · ' + o['observateur']) if o.get('observateur') else ''}" for o in obs}
+        obs_sel = c1.multiselect("Fiches d'observation", list(_lo), default=[obs[0]["id"]],
+                                 format_func=lambda k: _lo[k], key=f"rap_obs_sel_{jid}")
+    if avec_stats and matchs:
+        _lm = {i: _libelle_match_recrutement(m) for i, m in enumerate(matchs)}
+        m_sel = c2.multiselect("Matchs", list(_lm), default=list(_lm), format_func=lambda i: _lm[i],
+                               key=f"rap_m_sel_{jid}")
+        if len(m_sel) > 1:
+            mode = c2.radio("Fiche de statistiques", ["Une fiche cumulée", "Une fiche par match"], horizontal=True,
+                            key=f"rap_mode_{jid}")
+    if not obs_sel and not m_sel:
+        st.caption("Coche au moins un document.")
+        return
     _pb64 = ""
     if _ph and os.path.exists(_ph):
         import base64 as _b64r
         with open(_ph, "rb") as _fh:
             _pb64 = "data:image/jpeg;base64," + _b64r.b64encode(_fh.read()).decode()
-    _ddn_txt = pd.to_datetime(j["ddn"]).strftime("%d/%m/%Y") if j.get("ddn") else ""
-    html_r = build_tactical_report_html(
-        pd.concat(dfs, ignore_index=True), nom_aff, photo_b64=_pb64, match_info=mi,
-        player_info={"ddn": _ddn_txt, "pied": j.get("pied", ""), "poste1": j.get("poste", ""), "poste2": ""},
-        kpi_scores=kpi, tactic_dfs=dfs if len(dfs) > 1 else None, temps_saisi=tot_min)
-    if base:
-        st.caption(f"Radar : percentiles calculés parmi {base}.")
-    _afficher_rapport_imprimable(html_r, f"rec_{jid}")
+    for oid in obs_sel:
+        o = next(x for x in obs if x["id"] == oid)
+        st.subheader(f"Fiche d'observation · {pd.to_datetime(o['date']).strftime('%d/%m/%Y')}")
+        _afficher_rapport_imprimable(build_fiche_observation_html(j, o, _pb64), f"rap_o_{jid}_{oid}", portrait=True)
+    if m_sel:
+        groupes = [[matchs[i] for i in sorted(m_sel)]] if mode == "Une fiche cumulée" else [[matchs[i]] for i in sorted(m_sel)]
+        for g in groupes:
+            html_r, base = _stats_recrutement_html(j, nom_aff, _pb64, pfc_kpi_all, g)
+            if not html_r:
+                continue
+            st.subheader("Statistiques · " + (f"cumul de {len(g)} matchs" if len(g) > 1 else _libelle_match_recrutement(g[0])))
+            if base:
+                st.caption(f"Radar : percentiles calculés parmi {base}.")
+            _afficher_rapport_imprimable(html_r, f"rap_s_{jid}_{len(g)}_{g[0]['fichier']}")
 
 
 def render_import_trombi():
