@@ -268,7 +268,46 @@ def apply_player_settings(player_list: list, settings: dict) -> list:
         if p in hidden:
             continue
         result.append(aliases.get(p, p))
-    return sorted(set(result))
+    return retirer_parties(sorted(set(result)))
+
+
+def joueuses_parties() -> dict:
+    """Joueuses parties du club (Gestion → Joueuses) : {nom canonique: date de départ ISO ou ""}."""
+    return load_player_settings().get("parties", {}) or {}
+
+
+def _filtre_parties_actif() -> bool:
+    """Les joueuses parties restent visibles quand on consulte une saison passée."""
+    sel = st.session_state.get("selected_saison", "Toutes les saisons")
+    if not sel or sel == "Toutes les saisons":
+        return True
+    t = date.today()
+    y = t.year if t.month >= 7 else t.year - 1
+    return str(sel).replace("/", "")[:4] == f"{y % 100:02d}{(y + 1) % 100:02d}"
+
+
+def est_partie(nom: str, parties: dict = None) -> bool:
+    parties = joueuses_parties() if parties is None else parties
+    if not parties or not nom:
+        return False
+    from gps_compilation import sous_ensemble_flou
+    k = nettoyer_nom_joueuse(nom)
+    tk = k.split()
+    for p in parties:
+        kp = nettoyer_nom_joueuse(p)
+        if k == kp or (len(tk) >= 2 and (sous_ensemble_flou(tk, kp.split()) or sous_ensemble_flou(kp.split(), tk))):
+            return True
+    return False
+
+
+def retirer_parties(noms: list) -> list:
+    """Retire des listes de sélection les joueuses parties du club (données conservées)."""
+    if not _filtre_parties_actif():
+        return list(noms)
+    parties = joueuses_parties()
+    if not parties:
+        return list(noms)
+    return [n for n in noms if not est_partie(n, parties)]
 
 
 def resolve_alias_to_original(name: str, settings: dict) -> str:
@@ -11931,12 +11970,12 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                 _pres_dialog_date = st.session_state.get("_presence_dialog_date")
                 if _pres_dialog_date and st.session_state.get("_active_dialog_id") == "presence":
-                    _pres_all_players = load_presence_roster()
+                    _pres_all_players = retirer_parties(load_presence_roster())
                     if not _pres_all_players:
                         if _rpe_trombi:
-                            _pres_all_players = sorted({
+                            _pres_all_players = retirer_parties(sorted({
                                 nettoyer_nom_joueuse(f"{j['nom']} {j['prenom']}") for j in _rpe_trombi
-                                if _rpe_groupe in (None, "Tous") or j["categorie"] == _rpe_groupe})
+                                if _rpe_groupe in (None, "Tous") or j["categorie"] == _rpe_groupe}))
                         else:
                             _pres_all_players = sorted({nettoyer_nom_joueuse(n) for n in joueuses_saison(get_tactical_files())})
                     _pres_date_iso = _pres_dialog_date.isoformat()
@@ -12545,7 +12584,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
         _pgps = None
         if _gps_raw_df is not None and not _gps_raw_df.empty:
             _gr = ensure_date_column(_gps_raw_df)
-            _all_gps_p = sorted(_gr["Player"].dropna().astype(str).unique())
+            _all_gps_p = retirer_parties(sorted(_gr["Player"].dropna().astype(str).unique()))
 
             # Résoudre le nom par défaut depuis le contrôle global
             _pgps_default = _pgps_name if _pgps_name in _all_gps_p else (
@@ -12590,7 +12629,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     # actuellement incomplets/vides en production, donc la liste vient
     # directement des joueuses présentes dans la table objectifs_joueuse.
     with _st_objectifs:
-        _obj_joueuses = load_objectifs_joueuses()
+        _obj_joueuses = retirer_parties(load_objectifs_joueuses())
         if not _obj_joueuses:
             st.info("Aucun plan de développement disponible pour le moment.")
         else:
@@ -13859,7 +13898,7 @@ def joueuses_saison(tac_files: list) -> list:
                or sous_ensemble_flou(nettoyer_nom_joueuse(o).split(), tk) for o in out):
             continue
         out.append(n)
-    return sorted(out, key=lambda x: nettoyer_nom_joueuse(x))
+    return retirer_parties(sorted(out, key=lambda x: nettoyer_nom_joueuse(x)))
 
 
 def render_fiches_joueuses():
@@ -15358,6 +15397,38 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                 if pfc_kpi is not None and not pfc_kpi.empty and "Player" in pfc_kpi.columns:
                     _all_raw = sorted(pfc_kpi["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist())
 
+                # ── Joueuses parties du club ─────────────────────────────
+                st.markdown("**🚪 Joueuses parties du club**")
+                st.caption("Elles disparaissent des listes de joueuses de toute l'app (Performance, Suivi, RPE, Médical, "
+                           "Programme talent, Objectifs, Fiches…). Leurs données sont conservées : elles restent dans "
+                           "les rapports des matchs qu'elles ont joués et réapparaissent si tu choisis une saison passée.")
+                _parties = dict(_ps.get("parties", {}) or {})
+                _candidats = set(_all_raw)
+                try:
+                    _candidats |= {nettoyer_nom_joueuse(f"{_t['nom']} {_t['prenom']}") for _t in load_trombi()}
+                    _candidats |= {nettoyer_nom_joueuse(_k) for _k in load_fiches_joueuses()}
+                    _gr_g = st.session_state.get("gps_raw_df")
+                    if _gr_g is not None and not _gr_g.empty and "Player" in _gr_g.columns:
+                        _candidats |= set(_gr_g["Player"].dropna().astype(str))
+                except Exception:
+                    pass
+                _candidats = sorted(_c for _c in _candidats if _c and _c not in _hidden) 
+                _sel_parties = st.multiselect("Joueuses parties", sorted(set(_candidats) | set(_parties)),
+                                              default=sorted(_parties), key="joueuses_parties_sel")
+                if st.button("💾 Enregistrer les départs", key="save_parties", type="primary"):
+                    _ps_new = {**load_player_settings(),
+                               "parties": {n: _parties.get(n, date.today().isoformat()) for n in _sel_parties}}
+                    if save_player_settings(_ps_new):
+                        st.session_state["_player_settings"] = _ps_new
+                        st.success(f"✅ {len(_sel_parties)} joueuse(s) partie(s) enregistrée(s).")
+                        st.rerun()
+                    else:
+                        st.error("❌ Erreur lors de la sauvegarde.")
+                if _parties:
+                    st.caption("Départ enregistré le : " + " · ".join(
+                        f"{n} ({pd.to_datetime(d).strftime('%d/%m/%Y')})" if d else n for n, d in sorted(_parties.items())))
+                st.markdown("---")
+
                 if not _all_raw:
                     st.warning("Aucune joueuse trouvée dans les données Performance.")
                 else:
@@ -15403,7 +15474,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                     # ── Bouton sauvegarder ────────────────────────────────
                     st.markdown("---")
                     if st.button("💾 Sauvegarder les réglages", type="primary", key="save_player_settings"):
-                        _new_settings = {"hidden": list(_new_hidden), "aliases": _new_aliases}
+                        _new_settings = {**load_player_settings(), "hidden": list(_new_hidden), "aliases": _new_aliases}
                         if save_player_settings(_new_settings):
                             st.session_state["_player_settings"] = _new_settings
                             st.success(f"✅ Réglages sauvegardés — {len(_new_hidden)} masquée(s), {len(_new_aliases)} alias")
@@ -16073,7 +16144,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
         st.header("✨ Programme talent")
         st.caption("Suivi des rendez-vous (médical/physique, psy, développement) des joueuses du programme talent.")
 
-        _pt_players = load_programme_talent_players()
+        _pt_players = retirer_parties(load_programme_talent_players())
 
         with st.expander("⚙️ Gérer les joueuses du programme talent"):
             _pt_all_players = sorted(pfc_kpi_all["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
@@ -16341,7 +16412,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
             def _med_get_roster():
                 _roster = load_presence_roster()
                 if _roster:
-                    return _roster
+                    return retirer_parties(_roster)
                 _ps = st.session_state.get("_player_settings") or load_player_settings()
                 _all_p = sorted(pfc_kpi_all["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
                          if pfc_kpi_all is not None and not pfc_kpi_all.empty else []
