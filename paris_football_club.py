@@ -791,115 +791,77 @@ def medical_team_summary(df: pd.DataFrame) -> pd.DataFrame:
     return _g.sort_values("Nb visites", ascending=False).reset_index(drop=True)
 
 
+MEDICAL_BODY_IMAGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "schema_blessures_feminin.png")
+# Repères des zones sur le schéma (pixels de l'image d'origine 1760 × 1720, origine en haut à
+# gauche). Vue de face à gauche (droite de la joueuse à gauche), vue de dos à droite. Les zones
+# n'ont pas de côté en base : les zones paires sont marquées des deux côtés avec le même total.
+MEDICAL_BODY_IMAGE_SIZE = (1760, 1720)
+MEDICAL_BODY_ZONE_POINTS = {
+    "Tête":           [(440, 165)],
+    "Cou":            [(440, 290)],
+    "Épaule":         [(300, 395), (580, 395)],
+    "Bras/Coude":     [(235, 650), (645, 650)],
+    "Poignet/Main":   [(165, 905), (715, 905)],
+    "Thorax/Abdomen": [(440, 560)],
+    "Hanche/Aine":    [(440, 815)],
+    "Cuisse":         [(375, 1010), (505, 1010)],
+    "Genou":          [(382, 1215), (498, 1215)],
+    "Mollet/Tibia":   [(1255, 1370), (1385, 1370)],
+    "Cheville/Pied":  [(385, 1560), (495, 1560)],
+    "Dos":            [(1320, 600)],
+}
+
+
 @st.cache_data(ttl=300)
 @_mpl_safe
 def render_medical_heatmap_png(zone_counts: tuple) -> str:
-    """Silhouette corporelle schématique colorée par nombre de visites/zone.
+    """Schéma corporel (face / dos, assets/schema_blessures_feminin.png) avec une pastille
+    par zone touchée : taille et couleur selon le nombre de visites, total au centre.
     zone_counts : tuple(sorted((zone, count) for ...)) — clé hashable pour le cache.
     Retourne une data URI base64 PNG, ou None si aucune donnée."""
-    _counts = dict(zone_counts)
-    if not _counts or not any(_counts.values()):
+    _counts = {z: c for z, c in dict(zone_counts).items() if c and z in MEDICAL_BODY_ZONE_POINTS}
+    if not _counts:
         return None
 
     import base64 as _b64m, io as _iom
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as _pltm
-    from matplotlib.patches import Circle, FancyBboxPatch
+    from matplotlib.patches import Circle
     import matplotlib.patheffects as _pem
 
-    _max_count = max(_counts.values()) if _counts.values() else 0
-    _neutral = "#1E2D40"
-    _ramp_dark, _ramp_light = (24, 79, 149), (205, 226, 251)  # #184f95 -> #cde2fb
+    _w, _h = MEDICAL_BODY_IMAGE_SIZE
+    _max_count = max(_counts.values())
+    # Rampe orange clair → rouge : contraste avec le corps bleu du schéma.
+    _ramp_low, _ramp_high = (253, 186, 116), (220, 38, 38)  # #FDBA74 -> #DC2626
 
-    def _zone_color(zone):
-        _c = _counts.get(zone, 0)
-        if _c <= 0:
-            return _neutral
-        _t = _c / _max_count if _max_count else 0
-        _r = int(_ramp_dark[0] + (_ramp_light[0] - _ramp_dark[0]) * _t)
-        _g = int(_ramp_dark[1] + (_ramp_light[1] - _ramp_dark[1]) * _t)
-        _b = int(_ramp_dark[2] + (_ramp_light[2] - _ramp_dark[2]) * _t)
-        return f"#{_r:02x}{_g:02x}{_b:02x}"
+    def _zone_color(c):
+        _t = c / _max_count if _max_count > 1 else 1.0
+        return "#" + "".join(f"{int(a + (b - a) * _t):02x}" for a, b in zip(_ramp_low, _ramp_high))
 
-    _fig, _ax = _pltm.subplots(figsize=(4.6, 8.2))
-    _fig.patch.set_facecolor("#0C1A28")
-    _ax.set_facecolor("#0C1A28")
-    _ax.set_xlim(-2.4, 2.4)
-    _ax.set_ylim(0, 10)
+    _fig, _ax = _pltm.subplots(figsize=(7.2, 7.2 * _h / _w))
+    _fig.patch.set_facecolor("#08172E")
+    _ax.set_xlim(0, _w)
+    _ax.set_ylim(_h, 0)
     _ax.set_aspect("equal")
     _ax.axis("off")
+    try:
+        _ax.imshow(_pltm.imread(MEDICAL_BODY_IMAGE_PATH), extent=(0, _w, _h, 0), zorder=0)
+    except Exception:
+        pass  # image absente : pastilles seules, plutôt qu'une erreur
 
-    def _label(x, y, zone):
-        _c = _counts.get(zone, 0)
-        if _c > 0:
-            _t = _ax.text(x, y, str(_c), ha="center", va="center", fontsize=8,
-                           color="white", fontweight="bold", zorder=5)
-            _t.set_path_effects([_pem.withStroke(linewidth=2, foreground="#0C1A28")])
+    for _zone, _c in _counts.items():
+        _col = _zone_color(_c)
+        _r = 28 + 18 * (_c / _max_count)
+        for (_x, _y) in MEDICAL_BODY_ZONE_POINTS[_zone]:
+            _ax.add_patch(Circle((_x, _y), _r * 1.45, facecolor=_col, alpha=0.25, edgecolor="none", zorder=2))
+            _ax.add_patch(Circle((_x, _y), _r, facecolor=_col, alpha=0.92,
+                                 edgecolor="white", linewidth=1.2, zorder=3))
+            _t = _ax.text(_x, _y, str(_c), ha="center", va="center", fontsize=9,
+                          color="white", fontweight="bold", zorder=4)
+            _t.set_path_effects([_pem.withStroke(linewidth=2, foreground="#7F1D1D")])
 
-    def _patch_common(zone):
-        return dict(facecolor=_zone_color(zone), edgecolor="#1E2D40", linewidth=1, zorder=2)
-
-    # Tête
-    _ax.add_patch(Circle((0, 9.3), 0.55, **_patch_common("Tête")))
-    _label(0, 9.3, "Tête")
-    # Cou
-    _ax.add_patch(FancyBboxPatch((-0.18, 8.55), 0.36, 0.4,
-                                  boxstyle="round,pad=0,rounding_size=0.1", **_patch_common("Cou")))
-    _label(0, 8.75, "Cou")
-    # Épaules (x2, même zone) — décalées hors du torse pour ne pas le chevaucher
-    for _sx in (-1.05, 1.05):
-        _ax.add_patch(Circle((_sx, 8.35), 0.32, **_patch_common("Épaule")))
-    _label(-1.05, 8.35, "Épaule"); _label(1.05, 8.35, "Épaule")
-    # Bras/Coude (x2) — alignés sous les épaules, hors du torse
-    for _sx in (-1.05, 1.05):
-        _ax.add_patch(FancyBboxPatch((_sx - 0.2, 6.75), 0.4, 1.4,
-                                      boxstyle="round,pad=0,rounding_size=0.15", **_patch_common("Bras/Coude")))
-    _label(-1.05, 7.45, "Bras"); _label(1.05, 7.45, "Bras")
-    # Poignet/Main (x2)
-    for _sx in (-1.05, 1.05):
-        _ax.add_patch(Circle((_sx, 6.45), 0.3, **_patch_common("Poignet/Main")))
-    _label(-1.05, 6.45, "Poignet/Main"); _label(1.05, 6.45, "Poignet/Main")
-    # Thorax/Abdomen (1 pièce centrale)
-    _ax.add_patch(FancyBboxPatch((-0.85, 5.7), 1.7, 2.6,
-                                  boxstyle="round,pad=0,rounding_size=0.2", **_patch_common("Thorax/Abdomen")))
-    _label(0, 7.0, "Thorax/Abdomen")
-    # Hanche/Aine (1 pièce)
-    _ax.add_patch(FancyBboxPatch((-0.78, 5.08), 1.55, 0.6,
-                                  boxstyle="round,pad=0,rounding_size=0.15", **_patch_common("Hanche/Aine")))
-    _label(0, 5.38, "Hanche/Aine")
-    # Cuisse (x2)
-    for _sx in (-0.5, 0.5):
-        _ax.add_patch(FancyBboxPatch((_sx - 0.31, 3.5), 0.62, 1.65,
-                                      boxstyle="round,pad=0,rounding_size=0.15", **_patch_common("Cuisse")))
-    _label(-0.5, 4.325, "Cuisse"); _label(0.5, 4.325, "Cuisse")
-    # Genou (x2)
-    for _sx in (-0.5, 0.5):
-        _ax.add_patch(Circle((_sx, 3.3), 0.3, **_patch_common("Genou")))
-    _label(-0.5, 3.3, "Genou"); _label(0.5, 3.3, "Genou")
-    # Mollet/Tibia (x2)
-    for _sx in (-0.5, 0.5):
-        _ax.add_patch(FancyBboxPatch((_sx - 0.275, 1.55), 0.55, 1.5,
-                                      boxstyle="round,pad=0,rounding_size=0.15", **_patch_common("Mollet/Tibia")))
-    _label(-0.5, 2.3, "Mollet"); _label(0.5, 2.3, "Mollet")
-    # Cheville/Pied (x2)
-    for _sx in (-0.5, 0.5):
-        _ax.add_patch(FancyBboxPatch((_sx - 0.325, 0.95), 0.65, 0.6,
-                                      boxstyle="round,pad=0,rounding_size=0.12", **_patch_common("Cheville/Pied")))
-    _label(-0.5, 1.25, "Cheville"); _label(0.5, 1.25, "Cheville")
-
-    # Dos : pas de silhouette arrière séparée (une seule zone, sans sous-région) —
-    # une tuile à part sous la silhouette.
-    _dos_color = _zone_color("Dos")
-    _ax.add_patch(FancyBboxPatch((-0.85, -0.65), 1.7, 0.45,
-                                  boxstyle="round,pad=0,rounding_size=0.1",
-                                  facecolor=_dos_color, edgecolor="#1E2D40", linewidth=1))
-    _dos_c = _counts.get("Dos", 0)
-    _ax.text(0, -0.425, f"Dos (vue arrière){f' — {_dos_c}' if _dos_c else ''}",
-              ha="center", va="center", fontsize=7.5, color="white", fontweight="bold")
-
-    _ax.set_ylim(-1.1, 10)
-    _fig.suptitle("Zones les plus touchées", color="#C8D8E8", fontsize=11, y=0.98)
+    _ax.set_title("Zones les plus touchées", color="#C8D8E8", fontsize=11, pad=6)
 
     _buf = _iom.BytesIO()
     _fig.savefig(_buf, format="png", dpi=150, bbox_inches="tight", facecolor=_fig.get_facecolor())
