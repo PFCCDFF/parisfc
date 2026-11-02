@@ -3089,11 +3089,10 @@ def download_permissions_file():
         files = list_files_in_folder(service, DRIVE_MAIN_FOLDER_ID)
 
         target = normalize_str(PERMISSIONS_FILENAME)
-        candidate = None
-        for f in files:
-            if normalize_str(f["name"]) == target:
-                candidate = f
-                break
+        # Plusieurs fichiers du même nom possibles (copie restée dans le dossier) et l'ordre
+        # de la liste Drive n'est pas garanti : toujours prendre le plus récemment modifié.
+        _matches = [f for f in files if normalize_str(f["name"]) == target]
+        candidate = max(_matches, key=lambda f: f.get("modifiedTime") or "", default=None)
         if not candidate:
             # Pas trouvé sur Drive → utiliser le fichier local s'il existe
             return _alt or local_path if (_alt and os.path.exists(_alt)) else None
