@@ -673,6 +673,11 @@ MEDICAL_TYPES_SOIN = ["Consultation/bilan", "Soin de kinésithérapie", "Réédu
 MEDICAL_ZONES_CORPS = ["Tête", "Cou", "Épaule", "Bras/Coude", "Poignet/Main", "Dos",
                         "Thorax/Abdomen", "Hanche/Aine", "Cuisse", "Genou",
                         "Mollet/Tibia", "Cheville/Pied"]
+# Rdv complémentaire (case sous le commentaire d'une visite) — colonnes rdv_* de
+# visites_medicales, cf. sql/2026-11-02_visites_rdv_complementaire.sql.
+MEDICAL_SPECIALISTES = ["Médecin du sport", "Chirurgien orthopédiste", "Radiologue (imagerie)",
+                        "Rhumatologue", "Podologue", "Cardiologue", "Gynécologue", "Dermatologue",
+                        "Dentiste", "Ophtalmologue", "ORL", "Psychologue", "Nutritionniste", "Autre"]
 # Ordre fixe — la couleur suit le métier, pas son rang (stable d'une joueuse/fiche à l'autre).
 MEDICAL_PROF_COLORS = {
     "Médecin": "#3987e5", "Kiné": "#d95926", "Ostéopathe": "#199e70",
@@ -705,12 +710,16 @@ def _medical_invalidate():
 
 
 def insert_visite_medicale(joueuse: str, date_iso: str, professionnel: str, type_soin: str,
-                            partie_corps: str, duree_arret_jours: int, commentaire: str) -> bool:
+                            partie_corps: str, duree_arret_jours: int, commentaire: str,
+                            rdv: dict = None) -> bool:
+    """rdv : champs rdv_* renvoyés par medical_rdv_inputs (None = pas de rdv complémentaire :
+    les colonnes rdv_* ne sont alors pas envoyées)."""
     _sb = get_supabase_client()
     if _sb is None:
         return False
     try:
         _sb.table("visites_medicales").insert({
+            **(rdv or {}),
             "joueuse": joueuse,
             "date": date_iso,
             "professionnel": professionnel,
@@ -723,6 +732,62 @@ def insert_visite_medicale(joueuse: str, date_iso: str, professionnel: str, type
         return True
     except Exception:
         return False
+
+
+def medical_rdv_inputs(key_prefix: str, ligne=None):
+    """Case « Rdv complémentaire » + champs du rendez-vous (spécialiste, médecin, adresse, date).
+    ligne : visite existante (édition) pour préremplir. Retourne (champs, erreur) :
+    champs = dict des colonnes rdv_* à enregistrer, ou None si rien à écrire (case décochée
+    sur une visite qui n'avait pas de rdv : les colonnes rdv_* ne sont pas envoyées) ;
+    erreur = message à afficher si la saisie est incomplète, sinon None."""
+    def _val(col):
+        if ligne is None:
+            return None
+        _v = ligne.get(col)
+        return None if _v is None or (isinstance(_v, float) and pd.isna(_v)) else _v
+
+    _avait_rdv = bool(_val("rdv_complementaire"))
+    _coche = st.checkbox("Rdv complémentaire", value=_avait_rdv, key=f"{key_prefix}_rdv")
+    if not _coche:
+        if _avait_rdv:
+            return {"rdv_complementaire": False, "rdv_specialiste": None, "rdv_medecin": None,
+                    "rdv_adresse": None, "rdv_date": None}, None
+        return None, None
+
+    _spe_init = _val("rdv_specialiste") or ""
+    _spe_connu = _spe_init in MEDICAL_SPECIALISTES
+    _r1, _r2 = st.columns(2)
+    _spe = _r1.selectbox(
+        "Type de spécialiste", MEDICAL_SPECIALISTES,
+        index=MEDICAL_SPECIALISTES.index(_spe_init) if _spe_connu else (
+            MEDICAL_SPECIALISTES.index("Autre") if _spe_init else 0),
+        key=f"{key_prefix}_rdv_spe",
+    )
+    if _spe == "Autre":
+        _spe = st.text_input("Préciser le spécialiste", value="" if _spe_connu else _spe_init,
+                             key=f"{key_prefix}_rdv_spe_libre")
+    _medecin = _r2.text_input("Nom du médecin (facultatif)", value=_val("rdv_medecin") or "",
+                              key=f"{key_prefix}_rdv_medecin")
+    _adresse = st.text_input("Adresse (facultatif)", value=_val("rdv_adresse") or "",
+                             key=f"{key_prefix}_rdv_adresse")
+    _date_init = _val("rdv_date")
+    _rdv_date = st.date_input("Date du rdv", value=pd.to_datetime(_date_init).date() if _date_init else None,
+                              format="DD/MM/YYYY", key=f"{key_prefix}_rdv_date")
+
+    _spe = str(_spe or "").strip()
+    if not _spe or _spe == "Autre":
+        return None, "Précise le type de spécialiste du rdv complémentaire."
+    return {
+        "rdv_complementaire": True,
+        "rdv_specialiste": _spe,
+        "rdv_medecin": _medecin.strip() or None,
+        "rdv_adresse": _adresse.strip() or None,
+        "rdv_date": _rdv_date.isoformat() if _rdv_date else None,
+    }, None
+
+
+_MED_RDV_ERREUR = ("Échec de l'enregistrement. Si « Rdv complémentaire » est coché, vérifie que le "
+                   "script sql/2026-11-02_visites_rdv_complementaire.sql a été appliqué dans Supabase.")
 
 
 def update_visite_medicale(visite_id: int, **fields) -> bool:
@@ -16510,20 +16575,24 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                         _ma_arret = st.number_input("Durée de l'arrêt complet (jours, 0 si aucun)",
                                                      min_value=0, value=0, step=1, key="med_add_arret")
                         _ma_com = st.text_area("Commentaire (facultatif)", key="med_add_com")
+                        _ma_rdv, _ma_rdv_err = medical_rdv_inputs("med_add")
 
                         if st.button("➕ Ajouter", type="primary", key="med_add_btn"):
                             if _ma_soin == "Autre" or not str(_ma_soin).strip():
                                 st.warning("Précise un type de soin.")
+                            elif _ma_rdv_err:
+                                st.warning(_ma_rdv_err)
                             else:
                                 if insert_visite_medicale(
                                     joueuse=_ma_joueuse, date_iso=_med_date_iso, professionnel=_ma_pro,
                                     type_soin=str(_ma_soin).strip(), partie_corps=_ma_zone,
-                                    duree_arret_jours=_ma_arret, commentaire=_ma_com,
+                                    duree_arret_jours=_ma_arret, commentaire=_ma_com, rdv=_ma_rdv,
                                 ):
                                     st.success(f"Visite ajoutée pour {_ma_joueuse}.")
                                     st.rerun()
                                 else:
-                                    st.error("Échec de l'enregistrement (Supabase indisponible ?).")
+                                    st.error(_MED_RDV_ERREUR if _ma_rdv else
+                                             "Échec de l'enregistrement (Supabase indisponible ?).")
 
                         st.divider()
                         st.markdown("#### Visites déjà enregistrées ce jour")
@@ -16532,7 +16601,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                             st.caption("Aucune visite enregistrée.")
                         else:
                             def _med_row_label(r):
-                                return f"{r['joueuse']} — {r['professionnel']} — {r['type_soin']}"
+                                _rdv = " — 📌 Rdv complémentaire" if r.get("rdv_complementaire") == True  # noqa: E712 (numpy.bool_, NaN) else ""
+                                return f"{r['joueuse']} — {r['professionnel']} — {r['type_soin']}{_rdv}"
                             _med_options = {_med_row_label(r): int(r["id"]) for _, r in _med_day_visits.iterrows()}
                             _med_choix = st.selectbox("Visite", list(_med_options.keys()), key="med_edit_pick")
                             _med_vid = _med_options[_med_choix]
@@ -16566,19 +16636,22 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                                 value=_med_ligne["commentaire"] if pd.notna(_med_ligne["commentaire"]) else "",
                                 key=f"med_ed_com_{_med_vid}",
                             )
+                            _me_rdv, _me_rdv_err = medical_rdv_inputs(f"med_ed_{_med_vid}", _med_ligne)
 
                             _meb1, _meb2 = st.columns(2)
                             if _meb1.button("💾 Enregistrer", type="primary", key=f"med_ed_save_{_med_vid}", width="stretch"):
-                                if update_visite_medicale(
+                                if _me_rdv_err:
+                                    st.warning(_me_rdv_err)
+                                elif update_visite_medicale(
                                     _med_vid, joueuse=_me_joueuse, professionnel=_me_pro,
                                     type_soin=(_me_soin or "").strip() or _med_ligne["type_soin"],
                                     partie_corps=_me_zone, duree_arret_jours=int(_me_arret),
-                                    commentaire=_me_com.strip() or None,
+                                    commentaire=_me_com.strip() or None, **(_me_rdv or {}),
                                 ):
                                     st.success("Visite mise à jour.")
                                     st.rerun()
                                 else:
-                                    st.error("Échec de la mise à jour.")
+                                    st.error(_MED_RDV_ERREUR if _me_rdv else "Échec de la mise à jour.")
                             if _meb2.button("🗑️ Supprimer", key=f"med_ed_del_{_med_vid}", width="stretch"):
                                 if delete_visite_medicale(_med_vid):
                                     st.success("Visite supprimée.")
