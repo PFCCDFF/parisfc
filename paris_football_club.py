@@ -6222,7 +6222,9 @@ def load_evaluations():
     return df_j, df_c
 
 
-def render_evaluation_page(user_profile, permissions, selected_saison="Toutes les saisons"):
+def render_evaluation_page(user_profile, permissions, selected_saison="Toutes les saisons", joueuse=None):
+    """joueuse : nom choisi dans le sélecteur commun de « Suivi de la performance ».
+    Fourni, il remplace le filtre « Joueuse » de la page (plus de sélecteur dédié)."""
     import math, numpy as np
     st.header("⭐ Évaluations post-match")
 
@@ -6301,12 +6303,24 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
     _min_date = all_dates.min().date() if not all_dates.empty else pd.Timestamp("2024-01-01").date()
     _max_date = all_dates.max().date() if not all_dates.empty else pd.Timestamp.today().date()
 
+    # Sélecteur commun : correspondance par tokens de nom (ordre et casse
+    # indifférents), en gardant la joueuse qui partage le plus de tokens.
+    if joueuse is not None:
+        _j_tok = nom_tokens(joueuse)
+        _j_best = max(((len(nom_tokens(p) & _j_tok), p) for p in all_players),
+                      key=lambda s: s[0], default=(0, None))
+        if _j_best[0] == 0:
+            st.info(f"Aucune évaluation pour **{joueuse}**.")
+            return
+        sel_player = _j_best[1]
+
     # ── Filtres (repliés par défaut) ───────────────────────────────────────
     with st.expander("🔍 Filtres", expanded=False):
         # Ligne 1 : filtres texte
         col_f1, col_f2, col_f3 = st.columns(3)
         with col_f1:
-            sel_player = st.selectbox("Joueuse", ["Toutes"] + all_players, key="eval_player_sel")
+            if joueuse is None:
+                sel_player = st.selectbox("Joueuse", ["Toutes"] + all_players, key="eval_player_sel")
         with col_f2:
             sel_adv = st.selectbox("Adversaire", ["Tous"] + all_adv, key="eval_adv_sel")
         with col_f3:
@@ -12621,13 +12635,13 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
         if role == ROLE_JOUEUSE:
             st.info("Accès réservé au staff.")
         else:
-            render_evaluation_page(user_profile, permissions, _saison_sel)
+            render_evaluation_page(user_profile, permissions, _saison_sel, joueuse=_pgps)
 
     # ── Objectifs (plan de développement individuel — import du Gantt staff) ──
-    # Liste déroulante dédiée, indépendante du sélecteur _pgps (basé sur les
-    # données GPS) : le référentiel joueuses et le roster Présence sont
-    # actuellement incomplets/vides en production, donc la liste vient
-    # directement des joueuses présentes dans la table objectifs_joueuse.
+    # La joueuse suit le sélecteur commun _pgps (basé sur les données GPS),
+    # rapprochée par tokens de nom des joueuses de la table objectifs_joueuse
+    # (le référentiel joueuses et le roster Présence sont incomplets en prod).
+    # Sélecteur dédié seulement s'il n'y a pas de données GPS.
     with _st_objectifs:
         _obj_joueuses = retirer_parties(load_objectifs_joueuses())
         if not _obj_joueuses:
@@ -12645,9 +12659,19 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
             elif role == ROLE_JOUEUSE:
                 st.info("Aucun plan de développement disponible pour le moment.")
                 _obj_sel = None
+            elif _pgps:
+                # Suit le sélecteur commun de « Suivi de la performance » :
+                # correspondance par tokens de nom (ordre et casse indifférents),
+                # en gardant la joueuse qui partage le plus de tokens.
+                _pgps_tok = nom_tokens(_pgps)
+                _obj_scores = [(len(nom_tokens(p) & _pgps_tok), p) for p in _obj_joueuses]
+                _obj_best = max(_obj_scores, key=lambda s: s[0], default=(0, None))
+                _obj_sel = _obj_best[1] if _obj_best[0] > 0 else None
+                if _obj_sel is None:
+                    st.info(f"Aucun plan de développement pour **{_pgps}**.")
             else:
-                _obj_idx = _obj_joueuses.index(_obj_default) if _obj_default in _obj_joueuses else 0
-                _obj_sel = st.selectbox("Joueuse", _obj_joueuses, index=_obj_idx, key="objectifs_player_sel")
+                # Pas de données GPS (donc pas de sélecteur commun) : sélecteur dédié
+                _obj_sel = st.selectbox("Joueuse", _obj_joueuses, key="objectifs_player_sel")
 
             if _obj_sel:
                 _obj_df = load_objectifs_pour_joueuse(_obj_sel)
