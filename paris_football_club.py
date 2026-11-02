@@ -16601,7 +16601,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                             st.caption("Aucune visite enregistrée.")
                         else:
                             def _med_row_label(r):
-                                _rdv = " — 📌 Rdv complémentaire" if r.get("rdv_complementaire") == True  # noqa: E712 (numpy.bool_, NaN) else ""
+                                _rdv = " — 📌 Rdv complémentaire" if r.get("rdv_complementaire") == True else ""  # == : numpy.bool_ / NaN
                                 return f"{r['joueuse']} — {r['professionnel']} — {r['type_soin']}{_rdv}"
                             _med_options = {_med_row_label(r): int(r["id"]) for _, r in _med_day_visits.iterrows()}
                             _med_choix = st.selectbox("Visite", list(_med_options.keys()), key="med_edit_pick")
