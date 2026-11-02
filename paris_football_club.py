@@ -15177,9 +15177,9 @@ def _render_nav_menu(user_profile, permissions) -> str:
     role = get_user_role(user_profile, permissions)
 
     if role == ROLE_ADMIN:
-        options = ["Performance", "Programme talent", "Gestion", "Médical", "Recrutement", "Laboratoire"]
+        options = ["Performance", "Gestion", "Médical", "Recrutement", "Laboratoire"]
     elif role == ROLE_STAFF:
-        options = ["Performance", "Programme talent", "Médical", "Recrutement"]
+        options = ["Performance", "Médical", "Recrutement"]
     else:  # ROLE_JOUEUSE
         options = ["Performance"]
 
@@ -15424,7 +15424,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                 # ── Joueuses parties du club ─────────────────────────────
                 st.markdown("**🚪 Joueuses parties du club**")
                 st.caption("Elles disparaissent des listes de joueuses de toute l'app (Performance, Suivi, RPE, Médical, "
-                           "Programme talent, Objectifs, Fiches…). Leurs données sont conservées : elles restent dans "
+                           "Objectifs, Fiches…). Leurs données sont conservées : elles restent dans "
                            "les rapports des matchs qu'elles ont joués et réapparaissent si tu choisis une saison passée.")
                 _parties = dict(_ps.get("parties", {}) or {})
                 _candidats = set(_all_raw)
@@ -16164,6 +16164,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                                             except Exception as e:
                                                 st.warning(f"Graphique indisponible : {e}")
 
+    # Page retirée du menu le 02/11/2026 (plus utilisée) : code et données (talent_rdv,
+    # programme_talent_players.json) conservés — la remettre dans options pour la réafficher.
     elif page == "Programme talent":
         st.header("✨ Programme talent")
         st.caption("Suivi des rendez-vous (médical/physique, psy, développement) des joueuses du programme talent.")
