@@ -15216,7 +15216,9 @@ def _render_nav_menu(user_profile, permissions) -> str:
             orientation="vertical",
             styles={
                 "container": {"padding": "6px 4px !important", "background-color": "transparent"},
-                "icon": {"color": "#1FA8E0", "font-size": "16px"},
+                # Couleur via variable CSS : l'onglet sélectionné la redéfinit, sinon l'icône
+                # (bleue) se confond avec le fond bleu du bouton sélectionné.
+                "icon": {"color": "var(--pfc-icon-color, #1FA8E0)", "font-size": "16px"},
                 "nav-link": {
                     "font-size": "13px", "font-family": "Oswald, sans-serif",
                     "font-weight": "500", "letter-spacing": "0.07em", "text-transform": "uppercase",
@@ -15226,6 +15228,7 @@ def _render_nav_menu(user_profile, permissions) -> str:
                 "nav-link-selected": {
                     "background-color": "#1FA8E0",
                     "color": "#061A40", "font-weight": "600",
+                    "--pfc-icon-color": "#061A40",
                 },
             },
         )
