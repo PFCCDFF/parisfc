@@ -113,6 +113,7 @@ EDF_JOUEUSES_FILENAME = "EDF_Joueuses.xlsx"
 PASSERELLE_FILENAME = "Liste Joueuses Passerelles.xlsx"
 DONNEES_JOUEUSES_FILENAME = "Données joueuses.xlsx"  # fiche administrative de tout l'effectif (data/)
 FICHES_JOUEUSES_PATH = os.path.join("data", "fiches_joueuses.json")  # fiches modifiées dans Gestion (prioritaires)
+EFFECTIF_PATH = os.path.join("data", "effectif.json")  # liste des joueuses qui fait foi (Gestion → Effectif, effectif_utils.py)
 TROMBI_PATH = os.path.join("data", "trombi_joueuses.json")      # joueuses de la saison (trombinoscope importé)
 TROMBI_PHOTOS_FOLDER = os.path.join("data", "photos_trombi")    # photos extraites du trombinoscope
 POSTES_JOUEUSES = ["Gardienne de But", "Défenseure Centrale Droit", "Défenseure Centrale Gauche",
@@ -13951,69 +13952,369 @@ def joueuses_saison(tac_files: list) -> list:
     return retirer_parties(sorted(out, key=lambda x: nettoyer_nom_joueuse(x)))
 
 
-def render_fiches_joueuses():
-    """Gestion → Fiches joueuses : date de naissance, latéralité et postes des joueuses de la
-    saison, modifiables directement. Enregistrées dans data/fiches_joueuses.json, prioritaires
-    sur « Données joueuses.xlsx » pour les rapports individuels."""
-    st.subheader("📝 Fiches joueuses — saison en cours")
-    st.caption("Modifier directement dans le tableau puis « Enregistrer ». Les fiches enregistrées ici sont "
-               "prioritaires sur « Données joueuses.xlsx » du Drive et s'appliquent tout de suite aux rapports.")
+# =========================
+# EFFECTIF — liste unique des joueuses (Gestion → Effectif, effectif_utils.py)
+# =========================
+def charger_effectif() -> dict:
+    """Effectif de Gestion → Effectif. Au premier appel (pas encore de data/effectif.json), il est
+    créé depuis l'existant : joueuses de la saison (joueuses_saison), joueuses parties et
+    correspondances déjà saisies (alias de Gestion → Joueuses, correspondances GPS)."""
+    import effectif_utils as EU
+    eff = EU.charger(EFFECTIF_PATH)
+    if eff is not None:
+        return eff
+    _ps = load_player_settings()
     try:
-        noms = joueuses_saison(get_tactical_files())
+        au_club = joueuses_saison(get_tactical_files())
+    except Exception:
+        au_club = list(load_fiches_joueuses().keys())
+    try:
+        corr = {**ALIAS_NOMS_GPS, **load_gps_name_map(), **(_ps.get("aliases") or {})}
+    except Exception:
+        corr = dict(_ps.get("aliases") or {})
+    eff = EU.initialiser(au_club, _ps.get("parties") or {}, corr)
+    enregistrer_effectif(eff)
+    st.session_state["_effectif_cree"] = True
+    return eff
+
+
+def enregistrer_effectif(eff: dict) -> None:
+    """Enregistre l'effectif et recopie les départs dans player_settings["parties"], que les
+    listes de joueuses des pages utilisent encore (retirer_parties)."""
+    import effectif_utils as EU
+    EU.enregistrer(EFFECTIF_PATH, eff)
+    _ps = load_player_settings()
+    _ps["parties"] = {n: v["depart"] for n, v in eff["joueuses"].items() if v["statut"] == EU.STATUT_PARTIE}
+    if save_player_settings(_ps):
+        st.session_state["_player_settings"] = _ps
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _comptes_noms_supabase() -> dict:
+    """{source: {nom saisi: nb de lignes}} des tables Supabase lues par l'app (lecture paginée)."""
+    from collections import Counter
+    out = {}
+    _sb = get_supabase_client()
+    if _sb is None:
+        return out
+    for table, lib in [("presence_entrainement", "Présence"), ("visites_medicales", "Médical"),
+                       ("mesures_corporelles", "Mesures"), ("objectifs_joueuse", "Objectifs")]:
+        try:
+            rows, debut = [], 0
+            while True:
+                lot = _sb.table(table).select("joueuse").order("joueuse").range(debut, debut + 999).execute().data or []
+                rows += lot
+                if len(lot) < 1000:
+                    break
+                debut += 1000
+            out[lib] = dict(Counter(str(r.get("joueuse") or "") for r in rows))
+        except Exception:
+            pass
+    return out
+
+
+def comptes_noms_donnees(pfc_kpi) -> dict:
+    """Tous les noms de joueuses présents dans les données de l'app, par source, avec leur nombre
+    de lignes : matchs, GPS (séances et matchs), évaluations, et tables Supabase."""
+    c = {}
+    if pfc_kpi is not None and not pfc_kpi.empty and "Player" in pfc_kpi.columns:
+        c["Matchs"] = pfc_kpi["Player"].dropna().astype(str).value_counts().to_dict()
+    for _k, _lib in [("gps_raw_df", "GPS séances"), ("gps_match_df", "GPS matchs")]:
+        _g = st.session_state.get(_k)
+        if isinstance(_g, pd.DataFrame) and not _g.empty and "Player" in _g.columns:
+            c[_lib] = _g["Player"].dropna().astype(str).value_counts().to_dict()
+    try:
+        _ev = [d["joueur_label"] for d in load_evaluations()
+               if isinstance(d, pd.DataFrame) and not d.empty and "joueur_label" in d.columns]
+        if _ev:
+            c["Évaluations"] = pd.concat(_ev).dropna().astype(str).value_counts().to_dict()
+    except Exception:
+        pass
+    try:
+        c.update(_comptes_noms_supabase())
+    except Exception:
+        pass
+    return {s: {n: int(k) for n, k in d.items() if looks_like_player(n) and "PARIS FC" not in nettoyer_nom_joueuse(n)}
+            for s, d in c.items()}
+
+
+def _renommer_fiche_et_photo(ancien: str, nouveau: str) -> None:
+    """Après un renommage ou une fusion : la fiche et la photo manuelle suivent le nom officiel."""
+    fiches = load_fiches_joueuses()
+    if ancien in fiches:
+        f = fiches.pop(ancien)
+        fiches[nouveau] = {**f, **{k: v for k, v in fiches.get(nouveau, {}).items() if v}}
+        save_fiches_joueuses(fiches)
+    try:
+        m = load_photo_manual_mapping()
+        a, n = normalize_name_raw(ancien), normalize_name_raw(nouveau)
+        if a in m and a != n:
+            m.setdefault(n, m[a])
+            m.pop(a)
+            save_photo_manual_mapping(m)
+            st.session_state["photo_manual_mapping"] = m
+    except Exception:
+        pass
+
+
+def _effectif_maj(eff: dict, message: str) -> None:
+    enregistrer_effectif(eff)
+    st.session_state["_eff_v"] = st.session_state.get("_eff_v", 0) + 1
+    st.session_state["_eff_msg"] = message
+    st.rerun()
+
+
+def render_effectif(pfc_kpi=None):
+    """Gestion → Effectif : la liste des joueuses qui fait foi (au club / parties), leurs fiches
+    (date de naissance, latéralité, postes), leurs autres orthographes, et le rattachement des
+    noms trouvés dans les données. Remplace les onglets Fiches joueuses et « Joueuses parties »."""
+    import effectif_utils as EU
+    st.subheader("👥 Effectif")
+    st.caption("La liste des joueuses qui fait foi. Une joueuse partie disparaît des listes de la saison en cours, "
+               "mais toutes ses données sont conservées et gardent son poste (références au poste, saisons passées).")
+    try:
+        eff = charger_effectif()
     except Exception as e:
-        st.error(f"Liste des joueuses indisponible : {e}")
+        st.error(f"Effectif indisponible : {e}")
         return
+    _v = st.session_state.get("_eff_v", 0)
+    if st.session_state.pop("_effectif_cree", False):
+        st.info(f"Effectif créé à partir des données existantes : {len(EU.noms(eff, EU.STATUT_CLUB))} joueuses au club, "
+                f"{len(EU.noms(eff, EU.STATUT_PARTIE))} parties. Vérifie la liste ci-dessous.")
+    if st.session_state.get("_eff_msg"):
+        st.success(st.session_state.pop("_eff_msg"))
+
+    # ── Ajouter une joueuse ──────────────────────────────────────────────────
+    with st.expander("➕ Ajouter une joueuse", expanded=False):
+        a1, a2, a3 = st.columns([3, 1.4, 1])
+        _nv = a1.text_input("Nom (NOM Prénom)", key=f"eff_add_nom_{_v}", placeholder="DUPONT Juliette")
+        _nv_st = a2.selectbox("Statut", [EU.STATUT_CLUB, EU.STATUT_PARTIE], format_func=EU.LIBELLES_STATUT.get,
+                              key=f"eff_add_statut_{_v}")
+        a3.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+        if a3.button("Ajouter", key=f"eff_add_btn_{_v}", type="primary"):
+            _deja = EU.resoudre(_nv, eff)
+            _proches = [n for n, sc in EU.suggestions(_nv, eff) if sc >= 0.95]
+            if not _nv.strip():
+                st.warning("Saisir le nom de la joueuse.")
+            elif _deja:
+                st.warning(f"« {_nv.strip()} » est déjà dans l'effectif ({_deja}).")
+            elif _proches and not st.session_state.get(f"eff_add_force_{_v}"):
+                st.warning(f"Nom très proche de : {', '.join(_proches)}. S'il s'agit d'une autre joueuse, "
+                           "coche la case puis clique à nouveau sur « Ajouter ».")
+            else:
+                _n = EU.ajouter(eff, _nv, _nv_st, date.today().isoformat() if _nv_st == EU.STATUT_PARTIE else "")
+                _effectif_maj(eff, f"{_n} ajoutée à l'effectif.")
+        st.checkbox("C'est bien une autre joueuse (homonyme)", key=f"eff_add_force_{_v}")
+
+    # ── Liste + fiches ───────────────────────────────────────────────────────
+    _vue = st.radio("Afficher", ["Au club", "Parties", "Toutes"], horizontal=True, key="eff_vue",
+                    label_visibility="collapsed")
+    _statut_vue = {"Au club": EU.STATUT_CLUB, "Parties": EU.STATUT_PARTIE}.get(_vue)
+    _noms_vue = EU.noms(eff, _statut_vue)
+    _lib2st = {lib: k for k, lib in EU.LIBELLES_STATUT.items()}
     lignes = []
-    for n in noms:
+    for n in _noms_vue:
+        v = eff["joueuses"][n]
         d = get_player_demographics(n)
         _dob = pd.to_datetime(d.get("ddn", ""), dayfirst=True, errors="coerce")
-        _pied = d.get("pied", "") if d.get("pied", "") in LATERALITES else ""
-        lignes.append({"Joueuse": n, "Date de naissance": _dob.date() if pd.notna(_dob) else None,
-                       "Latéralité": _pied or None,
+        _dep = pd.to_datetime(v["depart"], errors="coerce") if v["depart"] else pd.NaT
+        lignes.append({"Joueuse": n, "Statut": EU.LIBELLES_STATUT[v["statut"]],
+                       "Départ": _dep.date() if pd.notna(_dep) else None,
+                       "Date de naissance": _dob.date() if pd.notna(_dob) else None,
+                       "Latéralité": (d.get("pied", "") if d.get("pied", "") in LATERALITES else "") or None,
                        "Poste 1": _poste_canonique(d.get("poste1", "")) or None,
-                       "Poste 2": _poste_canonique(d.get("poste2", "")) or None})
-    df0 = pd.DataFrame(lignes)
-    _manq = int(df0[["Date de naissance", "Latéralité", "Poste 1"]].isna().any(axis=1).sum()) if not df0.empty else 0
-    st.markdown(f"**{len(df0)} joueuses** · {_manq} fiche(s) incomplète(s)")
+                       "Poste 2": _poste_canonique(d.get("poste2", "")) or None,
+                       "Orthographes": len(v["variantes"])})
+    _cols = ["Joueuse", "Statut", "Départ", "Date de naissance", "Latéralité", "Poste 1", "Poste 2", "Orthographes"]
+    df0 = pd.DataFrame(lignes, columns=_cols)
+    _club = EU.noms(eff, EU.STATUT_CLUB)
+    _manq = int(df0[df0["Statut"] == "Au club"][["Date de naissance", "Latéralité", "Poste 1"]]
+                .isna().any(axis=1).sum()) if not df0.empty else 0
+    st.markdown(f"**{len(_club)} joueuses au club** · {len(EU.noms(eff, EU.STATUT_PARTIE))} parties"
+                + (f" · {_manq} fiche(s) incomplète(s) au club" if _manq else ""))
     ed = st.data_editor(
-        df0, hide_index=True, width="stretch", key="fiches_joueuses_ed", disabled=["Joueuse"],
+        df0, hide_index=True, width="stretch", key=f"effectif_ed_{_v}", num_rows="fixed",
+        disabled=["Joueuse", "Orthographes"],
         column_config={
+            "Statut": st.column_config.SelectboxColumn(options=list(EU.LIBELLES_STATUT.values()), required=True),
+            "Départ": st.column_config.DateColumn(format="DD/MM/YYYY", help="Date de départ (joueuses parties)"),
             "Date de naissance": st.column_config.DateColumn(format="DD/MM/YYYY"),
             "Latéralité": st.column_config.SelectboxColumn(options=LATERALITES),
             "Poste 1": st.column_config.SelectboxColumn(options=POSTES_JOUEUSES),
             "Poste 2": st.column_config.SelectboxColumn(options=POSTES_JOUEUSES),
+            "Orthographes": st.column_config.NumberColumn(help="Autres orthographes rattachées (voir « Modifier une joueuse »)"),
         })
     c1, c2 = st.columns([1, 1])
-    if c1.button("💾 Enregistrer les fiches", type="primary", key="fiches_joueuses_save"):
+    if c1.button("💾 Enregistrer", type="primary", key=f"effectif_save_{_v}"):
         fiches = load_fiches_joueuses()
-        n_mod = 0
+        n_fiche, n_statut = 0, 0
+        _fc = ["Date de naissance", "Latéralité", "Poste 1", "Poste 2"]
+
+        def _egal(x, y):
+            return (pd.isna(x) and pd.isna(y)) or x == y
         for (_, a), (_, b) in zip(df0.iterrows(), ed.iterrows()):
-            if all((pd.isna(a[c]) and pd.isna(b[c])) or a[c] == b[c] for c in df0.columns):
-                continue
-            _ddn = pd.to_datetime(b["Date de naissance"], errors="coerce")
-            fiches[b["Joueuse"]] = {
-                "ddn": _ddn.strftime("%d/%m/%Y") if pd.notna(_ddn) else "",
-                "pied": b["Latéralité"] or "", "poste1": b["Poste 1"] or "", "poste2": b["Poste 2"] or ""}
-            n_mod += 1
-        if n_mod and save_fiches_joueuses(fiches):
-            st.success(f"{n_mod} fiche(s) enregistrée(s).")
-        elif not n_mod:
+            nom = a["Joueuse"]
+            if not all(_egal(a[c], b[c]) for c in _fc):
+                _ddn = pd.to_datetime(b["Date de naissance"], errors="coerce")
+                fiches[nom] = {"ddn": _ddn.strftime("%d/%m/%Y") if pd.notna(_ddn) else "",
+                               "pied": b["Latéralité"] or "", "poste1": b["Poste 1"] or "", "poste2": b["Poste 2"] or ""}
+                n_fiche += 1
+            if not (_egal(a["Statut"], b["Statut"]) and _egal(a["Départ"], b["Départ"])):
+                st_ = _lib2st.get(b["Statut"], EU.STATUT_CLUB)
+                _dep = pd.to_datetime(b["Départ"], errors="coerce")
+                eff["joueuses"][nom]["statut"] = st_
+                eff["joueuses"][nom]["depart"] = ("" if st_ == EU.STATUT_CLUB else
+                                                  _dep.date().isoformat() if pd.notna(_dep) else date.today().isoformat())
+                n_statut += 1
+        if n_fiche and not save_fiches_joueuses(fiches):
+            st.error("Fiches : enregistrement impossible.")
+        elif n_fiche or n_statut:
+            _effectif_maj(eff, " · ".join(x for x in [f"{n_fiche} fiche(s) enregistrée(s)" if n_fiche else "",
+                                                      f"{n_statut} statut(s) modifié(s)" if n_statut else ""] if x))
+        else:
             st.info("Aucune modification.")
     _x = io.BytesIO()
     with pd.ExcelWriter(_x, engine="openpyxl") as _w:
-        ed.to_excel(_w, index=False, sheet_name="Fiches joueuses")
-    c2.download_button("⬇️ Télécharger (Excel)", _x.getvalue(), file_name="Fiches joueuses.xlsx",
+        ed.to_excel(_w, index=False, sheet_name="Effectif")
+    c2.download_button("⬇️ Télécharger (Excel)", _x.getvalue(), file_name="Effectif.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       key="fiches_joueuses_dl")
+                       key="effectif_dl")
+
+    # ── Noms à rattacher ─────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("**🔗 Noms à rattacher**")
+    with st.spinner("Recherche des noms dans les données…"):
+        try:
+            groupes = EU.noms_a_rattacher(comptes_noms_donnees(pfc_kpi), eff)
+        except Exception as e:
+            groupes = []
+            st.error(f"Recherche impossible : {e}")
+    if not groupes:
+        st.success("Tous les noms trouvés dans les données sont rattachés à une joueuse de l'effectif.")
+    else:
+        st.caption(f"{len(groupes)} nom(s) trouvé(s) dans les données (matchs, GPS, évaluations, présence, médical, "
+                   "objectifs) qui ne correspondent à aucune joueuse. Pour chacun, choisis la joueuse dans « Rattacher à » "
+                   "— la plus proche est pré-remplie quand elle est quasi certaine —, ou ajoute-la comme nouvelle joueuse "
+                   "(une ancienne joueuse : « partie », ses données restent associées à son poste), ou ignore le nom. "
+                   "Laisser vide = décider plus tard.")
+        _AJ_CLUB, _AJ_PART, _IGN = "➕ Nouvelle joueuse au club", "➕ Nouvelle joueuse partie", "🚫 Ignorer (pas une joueuse)"
+        _opts = [_AJ_CLUB, _AJ_PART, _IGN] + EU.noms(eff)
+        df_r = pd.DataFrame([{
+            "Nom trouvé": g["nom"], "Lignes": g["lignes"],
+            "Où": " · ".join(f"{s} ({k})" for s, k in g["sources"].items()),
+            "Proches": " · ".join(f"{n} ({round(sc * 100)} %)" for n, sc in g["suggestions"]) or "—",
+            "Rattacher à": g["suggestions"][0][0] if g["suggestions"] and g["suggestions"][0][1] >= 0.85 else None,
+        } for g in groupes])
+        ed_r = st.data_editor(
+            df_r, hide_index=True, width="stretch", key=f"effectif_ratt_{_v}", num_rows="fixed",
+            disabled=["Nom trouvé", "Lignes", "Où", "Proches"],
+            column_config={"Rattacher à": st.column_config.SelectboxColumn(options=_opts, width="medium")})
+        if st.button("💾 Appliquer", type="primary", key=f"effectif_ratt_save_{_v}"):
+            n_r, n_a, n_i = 0, 0, 0
+            for _, r in ed_r.iterrows():
+                ch = r["Rattacher à"]
+                if not ch or pd.isna(ch):
+                    continue
+                if ch == _IGN:
+                    EU.ignorer(eff, r["Nom trouvé"])
+                    n_i += 1
+                elif ch in (_AJ_CLUB, _AJ_PART):
+                    _p = ch == _AJ_PART
+                    EU.ajouter(eff, r["Nom trouvé"], EU.STATUT_PARTIE if _p else EU.STATUT_CLUB,
+                               date.today().isoformat() if _p else "")
+                    n_a += 1
+                elif ch in eff["joueuses"]:
+                    EU.rattacher(eff, r["Nom trouvé"], ch)
+                    n_r += 1
+            if n_r or n_a or n_i:
+                _effectif_maj(eff, " · ".join(x for x in [f"{n_r} nom(s) rattaché(s)" if n_r else "",
+                                                          f"{n_a} joueuse(s) ajoutée(s)" if n_a else "",
+                                                          f"{n_i} nom(s) ignoré(s)" if n_i else ""] if x))
+            else:
+                st.info("Aucun choix à appliquer.")
+    if eff.get("ignores"):
+        with st.expander(f"🚫 Noms ignorés ({len(eff['ignores'])})"):
+            _rest = st.multiselect("Décocher pour les proposer à nouveau", eff["ignores"], default=eff["ignores"],
+                                   key=f"eff_ign_{_v}")
+            if len(_rest) != len(eff["ignores"]) and st.button("💾 Enregistrer", key=f"eff_ign_save_{_v}"):
+                eff["ignores"] = list(_rest)
+                _effectif_maj(eff, "Noms ignorés mis à jour.")
+
+    # ── Modifier une joueuse ─────────────────────────────────────────────────
+    st.divider()
+    st.markdown("**✏️ Modifier une joueuse**")
+    _tous = EU.noms(eff)
+    if not _tous:
+        return
+    if "_eff_sel_next" in st.session_state:  # après renommage / fusion / suppression
+        _nx = st.session_state.pop("_eff_sel_next")
+        if _nx in _tous:
+            st.session_state["eff_sel"] = _nx
+        else:
+            st.session_state.pop("eff_sel", None)
+    if st.session_state.get("eff_sel") not in _tous:
+        st.session_state.pop("eff_sel", None)
+    _sel = st.selectbox("Joueuse", _tous, key="eff_sel",
+                        format_func=lambda n: n + (" (partie)" if eff["joueuses"][n]["statut"] == EU.STATUT_PARTIE else ""))
+    v = eff["joueuses"][_sel]
+    m1, m2 = st.columns(2)
+    with m1:
+        _nouveau = st.text_input("Nom officiel", value=_sel, key=f"eff_ren_{_sel}_{_v}",
+                                 help="L'ancien nom est gardé comme orthographe rattachée : aucune donnée n'est perdue.")
+        if st.button("Renommer", key=f"eff_ren_btn_{_v}") and _nouveau.strip() not in ("", _sel):
+            try:
+                _n = EU.renommer(eff, _sel, _nouveau)
+                _renommer_fiche_et_photo(_sel, _n)
+                st.session_state["_eff_sel_next"] = _n
+                _effectif_maj(eff, f"{_sel} renommée en {_n}.")
+            except ValueError as e:
+                st.error(str(e))
+    with m2:
+        _autres = [n for n in _tous if n != _sel]
+        _cible = st.selectbox("Doublon : fusionner dans", [""] + _autres, key=f"eff_fus_{_sel}_{_v}",
+                              help="Pour une joueuse présente deux fois : ce nom et ses orthographes passent sur l'autre.")
+        if st.button("Fusionner", key=f"eff_fus_btn_{_v}") and _cible:
+            EU.fusionner(eff, _sel, _cible)
+            _renommer_fiche_et_photo(_sel, _cible)
+            st.session_state["_eff_sel_next"] = _cible
+            _effectif_maj(eff, f"{_sel} fusionnée dans {_cible}.")
+
+    st.markdown("Autres orthographes rattachées :")
+    if not v["variantes"]:
+        st.caption("Aucune.")
+    for _i, _var in enumerate(sorted(v["variantes"], key=EU.tri)):
+        o1, o2 = st.columns([4, 1])
+        o1.markdown(f"`{_var}`")
+        if o2.button("Détacher", key=f"eff_det_{_sel}_{_i}_{_v}"):
+            EU.detacher(eff, _sel, _var)
+            _effectif_maj(eff, f"« {_var} » détaché de {_sel}.")
+    r1, r2 = st.columns([4, 1])
+    _ajout = r1.text_input("Ajouter une orthographe", key=f"eff_var_{_sel}_{_v}", label_visibility="collapsed",
+                           placeholder="Ajouter une orthographe (ex. nom du capteur GPS)")
+    if r2.button("Rattacher", key=f"eff_var_btn_{_v}") and _ajout.strip():
+        _avant = EU.resoudre(_ajout, eff)
+        if _avant == _sel:
+            st.info("Cette orthographe est déjà rattachée à cette joueuse.")
+        elif _avant and _ajout.strip().lower() == _avant.strip().lower():
+            st.error(f"« {_ajout.strip()} » est le nom officiel de {_avant} : utiliser « Fusionner ».")
+        else:
+            EU.rattacher(eff, _ajout, _sel)
+            _effectif_maj(eff, f"« {_ajout.strip()} » rattaché à {_sel}"
+                               + (f" (retiré de {_avant})" if _avant else "") + ".")
+    if v.get("ajout") == "manuel":
+        if st.button(f"🗑️ Supprimer {_sel} de l'effectif", key=f"eff_del_{_v}",
+                     help="Seulement pour une joueuse ajoutée à la main par erreur. Ses orthographes reviennent dans « Noms à rattacher »."):
+            eff["joueuses"].pop(_sel, None)
+            st.session_state["_eff_sel_next"] = ""
+            _effectif_maj(eff, f"{_sel} supprimée de l'effectif.")
 
     # ── Photo de la joueuse ──────────────────────────────────────────────────
-    st.divider()
     st.markdown("**📷 Photo**")
-    st.caption("Choisir la joueuse puis déposer sa photo (JPG, PNG ou HEIC d'iPhone). Elle est redressée, "
-               "convertie et associée à la joueuse en priorité sur les photos du Drive.")
+    st.caption("Déposer la photo (JPG, PNG ou HEIC d'iPhone). Elle est redressée, convertie et associée à la "
+               "joueuse en priorité sur les photos du Drive.")
     pc1, pc2 = st.columns([1, 2])
+    _pj = _sel
     with pc1:
-        _pj = st.selectbox("Joueuse", noms, key="fiches_photo_joueuse")
         _cur = find_photo_for_player(
             _pj, concordance=st.session_state.get("photo_concordance") or get_photo_concordance(),
             photos_index=st.session_state.get("photos_index") or build_photos_index_local()) if _pj else None
@@ -15382,10 +15683,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
         if not check_permission(user_profile, "all", permissions):
             st.warning("⛔ Accès réservé aux administrateurs.")
         else:
-            tab_ref, tab_perms, tab_jouеuses, tab_fiches, tab_admin, tab_passerelles, tab_import = st.tabs(["📋 Référentiel joueuses", "🔐 Profils & permissions", "👥 Joueuses", "📝 Fiches joueuses", "🛠️ Administration", "📋 Passerelles", "📥 Import"])
+            tab_fiches, tab_ref, tab_perms, tab_jouеuses, tab_admin, tab_passerelles, tab_import = st.tabs(["👥 Effectif", "📋 Référentiel joueuses", "🔐 Profils & permissions", "🏷️ Masquées & alias", "🛠️ Administration", "📋 Passerelles", "📥 Import"])
 
             with tab_fiches:
-                render_fiches_joueuses()
+                render_effectif(pfc_kpi)
 
             with tab_import:
                 render_import_csv()
@@ -15450,36 +15751,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                 if pfc_kpi is not None and not pfc_kpi.empty and "Player" in pfc_kpi.columns:
                     _all_raw = sorted(pfc_kpi["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist())
 
-                # ── Joueuses parties du club ─────────────────────────────
-                st.markdown("**🚪 Joueuses parties du club**")
-                st.caption("Elles disparaissent des listes de joueuses de toute l'app (Performance, Suivi, RPE, Médical, "
-                           "Objectifs, Fiches…). Leurs données sont conservées : elles restent dans "
-                           "les rapports des matchs qu'elles ont joués et réapparaissent si tu choisis une saison passée.")
-                _parties = dict(_ps.get("parties", {}) or {})
-                _candidats = set(_all_raw)
-                try:
-                    _candidats |= {nettoyer_nom_joueuse(f"{_t['nom']} {_t['prenom']}") for _t in load_trombi()}
-                    _candidats |= {nettoyer_nom_joueuse(_k) for _k in load_fiches_joueuses()}
-                    _gr_g = st.session_state.get("gps_raw_df")
-                    if _gr_g is not None and not _gr_g.empty and "Player" in _gr_g.columns:
-                        _candidats |= set(_gr_g["Player"].dropna().astype(str))
-                except Exception:
-                    pass
-                _candidats = sorted(_c for _c in _candidats if _c and _c not in _hidden) 
-                _sel_parties = st.multiselect("Joueuses parties", sorted(set(_candidats) | set(_parties)),
-                                              default=sorted(_parties), key="joueuses_parties_sel")
-                if st.button("💾 Enregistrer les départs", key="save_parties", type="primary"):
-                    _ps_new = {**load_player_settings(),
-                               "parties": {n: _parties.get(n, date.today().isoformat()) for n in _sel_parties}}
-                    if save_player_settings(_ps_new):
-                        st.session_state["_player_settings"] = _ps_new
-                        st.success(f"✅ {len(_sel_parties)} joueuse(s) partie(s) enregistrée(s).")
-                        st.rerun()
-                    else:
-                        st.error("❌ Erreur lors de la sauvegarde.")
-                if _parties:
-                    st.caption("Départ enregistré le : " + " · ".join(
-                        f"{n} ({pd.to_datetime(d).strftime('%d/%m/%Y')})" if d else n for n, d in sorted(_parties.items())))
+                st.info("🚪 Les joueuses parties du club se gèrent maintenant dans l'onglet **👥 Effectif** (colonne Statut).")
                 st.markdown("---")
 
                 if not _all_raw:
