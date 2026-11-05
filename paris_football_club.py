@@ -12031,7 +12031,12 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 if _c != case:
                                     st.session_state[f"rpe_cb_{date_iso}_{nom}_{_c}"] = False
 
-                    @st.dialog(f"RPE du {_pres_dialog_date.strftime('%d/%m/%Y')}", width="large")
+                    def _rpe_fermer():  # fermeture par la croix : sinon la fenêtre se rouvre à chaque rerun
+                        for _k in ("_presence_dialog_date", "_presence_extra_names",
+                                   "_presence_extra_names_date", "_active_dialog_id"):
+                            st.session_state.pop(_k, None)
+
+                    @st.dialog(f"RPE du {_pres_dialog_date.strftime('%d/%m/%Y')}", width="large", on_dismiss=_rpe_fermer)
                     def _rpe_dialog():
                         _existing = load_presence_for_date(_pres_date_iso)
                         if st.session_state.get("_presence_extra_names_date") != _pres_date_iso:
@@ -12810,7 +12815,11 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                 _mine = _obj_evals[_obj_evals["evaluateur"] == _obj_eval_role]
                                 _obj_existing_notes = dict(zip(_mine["objectif_id"], _mine["note"]))
 
-                            @st.dialog(f"Évaluation — {_obj_match_sel_label}")
+                            def _objectifs_eval_fermer():  # fermeture par la croix
+                                st.session_state.pop("_objectifs_eval_ctx", None)
+                                st.session_state.pop("_active_dialog_id", None)
+
+                            @st.dialog(f"Évaluation — {_obj_match_sel_label}", on_dismiss=_objectifs_eval_fermer)
                             def _objectifs_eval_dialog():
                                 st.caption(f"Joueuse : **{_obj_sel}**")
                                 _new_notes = {}
@@ -16833,7 +16842,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                     _med_roster = _med_get_roster()
                     _med_date_iso = _med_dialog_date.isoformat()
 
-                    @st.dialog(f"Visites médicales du {_med_dialog_date.strftime('%d/%m/%Y')}")
+                    def _medical_fermer():  # fermeture par la croix
+                        st.session_state.pop("_med_dialog_date", None)
+                        st.session_state.pop("_active_dialog_id", None)
+
+                    @st.dialog(f"Visites médicales du {_med_dialog_date.strftime('%d/%m/%Y')}", on_dismiss=_medical_fermer)
                     def _medical_dialog():
                         st.markdown("#### Ajouter une visite")
                         _ma1, _ma2 = st.columns(2)
