@@ -35,7 +35,6 @@ matplotlib.use("Agg", force=True)  # Backend non-interactif — nécessaire mais
 # observés en usage concurrent. MPL_LOCK sérialise tout accès à pyplot pour l'empêcher.
 import matplotlib.pyplot as plt
 
-from streamlit_option_menu import option_menu
 from mplsoccer import PyPizza, Radar, grid
 import plotly.graph_objects as go
 import plotly.express as px
@@ -11651,13 +11650,14 @@ table {{ width: 100%; border-collapse: collapse; }}
 # ═══════════════════════════════════════════════════════════════════════════
 
 def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
-                             player_name, user_profile, permissions, role=None):
-    """Page Performance unifiée — données chargées une seule fois."""
+                             player_name, user_profile, permissions, role=None, rubrique="Matchs"):
+    """Rubriques issues de l'ancienne page Performance (Matchs, Entraînement, Monitoring,
+    Objectifs, Bilan) : seule la rubrique choisie sur l'accueil est calculée et affichée."""
 
     if role is None:
         role = get_user_role(user_profile, permissions)
 
-    st.header("🏆 Performance")
+    st.header(RUBRIQUES_TITRES.get(rubrique, rubrique))
     _saison_sel = st.session_state.get("selected_saison", "Toutes les saisons")
 
     # ── Données partagées (une seule fois) ─────────────────────────────────
@@ -11679,28 +11679,16 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     _pgps_name = _perf_player
     _df_player = pd.DataFrame()
 
-    # ── 4 onglets internes ─────────────────────────────────────────────────
-    # Entraînement = GPS de toute l'équipe + saisie de présence → staff uniquement
-    if role == ROLE_JOUEUSE:
-        _tab_matchs, _tab_suivi = st.tabs(["⚽ Matchs", "📊 Suivi de la performance"])
-        _tab_entrainement = None
-    else:
-        _tab_matchs, _tab_entrainement, _tab_suivi = st.tabs([
-            "⚽ Matchs",
-            "🏋️ Entraînement",
-            "📊 Suivi de la performance",
-        ])
-
     # ══════════════════════════════════
     # TAB — ENTRAÎNEMENT (calendrier des séances)
     # ══════════════════════════════════
-    if _tab_entrainement is not None:
-        with _tab_entrainement:
+    if rubrique == "Entraînement":
+        with st.container():
             _CAL_MOIS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
                             "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
             _CAL_JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
 
-            _ent_sub_seances, _ent_sub_rpe = st.tabs(["📅 Séances", "📝 RPE"])
+            _ent_sub_seances, _ent_sub_rpe, _ent_sub_charge = st.tabs(["📅 Séances", "📝 RPE", "⚖️ Charge vs match"])
             with _ent_sub_seances:
                 _gr_cal = ensure_date_column(_gps_raw_df) if _gps_raw_df is not None and not _gps_raw_df.empty else pd.DataFrame()
                 _gr_cal = _gr_cal[_gr_cal["DATE"].notna()].copy() if not _gr_cal.empty else _gr_cal
@@ -12054,11 +12042,15 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                     _rpe_dialog()
 
+            # Charge vs référence match / microcycle (anciennement dans Laboratoire)
+            with _ent_sub_charge:
+                render_laboratoire_charge()
+
     # ══════════════════════════════════
     # TAB 1 — MATCHS
     # ══════════════════════════════════
-    with _tab_matchs:
-        _mat_collectif, _mat_individuel = st.tabs(["🤝 Performance Collective", "🎯 Performance Individuelle"])
+    if rubrique == "Matchs":
+        _mat_collectif, _mat_individuel, _mat_eval = st.tabs(["🤝 Performance Collective", "🎯 Performance Individuelle", "📝 Évaluations"])
 
         with _mat_collectif:
             if not _tac_files:
@@ -12552,14 +12544,14 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         st.iframe(_html, height=820)
 
     # ══════════════════════════════════
-    # TAB — SUIVI DE LA PERFORMANCE — onglets à plat (Séances, Match,
-    # Charge, Paramètres, Fiche Bilan, Évaluations) : un seul niveau de
-    # clic depuis cet onglet, sélecteur de joueuse commun affiché une
-    # fois au-dessus (au lieu d'un onglet "Monitoring & Charge" imbriqué).
+    # MONITORING — sélecteur de joueuse commun affiché une fois au-dessus des
+    # onglets Séance, Semaine, Période, GPS Matchs, Charge, Paramètres.
+    # _gr / _pgps restent définis (vides) pour les autres rubriques ; Objectifs
+    # retombe alors sur son propre sélecteur.
     # ══════════════════════════════════
-    with _tab_suivi:
-        _gr = pd.DataFrame()
-        _pgps = None
+    _gr = pd.DataFrame()
+    _pgps = None
+    if rubrique == "Monitoring":
         if _gps_raw_df is not None and not _gps_raw_df.empty:
             _gr = ensure_date_column(_gps_raw_df)
             _all_gps_p = liste_effectif(_gr["Player"].dropna().astype(str).unique().tolist())
@@ -12589,24 +12581,24 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     key="perf_gps_player_sel"
                 )
 
-        (_st_seance, _st_semaine, _st_periode, _st_match, _st_charge, _st_params, _st_fiche,
-         _suivi_eval, _st_objectifs) = st.tabs([
-            "🏃 Séance", "📅 Semaine", "🗓️ Période", "⚽ Match", "⚖️ Charge", "⚙️ Paramètres",
-            "📋 Fiche Bilan", "📝 Évaluations", "🎯 Objectifs"
+        (_st_seance, _st_semaine, _st_periode, _st_match, _st_charge, _st_params) = st.tabs([
+            "🏃 Séance", "📅 Semaine", "🗓️ Période", "⚽ GPS Matchs", "⚖️ Charge", "⚙️ Paramètres",
         ])
 
-    with _suivi_eval:
-        if role == ROLE_JOUEUSE:
-            st.info("Accès réservé au staff.")
-        else:
-            render_evaluation_page(user_profile, permissions, _saison_sel, joueuse=_pgps)
+    if rubrique == "Matchs":
+        with _mat_eval:
+            if role == ROLE_JOUEUSE:
+                st.info("Accès réservé au staff.")
+            else:
+                # Sélecteur de joueuse propre à la page (« Toutes » par défaut)
+                render_evaluation_page(user_profile, permissions, _saison_sel)
 
     # ── Objectifs (plan de développement individuel — import du Gantt staff) ──
     # La joueuse suit le sélecteur commun _pgps (basé sur les données GPS),
     # rapprochée par tokens de nom des joueuses de la table objectifs_joueuse
     # (le référentiel joueuses et le roster Présence sont incomplets en prod).
     # Sélecteur dédié seulement s'il n'y a pas de données GPS.
-    with _st_objectifs:
+    if rubrique == "Objectifs":
         _obj_joueuses = liste_effectif(load_objectifs_joueuses())
         if not _obj_joueuses:
             st.info("Aucun plan de développement disponible pour le moment.")
@@ -12792,745 +12784,746 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     # messages "aucune donnée" appropriés.
     # ── Séance / Semaine / Période : onglets des vues U19 de l'app d'Emma (suivi_gps.py),
     # alimentés par les GPS locaux ; liste des joueuses = Gestion → Fiches joueuses.
-    import suivi_gps as _sv
-    from gps_compilation import sous_ensemble_flou as _sv_sef
-    _sv_df = _sv.construire_donnees_suivi(_gps_raw_df if _gps_raw_df is not None else pd.DataFrame(),
-                                          _gps_match_df if _gps_match_df is not None else pd.DataFrame())
-    _sv_cle = ("_sv_noms_gestion", _EFF_MEMO.get("mtime"), st.session_state.get("selected_saison"))
-    if st.session_state.get("_sv_noms_cle") != _sv_cle:
-        st.session_state["_sv_noms_gestion"] = liste_effectif()
-        st.session_state["_sv_noms_cle"] = _sv_cle
-    _sv_roster = _sv.rattacher_roster(st.session_state["_sv_noms_gestion"], _sv_df, nettoyer_nom_joueuse, _sv_sef)
-    _sv_defaut = _sv.rattacher_roster([_pgps], _sv_df, nettoyer_nom_joueuse, _sv_sef).get(_pgps) if _pgps else None
-    _sv_fixe = None
-    if role == ROLE_JOUEUSE:
-        # Profil joueuse : vue individuelle seule, sur elle-même (pas de vue équipe).
-        _sv_moi = player_name or _pgps or ""
-        _sv_fixe = (_sv_moi, _sv.rattacher_roster([_sv_moi], _sv_df, nettoyer_nom_joueuse, _sv_sef).get(_sv_moi))
-    for _sv_tab, _sv_onglet in ((_st_seance, "seance"), (_st_semaine, "semaine"), (_st_periode, "periode")):
-        with _sv_tab:
-            _sv.render_onglet(_sv_onglet, _sv_df, _sv_roster, joueuse_fixe=_sv_fixe, defaut=_sv_defaut)
+    if rubrique == "Monitoring":
+        import suivi_gps as _sv
+        from gps_compilation import sous_ensemble_flou as _sv_sef
+        _sv_df = _sv.construire_donnees_suivi(_gps_raw_df if _gps_raw_df is not None else pd.DataFrame(),
+                                              _gps_match_df if _gps_match_df is not None else pd.DataFrame())
+        _sv_cle = ("_sv_noms_gestion", _EFF_MEMO.get("mtime"), st.session_state.get("selected_saison"))
+        if st.session_state.get("_sv_noms_cle") != _sv_cle:
+            st.session_state["_sv_noms_gestion"] = liste_effectif()
+            st.session_state["_sv_noms_cle"] = _sv_cle
+        _sv_roster = _sv.rattacher_roster(st.session_state["_sv_noms_gestion"], _sv_df, nettoyer_nom_joueuse, _sv_sef)
+        _sv_defaut = _sv.rattacher_roster([_pgps], _sv_df, nettoyer_nom_joueuse, _sv_sef).get(_pgps) if _pgps else None
+        _sv_fixe = None
+        if role == ROLE_JOUEUSE:
+            # Profil joueuse : vue individuelle seule, sur elle-même (pas de vue équipe).
+            _sv_moi = player_name or _pgps or ""
+            _sv_fixe = (_sv_moi, _sv.rattacher_roster([_sv_moi], _sv_df, nettoyer_nom_joueuse, _sv_sef).get(_sv_moi))
+        for _sv_tab, _sv_onglet in ((_st_seance, "seance"), (_st_semaine, "semaine"), (_st_periode, "periode")):
+            with _sv_tab:
+                _sv.render_onglet(_sv_onglet, _sv_df, _sv_roster, joueuse_fixe=_sv_fixe, defaut=_sv_defaut)
 
-    with _st_match:
-                    # ── Données GPS match pour la joueuse ─────────────────
-                    _gm_df = _gps_match_df.copy() if _gps_match_df is not None and not _gps_match_df.empty else pd.DataFrame()
+        with _st_match:
+                        # ── Données GPS match pour la joueuse ─────────────────
+                        _gm_df = _gps_match_df.copy() if _gps_match_df is not None and not _gps_match_df.empty else pd.DataFrame()
 
-                    if _gm_df.empty or "Player" not in _gm_df.columns:
-                        st.info("Aucune donnée GPS match disponible.")
-                    else:
-                        # Filtrer sur la joueuse sélectionnée
-                        _gm_player = _gm_df[
-                            _gm_df["Player"].astype(str).apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(_pgps)
-                        ].copy()
-
-                        if _gm_player.empty:
-                            st.info(f"Aucune donnée GPS match pour **{_pgps}**.")
+                        if _gm_df.empty or "Player" not in _gm_df.columns:
+                            st.info("Aucune donnée GPS match disponible.")
                         else:
-                            _gm_player = ensure_date_column(_gm_player)
+                            # Filtrer sur la joueuse sélectionnée
+                            _gm_player = _gm_df[
+                                _gm_df["Player"].astype(str).apply(nettoyer_nom_joueuse) == nettoyer_nom_joueuse(_pgps)
+                            ].copy()
 
-                            # ── Construire les labels de matchs ────────────
-                            def _match_label_short(row):
-                                parts = []
-                                if "__match_label" in row and pd.notna(row["__match_label"]):
-                                    return str(row["__match_label"])
-                                if "__journee" in row and pd.notna(row["__journee"]):
-                                    parts.append(f"J{row['__journee']}")
-                                if "__adversaire" in row and pd.notna(row["__adversaire"]):
-                                    parts.append(str(row["__adversaire"]))
-                                if "DATE" in row and pd.notna(row["DATE"]):
-                                    parts.append(pd.Timestamp(row["DATE"]).strftime("%d/%m"))
-                                return " · ".join(parts) if parts else "Match inconnu"
-
-                            _gm_player["_label"] = _gm_player.apply(_match_label_short, axis=1)
-
-                            # Dédoublonner par label (garder ligne avec distance max)
-                            if "Distance (m)" in _gm_player.columns:
-                                _gm_player = (
-                                    _gm_player
-                                    .sort_values("Distance (m)", ascending=False)
-                                    .drop_duplicates(subset=["_label"])
-                                    .sort_values("DATE", ascending=True)
-                                )
+                            if _gm_player.empty:
+                                st.info(f"Aucune donnée GPS match pour **{_pgps}**.")
                             else:
-                                _gm_player = _gm_player.drop_duplicates(subset=["_label"])
+                                _gm_player = ensure_date_column(_gm_player)
 
-                            _all_labels = _gm_player["_label"].tolist()
+                                # ── Construire les labels de matchs ────────────
+                                def _match_label_short(row):
+                                    parts = []
+                                    if "__match_label" in row and pd.notna(row["__match_label"]):
+                                        return str(row["__match_label"])
+                                    if "__journee" in row and pd.notna(row["__journee"]):
+                                        parts.append(f"J{row['__journee']}")
+                                    if "__adversaire" in row and pd.notna(row["__adversaire"]):
+                                        parts.append(str(row["__adversaire"]))
+                                    if "DATE" in row and pd.notna(row["DATE"]):
+                                        parts.append(pd.Timestamp(row["DATE"]).strftime("%d/%m"))
+                                    return " · ".join(parts) if parts else "Match inconnu"
 
-                            # ── Sélection des matchs ───────────────────────
-                            _sel_labels = st.multiselect(
-                                "Sélectionner un ou plusieurs matchs",
-                                options=_all_labels,
-                                default=_all_labels[-3:] if len(_all_labels) >= 3 else _all_labels,
-                                key="perf_gps_match_sel"
-                            )
+                                _gm_player["_label"] = _gm_player.apply(_match_label_short, axis=1)
 
-                            if not _sel_labels:
-                                # Aucune sélection → visuel global habituel
-                                _render_gps_match_tab(_gps_match_df, _pgps, permissions,
-                                                      user_profile, tactical_files=get_tactical_files())
-                            else:
-                                _gm_sel = _gm_player[_gm_player["_label"].isin(_sel_labels)].copy()
-
-                                # ── KPI cols disponibles ───────────────────
-                                _KPI_DEFS = [
-                                    ("Distance (m)",              "Distance",      "m",    "sum"),
-                                    ("Distance HID (>13 km/h)",   "HID >13km/h",  "m",    "sum"),
-                                    ("Distance HID (>19 km/h)",   "HID >19km/h",  "m",    "sum"),
-                                    ("Vitesse max (km/h)",         "Vmax",          "km/h", "max"),
-                                    ("Sprints_23",                 "Sprints >23",   "nb",   "sum"),
-                                    ("Sprints_25",                 "Sprints >25",   "nb",   "sum"),
-                                    ("Acc_2",                      "Acc >2m/s²",   "nb",   "sum"),
-                                    ("Dec_2",                      "Déc >2m/s²",   "nb",   "sum"),
-                                    ("#accel/decel",               "Acc/Déc tot.", "nb",   "sum"),
-                                    ("Acc_max",                    "Acc. max",      "m/s²", "max"),
-                                    ("Durée_min",                  "Temps joué",   "min",  "sum"),
-                                    ("V_0_7",                      "0-7 km/h",     "m",    "sum"),
-                                    ("V_7_13",                     "7-13 km/h",    "m",    "sum"),
-                                    ("V_13_15",                    "13-15 km/h",   "m",    "sum"),
-                                    ("V_15_19",                    "15-19 km/h",   "m",    "sum"),
-                                    ("V_19_23",                    "19-23 km/h",   "m",    "sum"),
-                                    ("V_23_25",                    "23-25 km/h",   "m",    "sum"),
-                                    ("V_sup25",                    ">25 km/h",     "m",    "sum"),
-                                ]
-                                _avail_kpis = [(col, lbl, unit, agg)
-                                               for col, lbl, unit, agg in _KPI_DEFS
-                                               if col in _gm_sel.columns]
-
-                                # ── Si 1 match : visuel complet ────────────
-                                if len(_sel_labels) == 1:
-                                    _row = _gm_sel.iloc[0]
-
-                                    # ── Calcul des moyennes individuelles ──────
-                                    # (sur tous les matchs GPS de la joueuse, hors match sélectionné)
-                                    _avg = {}
-                                    for _ac in ["Distance (m)", "Distance HID (>13 km/h)",
-                                                "Distance HID (>19 km/h)", "Vitesse max (km/h)",
-                                                "Sprints_23", "#accel/decel", "Durée_min",
-                                                "Acc_2", "Acc_3", "Dec_2", "Dec_3", "Acc_max"]:
-                                        if _ac in _gm_player.columns:
-                                            _vals_all = pd.to_numeric(_gm_player[_ac], errors="coerce").dropna()
-                                            _avg[_ac] = _vals_all.mean() if len(_vals_all) > 0 else None
-
-                                    def _num(col):
-                                        return pd.to_numeric(_row.get(col), errors="coerce")
-
-                                    def _delta(col, pct=False, higher_is_better=True):
-                                        """Retourne (delta_str, couleur) vs moyenne individuelle."""
-                                        v = _num(col); m = _avg.get(col)
-                                        if pd.isna(v) or m is None or m == 0:
-                                            return "", "off"
-                                        d = v - m
-                                        if pct:
-                                            d_str = f"{'+' if d>=0 else ''}{d:.1f} pts"
-                                        else:
-                                            d_str = f"{'+' if d>=0 else ''}{d:.0f}"
-                                        good = (d >= 0) == higher_is_better
-                                        return d_str, "up" if good else "dn"
-
-                                    # ── Valeurs relatives HID ──────────────────
-                                    _dist = _num("Distance (m)")
-                                    _hid13 = _num("Distance HID (>13 km/h)")
-                                    _hid19 = _num("Distance HID (>19 km/h)")
-                                    _hid13_pct = round(_hid13 / _dist * 100, 1) if pd.notna(_hid13) and pd.notna(_dist) and _dist > 0 else None
-                                    _hid19_pct = round(_hid19 / _dist * 100, 1) if pd.notna(_hid19) and pd.notna(_dist) and _dist > 0 else None
-
-                                    # Moyennes relatives HID
-                                    _avg_hid13_pct, _avg_hid19_pct = None, None
-                                    if _avg.get("Distance (m)") and _avg.get("Distance HID (>13 km/h)"):
-                                        _avg_hid13_pct = _avg["Distance HID (>13 km/h)"] / _avg["Distance (m)"] * 100
-                                    if _avg.get("Distance (m)") and _avg.get("Distance HID (>19 km/h)"):
-                                        _avg_hid19_pct = _avg["Distance HID (>19 km/h)"] / _avg["Distance (m)"] * 100
-
-                                    def _delta_pct_rel(val, avg):
-                                        if val is None or avg is None: return "", "off"
-                                        d = val - avg
-                                        s = f"{'+' if d>=0 else ''}{d:.1f} pts vs moy."
-                                        return s, "up" if d >= 0 else "dn"
-
-                                    # ── En-tête match ──────────────────────────
-                                    _tps = _num("Durée_min")
-                                    _h1, _h2 = st.columns([3,1])
-                                    with _h1:
-                                        st.markdown(f"**{_sel_labels[0]}**")
-                                    with _h2:
-                                        if pd.notna(_tps):
-                                            st.markdown(
-                                                f"<span style='background:var(--color-background-success);"
-                                                f"color:var(--color-text-success);font-size:12px;"
-                                                f"font-weight:500;padding:3px 10px;border-radius:20px'>"
-                                                f"{_tps:.0f} min jouées</span>",
-                                                unsafe_allow_html=True
-                                            )
-
-                                    # ── 5 KPIs principaux ──────────────────────
-                                    _kpi5_cols = st.columns(5)
-                                    _kpi_defs_main = [
-                                        ("Distance (m)",            "Distance",      "m",    False),
-                                        ("hid13_pct",               "HID >13 km/h", "% dist", False),
-                                        ("hid19_pct",               "HID >19 km/h", "% dist", False),
-                                        ("Vitesse max (km/h)",       "Vmax",          "km/h",  False),
-                                        ("Sprints_23",               "Sprints >23",  "nb",    False),
-                                    ]
-                                    for _ci2, (col, lbl, unit, _) in enumerate(_kpi_defs_main):
-                                        with _kpi5_cols[_ci2]:
-                                            if col == "hid13_pct":
-                                                _v = _hid13_pct
-                                                _vfmt = f"{_v:.1f}" if _v is not None else "—"
-                                                _dsub = f"{_hid13:.0f} m" if pd.notna(_hid13) else ""
-                                                _d, _dc = _delta_pct_rel(_hid13_pct, _avg_hid13_pct)
-                                            elif col == "hid19_pct":
-                                                _v = _hid19_pct
-                                                _vfmt = f"{_v:.1f}" if _v is not None else "—"
-                                                _dsub = f"{_hid19:.0f} m" if pd.notna(_hid19) else ""
-                                                _d, _dc = _delta_pct_rel(_hid19_pct, _avg_hid19_pct)
-                                            elif col == "Distance (m)":
-                                                _v = _num(col)
-                                                _vfmt = f"{_v:,.0f}".replace(",", " ") if pd.notna(_v) else "—"
-                                                _dsub = ""
-                                                _d, _dc = _delta(col)
-                                                _d = f"{_d} m" if _d else ""
-                                            else:
-                                                _v = _num(col)
-                                                _vfmt = f"{_v:.1f}" if pd.notna(_v) else "—"
-                                                _dsub = ""
-                                                _d, _dc = _delta(col)
-                                                _d = f"{_d} {unit}" if _d else ""
-
-                                            _arrow = "↑" if _dc == "up" else ("↓" if _dc == "dn" else "")
-                                            _color = ("var(--color-text-success)" if _dc == "up"
-                                                      else ("var(--color-text-danger)" if _dc == "dn"
-                                                            else "var(--color-text-tertiary)"))
-                                            st.markdown(
-                                                f"<div style='background:var(--color-background-secondary);"
-                                                f"border-radius:8px;padding:12px 14px'>"
-                                                f"<div style='font-size:11px;color:var(--color-text-tertiary);margin-bottom:4px'>{lbl}</div>"
-                                                f"<div style='font-size:22px;font-weight:500;line-height:1;color:var(--color-text-primary)'>{_vfmt}</div>"
-                                                f"<div style='font-size:11px;color:var(--color-text-secondary);margin-top:3px'>{unit}</div>"
-                                                + (f"<div style='font-size:10px;color:var(--color-text-tertiary);margin-top:2px'>{_dsub}</div>" if _dsub else "")
-                                                + (f"<div style='font-size:11px;margin-top:4px;color:{_color}'>{_arrow} {_d}</div>" if _d else "")
-                                                + "</div>",
-                                                unsafe_allow_html=True
-                                            )
-
-                                    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-
-                                    # ── Plages de vitesse ──────────────────────
-                                    _speed_cols = [("V_0_7","0–7","#5F5E5A"),
-                                                   ("V_7_13","7–13","#5F5E5A"),
-                                                   ("V_13_15","13–15","#378ADD"),
-                                                   ("V_15_19","15–19","#378ADD"),
-                                                   ("V_19_23","19–23","#EF9F27"),
-                                                   ("V_23_25","23–25","#E24B4A"),
-                                                   ("V_sup25",">25","#E24B4A")]
-                                    _sp_avail = [(c,l,col) for c,l,col in _speed_cols if c in _gm_sel.columns]
-                                    if _sp_avail:
-                                      with MPL_LOCK:
-                                        import matplotlib.pyplot as _plt_m
-                                        _sp_vals = [pd.to_numeric(_row.get(c), errors="coerce") for c,_,_ in _sp_avail]
-                                        _sp_max = max([v for v in _sp_vals if pd.notna(v)] or [1])
-                                        _sp_labels_c = [l for _,l,_ in _sp_avail]
-                                        _sp_colors = [col for _,_,col in _sp_avail]
-                                        _fig_sp, _ax_sp = _plt_m.subplots(figsize=(8, 2.8))
-                                        _fig_sp.patch.set_facecolor("#061A40")
-                                        _ax_sp.set_facecolor("#0E2B5E")
-                                        _bars = _ax_sp.bar(_sp_labels_c, _sp_vals,
-                                                           color=_sp_colors, alpha=0.85, width=0.6)
-                                        for _b, _v in zip(_bars, _sp_vals):
-                                            if pd.notna(_v) and _v > 0:
-                                                _ax_sp.text(_b.get_x()+_b.get_width()/2,
-                                                            _b.get_height()+_sp_max*0.02,
-                                                            f"{_v:.0f}", ha="center", va="bottom",
-                                                            color="#C8D8E8", fontsize=8)
-                                        _ax_sp.set_ylabel("Distance (m)", color="#9FB8D8", fontsize=9)
-                                        _ax_sp.set_xlabel("Plage de vitesse (km/h)", color="#9FB8D8", fontsize=9)
-                                        _ax_sp.tick_params(colors="#C8D8E8", labelsize=8)
-                                        for spine in _ax_sp.spines.values():
-                                            spine.set_edgecolor("#2A4A7A")
-                                        _fig_sp.tight_layout()
-                                        st.markdown("##### Répartition par plage de vitesse")
-                                        st.pyplot(_fig_sp, width="stretch")
-                                        _plt_m.close(_fig_sp)
-
-                                    # ── 2 panneaux : acc/déc + HID ────────────
-                                    _pc1, _pc2 = st.columns(2)
-
-                                    def _effort_bar(label, val, max_val, color, fmt="{:.0f}"):
-                                        pct = min(int(val/max_val*100), 100) if max_val and pd.notna(val) and val > 0 else 0
-                                        vstr = fmt.format(val) if pd.notna(val) else "—"
-                                        st.markdown(
-                                            f"<div style='display:flex;align-items:center;gap:8px;margin-bottom:8px'>"
-                                            f"<span style='font-size:12px;color:var(--color-text-secondary);width:90px;flex-shrink:0'>{label}</span>"
-                                            f"<div style='flex:1;height:6px;background:var(--color-border-tertiary);border-radius:3px;overflow:hidden'>"
-                                            f"<div style='width:{pct}%;height:6px;background:{color};border-radius:3px'></div></div>"
-                                            f"<span style='font-size:12px;font-weight:500;color:var(--color-text-primary);min-width:46px;text-align:right'>{vstr}</span>"
-                                            f"</div>",
-                                            unsafe_allow_html=True
-                                        )
-
-                                    with _pc1:
-                                        st.markdown(
-                                            "<div style='background:var(--color-background-secondary);"
-                                            "border-radius:8px;padding:12px'>",
-                                            unsafe_allow_html=True)
-                                        st.markdown("<div style='font-size:11px;font-weight:500;color:var(--color-text-secondary);"
-                                                    "text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px'>"
-                                                    "Accélérations / décélérations</div>", unsafe_allow_html=True)
-                                        _max_acc = max([pd.to_numeric(_row.get(c), errors="coerce")
-                                                        for c in ["Acc_2","Dec_2","#accel/decel"]
-                                                        if c in _gm_sel.columns] or [1])
-                                        for _ec, _el, _ecol in [("Acc_2","Acc >2 m/s²","#378ADD"),
-                                                                  ("Acc_3","Acc >3 m/s²","#378ADD"),
-                                                                  ("Dec_2","Déc >2 m/s²","#7F77DD"),
-                                                                  ("Dec_3","Déc >3 m/s²","#7F77DD"),
-                                                                  ("#accel/decel","Total Acc/Déc","#B4B2A9")]:
-                                            if _ec in _gm_sel.columns:
-                                                _effort_bar(_el, _num(_ec),
-                                                            _max_acc if _ec != "#accel/decel" else _num("#accel/decel"),
-                                                            _ecol)
-                                        st.markdown("</div>", unsafe_allow_html=True)
-
-                                    with _pc2:
-                                        st.markdown(
-                                            "<div style='background:var(--color-background-secondary);"
-                                            "border-radius:8px;padding:12px'>",
-                                            unsafe_allow_html=True)
-                                        st.markdown("<div style='font-size:11px;font-weight:500;color:var(--color-text-secondary);"
-                                                    "text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px'>"
-                                                    "Intensité haute (HID)</div>", unsafe_allow_html=True)
-                                        for _ec, _el, _ecol, _fmt in [
-                                            ("hid13_pct", "HID >13 km/h", "#1D9E75", "{:.1f} %"),
-                                            ("hid19_pct", "HID >19 km/h", "#1D9E75", "{:.1f} %"),
-                                            ("Sprints_23","Sprints >23",  "#EF9F27", "{:.0f} nb"),
-                                            ("Sprints_25","Sprints >25",  "#E24B4A", "{:.0f} nb"),
-                                            ("Acc_max",   "Acc. max",      "#B4B2A9", "{:.1f} m/s²"),
-                                        ]:
-                                            if _ec == "hid13_pct":
-                                                _effort_bar(_el, _hid13_pct, 40, _ecol, "{:.1f} %")
-                                            elif _ec == "hid19_pct":
-                                                _effort_bar(_el, _hid19_pct, 15, _ecol, "{:.1f} %")
-                                            elif _ec in _gm_sel.columns:
-                                                _effort_bar(_el, _num(_ec),
-                                                            max(pd.to_numeric(_gm_player[_ec], errors="coerce").max(), 1),
-                                                            _ecol, _fmt)
-                                        st.markdown("</div>", unsafe_allow_html=True)
-
-                                    # ── Bouton export PDF ──────────────────────
-                                    st.divider()
-                                    try:
-                                        _row_dict = _row.to_dict() if hasattr(_row, "to_dict") else dict(_row)
-                                        _pdf_html = build_gps_match_report_html(
-                                            row=_row_dict,
-                                            avg=_avg,
-                                            player_name=_pgps,
-                                            match_label=_sel_labels[0]
-                                        )
-                                        _print_js = (
-                                            '<script>'
-                                            'function printGpsReport(){'
-                                            'var w=window.open("","_blank","width=900,height=1200");'
-                                            'w.document.write(`' + _pdf_html.replace('`','\\`') + '`);'
-                                            'w.document.close();'
-                                            'setTimeout(function(){w.print();},800);}'
-                                            '</script>'
-                                            '<button onclick="printGpsReport()" '
-                                            'style="background:#1FA8E0;color:#061A40;border:none;'
-                                            'border-radius:4px;padding:8px 20px;'
-                                            'font-family:Oswald,sans-serif;font-size:13px;'
-                                            'font-weight:700;cursor:pointer;letter-spacing:.05em">'
-                                            '🖨️ Exporter en PDF (A4)'
-                                            '</button>'
-                                        )
-                                        st.iframe(_print_js, height=50)
-                                    except Exception as _pe:
-                                        st.warning(f"Export PDF indisponible : {_pe}")
-
-                                # ── Si plusieurs matchs : comparaison ──────
-                                else:
-                                    # Choisir les indicateurs à comparer
-                                    _kpi_opts = [lbl for _, lbl, _, _ in _avail_kpis]
-                                    _kpi_defaults = [lbl for col, lbl, _, _ in _avail_kpis
-                                                     if col in ("Distance (m)", "Distance HID (>13 km/h)",
-                                                                "Vitesse max (km/h)", "Sprints_23", "#accel/decel")]
-                                    _sel_kpis = st.multiselect(
-                                        "Indicateurs à comparer",
-                                        options=_kpi_opts,
-                                        default=_kpi_defaults,
-                                        key="perf_gps_match_kpis"
+                                # Dédoublonner par label (garder ligne avec distance max)
+                                if "Distance (m)" in _gm_player.columns:
+                                    _gm_player = (
+                                        _gm_player
+                                        .sort_values("Distance (m)", ascending=False)
+                                        .drop_duplicates(subset=["_label"])
+                                        .sort_values("DATE", ascending=True)
                                     )
+                                else:
+                                    _gm_player = _gm_player.drop_duplicates(subset=["_label"])
 
-                                    if _sel_kpis:
-                                      with MPL_LOCK:
-                                        import matplotlib.pyplot as _plt_c
-                                        import numpy as _np_c
+                                _all_labels = _gm_player["_label"].tolist()
 
-                                        # Construire tableau comparatif
-                                        _comp_data = {"Match": _sel_labels}
-                                        for col, lbl, unit, agg in _avail_kpis:
-                                            if lbl in _sel_kpis:
+                                # ── Sélection des matchs ───────────────────────
+                                _sel_labels = st.multiselect(
+                                    "Sélectionner un ou plusieurs matchs",
+                                    options=_all_labels,
+                                    default=_all_labels[-3:] if len(_all_labels) >= 3 else _all_labels,
+                                    key="perf_gps_match_sel"
+                                )
+
+                                if not _sel_labels:
+                                    # Aucune sélection → visuel global habituel
+                                    _render_gps_match_tab(_gps_match_df, _pgps, permissions,
+                                                          user_profile, tactical_files=get_tactical_files())
+                                else:
+                                    _gm_sel = _gm_player[_gm_player["_label"].isin(_sel_labels)].copy()
+
+                                    # ── KPI cols disponibles ───────────────────
+                                    _KPI_DEFS = [
+                                        ("Distance (m)",              "Distance",      "m",    "sum"),
+                                        ("Distance HID (>13 km/h)",   "HID >13km/h",  "m",    "sum"),
+                                        ("Distance HID (>19 km/h)",   "HID >19km/h",  "m",    "sum"),
+                                        ("Vitesse max (km/h)",         "Vmax",          "km/h", "max"),
+                                        ("Sprints_23",                 "Sprints >23",   "nb",   "sum"),
+                                        ("Sprints_25",                 "Sprints >25",   "nb",   "sum"),
+                                        ("Acc_2",                      "Acc >2m/s²",   "nb",   "sum"),
+                                        ("Dec_2",                      "Déc >2m/s²",   "nb",   "sum"),
+                                        ("#accel/decel",               "Acc/Déc tot.", "nb",   "sum"),
+                                        ("Acc_max",                    "Acc. max",      "m/s²", "max"),
+                                        ("Durée_min",                  "Temps joué",   "min",  "sum"),
+                                        ("V_0_7",                      "0-7 km/h",     "m",    "sum"),
+                                        ("V_7_13",                     "7-13 km/h",    "m",    "sum"),
+                                        ("V_13_15",                    "13-15 km/h",   "m",    "sum"),
+                                        ("V_15_19",                    "15-19 km/h",   "m",    "sum"),
+                                        ("V_19_23",                    "19-23 km/h",   "m",    "sum"),
+                                        ("V_23_25",                    "23-25 km/h",   "m",    "sum"),
+                                        ("V_sup25",                    ">25 km/h",     "m",    "sum"),
+                                    ]
+                                    _avail_kpis = [(col, lbl, unit, agg)
+                                                   for col, lbl, unit, agg in _KPI_DEFS
+                                                   if col in _gm_sel.columns]
+
+                                    # ── Si 1 match : visuel complet ────────────
+                                    if len(_sel_labels) == 1:
+                                        _row = _gm_sel.iloc[0]
+
+                                        # ── Calcul des moyennes individuelles ──────
+                                        # (sur tous les matchs GPS de la joueuse, hors match sélectionné)
+                                        _avg = {}
+                                        for _ac in ["Distance (m)", "Distance HID (>13 km/h)",
+                                                    "Distance HID (>19 km/h)", "Vitesse max (km/h)",
+                                                    "Sprints_23", "#accel/decel", "Durée_min",
+                                                    "Acc_2", "Acc_3", "Dec_2", "Dec_3", "Acc_max"]:
+                                            if _ac in _gm_player.columns:
+                                                _vals_all = pd.to_numeric(_gm_player[_ac], errors="coerce").dropna()
+                                                _avg[_ac] = _vals_all.mean() if len(_vals_all) > 0 else None
+
+                                        def _num(col):
+                                            return pd.to_numeric(_row.get(col), errors="coerce")
+
+                                        def _delta(col, pct=False, higher_is_better=True):
+                                            """Retourne (delta_str, couleur) vs moyenne individuelle."""
+                                            v = _num(col); m = _avg.get(col)
+                                            if pd.isna(v) or m is None or m == 0:
+                                                return "", "off"
+                                            d = v - m
+                                            if pct:
+                                                d_str = f"{'+' if d>=0 else ''}{d:.1f} pts"
+                                            else:
+                                                d_str = f"{'+' if d>=0 else ''}{d:.0f}"
+                                            good = (d >= 0) == higher_is_better
+                                            return d_str, "up" if good else "dn"
+
+                                        # ── Valeurs relatives HID ──────────────────
+                                        _dist = _num("Distance (m)")
+                                        _hid13 = _num("Distance HID (>13 km/h)")
+                                        _hid19 = _num("Distance HID (>19 km/h)")
+                                        _hid13_pct = round(_hid13 / _dist * 100, 1) if pd.notna(_hid13) and pd.notna(_dist) and _dist > 0 else None
+                                        _hid19_pct = round(_hid19 / _dist * 100, 1) if pd.notna(_hid19) and pd.notna(_dist) and _dist > 0 else None
+
+                                        # Moyennes relatives HID
+                                        _avg_hid13_pct, _avg_hid19_pct = None, None
+                                        if _avg.get("Distance (m)") and _avg.get("Distance HID (>13 km/h)"):
+                                            _avg_hid13_pct = _avg["Distance HID (>13 km/h)"] / _avg["Distance (m)"] * 100
+                                        if _avg.get("Distance (m)") and _avg.get("Distance HID (>19 km/h)"):
+                                            _avg_hid19_pct = _avg["Distance HID (>19 km/h)"] / _avg["Distance (m)"] * 100
+
+                                        def _delta_pct_rel(val, avg):
+                                            if val is None or avg is None: return "", "off"
+                                            d = val - avg
+                                            s = f"{'+' if d>=0 else ''}{d:.1f} pts vs moy."
+                                            return s, "up" if d >= 0 else "dn"
+
+                                        # ── En-tête match ──────────────────────────
+                                        _tps = _num("Durée_min")
+                                        _h1, _h2 = st.columns([3,1])
+                                        with _h1:
+                                            st.markdown(f"**{_sel_labels[0]}**")
+                                        with _h2:
+                                            if pd.notna(_tps):
+                                                st.markdown(
+                                                    f"<span style='background:var(--color-background-success);"
+                                                    f"color:var(--color-text-success);font-size:12px;"
+                                                    f"font-weight:500;padding:3px 10px;border-radius:20px'>"
+                                                    f"{_tps:.0f} min jouées</span>",
+                                                    unsafe_allow_html=True
+                                                )
+
+                                        # ── 5 KPIs principaux ──────────────────────
+                                        _kpi5_cols = st.columns(5)
+                                        _kpi_defs_main = [
+                                            ("Distance (m)",            "Distance",      "m",    False),
+                                            ("hid13_pct",               "HID >13 km/h", "% dist", False),
+                                            ("hid19_pct",               "HID >19 km/h", "% dist", False),
+                                            ("Vitesse max (km/h)",       "Vmax",          "km/h",  False),
+                                            ("Sprints_23",               "Sprints >23",  "nb",    False),
+                                        ]
+                                        for _ci2, (col, lbl, unit, _) in enumerate(_kpi_defs_main):
+                                            with _kpi5_cols[_ci2]:
+                                                if col == "hid13_pct":
+                                                    _v = _hid13_pct
+                                                    _vfmt = f"{_v:.1f}" if _v is not None else "—"
+                                                    _dsub = f"{_hid13:.0f} m" if pd.notna(_hid13) else ""
+                                                    _d, _dc = _delta_pct_rel(_hid13_pct, _avg_hid13_pct)
+                                                elif col == "hid19_pct":
+                                                    _v = _hid19_pct
+                                                    _vfmt = f"{_v:.1f}" if _v is not None else "—"
+                                                    _dsub = f"{_hid19:.0f} m" if pd.notna(_hid19) else ""
+                                                    _d, _dc = _delta_pct_rel(_hid19_pct, _avg_hid19_pct)
+                                                elif col == "Distance (m)":
+                                                    _v = _num(col)
+                                                    _vfmt = f"{_v:,.0f}".replace(",", " ") if pd.notna(_v) else "—"
+                                                    _dsub = ""
+                                                    _d, _dc = _delta(col)
+                                                    _d = f"{_d} m" if _d else ""
+                                                else:
+                                                    _v = _num(col)
+                                                    _vfmt = f"{_v:.1f}" if pd.notna(_v) else "—"
+                                                    _dsub = ""
+                                                    _d, _dc = _delta(col)
+                                                    _d = f"{_d} {unit}" if _d else ""
+
+                                                _arrow = "↑" if _dc == "up" else ("↓" if _dc == "dn" else "")
+                                                _color = ("var(--color-text-success)" if _dc == "up"
+                                                          else ("var(--color-text-danger)" if _dc == "dn"
+                                                                else "var(--color-text-tertiary)"))
+                                                st.markdown(
+                                                    f"<div style='background:var(--color-background-secondary);"
+                                                    f"border-radius:8px;padding:12px 14px'>"
+                                                    f"<div style='font-size:11px;color:var(--color-text-tertiary);margin-bottom:4px'>{lbl}</div>"
+                                                    f"<div style='font-size:22px;font-weight:500;line-height:1;color:var(--color-text-primary)'>{_vfmt}</div>"
+                                                    f"<div style='font-size:11px;color:var(--color-text-secondary);margin-top:3px'>{unit}</div>"
+                                                    + (f"<div style='font-size:10px;color:var(--color-text-tertiary);margin-top:2px'>{_dsub}</div>" if _dsub else "")
+                                                    + (f"<div style='font-size:11px;margin-top:4px;color:{_color}'>{_arrow} {_d}</div>" if _d else "")
+                                                    + "</div>",
+                                                    unsafe_allow_html=True
+                                                )
+
+                                        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+                                        # ── Plages de vitesse ──────────────────────
+                                        _speed_cols = [("V_0_7","0–7","#5F5E5A"),
+                                                       ("V_7_13","7–13","#5F5E5A"),
+                                                       ("V_13_15","13–15","#378ADD"),
+                                                       ("V_15_19","15–19","#378ADD"),
+                                                       ("V_19_23","19–23","#EF9F27"),
+                                                       ("V_23_25","23–25","#E24B4A"),
+                                                       ("V_sup25",">25","#E24B4A")]
+                                        _sp_avail = [(c,l,col) for c,l,col in _speed_cols if c in _gm_sel.columns]
+                                        if _sp_avail:
+                                          with MPL_LOCK:
+                                            import matplotlib.pyplot as _plt_m
+                                            _sp_vals = [pd.to_numeric(_row.get(c), errors="coerce") for c,_,_ in _sp_avail]
+                                            _sp_max = max([v for v in _sp_vals if pd.notna(v)] or [1])
+                                            _sp_labels_c = [l for _,l,_ in _sp_avail]
+                                            _sp_colors = [col for _,_,col in _sp_avail]
+                                            _fig_sp, _ax_sp = _plt_m.subplots(figsize=(8, 2.8))
+                                            _fig_sp.patch.set_facecolor("#061A40")
+                                            _ax_sp.set_facecolor("#0E2B5E")
+                                            _bars = _ax_sp.bar(_sp_labels_c, _sp_vals,
+                                                               color=_sp_colors, alpha=0.85, width=0.6)
+                                            for _b, _v in zip(_bars, _sp_vals):
+                                                if pd.notna(_v) and _v > 0:
+                                                    _ax_sp.text(_b.get_x()+_b.get_width()/2,
+                                                                _b.get_height()+_sp_max*0.02,
+                                                                f"{_v:.0f}", ha="center", va="bottom",
+                                                                color="#C8D8E8", fontsize=8)
+                                            _ax_sp.set_ylabel("Distance (m)", color="#9FB8D8", fontsize=9)
+                                            _ax_sp.set_xlabel("Plage de vitesse (km/h)", color="#9FB8D8", fontsize=9)
+                                            _ax_sp.tick_params(colors="#C8D8E8", labelsize=8)
+                                            for spine in _ax_sp.spines.values():
+                                                spine.set_edgecolor("#2A4A7A")
+                                            _fig_sp.tight_layout()
+                                            st.markdown("##### Répartition par plage de vitesse")
+                                            st.pyplot(_fig_sp, width="stretch")
+                                            _plt_m.close(_fig_sp)
+
+                                        # ── 2 panneaux : acc/déc + HID ────────────
+                                        _pc1, _pc2 = st.columns(2)
+
+                                        def _effort_bar(label, val, max_val, color, fmt="{:.0f}"):
+                                            pct = min(int(val/max_val*100), 100) if max_val and pd.notna(val) and val > 0 else 0
+                                            vstr = fmt.format(val) if pd.notna(val) else "—"
+                                            st.markdown(
+                                                f"<div style='display:flex;align-items:center;gap:8px;margin-bottom:8px'>"
+                                                f"<span style='font-size:12px;color:var(--color-text-secondary);width:90px;flex-shrink:0'>{label}</span>"
+                                                f"<div style='flex:1;height:6px;background:var(--color-border-tertiary);border-radius:3px;overflow:hidden'>"
+                                                f"<div style='width:{pct}%;height:6px;background:{color};border-radius:3px'></div></div>"
+                                                f"<span style='font-size:12px;font-weight:500;color:var(--color-text-primary);min-width:46px;text-align:right'>{vstr}</span>"
+                                                f"</div>",
+                                                unsafe_allow_html=True
+                                            )
+
+                                        with _pc1:
+                                            st.markdown(
+                                                "<div style='background:var(--color-background-secondary);"
+                                                "border-radius:8px;padding:12px'>",
+                                                unsafe_allow_html=True)
+                                            st.markdown("<div style='font-size:11px;font-weight:500;color:var(--color-text-secondary);"
+                                                        "text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px'>"
+                                                        "Accélérations / décélérations</div>", unsafe_allow_html=True)
+                                            _max_acc = max([pd.to_numeric(_row.get(c), errors="coerce")
+                                                            for c in ["Acc_2","Dec_2","#accel/decel"]
+                                                            if c in _gm_sel.columns] or [1])
+                                            for _ec, _el, _ecol in [("Acc_2","Acc >2 m/s²","#378ADD"),
+                                                                      ("Acc_3","Acc >3 m/s²","#378ADD"),
+                                                                      ("Dec_2","Déc >2 m/s²","#7F77DD"),
+                                                                      ("Dec_3","Déc >3 m/s²","#7F77DD"),
+                                                                      ("#accel/decel","Total Acc/Déc","#B4B2A9")]:
+                                                if _ec in _gm_sel.columns:
+                                                    _effort_bar(_el, _num(_ec),
+                                                                _max_acc if _ec != "#accel/decel" else _num("#accel/decel"),
+                                                                _ecol)
+                                            st.markdown("</div>", unsafe_allow_html=True)
+
+                                        with _pc2:
+                                            st.markdown(
+                                                "<div style='background:var(--color-background-secondary);"
+                                                "border-radius:8px;padding:12px'>",
+                                                unsafe_allow_html=True)
+                                            st.markdown("<div style='font-size:11px;font-weight:500;color:var(--color-text-secondary);"
+                                                        "text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px'>"
+                                                        "Intensité haute (HID)</div>", unsafe_allow_html=True)
+                                            for _ec, _el, _ecol, _fmt in [
+                                                ("hid13_pct", "HID >13 km/h", "#1D9E75", "{:.1f} %"),
+                                                ("hid19_pct", "HID >19 km/h", "#1D9E75", "{:.1f} %"),
+                                                ("Sprints_23","Sprints >23",  "#EF9F27", "{:.0f} nb"),
+                                                ("Sprints_25","Sprints >25",  "#E24B4A", "{:.0f} nb"),
+                                                ("Acc_max",   "Acc. max",      "#B4B2A9", "{:.1f} m/s²"),
+                                            ]:
+                                                if _ec == "hid13_pct":
+                                                    _effort_bar(_el, _hid13_pct, 40, _ecol, "{:.1f} %")
+                                                elif _ec == "hid19_pct":
+                                                    _effort_bar(_el, _hid19_pct, 15, _ecol, "{:.1f} %")
+                                                elif _ec in _gm_sel.columns:
+                                                    _effort_bar(_el, _num(_ec),
+                                                                max(pd.to_numeric(_gm_player[_ec], errors="coerce").max(), 1),
+                                                                _ecol, _fmt)
+                                            st.markdown("</div>", unsafe_allow_html=True)
+
+                                        # ── Bouton export PDF ──────────────────────
+                                        st.divider()
+                                        try:
+                                            _row_dict = _row.to_dict() if hasattr(_row, "to_dict") else dict(_row)
+                                            _pdf_html = build_gps_match_report_html(
+                                                row=_row_dict,
+                                                avg=_avg,
+                                                player_name=_pgps,
+                                                match_label=_sel_labels[0]
+                                            )
+                                            _print_js = (
+                                                '<script>'
+                                                'function printGpsReport(){'
+                                                'var w=window.open("","_blank","width=900,height=1200");'
+                                                'w.document.write(`' + _pdf_html.replace('`','\\`') + '`);'
+                                                'w.document.close();'
+                                                'setTimeout(function(){w.print();},800);}'
+                                                '</script>'
+                                                '<button onclick="printGpsReport()" '
+                                                'style="background:#1FA8E0;color:#061A40;border:none;'
+                                                'border-radius:4px;padding:8px 20px;'
+                                                'font-family:Oswald,sans-serif;font-size:13px;'
+                                                'font-weight:700;cursor:pointer;letter-spacing:.05em">'
+                                                '🖨️ Exporter en PDF (A4)'
+                                                '</button>'
+                                            )
+                                            st.iframe(_print_js, height=50)
+                                        except Exception as _pe:
+                                            st.warning(f"Export PDF indisponible : {_pe}")
+
+                                    # ── Si plusieurs matchs : comparaison ──────
+                                    else:
+                                        # Choisir les indicateurs à comparer
+                                        _kpi_opts = [lbl for _, lbl, _, _ in _avail_kpis]
+                                        _kpi_defaults = [lbl for col, lbl, _, _ in _avail_kpis
+                                                         if col in ("Distance (m)", "Distance HID (>13 km/h)",
+                                                                    "Vitesse max (km/h)", "Sprints_23", "#accel/decel")]
+                                        _sel_kpis = st.multiselect(
+                                            "Indicateurs à comparer",
+                                            options=_kpi_opts,
+                                            default=_kpi_defaults,
+                                            key="perf_gps_match_kpis"
+                                        )
+
+                                        if _sel_kpis:
+                                          with MPL_LOCK:
+                                            import matplotlib.pyplot as _plt_c
+                                            import numpy as _np_c
+
+                                            # Construire tableau comparatif
+                                            _comp_data = {"Match": _sel_labels}
+                                            for col, lbl, unit, agg in _avail_kpis:
+                                                if lbl in _sel_kpis:
+                                                    _vals = []
+                                                    for _lbl in _sel_labels:
+                                                        _r = _gm_sel[_gm_sel["_label"] == _lbl]
+                                                        if _r.empty:
+                                                            _vals.append(None)
+                                                        else:
+                                                            _v = pd.to_numeric(_r[col].iloc[0], errors="coerce")
+                                                            _vals.append(round(float(_v), 1) if pd.notna(_v) else None)
+                                                    _comp_data[f"{lbl} ({unit})"] = _vals
+
+                                            _df_comp = pd.DataFrame(_comp_data).set_index("Match")
+                                            st.dataframe(_df_comp, width="stretch")
+
+                                            # Graphique barres groupées
+                                            _n_kpis = len(_sel_kpis)
+                                            _n_match = len(_sel_labels)
+                                            _fig_c, _axes = _plt_c.subplots(
+                                                1, _n_kpis,
+                                                figsize=(min(4 * _n_kpis, 16), 4),
+                                                squeeze=False
+                                            )
+                                            _fig_c.patch.set_facecolor("#061A40")
+                                            _bar_colors = ["#1FA8E0","#7B84FF","#FF6B6B","#FFA06E",
+                                                           "#2FB8FF","#5DCAA5","#FAC775"]
+
+                                            for _ki, (col, lbl, unit, agg) in enumerate(
+                                                [(c,l,u,a) for c,l,u,a in _avail_kpis if l in _sel_kpis]
+                                            ):
+                                                _ax = _axes[0][_ki]
+                                                _ax.set_facecolor("#0E2B5E")
                                                 _vals = []
                                                 for _lbl in _sel_labels:
                                                     _r = _gm_sel[_gm_sel["_label"] == _lbl]
                                                     if _r.empty:
-                                                        _vals.append(None)
+                                                        _vals.append(0)
                                                     else:
                                                         _v = pd.to_numeric(_r[col].iloc[0], errors="coerce")
-                                                        _vals.append(round(float(_v), 1) if pd.notna(_v) else None)
-                                                _comp_data[f"{lbl} ({unit})"] = _vals
+                                                        _vals.append(float(_v) if pd.notna(_v) else 0)
 
-                                        _df_comp = pd.DataFrame(_comp_data).set_index("Match")
-                                        st.dataframe(_df_comp, width="stretch")
+                                                _xs = _np_c.arange(_n_match)
+                                                _bars = _ax.bar(_xs, _vals,
+                                                                color=[_bar_colors[i % len(_bar_colors)]
+                                                                       for i in range(_n_match)],
+                                                                alpha=0.85)
+                                                # Labels valeurs
+                                                for _bar, _v in zip(_bars, _vals):
+                                                    _ax.text(_bar.get_x() + _bar.get_width()/2,
+                                                             _bar.get_height() + max(_vals)*0.02,
+                                                             f"{_v:.0f}", ha="center", va="bottom",
+                                                             color="#C8D8E8", fontsize=7)
+                                                _ax.set_title(f"{lbl}\n({unit})", color="#C8D8E8",
+                                                              fontsize=8, pad=4)
+                                                _ax.set_xticks(_xs)
+                                                _short_labels = [l.split(" · ")[-1] if " · " in l else l[:8]
+                                                                 for l in _sel_labels]
+                                                _ax.set_xticklabels(_short_labels, rotation=30, ha="right",
+                                                                     color="#C8D8E8", fontsize=7)
+                                                _ax.tick_params(axis="y", colors="#C8D8E8", labelsize=7)
+                                                for spine in _ax.spines.values():
+                                                    spine.set_edgecolor("#2A4A7A")
 
-                                        # Graphique barres groupées
-                                        _n_kpis = len(_sel_kpis)
-                                        _n_match = len(_sel_labels)
-                                        _fig_c, _axes = _plt_c.subplots(
-                                            1, _n_kpis,
-                                            figsize=(min(4 * _n_kpis, 16), 4),
-                                            squeeze=False
-                                        )
-                                        _fig_c.patch.set_facecolor("#061A40")
-                                        _bar_colors = ["#1FA8E0","#7B84FF","#FF6B6B","#FFA06E",
-                                                       "#2FB8FF","#5DCAA5","#FAC775"]
+                                            _fig_c.tight_layout()
+                                            st.pyplot(_fig_c, width="stretch")
+                                            _plt_c.close(_fig_c)
 
-                                        for _ki, (col, lbl, unit, agg) in enumerate(
-                                            [(c,l,u,a) for c,l,u,a in _avail_kpis if l in _sel_kpis]
-                                        ):
-                                            _ax = _axes[0][_ki]
-                                            _ax.set_facecolor("#0E2B5E")
-                                            _vals = []
-                                            for _lbl in _sel_labels:
-                                                _r = _gm_sel[_gm_sel["_label"] == _lbl]
-                                                if _r.empty:
-                                                    _vals.append(0)
-                                                else:
-                                                    _v = pd.to_numeric(_r[col].iloc[0], errors="coerce")
-                                                    _vals.append(float(_v) if pd.notna(_v) else 0)
-
-                                            _xs = _np_c.arange(_n_match)
-                                            _bars = _ax.bar(_xs, _vals,
-                                                            color=[_bar_colors[i % len(_bar_colors)]
-                                                                   for i in range(_n_match)],
-                                                            alpha=0.85)
-                                            # Labels valeurs
-                                            for _bar, _v in zip(_bars, _vals):
-                                                _ax.text(_bar.get_x() + _bar.get_width()/2,
-                                                         _bar.get_height() + max(_vals)*0.02,
-                                                         f"{_v:.0f}", ha="center", va="bottom",
-                                                         color="#C8D8E8", fontsize=7)
-                                            _ax.set_title(f"{lbl}\n({unit})", color="#C8D8E8",
-                                                          fontsize=8, pad=4)
-                                            _ax.set_xticks(_xs)
-                                            _short_labels = [l.split(" · ")[-1] if " · " in l else l[:8]
-                                                             for l in _sel_labels]
-                                            _ax.set_xticklabels(_short_labels, rotation=30, ha="right",
-                                                                 color="#C8D8E8", fontsize=7)
-                                            _ax.tick_params(axis="y", colors="#C8D8E8", labelsize=7)
-                                            for spine in _ax.spines.values():
-                                                spine.set_edgecolor("#2A4A7A")
-
-                                        _fig_c.tight_layout()
-                                        st.pyplot(_fig_c, width="stretch")
-                                        _plt_c.close(_fig_c)
-
-    with _st_charge:
-                    if _gr is None or _gr.empty:
-                        st.info("Aucune donnée GPS brute disponible.")
-                    else:
-                        # Gabbett / Murray partent de la sRPE (charge interne) ; la charge externe
-                        # (distance GPS) reste disponible.
-                        _mode_ch = st.segmented_control(
-                            "Charge utilisée pour l'ACWR",
-                            ["Charge externe (distance GPS)", "Avec la RPE (sRPE = RPE × durée)"],
-                            default="Charge externe (distance GPS)", required=True, key="perf_charge_mode")
-                        _avec_rpe = _mode_ch.startswith("Avec")
-                        _unite_ch = "UA" if _avec_rpe else "m"
-                        _weekly_acwr = compute_acwr(_gr, _pgps, rpe=load_rpe_joueuse(_pgps) if _avec_rpe else None)
-                        if _avec_rpe:
-                            st.caption("sRPE (Foster) = RPE saisie dans Entraînement → 📝 RPE × durée GPS de la séance "
-                                       "(durée médiane de l'équipe si la joueuse n'avait pas de balise). "
-                                       "Les jours sans RPE (matchs compris s'ils ne sont pas saisis) comptent 0.")
-                        if _weekly_acwr.empty and _avec_rpe:
-                            st.info("Aucune RPE saisie pour cette joueuse (Entraînement → 📝 RPE) : "
-                                    "pas de charge interne à afficher.")
-                        elif _weekly_acwr.empty:
-                            st.info(
-                                "Pas de données de charge disponibles pour cette joueuse. "
-                                "Vérifiez que les colonnes RPE et Durée_min (ou CHARGE ou Distance) "
-                                "sont présentes dans les fichiers GPS."
-                            )
+        with _st_charge:
+                        if _gr is None or _gr.empty:
+                            st.info("Aucune donnée GPS brute disponible.")
                         else:
-                            import matplotlib.pyplot as _plt_acwr
-                            import matplotlib.patches as _mpatches_acwr
-
-                            # ── Date de référence (fin de période) ────────
-                            # L'ACWR est calculé sur tout l'historique (charge
-                            # chronique correcte), puis on n'affiche que les
-                            # semaines/séances jusqu'à cette date.
-                            _d_min_ch = _weekly_acwr["DATE_FIN"].min().date()
-                            _d_max_ch = _weekly_acwr["DATE_FIN"].max().date()
-                            _charge_ref = st.date_input(
-                                "📅 Suivi de charge jusqu'au",
-                                value=_d_max_ch, min_value=_d_min_ch, max_value=_d_max_ch,
-                                format="DD/MM/YYYY",
-                                key=f"perf_charge_date_ref_{_pgps}",
-                                help="Affiche les semaines et séances précédant cette date "
-                                     "(nombre choisi avec les curseurs)."
-                            )
-                            _charge_ref_ts = pd.Timestamp(_charge_ref)
-                            # Inclure la semaine ISO contenant la date de référence
-                            _weekly_upto = _weekly_acwr[
-                                _weekly_acwr["DATE_FIN"]
-                                < _charge_ref_ts - pd.Timedelta(days=_charge_ref_ts.weekday()) + pd.Timedelta(days=7)
-                            ]
-
-                            # ── Sélecteur nombre de semaines ──────────────
-                            _n_sem_tot = len(_weekly_upto)
-                            if _n_sem_tot > 4:
-                                # Clé liée au max pour éviter une valeur hors bornes
-                                # quand la date change ; la valeur choisie est conservée.
-                                _n_sem_pref = st.session_state.get("_perf_charge_n_sem_pref", 8)
-                                _n_sem_sel = st.slider(
-                                    "Nombre de semaines affichées",
-                                    4, _n_sem_tot,
-                                    max(4, min(_n_sem_pref, _n_sem_tot)),
-                                    key=f"perf_charge_n_semaines_{_n_sem_tot}"
+                            # Gabbett / Murray partent de la sRPE (charge interne) ; la charge externe
+                            # (distance GPS) reste disponible.
+                            _mode_ch = st.segmented_control(
+                                "Charge utilisée pour l'ACWR",
+                                ["Charge externe (distance GPS)", "Avec la RPE (sRPE = RPE × durée)"],
+                                default="Charge externe (distance GPS)", required=True, key="perf_charge_mode")
+                            _avec_rpe = _mode_ch.startswith("Avec")
+                            _unite_ch = "UA" if _avec_rpe else "m"
+                            _weekly_acwr = compute_acwr(_gr, _pgps, rpe=load_rpe_joueuse(_pgps) if _avec_rpe else None)
+                            if _avec_rpe:
+                                st.caption("sRPE (Foster) = RPE saisie dans Entraînement → 📝 RPE × durée GPS de la séance "
+                                           "(durée médiane de l'équipe si la joueuse n'avait pas de balise). "
+                                           "Les jours sans RPE (matchs compris s'ils ne sont pas saisis) comptent 0.")
+                            if _weekly_acwr.empty and _avec_rpe:
+                                st.info("Aucune RPE saisie pour cette joueuse (Entraînement → 📝 RPE) : "
+                                        "pas de charge interne à afficher.")
+                            elif _weekly_acwr.empty:
+                                st.info(
+                                    "Pas de données de charge disponibles pour cette joueuse. "
+                                    "Vérifiez que les colonnes RPE et Durée_min (ou CHARGE ou Distance) "
+                                    "sont présentes dans les fichiers GPS."
                                 )
-                                st.session_state["_perf_charge_n_sem_pref"] = _n_sem_sel
                             else:
-                                _n_sem_sel = _n_sem_tot
-                            _weekly_disp = _weekly_upto.tail(_n_sem_sel).copy()
-                            _last = _weekly_disp.iloc[-1]
+                                import matplotlib.pyplot as _plt_acwr
+                                import matplotlib.patches as _mpatches_acwr
 
-                            def _zone_color(v):
-                                if pd.isna(v): return "⚪"
-                                if v < 0.8:    return "🔵"
-                                if v <= 1.3:   return "🟢"
-                                return "🔴"
-
-                            def _zone_label(v):
-                                if pd.isna(v): return "—"
-                                if v < 0.8:    return "🔵 Sous-charge"
-                                if v <= 1.3:   return "🟢 Zone optimale"
-                                return "🔴 Sur-charge"
-
-                            # ── Métriques dernière semaine ─────────────────
-                            st.markdown("##### Dernière semaine de la période")
-                            _rc1, _rc2, _rc3 = st.columns(3)
-                            _rc1.metric("📅 Semaine", _last["Label_semaine"])
-                            _rc2.metric(f"📦 Charge totale ({_unite_ch})", f"{_last['CHARGE_semaine']:.0f}")
-                            _rc3.metric("📊 Zone globale", _zone_label(_last["ACWR_EWMA"]))
-
-                            _rc4, _rc5, _rc6, _rc7 = st.columns(4)
-                            _rc4.metric(
-                                f"ACWR Rolling Avg {_zone_color(_last['ACWR_RA'])}",
-                                f"{_last['ACWR_RA']:.2f}" if not pd.isna(_last["ACWR_RA"]) else "—",
-                                help="Modèle Gabbett (2016) — moyenne glissante 7j / 28j"
-                            )
-                            _rc5.metric(
-                                f"ACWR EWMA {_zone_color(_last['ACWR_EWMA'])}",
-                                f"{_last['ACWR_EWMA']:.2f}" if not pd.isna(_last["ACWR_EWMA"]) else "—",
-                                help="Modèle Murray et al. (2016) — moyenne exponentielle pondérée"
-                            )
-                            _rc6.metric(
-                                "Charge aiguë (RA)",
-                                f"{_last['Aigu_RA']:.0f}" if not pd.isna(_last["Aigu_RA"]) else "—",
-                                help="Moyenne quotidienne sur 7 jours"
-                            )
-                            _rc7.metric(
-                                "Charge chronique (RA)",
-                                f"{_last['Chronique_RA']:.0f}" if not pd.isna(_last["Chronique_RA"]) else "—",
-                                help="Moyenne quotidienne sur 28 jours"
-                            )
-
-                            st.divider()
-
-                            # ── Graphique ACWR ─────────────────────────────
-                            _labels_ch  = _weekly_disp["Label_semaine"].tolist()
-                            _acwr_ra    = _weekly_disp["ACWR_RA"].tolist()
-                            _acwr_ew    = _weekly_disp["ACWR_EWMA"].tolist()
-                            _charges_ch = _weekly_disp["CHARGE_semaine"].tolist()
-                            _x_ch       = list(range(len(_labels_ch)))
-
-                            with MPL_LOCK:
-                                _fig_w = max(9, len(_x_ch) * 1.1)
-                                _fig_ch, _ax1_ch = _plt_acwr.subplots(figsize=(_fig_w, 3.8))
-                                _fig_ch.patch.set_facecolor("#0E2B5E")
-                                _ax1_ch.set_facecolor("#0E2B5E")
-
-                                _ax1_ch.bar(_x_ch, _charges_ch, color="#1A3A5C", alpha=0.6,
-                                            label="Charge hebdo", zorder=2, width=0.6)
-                                _ax1_ch.set_ylabel(f"Charge ({_unite_ch})", color="#9FB8D8", fontsize=9)
-                                _ax1_ch.tick_params(axis="y", colors="#9FB8D8", labelsize=8)
-                                _ax1_ch.tick_params(axis="x", colors="#C8D8E8", labelsize=8)
-                                _ax1_ch.set_xticks(_x_ch)
-                                _ax1_ch.set_xticklabels(_labels_ch, rotation=30, ha="right",
-                                                         fontsize=8.5, color="#C8D8E8")
-                                _ax1_ch.spines[:].set_color("#2A4A7A")
-
-                                _ax2_ch = _ax1_ch.twinx()
-                                _ax2_ch.set_facecolor("#0E2B5E")
-                                _ax2_ch.set_ylabel("ACWR", color="#C8D8E8", fontsize=9)
-                                _ax2_ch.tick_params(axis="y", colors="#C8D8E8", labelsize=8)
-                                _ax2_ch.spines[:].set_color("#2A4A7A")
-
-                                _ax2_ch.axhspan(0.8, 1.3, color="#22C55E", alpha=0.08, zorder=1)
-                                _ax2_ch.axhline(0.8, color="#22C55E", lw=0.8, ls="--", alpha=0.5)
-                                _ax2_ch.axhline(1.3, color="#EF4444", lw=0.8, ls="--", alpha=0.5)
-
-                                _ax2_ch.plot(_x_ch, _acwr_ra, color="#F4830A", lw=2,
-                                             marker="o", ms=5, label="ACWR RA (Gabbett)", zorder=5)
-                                _ax2_ch.plot(_x_ch, _acwr_ew, color="#1FA8E0", lw=2,
-                                             marker="s", ms=5, label="ACWR EWMA (Murray)", zorder=5)
-
-                                for _xi, (_ra, _ew) in enumerate(zip(_acwr_ra, _acwr_ew)):
-                                    for _val, _col in [(_ra, "#F4830A"), (_ew, "#1FA8E0")]:
-                                        if not pd.isna(_val):
-                                            _fc = "#22C55E" if 0.8 <= _val <= 1.3 else ("#EF4444" if _val > 1.3 else "#3B82F6")
-                                            _ax2_ch.scatter(_xi, _val, color=_fc, edgecolors=_col,
-                                                            s=45, zorder=6, linewidths=1.5)
-
-                                _all_v = [v for v in _acwr_ra + _acwr_ew if not pd.isna(v)]
-                                if _all_v:
-                                    _ax2_ch.set_ylim(max(0, min(_all_v) - 0.2),
-                                                     max(max(_all_v) + 0.2, 1.8))
-
-                                _handles_ch = [
-                                    _mpatches_acwr.Patch(color="#1A3A5C", alpha=0.8, label="Charge hebdo"),
-                                    _plt_acwr.Line2D([0],[0], color="#F4830A", lw=2, marker="o", ms=5, label="ACWR RA (Gabbett)"),
-                                    _plt_acwr.Line2D([0],[0], color="#1FA8E0", lw=2, marker="s", ms=5, label="ACWR EWMA (Murray)"),
-                                    _mpatches_acwr.Patch(color="#22C55E", alpha=0.15, label="Zone optimale (0.8–1.3)"),
+                                # ── Date de référence (fin de période) ────────
+                                # L'ACWR est calculé sur tout l'historique (charge
+                                # chronique correcte), puis on n'affiche que les
+                                # semaines/séances jusqu'à cette date.
+                                _d_min_ch = _weekly_acwr["DATE_FIN"].min().date()
+                                _d_max_ch = _weekly_acwr["DATE_FIN"].max().date()
+                                _charge_ref = st.date_input(
+                                    "📅 Suivi de charge jusqu'au",
+                                    value=_d_max_ch, min_value=_d_min_ch, max_value=_d_max_ch,
+                                    format="DD/MM/YYYY",
+                                    key=f"perf_charge_date_ref_{_pgps}",
+                                    help="Affiche les semaines et séances précédant cette date "
+                                         "(nombre choisi avec les curseurs)."
+                                )
+                                _charge_ref_ts = pd.Timestamp(_charge_ref)
+                                # Inclure la semaine ISO contenant la date de référence
+                                _weekly_upto = _weekly_acwr[
+                                    _weekly_acwr["DATE_FIN"]
+                                    < _charge_ref_ts - pd.Timedelta(days=_charge_ref_ts.weekday()) + pd.Timedelta(days=7)
                                 ]
-                                _ax2_ch.legend(handles=_handles_ch, loc="upper center",
-                                               bbox_to_anchor=(0.5, 1.14), ncol=4,
-                                               fontsize=7.5, facecolor="#0E2B5E",
-                                               edgecolor="#2A4A7A", labelcolor="#C8D8E8")
 
-                                _fig_ch.tight_layout(rect=[0, 0, 1, 0.96])
-                                st.pyplot(_fig_ch, width="stretch")
-                                _plt_acwr.close(_fig_ch)
-
-                            st.caption(
-                                "🔵 Sous-charge (<0.8) · 🟢 Zone optimale (0.8–1.3) · 🔴 Sur-charge / risque blessure (>1.3)  |  "
-                                "**RA** = Rolling Average (Gabbett, 2016) · **EWMA** = Exponentially Weighted Moving Average (Murray et al., 2016)"
-                            )
-
-                            st.divider()
-
-                            # ── Équipe — semaine (contenu de Laboratoire → Équipe — semaine) ──
-                            # Remplace l'ancien tableau détaillé (charge / ACWR RA-EWMA par semaine).
-                            st.markdown("##### Équipe — semaine")
-                            if role == ROLE_JOUEUSE:
-                                st.caption("Vue équipe réservée au staff.")
-                            else:
-                                try:
-                                    _df_lab = charger_sessions_charge(_empreinte_dossiers_gps())
-                                except Exception as _e_lab:
-                                    _df_lab = None
-                                    st.error(f"Compilation GPS impossible : {_e_lab}")
-                                if _df_lab is None or _df_lab.empty:
-                                    st.info("Aucune donnée GPS compilée.")
-                                else:
-                                    from charge_entrainement import render_equipe_semaine
-                                    render_equipe_semaine(_df_lab, "suivi_charge")
-
-                            st.info(
-                                "**Interprétation** : La charge utilisée est basée sur la Distance (proxy) ou le produit RPE × Durée (UA). "
-                                "L'ACWR EWMA pondère les charges récentes plus fortement, le rendant plus sensible aux pics de charge "
-                                "et donc plus adapté aux calendriers irréguliers."
-                            )
-
-                            st.divider()
-
-                            # ── Répartition de la charge par catégorie (méthodologie GPS) ──
-                            st.markdown("##### 📊 Répartition de la charge par catégorie")
-                            st.caption(
-                                "Classification des métriques GPS en 4 catégories : "
-                                "🟢 Faible intensité & Volume · 🔵 Haute intensité · "
-                                "🔴 Intensité max · 🟠 Accélérations / Décélérations."
-                            )
-
-                            _dr_cat = _gr[_gr["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)].copy()
-                            _dr_cat = ensure_date_column(_dr_cat)
-                            _dr_cat = _dr_cat[_dr_cat["DATE"].notna()].sort_values("DATE")
-                            _dr_cat = _dr_cat[pd.to_datetime(_dr_cat["DATE"]).dt.normalize() <= _charge_ref_ts]
-
-                            if _dr_cat.empty:
-                                st.info("Pas de données de séance exploitables pour la répartition par catégorie.")
-                            else:
-                                if len(_dr_cat) > 3:
-                                    _n_seances_pref = st.session_state.get("_perf_charge_n_seances_pref", 8)
-                                    _n_seances_cat = st.slider(
-                                        "Nombre de séances affichées",
-                                        3, len(_dr_cat),
-                                        max(3, min(_n_seances_pref, len(_dr_cat))),
-                                        key=f"perf_charge_cat_n_seances_{len(_dr_cat)}"
+                                # ── Sélecteur nombre de semaines ──────────────
+                                _n_sem_tot = len(_weekly_upto)
+                                if _n_sem_tot > 4:
+                                    # Clé liée au max pour éviter une valeur hors bornes
+                                    # quand la date change ; la valeur choisie est conservée.
+                                    _n_sem_pref = st.session_state.get("_perf_charge_n_sem_pref", 8)
+                                    _n_sem_sel = st.slider(
+                                        "Nombre de semaines affichées",
+                                        4, _n_sem_tot,
+                                        max(4, min(_n_sem_pref, _n_sem_tot)),
+                                        key=f"perf_charge_n_semaines_{_n_sem_tot}"
                                     )
-                                    st.session_state["_perf_charge_n_seances_pref"] = _n_seances_cat
+                                    st.session_state["_perf_charge_n_sem_pref"] = _n_sem_sel
                                 else:
-                                    _n_seances_cat = len(_dr_cat)
-                                _dr_cat_disp  = _dr_cat.tail(_n_seances_cat).copy()
-                                _last_row_cat = _dr_cat_disp.iloc[-1]
+                                    _n_sem_sel = _n_sem_tot
+                                _weekly_disp = _weekly_upto.tail(_n_sem_sel).copy()
+                                _last = _weekly_disp.iloc[-1]
 
-                                # ── Cartes par catégorie (dernière séance) ─────────────
-                                st.markdown(f"**Dernière séance : {_last_row_cat['DATE'].strftime('%d/%m/%Y')}**")
-                                _cat_cols_ui = st.columns(len(MONITORING_METRICS))
-                                for _col_ui, (_cat_name, _cat_metrics) in zip(_cat_cols_ui, MONITORING_METRICS.items()):
-                                    with _col_ui:
-                                        st.markdown(
-                                            f"<div style='color:{MONITORING_CATEGORY_COLORS[_cat_name]};"
-                                            f"font-weight:600;font-size:13px;margin-bottom:4px'>{_cat_name}</div>",
-                                            unsafe_allow_html=True
+                                def _zone_color(v):
+                                    if pd.isna(v): return "⚪"
+                                    if v < 0.8:    return "🔵"
+                                    if v <= 1.3:   return "🟢"
+                                    return "🔴"
+
+                                def _zone_label(v):
+                                    if pd.isna(v): return "—"
+                                    if v < 0.8:    return "🔵 Sous-charge"
+                                    if v <= 1.3:   return "🟢 Zone optimale"
+                                    return "🔴 Sur-charge"
+
+                                # ── Métriques dernière semaine ─────────────────
+                                st.markdown("##### Dernière semaine de la période")
+                                _rc1, _rc2, _rc3 = st.columns(3)
+                                _rc1.metric("📅 Semaine", _last["Label_semaine"])
+                                _rc2.metric(f"📦 Charge totale ({_unite_ch})", f"{_last['CHARGE_semaine']:.0f}")
+                                _rc3.metric("📊 Zone globale", _zone_label(_last["ACWR_EWMA"]))
+
+                                _rc4, _rc5, _rc6, _rc7 = st.columns(4)
+                                _rc4.metric(
+                                    f"ACWR Rolling Avg {_zone_color(_last['ACWR_RA'])}",
+                                    f"{_last['ACWR_RA']:.2f}" if not pd.isna(_last["ACWR_RA"]) else "—",
+                                    help="Modèle Gabbett (2016) — moyenne glissante 7j / 28j"
+                                )
+                                _rc5.metric(
+                                    f"ACWR EWMA {_zone_color(_last['ACWR_EWMA'])}",
+                                    f"{_last['ACWR_EWMA']:.2f}" if not pd.isna(_last["ACWR_EWMA"]) else "—",
+                                    help="Modèle Murray et al. (2016) — moyenne exponentielle pondérée"
+                                )
+                                _rc6.metric(
+                                    "Charge aiguë (RA)",
+                                    f"{_last['Aigu_RA']:.0f}" if not pd.isna(_last["Aigu_RA"]) else "—",
+                                    help="Moyenne quotidienne sur 7 jours"
+                                )
+                                _rc7.metric(
+                                    "Charge chronique (RA)",
+                                    f"{_last['Chronique_RA']:.0f}" if not pd.isna(_last["Chronique_RA"]) else "—",
+                                    help="Moyenne quotidienne sur 28 jours"
+                                )
+
+                                st.divider()
+
+                                # ── Graphique ACWR ─────────────────────────────
+                                _labels_ch  = _weekly_disp["Label_semaine"].tolist()
+                                _acwr_ra    = _weekly_disp["ACWR_RA"].tolist()
+                                _acwr_ew    = _weekly_disp["ACWR_EWMA"].tolist()
+                                _charges_ch = _weekly_disp["CHARGE_semaine"].tolist()
+                                _x_ch       = list(range(len(_labels_ch)))
+
+                                with MPL_LOCK:
+                                    _fig_w = max(9, len(_x_ch) * 1.1)
+                                    _fig_ch, _ax1_ch = _plt_acwr.subplots(figsize=(_fig_w, 3.8))
+                                    _fig_ch.patch.set_facecolor("#0E2B5E")
+                                    _ax1_ch.set_facecolor("#0E2B5E")
+
+                                    _ax1_ch.bar(_x_ch, _charges_ch, color="#1A3A5C", alpha=0.6,
+                                                label="Charge hebdo", zorder=2, width=0.6)
+                                    _ax1_ch.set_ylabel(f"Charge ({_unite_ch})", color="#9FB8D8", fontsize=9)
+                                    _ax1_ch.tick_params(axis="y", colors="#9FB8D8", labelsize=8)
+                                    _ax1_ch.tick_params(axis="x", colors="#C8D8E8", labelsize=8)
+                                    _ax1_ch.set_xticks(_x_ch)
+                                    _ax1_ch.set_xticklabels(_labels_ch, rotation=30, ha="right",
+                                                             fontsize=8.5, color="#C8D8E8")
+                                    _ax1_ch.spines[:].set_color("#2A4A7A")
+
+                                    _ax2_ch = _ax1_ch.twinx()
+                                    _ax2_ch.set_facecolor("#0E2B5E")
+                                    _ax2_ch.set_ylabel("ACWR", color="#C8D8E8", fontsize=9)
+                                    _ax2_ch.tick_params(axis="y", colors="#C8D8E8", labelsize=8)
+                                    _ax2_ch.spines[:].set_color("#2A4A7A")
+
+                                    _ax2_ch.axhspan(0.8, 1.3, color="#22C55E", alpha=0.08, zorder=1)
+                                    _ax2_ch.axhline(0.8, color="#22C55E", lw=0.8, ls="--", alpha=0.5)
+                                    _ax2_ch.axhline(1.3, color="#EF4444", lw=0.8, ls="--", alpha=0.5)
+
+                                    _ax2_ch.plot(_x_ch, _acwr_ra, color="#F4830A", lw=2,
+                                                 marker="o", ms=5, label="ACWR RA (Gabbett)", zorder=5)
+                                    _ax2_ch.plot(_x_ch, _acwr_ew, color="#1FA8E0", lw=2,
+                                                 marker="s", ms=5, label="ACWR EWMA (Murray)", zorder=5)
+
+                                    for _xi, (_ra, _ew) in enumerate(zip(_acwr_ra, _acwr_ew)):
+                                        for _val, _col in [(_ra, "#F4830A"), (_ew, "#1FA8E0")]:
+                                            if not pd.isna(_val):
+                                                _fc = "#22C55E" if 0.8 <= _val <= 1.3 else ("#EF4444" if _val > 1.3 else "#3B82F6")
+                                                _ax2_ch.scatter(_xi, _val, color=_fc, edgecolors=_col,
+                                                                s=45, zorder=6, linewidths=1.5)
+
+                                    _all_v = [v for v in _acwr_ra + _acwr_ew if not pd.isna(v)]
+                                    if _all_v:
+                                        _ax2_ch.set_ylim(max(0, min(_all_v) - 0.2),
+                                                         max(max(_all_v) + 0.2, 1.8))
+
+                                    _handles_ch = [
+                                        _mpatches_acwr.Patch(color="#1A3A5C", alpha=0.8, label="Charge hebdo"),
+                                        _plt_acwr.Line2D([0],[0], color="#F4830A", lw=2, marker="o", ms=5, label="ACWR RA (Gabbett)"),
+                                        _plt_acwr.Line2D([0],[0], color="#1FA8E0", lw=2, marker="s", ms=5, label="ACWR EWMA (Murray)"),
+                                        _mpatches_acwr.Patch(color="#22C55E", alpha=0.15, label="Zone optimale (0.8–1.3)"),
+                                    ]
+                                    _ax2_ch.legend(handles=_handles_ch, loc="upper center",
+                                                   bbox_to_anchor=(0.5, 1.14), ncol=4,
+                                                   fontsize=7.5, facecolor="#0E2B5E",
+                                                   edgecolor="#2A4A7A", labelcolor="#C8D8E8")
+
+                                    _fig_ch.tight_layout(rect=[0, 0, 1, 0.96])
+                                    st.pyplot(_fig_ch, width="stretch")
+                                    _plt_acwr.close(_fig_ch)
+
+                                st.caption(
+                                    "🔵 Sous-charge (<0.8) · 🟢 Zone optimale (0.8–1.3) · 🔴 Sur-charge / risque blessure (>1.3)  |  "
+                                    "**RA** = Rolling Average (Gabbett, 2016) · **EWMA** = Exponentially Weighted Moving Average (Murray et al., 2016)"
+                                )
+
+                                st.divider()
+
+                                # ── Équipe — semaine (contenu de Laboratoire → Équipe — semaine) ──
+                                # Remplace l'ancien tableau détaillé (charge / ACWR RA-EWMA par semaine).
+                                st.markdown("##### Équipe — semaine")
+                                if role == ROLE_JOUEUSE:
+                                    st.caption("Vue équipe réservée au staff.")
+                                else:
+                                    try:
+                                        _df_lab = charger_sessions_charge(_empreinte_dossiers_gps())
+                                    except Exception as _e_lab:
+                                        _df_lab = None
+                                        st.error(f"Compilation GPS impossible : {_e_lab}")
+                                    if _df_lab is None or _df_lab.empty:
+                                        st.info("Aucune donnée GPS compilée.")
+                                    else:
+                                        from charge_entrainement import render_equipe_semaine
+                                        render_equipe_semaine(_df_lab, "suivi_charge")
+
+                                st.info(
+                                    "**Interprétation** : La charge utilisée est basée sur la Distance (proxy) ou le produit RPE × Durée (UA). "
+                                    "L'ACWR EWMA pondère les charges récentes plus fortement, le rendant plus sensible aux pics de charge "
+                                    "et donc plus adapté aux calendriers irréguliers."
+                                )
+
+                                st.divider()
+
+                                # ── Répartition de la charge par catégorie (méthodologie GPS) ──
+                                st.markdown("##### 📊 Répartition de la charge par catégorie")
+                                st.caption(
+                                    "Classification des métriques GPS en 4 catégories : "
+                                    "🟢 Faible intensité & Volume · 🔵 Haute intensité · "
+                                    "🔴 Intensité max · 🟠 Accélérations / Décélérations."
+                                )
+
+                                _dr_cat = _gr[_gr["Player"].astype(str) == nettoyer_nom_joueuse(_pgps)].copy()
+                                _dr_cat = ensure_date_column(_dr_cat)
+                                _dr_cat = _dr_cat[_dr_cat["DATE"].notna()].sort_values("DATE")
+                                _dr_cat = _dr_cat[pd.to_datetime(_dr_cat["DATE"]).dt.normalize() <= _charge_ref_ts]
+
+                                if _dr_cat.empty:
+                                    st.info("Pas de données de séance exploitables pour la répartition par catégorie.")
+                                else:
+                                    if len(_dr_cat) > 3:
+                                        _n_seances_pref = st.session_state.get("_perf_charge_n_seances_pref", 8)
+                                        _n_seances_cat = st.slider(
+                                            "Nombre de séances affichées",
+                                            3, len(_dr_cat),
+                                            max(3, min(_n_seances_pref, len(_dr_cat))),
+                                            key=f"perf_charge_cat_n_seances_{len(_dr_cat)}"
                                         )
-                                        for _col_key, _col_label in _cat_metrics.items():
-                                            if _col_key not in _last_row_cat.index:
-                                                continue
-                                            _v_cat = pd.to_numeric(_last_row_cat.get(_col_key), errors="coerce")
-                                            _dec_cat = 1 if _col_key in _MONITORING_DECIMAL_COLS else 0
-                                            st.metric(
-                                                _col_label,
-                                                f"{_v_cat:.{_dec_cat}f}" if pd.notna(_v_cat) else "—",
+                                        st.session_state["_perf_charge_n_seances_pref"] = _n_seances_cat
+                                    else:
+                                        _n_seances_cat = len(_dr_cat)
+                                    _dr_cat_disp  = _dr_cat.tail(_n_seances_cat).copy()
+                                    _last_row_cat = _dr_cat_disp.iloc[-1]
+
+                                    # ── Cartes par catégorie (dernière séance) ─────────────
+                                    st.markdown(f"**Dernière séance : {_last_row_cat['DATE'].strftime('%d/%m/%Y')}**")
+                                    _cat_cols_ui = st.columns(len(MONITORING_METRICS))
+                                    for _col_ui, (_cat_name, _cat_metrics) in zip(_cat_cols_ui, MONITORING_METRICS.items()):
+                                        with _col_ui:
+                                            st.markdown(
+                                                f"<div style='color:{MONITORING_CATEGORY_COLORS[_cat_name]};"
+                                                f"font-weight:600;font-size:13px;margin-bottom:4px'>{_cat_name}</div>",
+                                                unsafe_allow_html=True
                                             )
+                                            for _col_key, _col_label in _cat_metrics.items():
+                                                if _col_key not in _last_row_cat.index:
+                                                    continue
+                                                _v_cat = pd.to_numeric(_last_row_cat.get(_col_key), errors="coerce")
+                                                _dec_cat = 1 if _col_key in _MONITORING_DECIMAL_COLS else 0
+                                                st.metric(
+                                                    _col_label,
+                                                    f"{_v_cat:.{_dec_cat}f}" if pd.notna(_v_cat) else "—",
+                                                )
 
-                                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+                                    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-                                # ── Carte de comparaison des séances (heatmap) ─────────
-                                st.markdown("**Carte de comparaison des séances**")
-                                _hm_cols = [c for c in MONITORING_ALL_COLS if c in _dr_cat_disp.columns]
-                                if not _hm_cols:
-                                    st.info("Aucune des colonnes GPS attendues n'est présente pour cette joueuse.")
-                                else:
-                                    _hm_labels   = {c: MONITORING_ALL_LABELS[c] for c in _hm_cols}
-                                    _hm_df       = _dr_cat_disp[["DATE"] + _hm_cols].copy()
-                                    _hm_df["DATE"] = _hm_df["DATE"].dt.strftime("%d/%m/%Y")
-                                    _hm_df       = _hm_df.rename(columns={"DATE": "Séance", **_hm_labels})
-                                    _hm_num_cols = list(_hm_labels.values())
-                                    _hm_fmt      = {
-                                        _hm_labels[c]: "{:" + monitoring_metric_fmt(c) + "}"
-                                        for c in _hm_cols
-                                    }
-                                    _styled_hm = (
-                                        _hm_df.style
-                                        .format(_hm_fmt)
-                                        .apply(monitoring_heatmap_styles, subset=_hm_num_cols)
-                                    )
-                                    st.dataframe(_styled_hm, width="stretch", hide_index=True)
-                                    st.markdown(MONITORING_HEATMAP_LEGEND, unsafe_allow_html=True)
+                                    # ── Carte de comparaison des séances (heatmap) ─────────
+                                    st.markdown("**Carte de comparaison des séances**")
+                                    _hm_cols = [c for c in MONITORING_ALL_COLS if c in _dr_cat_disp.columns]
+                                    if not _hm_cols:
+                                        st.info("Aucune des colonnes GPS attendues n'est présente pour cette joueuse.")
+                                    else:
+                                        _hm_labels   = {c: MONITORING_ALL_LABELS[c] for c in _hm_cols}
+                                        _hm_df       = _dr_cat_disp[["DATE"] + _hm_cols].copy()
+                                        _hm_df["DATE"] = _hm_df["DATE"].dt.strftime("%d/%m/%Y")
+                                        _hm_df       = _hm_df.rename(columns={"DATE": "Séance", **_hm_labels})
+                                        _hm_num_cols = list(_hm_labels.values())
+                                        _hm_fmt      = {
+                                            _hm_labels[c]: "{:" + monitoring_metric_fmt(c) + "}"
+                                            for c in _hm_cols
+                                        }
+                                        _styled_hm = (
+                                            _hm_df.style
+                                            .format(_hm_fmt)
+                                            .apply(monitoring_heatmap_styles, subset=_hm_num_cols)
+                                        )
+                                        st.dataframe(_styled_hm, width="stretch", hide_index=True)
+                                        st.markdown(MONITORING_HEATMAP_LEGEND, unsafe_allow_html=True)
 
-    with _st_params:
-        if role == ROLE_JOUEUSE:
-            st.info("Accès réservé au staff.")
-        else:
-            _tpc = []
-            for _sk in ["pfc_kpi_all", "kpi_df", "pfc_kpi_df"]:
-                _kdf = st.session_state.get(_sk)
-                if _kdf is not None and not getattr(_kdf, "empty", True) and "Player" in _kdf.columns:
-                    _tpc += _kdf["Player"].dropna().astype(str).unique().tolist()
-            render_gps_concordance_ui(_gps_match_df, sorted(set(_tpc)))
+        with _st_params:
+            if role == ROLE_JOUEUSE:
+                st.info("Accès réservé au staff.")
+            else:
+                _tpc = []
+                for _sk in ["pfc_kpi_all", "kpi_df", "pfc_kpi_df"]:
+                    _kdf = st.session_state.get(_sk)
+                    if _kdf is not None and not getattr(_kdf, "empty", True) and "Player" in _kdf.columns:
+                        _tpc += _kdf["Player"].dropna().astype(str).unique().tolist()
+                render_gps_concordance_ui(_gps_match_df, sorted(set(_tpc)))
 
     # ══════════════════════════════════════
     # TAB — SUIVI (Fiche Bilan, onglet à plat dédié)
     # ══════════════════════════════════════
-    with _st_fiche:
+    if rubrique == "Bilan":
         st.markdown("#### 📋 Fiche Bilan")
 
         # ── Sélecteur de joueuse dédié (indépendant de Matchs → Performance
@@ -15552,77 +15545,102 @@ def render_laboratoire_charge():
                 st.error(f"Export Drive impossible : {e}")
 
 
-def _render_nav_menu(user_profile, permissions) -> str:
-    """Menu de navigation de la sidebar (composant streamlit_option_menu).
+# ═══════════════════════════════════════════════════════════════════════════
+# ACCUEIL — menu en tuiles (remplace le menu de la sidebar le 05/11/2026)
+# ═══════════════════════════════════════════════════════════════════════════
+# Rubrique ouverte : st.session_state["pfc_rubrique"] (None = accueil). Matchs,
+# Entraînement, Monitoring, Objectifs et Bilan sont les anciens onglets de la page
+# Performance (render_performance_page(..., rubrique=...)).
+RUBRIQUES_PERF = ("Matchs", "Entraînement", "Monitoring", "Objectifs", "Bilan")
+RUBRIQUES_TITRES = {
+    "Matchs": "⚽ Matchs", "Entraînement": "🏋️ Entraînement", "Monitoring": "📈 Monitoring",
+    "Objectifs": "🎯 Objectifs", "Bilan": "📋 Bilan",
+}
 
-    Appelé par main() AVANT collect_data() : le composant doit signaler qu'il est prêt
-    dans les 60 s qui suivent son affichage, sinon Streamlit affiche « having trouble
-    loading the option_menu component ». Rendu après collect_data(), il attendait toute
-    la reconstruction des données (≥ 45 s après chaque nouveau fichier Drive, plus avec
-    plusieurs sessions en parallèle)."""
-    role = get_user_role(user_profile, permissions)
+_ICONES_RUBRIQUES = {
+    "ballon": '<circle cx="12" cy="12" r="9.5"/><path d="M12 7.5l4.3 3.1-1.6 5h-5.4l-1.6-5z"/>'
+              '<path d="M12 2.5v5M16.3 10.6l4.6-1.5M14.7 15.6l2.8 4M9.3 15.6l-2.8 4M7.7 10.6L3.1 9.1"/>',
+    "halteres": '<path d="M6.5 6.5v11M17.5 6.5v11M3.5 9v6M20.5 9v6M6.5 12h11"/>',
+    "pouls": '<path d="M3 12h4l2.5-6 4 12 2.5-6H21"/>',
+    "cible": '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/>',
+    "bilan": '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1M8.5 10h7M8.5 14h7M8.5 18h4"/>',
+    "reglages": '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/>'
+                '<circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+    "coeur": '<path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7a4.3 4.3 0 0 1 7.5 2.8C19.5 15.4 12 20 12 20z"/>'
+             '<path d="M7.5 12h2.5l1.2-2 1.6 4 1.2-2h2.5"/>',
+    "loupe": '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
+    "fiole": '<path d="M9.5 3h5M10.5 3v6L5 18.5A1.7 1.7 0 0 0 6.5 21h11a1.7 1.7 0 0 0 1.5-2.5L13.5 9V3"/>'
+             '<path d="M7.5 15h9"/>',
+    "etoile": '<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>',
+}
 
-    if role == ROLE_ADMIN:
-        options = ["Performance", "Gestion", "Médical", "Recrutement", "Laboratoire"]
-    elif role == ROLE_STAFF:
-        options = ["Performance", "Médical", "Recrutement"]
-    else:  # ROLE_JOUEUSE
-        options = ["Performance"]
+# (rubrique, description, icône, rôles autorisés — None = tout le monde)
+RUBRIQUES_ACCUEIL = [
+    ("Matchs", "Analyses collectives et individuelles, évaluations post-match", "ballon", None),
+    ("Entraînement", "Saisie des RPE, calendrier des séances, charge vs match", "halteres", None),
+    ("Monitoring", "Séance, semaine, période, GPS matchs, charge ACWR", "pouls", None),
+    ("Objectifs", "Plans de développement individuels", "cible", None),
+    ("Bilan", "Fiche bilan périodique de la joueuse", "bilan", None),
+    ("Gestion", "Effectif, référentiel, profils, imports", "reglages", (ROLE_ADMIN,)),
+    ("Médical", "Calendrier des visites, mesures, bilan", "coeur", (ROLE_ADMIN, ROLE_STAFF)),
+    ("Recrutement", "Joueuses suivies et rapports de match", "loupe", (ROLE_ADMIN, ROLE_STAFF)),
+    ("Laboratoire", "Fonctionnalités en test", "fiole", (ROLE_ADMIN,)),
+]
 
-    # Onglet Staff Pro — visible uniquement pour le profil "Staff Pro"
-    _is_staff_pro = str(user_profile).strip().lower() in ("staff pro", "staffpro", "staff_pro")
-    if _is_staff_pro:
-        options.append("Staff Pro")
 
-    # Forcer la navigation vers "Staff Pro" à la première exécution après connexion
-    # Performance reste la page d'accueil quel que soit l'ordre du menu.
-    _default_index = options.index("Performance") if "Performance" in options else 0
-    if _is_staff_pro and "Staff Pro" in options:
-        _default_index = options.index("Staff Pro")
+def _aller_rubrique(rubrique):
+    """Callback des tuiles et du bouton « ← Accueil » (None = accueil)."""
+    st.session_state["pfc_rubrique"] = rubrique
 
-    # Reconstruire la liste d'icônes en suivant l'ordre des options
-    _icon_map = {
-        "Laboratoire":        "eyedropper",
-        "Performance":        "lightning-charge",
-        "Programme talent": "people-fill",
-        "Gestion":            "gear-fill",
-        "Médical":            "heart-pulse",
-        "Staff Pro":          "star-fill",
-        "Recrutement":        "search",
-    }
-    icons = [_icon_map.get(o, "circle") for o in options]
 
-    with st.sidebar:
-        return option_menu(
-            menu_title="",
-            options=options,
-            icons=icons,
-            menu_icon="cast",
-            default_index=_default_index,
-            orientation="vertical",
-            styles={
-                "container": {"padding": "6px 4px !important", "background-color": "transparent"},
-                # Couleur via variable CSS : l'onglet sélectionné la redéfinit, sinon l'icône
-                # (bleue) se confond avec le fond bleu du bouton sélectionné.
-                "icon": {"color": "var(--pfc-icon-color, #1FA8E0)", "font-size": "16px"},
-                "nav-link": {
-                    "font-size": "13px", "font-family": "Oswald, sans-serif",
-                    "font-weight": "500", "letter-spacing": "0.07em", "text-transform": "uppercase",
-                    "text-align": "left", "margin": "1px 6px", "--hover-color": "rgba(0,163,224,0.12)",
-                    "border-radius": "3px", "color": "#C8D8E8",
-                },
-                "nav-link-selected": {
-                    "background-color": "#1FA8E0",
-                    "color": "#061A40", "font-weight": "600",
-                    "--pfc-icon-color": "#061A40",
-                },
-            },
-        )
+def _render_accueil(user_profile, role, is_staff_pro=False):
+    """Page d'accueil : une tuile cliquable par rubrique (bouton Streamlit invisible
+    posé sur la carte HTML, cf. CSS .st-key-pfc_tuile_*). Toutes les rubriques sont
+    affichées ; celles réservées à un autre rôle sont grisées et non cliquables."""
+    tuiles = list(RUBRIQUES_ACCUEIL)
+    if is_staff_pro:
+        tuiles.append(("Staff Pro", "Espace dédié au staff professionnel", "etoile", None))
+
+    st.markdown(
+        "<div class='pfc-accueil-tete'>"
+        f"<div class='pfc-accueil-salut'>Bonjour, {_esc(str(user_profile))}</div>"
+        "<div class='pfc-accueil-titre'>Que veux-tu consulter&nbsp;?</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    n_col = 3
+    for debut in range(0, len(tuiles), n_col):
+        cols = st.columns(n_col, gap="medium")
+        for j, (rub, texte, icone, roles) in enumerate(tuiles[debut:debut + n_col]):
+            i = debut + j
+            accessible = roles is None or role in roles
+            with cols[j]:
+                with st.container(key=f"pfc_tuile_{i}"):
+                    badge = "" if accessible else (
+                        "<span class='pfc-tuile-badge'>Réservé "
+                        + ("admins" if roles == (ROLE_ADMIN,) else "staff") + "</span>")
+                    st.markdown(
+                        f"<div class='pfc-tuile{'' if accessible else ' pfc-tuile-off'}'>"
+                        f"<div class='pfc-tuile-num'>{i + 1:02d}</div>"
+                        "<div class='pfc-tuile-icone'><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' "
+                        "stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>"
+                        f"{_ICONES_RUBRIQUES[icone]}</svg></div>"
+                        f"<div class='pfc-tuile-titre'>{_esc(rub)}</div>"
+                        f"<div class='pfc-tuile-texte'>{_esc(texte)}</div>"
+                        f"{badge}<div class='pfc-tuile-fleche'>&rarr;</div>"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+                    if accessible:
+                        st.button(rub, key=f"pfc_btn_tuile_{i}", on_click=_aller_rubrique,
+                                  args=(rub,), width="stretch")
 
 
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sidebar=None):
-    # sidebar : conteneur réservé par main() au-dessus du menu (déjà affiché) pour garder
-    # l'ordre logo / profil / saison / déconnexion / menu ; page : choix du menu.
+    # sidebar : conteneur réservé par main() en haut de la sidebar (logo / profil / saison /
+    # déconnexion) ; page : rubrique ouverte (None = st.session_state["pfc_rubrique"],
+    # lui-même None = accueil en tuiles).
     _sb = sidebar if sidebar is not None else st.sidebar
     _sb.markdown(
         "<div style='display:flex;flex-direction:column;align-items:center;padding:24px 0 16px 0;border-bottom:1px solid rgba(0,163,224,0.15);margin-bottom:8px;'>"
@@ -15654,6 +15672,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
     if _sb.button("🔒 Déconnexion"):
         st.session_state.authenticated = False
         st.session_state.user_profile = None
+        st.session_state["pfc_rubrique"] = None
         st.rerun()
 
     if check_permission(user_profile, "update_data", permissions) or check_permission(user_profile, "all", permissions):
@@ -15716,7 +15735,12 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
     _is_staff_pro = str(user_profile).strip().lower() in ("staff pro", "staffpro", "staff_pro")
 
     if page is None:
-        page = _render_nav_menu(user_profile, permissions)
+        page = st.session_state.get("pfc_rubrique")
+    if page is None:
+        _render_accueil(user_profile, role, _is_staff_pro)
+        return
+    with st.container(key="pfc_retour"):
+        st.button("←  Accueil", key="pfc_btn_accueil", on_click=_aller_rubrique, args=(None,))
 
     # =====================
     # =====================
@@ -15729,11 +15753,11 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
         else:
             st.header("🧪 Laboratoire")
             st.info("Espace de test pour les nouvelles fonctionnalités, visible uniquement par les admins.")
-            render_laboratoire_charge()
+            st.caption("La charge vs référence match / microcycle est passée dans Entraînement → ⚖️ Charge vs match.")
 
-    elif page == "Performance":
+    elif page in RUBRIQUES_PERF:
         render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
-                                player_name, user_profile, permissions, role=role)
+                                player_name, user_profile, permissions, role=role, rubrique=page)
 
     elif page == "Recrutement":
         if role not in (ROLE_ADMIN, ROLE_STAFF):
@@ -17177,12 +17201,54 @@ hr { border-color: var(--pfc-border) !important; margin: 1rem 0 !important; }
 ::-webkit-scrollbar-thumb { background: rgba(31,168,224,0.6); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--pfc-blue); }
 .stCaption, [data-testid="stCaptionContainer"] { color: var(--pfc-muted) !important; font-size: 12px !important; }
-/* ── Menu (option_menu) ── */
-.nav-link { border-radius: 999px !important; margin: 2px 6px !important; font-family: 'Inter', sans-serif !important; font-size: 13.5px !important;
-            font-weight: 600 !important; letter-spacing: 0.06em !important; text-transform: uppercase !important; color: var(--pfc-text) !important; }
-.nav-link:hover { background: rgba(31,168,224,0.14) !important; }
-.nav-link-selected { background: var(--pfc-blue) !important; color: var(--pfc-bande) !important; font-weight: 700 !important; }
-.nav-link-selected .icon { color: var(--pfc-bande) !important; }
+/* ── Accueil : tuiles des rubriques (cf. _render_accueil) ── */
+.pfc-accueil-tete { margin: 0.4rem 0 1.6rem 0; }
+.pfc-accueil-salut { font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.18em;
+                     text-transform: uppercase; color: var(--pfc-blue); }
+.pfc-accueil-titre { font-family: 'Unbounded', sans-serif; font-size: 1.7rem; font-weight: 800; color: var(--pfc-white);
+                     margin-top: 6px; line-height: 1.15; }
+[class*="st-key-pfc_tuile_"] { position: relative; margin-bottom: 18px; }
+[class*="st-key-pfc_tuile_"] .stElementContainer:has(.stButton) { position: absolute !important; inset: 0; z-index: 2; margin: 0 !important; }
+[class*="st-key-pfc_tuile_"] .stButton, [class*="st-key-pfc_tuile_"] .stButton > button {
+    width: 100% !important; height: 100% !important; }
+[class*="st-key-pfc_tuile_"] .stButton > button { opacity: 0 !important; cursor: pointer !important; }
+.pfc-tuile { position: relative; overflow: hidden; height: 196px; padding: 22px 22px 18px 22px; border-radius: 18px;
+    background: linear-gradient(150deg, rgba(31,168,224,0.16) 0%, rgba(12,40,92,0.62) 46%, rgba(6,26,64,0.82) 100%);
+    border: 1px solid var(--pfc-border); box-shadow: 0 6px 22px rgba(0,0,0,0.22);
+    transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
+.pfc-tuile::after { content: ""; position: absolute; left: 22px; right: 22px; bottom: 0; height: 3px; border-radius: 3px 3px 0 0;
+    background: var(--pfc-blue); transform: scaleX(0); transform-origin: left; transition: transform .25s ease; }
+.pfc-tuile-num { position: absolute; top: 16px; right: 20px; font-family: 'Unbounded', sans-serif; font-size: 13px;
+                 font-weight: 700; color: rgba(255,255,255,0.22); letter-spacing: 0.04em; }
+.pfc-tuile-icone { width: 48px; height: 48px; border-radius: 14px; display: flex; align-items: center; justify-content: center;
+    background: rgba(31,168,224,0.16); border: 1px solid rgba(31,168,224,0.35); color: var(--pfc-blue);
+    transition: background .18s ease, color .18s ease; }
+.pfc-tuile-icone svg { width: 26px; height: 26px; }
+.pfc-tuile-titre { font-family: 'Unbounded', sans-serif; font-size: 1.15rem; font-weight: 800; color: var(--pfc-white);
+                   margin-top: 18px; letter-spacing: 0.01em; }
+.pfc-tuile-texte { font-family: 'Inter', sans-serif; font-size: 13px; line-height: 1.45; color: var(--pfc-muted);
+                   margin-top: 6px; padding-right: 34px; }
+.pfc-tuile-fleche { position: absolute; right: 18px; bottom: 18px; width: 32px; height: 32px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; font-size: 16px; color: var(--pfc-blue);
+    border: 1px solid rgba(31,168,224,0.45); transition: all .18s ease; }
+[class*="st-key-pfc_tuile_"]:hover .pfc-tuile:not(.pfc-tuile-off) { transform: translateY(-4px);
+    border-color: rgba(31,168,224,0.75); box-shadow: 0 14px 34px rgba(31,168,224,0.22); }
+[class*="st-key-pfc_tuile_"]:hover .pfc-tuile:not(.pfc-tuile-off)::after { transform: scaleX(1); }
+[class*="st-key-pfc_tuile_"]:hover .pfc-tuile:not(.pfc-tuile-off) .pfc-tuile-icone { background: var(--pfc-blue); color: var(--pfc-bande); }
+[class*="st-key-pfc_tuile_"]:hover .pfc-tuile:not(.pfc-tuile-off) .pfc-tuile-fleche { background: var(--pfc-blue); color: var(--pfc-bande); }
+.pfc-tuile-off { opacity: 0.42; filter: grayscale(0.6); }
+.pfc-tuile-off .pfc-tuile-fleche { display: none; }
+.pfc-tuile-badge { position: absolute; right: 18px; bottom: 20px; font-family: 'Inter', sans-serif; font-size: 10.5px;
+    font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--pfc-text);
+    border: 1px solid var(--pfc-border); border-radius: 999px; padding: 4px 10px; }
+/* ── Bouton « ← Accueil » en haut de chaque rubrique ── */
+.st-key-pfc_retour .stButton > button { border-radius: 999px !important; padding: 4px 16px !important; min-height: 0 !important;
+    background: transparent !important; border: 1px solid rgba(31,168,224,0.55) !important; color: var(--pfc-blue) !important;
+    font-family: 'Inter', sans-serif !important; font-size: 12px !important; font-weight: 700 !important;
+    letter-spacing: 0.12em !important; text-transform: uppercase !important; }
+.st-key-pfc_retour .stButton > button:hover { background: var(--pfc-blue) !important; color: var(--pfc-bande) !important; }
+.st-key-pfc_retour .stButton > button p { color: inherit !important; }
+@media (max-width: 640px) { .pfc-tuile { height: auto; min-height: 160px; } .pfc-accueil-titre { font-size: 1.3rem; } }
 """
 
 
@@ -17321,10 +17387,8 @@ def main():
         else:
             st.sidebar.caption("🔄 Mise à jour Drive en cours…")
 
-    # Menu affiché avant le chargement des données (cf. _render_nav_menu) ; le haut de
-    # la sidebar est réservé au-dessus pour conserver l'ordre d'affichage.
+    # Haut de la sidebar réservé avant le chargement des données (rempli par script_streamlit)
     _sb_haut = st.sidebar.container()
-    _page = _render_nav_menu(st.session_state.user_profile, permissions)
 
     with st.spinner("Chargement des données…"):
         pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, gps_match_df, name_report_df = collect_data()
@@ -17337,7 +17401,7 @@ def main():
     st.session_state["gps_weekly_df"] = gps_week_df
     st.session_state["gps_match_df"] = gps_match_df
 
-    script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile, page=_page, sidebar=_sb_haut)
+    script_streamlit(pfc_kpi, edf_kpi, permissions, st.session_state.user_profile, sidebar=_sb_haut)
 
 
 if __name__ == "__main__":
