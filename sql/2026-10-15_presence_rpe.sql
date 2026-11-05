@@ -4,7 +4,7 @@
 -- projet Supabase : rien n'était enregistré. Création, avec la RPE (échelle de Borg 1-10,
 -- questionnaire sRPE) : une ligne par joueuse et par jour.
 --   statut = 'Présente' (RPE renseignée) ou motif d'absence :
---            'Absente', 'Sélection', 'Réathlé', 'Blessée (Kiné)', 'Pro'
+--            'Absente', 'Sélection', 'Réathlé', 'Blessée (Kiné)', 'Pro', 'Repos' (ajouté le 05/11/2026)
 -- Additif uniquement : aucune table existante modifiée.
 
 create table if not exists presence_entrainement (

@@ -414,13 +414,15 @@ def get_supabase_client():
         return None
 
 
-PRESENCE_STATUTS = ["Présente", "Absente", "Sélection", "Réathlé", "Blessée (Kiné)", "Pro"]
+PRESENCE_STATUTS = ["Présente", "Absente", "Sélection", "Réathlé", "Blessée (Kiné)", "Pro", "Repos"]
 PRESENCE_STATUTS_SHORT = {
     "Présente": "Présente", "Absente": "Absente", "Sélection": "Sélection",
-    "Réathlé": "Réathlé", "Blessée (Kiné)": "Blessée", "Pro": "Pro",
+    "Réathlé": "Réathlé", "Blessée (Kiné)": "Blessée", "Pro": "Pro", "Repos": "Repos",
 }
 # Statuts comptant comme "présente à l'entraînement" pour le calcul du taux de présence.
 PRESENCE_STATUTS_PRESENTE = ("Présente", "Sélection", "Pro")
+# Statuts hors calcul du taux de présence (repos prescrit : ni présence ni absence).
+PRESENCE_STATUTS_HORS_TAUX = ("Repos",)
 
 
 PRESENCE_ABSENCES = [st_ for st_ in PRESENCE_STATUTS if st_ != "Présente"]
@@ -487,6 +489,7 @@ def load_presence_rate(joueuse: str):
     try:
         _rows = _presence_select_all(_sb.table("presence_entrainement").select("date,joueuse,statut")
                                      .in_("joueuse", orthographes_supabase("presence_entrainement", joueuse)))
+        _rows = [r for r in _rows if r["statut"] not in PRESENCE_STATUTS_HORS_TAUX]
         if not _rows:
             return None
         _presentes = sum(1 for r in _rows if r["statut"] in PRESENCE_STATUTS_PRESENTE)
@@ -11951,7 +11954,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     _pres_date_iso = _pres_dialog_date.isoformat()
                     _RPE_CASES = list(range(1, 11)) + ["abs"]
                     _RPE_MOTIFS = {"Non précisé": "Absente", "Sélection": "Sélection", "Réathlé": "Réathlé",
-                                   "Blessée (Kiné)": "Blessée (Kiné)", "Pro": "Pro"}
+                                   "Blessée (Kiné)": "Blessée (Kiné)", "Pro": "Pro", "Repos": "Repos"}
 
                     def _rpe_cocher(date_iso, nom, case):
                         # Une seule case par joueuse (comme un bouton radio) ; décocher = non renseigné.
