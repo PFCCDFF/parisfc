@@ -15607,7 +15607,7 @@ def _render_accueil(user_profile, role, is_staff_pro=False):
     st.markdown(
         "<div class='pfc-accueil-tete'>"
         f"<div class='pfc-accueil-salut'>Bonjour, {_esc(str(user_profile))}</div>"
-        "<div class='pfc-accueil-titre'>Que veux-tu consulter&nbsp;?</div>"
+        "<div class='pfc-accueil-titre'>Centre de Formation F&eacute;minin</div>"
         "</div>",
         unsafe_allow_html=True,
     )
