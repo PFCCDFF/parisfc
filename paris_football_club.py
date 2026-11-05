@@ -258,18 +258,9 @@ def apply_player_settings(player_list: list, settings: dict) -> list:
     sont exclues, avant même le filtre "hidden" (qui reste géré indépendamment dans
     Gestion → Joueuses, qui n'appelle pas cette fonction et voit donc tout l'effectif
     brut pour permettre son propre pilotage)."""
-    _roster = load_presence_roster()
-    if _roster:
-        _roster_set = set(_roster)
-        player_list = [p for p in player_list if p in _roster_set]
-    hidden = set(settings.get("hidden", []))
-    aliases = settings.get("aliases", {})
-    result = []
-    for p in player_list:
-        if p in hidden:
-            continue
-        result.append(aliases.get(p, p))
-    return retirer_parties(sorted(set(result)))
+    # Depuis l'Effectif (Gestion → 👥 Effectif) : seules les joueuses de l'effectif ayant des
+    # données dans `player_list` ; les réglages « masquées » / alias ne s'appliquent plus.
+    return liste_effectif(player_list)
 
 
 def joueuses_parties() -> dict:
@@ -313,9 +304,8 @@ def retirer_parties(noms: list) -> list:
 
 def resolve_alias_to_original(name: str, settings: dict) -> str:
     """Retrouve le nom original depuis un alias (pour les requêtes de données)."""
-    aliases = settings.get("aliases", {})
-    reverse = {v: k for k, v in aliases.items()}
-    return reverse.get(name, name)
+    # Les données portent déjà le nom officiel (canon_joueuse) : plus d'alias à défaire.
+    return name
 
 
 # ── Fiche Bilan : catalogue d'indicateurs + templates nommés persistants ──
@@ -513,7 +503,7 @@ def load_presence_for_date(date_iso: str) -> dict:
         return {}
     try:
         _res = _sb.table("presence_entrainement").select("joueuse,statut,rpe").eq("date", date_iso).execute()
-        return {r["joueuse"]: {"statut": r["statut"], "rpe": r.get("rpe")} for r in _res.data}
+        return {canon_joueuse(r["joueuse"]): {"statut": r["statut"], "rpe": r.get("rpe")} for r in _res.data}
     except Exception:
         return {}
 
@@ -526,7 +516,8 @@ def load_presence_rate(joueuse: str):
     if _sb is None or not joueuse:
         return None
     try:
-        _rows = _presence_select_all(_sb.table("presence_entrainement").select("date,joueuse,statut").eq("joueuse", joueuse))
+        _rows = _presence_select_all(_sb.table("presence_entrainement").select("date,joueuse,statut")
+                                     .in_("joueuse", orthographes_supabase("presence_entrainement", joueuse)))
         if not _rows:
             return None
         _presentes = sum(1 for r in _rows if r["statut"] in PRESENCE_STATUTS_PRESENTE)
@@ -543,7 +534,8 @@ def load_rpe_joueuse(joueuse: str) -> pd.DataFrame:
         return pd.DataFrame(columns=["DATE", "RPE"])
     try:
         _rows = _presence_select_all(_sb.table("presence_entrainement").select("date,joueuse,rpe")
-                                     .eq("joueuse", nettoyer_nom_joueuse(joueuse)).not_.is_("rpe", "null"))
+                                     .in_("joueuse", orthographes_supabase("presence_entrainement", joueuse))
+                                     .not_.is_("rpe", "null"))
     except Exception:
         return pd.DataFrame(columns=["DATE", "RPE"])
     d = pd.DataFrame(_rows)
@@ -570,6 +562,13 @@ def save_presence_rpe(date_iso: str, saisies: dict, auteur: str = "") -> Tuple[b
             else:
                 _rows.append({"joueuse": _nom, "date": date_iso, "statut": _val, "rpe": None,
                               "saisi_par": auteur, "updated_at": datetime.now(timezone.utc).isoformat()})
+        # Lignes du jour enregistrées sous une autre orthographe de la même joueuse : remplacées
+        # (sinon la joueuse compterait deux fois ce jour-là).
+        _cibles = {canon_joueuse(n) for n in saisies}
+        _noms_saisis = {r["joueuse"] for r in _rows} | set(_a_supprimer)
+        _anciens = _sb.table("presence_entrainement").select("joueuse").eq("date", date_iso).execute().data or []
+        _a_supprimer += [r["joueuse"] for r in _anciens
+                         if r["joueuse"] not in _noms_saisis and canon_joueuse(r["joueuse"]) in _cibles]
         if _rows:
             _sb.table("presence_entrainement").upsert(_rows, on_conflict="joueuse,date").execute()
         if _a_supprimer:
@@ -599,7 +598,7 @@ def load_objectifs_joueuses() -> list:
         return []
     try:
         _res = _sb.table("objectifs_joueuse").select("joueuse").execute()
-        return sorted(set(r["joueuse"] for r in _res.data))
+        return sorted(set(canon_joueuse(r["joueuse"]) for r in _res.data))
     except Exception:
         return []
 
@@ -614,7 +613,7 @@ def load_objectifs_pour_joueuse(joueuse: str) -> pd.DataFrame:
     try:
         _res = _sb.table("objectifs_joueuse").select(
             "id,poste,categorie,objectif,statut,statut_label,actif,mois_actifs,ordre"
-        ).eq("joueuse", joueuse).order("ordre").execute()
+        ).in_("joueuse", orthographes_supabase("objectifs_joueuse", joueuse)).order("ordre").execute()
         if not _res.data:
             return pd.DataFrame()
         _df = pd.DataFrame(_res.data)
@@ -635,7 +634,7 @@ def load_pdi_evaluations(joueuse: str, match_date: str) -> pd.DataFrame:
     try:
         _res = _sb.table("objectifs_evaluations").select(
             "objectif_id,evaluateur,evaluateur_nom,note"
-        ).eq("joueuse", joueuse).eq("match_date", match_date).execute()
+        ).in_("joueuse", orthographes_supabase("objectifs_evaluations", joueuse)).eq("match_date", match_date).execute()
         return pd.DataFrame(_res.data) if _res.data else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
@@ -701,7 +700,7 @@ def load_visites_medicales() -> pd.DataFrame:
         _df = pd.DataFrame(_res.data)
         if not _df.empty:
             _df["date"] = pd.to_datetime(_df["date"])
-        return _df
+        return canon_df(_df, "joueuse")
     except Exception:
         return pd.DataFrame()
 
@@ -991,7 +990,7 @@ def load_mesures_corporelles() -> pd.DataFrame:
         _df = pd.DataFrame(_res.data)
         if not _df.empty:
             _df["date"] = pd.to_datetime(_df["date"])
-        return _df
+        return canon_df(_df, "joueuse")
     except Exception:
         return pd.DataFrame()
 
@@ -6305,6 +6304,12 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
     n_joueur = len(df_j) if _j_ok else 0
     st.caption(f"📊 {n_coach} évaluations entraîneur · {n_joueur} auto-évaluations joueuses{saison_label}")
 
+    # Noms des formulaires ramenés au nom officiel de l'Effectif
+    if _j_ok:
+        df_j = canon_df(df_j.copy(), "joueur_label")
+    if _c_ok:
+        df_c = canon_df(df_c.copy(), "joueur_label")
+
     # ── Clés dimensions ────────────────────────────────────────────────────
     dim_keys   = [k for k, c, _ in _EVAL_DIMS]
     dim_keys_c = [k+"_c" for k in dim_keys]
@@ -6312,10 +6317,10 @@ def render_evaluation_page(user_profile, permissions, selected_saison="Toutes le
 
     # ── Filtres ────────────────────────────────────────────────────────────
     # Construire listes depuis Feuille 1 (source principale pour filtres)
-    all_players = sorted(set(
+    all_players = liste_effectif(
         (df_c["joueur_label"].dropna().tolist() if not df_c.empty else []) +
         (df_j["joueur_label"].dropna().tolist() if not df_j.empty else [])
-    ))
+    )
     all_adv = sorted(set(
         (df_c["adversaire"].dropna().tolist() if not df_c.empty else []) +
         (df_j["adversaire"].dropna().tolist() if not df_j.empty else [])
@@ -10459,7 +10464,7 @@ def _render_gps_match_tab(gps_match: "pd.DataFrame", player_name: str, permissio
         )
         return
 
-    all_players_m = sorted(gps_match["Player"].dropna().astype(str).unique().tolist()) if "Player" in gps_match.columns else []
+    all_players_m = liste_effectif(gps_match["Player"].dropna().astype(str).unique().tolist()) if "Player" in gps_match.columns else []
     is_admin = check_permission(user_profile, "all", permissions) or check_permission(user_profile, "update_data", permissions)
 
     # ── Sélection joueuse ──────────────────────────────────────────
@@ -11873,50 +11878,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             st.dataframe(_detail_df, width="stretch", hide_index=True)
 
             with _ent_sub_rpe:
-                with st.expander("📋 Effectif (liste des joueuses)"):
-                    _pres_roster_cur = load_presence_roster()
-                    if _pres_roster_cur:
-                        st.caption(f"{len(_pres_roster_cur)} joueuse(s) enregistrée(s) — utilisée(s) pour la saisie RPE.")
-                        st.write(", ".join(_pres_roster_cur))
-                    else:
-                        st.caption(
-                            "Aucune liste chargée : la saisie reprend les joueuses du trombinoscope "
-                            "(groupe choisi ci-dessous). Charge un fichier Excel pour définir "
-                            "explicitement l'effectif."
-                        )
-
-                    _pres_xlsx = st.file_uploader(
-                        "Charger un fichier Excel (une colonne avec le nom des joueuses)",
-                        type=["xlsx", "xls"], key="pres_roster_uploader",
-                    )
-                    if _pres_xlsx is not None:
-                        try:
-                            _df_pres_roster = pd.read_excel(_pres_xlsx)
-                            _pres_name_col = None
-                            for _cand in ["Joueuse", "Joueuses", "Nom", "Nom complet", "Nom Prénom", "Player"]:
-                                for _col in _df_pres_roster.columns:
-                                    if str(_col).strip().lower() == _cand.lower():
-                                        _pres_name_col = _col
-                                        break
-                                if _pres_name_col is not None:
-                                    break
-                            if _pres_name_col is None:
-                                _pres_name_col = _df_pres_roster.columns[0]
-
-                            _pres_new_roster = sorted({
-                                nettoyer_nom_joueuse(v) for v in _df_pres_roster[_pres_name_col].dropna().astype(str)
-                                if str(v).strip()
-                            })
-                            st.success(f"{len(_pres_new_roster)} joueuse(s) détectée(s) dans la colonne « {_pres_name_col} ».")
-                            st.write(", ".join(_pres_new_roster))
-                            if st.button("💾 Enregistrer cette liste", key="pres_roster_save", type="primary"):
-                                if save_presence_roster(_pres_new_roster):
-                                    st.success("Liste enregistrée.")
-                                    st.rerun()
-                                else:
-                                    st.error("Échec de l'enregistrement.")
-                        except Exception as _pres_re:
-                            st.error(f"Impossible de lire ce fichier : {_pres_re}")
+                st.caption("📋 Joueuses proposées : l'effectif au club (Gestion → 👥 Effectif), "
+                           "filtré par groupe du trombinoscope.")
 
                 _rpe_ok, _rpe_err = presence_table_disponible()
                 if not _rpe_ok:
@@ -11927,7 +11890,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 _rpe_trombi = load_trombi()
                 _rpe_groupes = sorted({j["categorie"] for j in _rpe_trombi})
                 _rpe_groupe = None
-                if not load_presence_roster() and _rpe_groupes:
+                if _rpe_groupes:
                     _rpe_groupe = st.segmented_control(
                         "Groupe", _rpe_groupes + ["Tous"], key="rpe_groupe", required=True,
                         default="U19" if "U19" in _rpe_groupes else _rpe_groupes[0])
@@ -12011,14 +11974,11 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
                 _pres_dialog_date = st.session_state.get("_presence_dialog_date")
                 if _pres_dialog_date and st.session_state.get("_active_dialog_id") == "presence":
-                    _pres_all_players = retirer_parties(load_presence_roster())
-                    if not _pres_all_players:
-                        if _rpe_trombi:
-                            _pres_all_players = retirer_parties(sorted({
-                                nettoyer_nom_joueuse(f"{j['nom']} {j['prenom']}") for j in _rpe_trombi
-                                if _rpe_groupe in (None, "Tous") or j["categorie"] == _rpe_groupe}))
-                        else:
-                            _pres_all_players = sorted({nettoyer_nom_joueuse(n) for n in joueuses_saison(get_tactical_files())})
+                    _pres_all_players = liste_effectif()
+                    if _rpe_trombi and _rpe_groupe not in (None, "Tous"):
+                        _pres_groupe = {canon_joueuse(f"{j['nom']} {j['prenom']}") for j in _rpe_trombi
+                                        if j["categorie"] == _rpe_groupe}
+                        _pres_all_players = [n for n in _pres_all_players if n in _pres_groupe]
                     _pres_date_iso = _pres_dialog_date.isoformat()
                     _RPE_CASES = list(range(1, 11)) + ["abs"]
                     _RPE_MOTIFS = {"Non précisé": "Absente", "Sélection": "Sélection", "Réathlé": "Réathlé",
@@ -12630,7 +12590,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
         _pgps = None
         if _gps_raw_df is not None and not _gps_raw_df.empty:
             _gr = ensure_date_column(_gps_raw_df)
-            _all_gps_p = retirer_parties(sorted(_gr["Player"].dropna().astype(str).unique()))
+            _all_gps_p = liste_effectif(_gr["Player"].dropna().astype(str).unique().tolist())
 
             # Résoudre le nom par défaut depuis le contrôle global
             _pgps_default = _pgps_name if _pgps_name in _all_gps_p else (
@@ -12675,7 +12635,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     # (le référentiel joueuses et le roster Présence sont incomplets en prod).
     # Sélecteur dédié seulement s'il n'y a pas de données GPS.
     with _st_objectifs:
-        _obj_joueuses = retirer_parties(load_objectifs_joueuses())
+        _obj_joueuses = liste_effectif(load_objectifs_joueuses())
         if not _obj_joueuses:
             st.info("Aucun plan de développement disponible pour le moment.")
         else:
@@ -12864,9 +12824,9 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     from gps_compilation import sous_ensemble_flou as _sv_sef
     _sv_df = _sv.construire_donnees_suivi(_gps_raw_df if _gps_raw_df is not None else pd.DataFrame(),
                                           _gps_match_df if _gps_match_df is not None else pd.DataFrame())
-    _sv_cle = ("_sv_noms_gestion", len(get_tactical_files()))
+    _sv_cle = ("_sv_noms_gestion", _EFF_MEMO.get("mtime"), st.session_state.get("selected_saison"))
     if st.session_state.get("_sv_noms_cle") != _sv_cle:
-        st.session_state["_sv_noms_gestion"] = joueuses_saison(get_tactical_files())
+        st.session_state["_sv_noms_gestion"] = liste_effectif()
         st.session_state["_sv_noms_cle"] = _sv_cle
     _sv_roster = _sv.rattacher_roster(st.session_state["_sv_noms_gestion"], _sv_df, nettoyer_nom_joueuse, _sv_sef)
     _sv_defaut = _sv.rattacher_roster([_pgps], _sv_df, nettoyer_nom_joueuse, _sv_sef).get(_pgps) if _pgps else None
@@ -13998,28 +13958,145 @@ def enregistrer_effectif(eff: dict) -> None:
         st.session_state["_player_settings"] = _ps
 
 
+# ── Correspondance nom brut → nom officiel, utilisée par toutes les pages ──
+# Les données (matchs, GPS, Supabase, évaluations) gardent l'orthographe de leur source ;
+# canon_joueuse() la ramène au nom officiel de l'Effectif, sous la forme normalize_name_raw
+# (« DUPONT JULIETTE »), celle des données de match. Les listes de joueuses (liste_effectif)
+# utilisent la même forme : un nom choisi dans une liste est égal au nom dans les données.
+_EFF_MEMO = {"mtime": -1.0, "eff": None, "index": {}, "canon": {}}
+
+
+def _effectif_courant():
+    """Effectif lu sur disque, relu seulement quand le fichier change (mémo partagé)."""
+    import effectif_utils as EU
+    try:
+        mt = os.path.getmtime(EFFECTIF_PATH)
+    except OSError:
+        mt = None
+    if _EFF_MEMO["mtime"] != mt:
+        eff = EU.charger(EFFECTIF_PATH) if mt is not None else None
+        index = {}
+        if eff:
+            for nom, v in eff["joueuses"].items():
+                for x in [nom] + v["variantes"]:
+                    index.setdefault(EU.cle(x), nom)
+        _EFF_MEMO.update(mtime=mt, eff=eff, index=index, canon={})
+    return _EFF_MEMO["eff"]
+
+
+def nom_officiel(brut) -> Optional[str]:
+    """Nom officiel (tel qu'écrit dans l'Effectif) d'une orthographe trouvée dans les données :
+    nom officiel ou orthographe rattachée, sinon ressemblance quasi certaine et sans ambiguïté
+    (mots contenus l'un dans l'autre à une faute près, ≥ 2 mots). None si inconnue."""
+    import effectif_utils as EU
+    eff = _effectif_courant()
+    if not eff or not isinstance(brut, str) or not brut.strip():
+        return None
+    memo = _EFF_MEMO["canon"]
+    if brut in memo:
+        return memo[brut]
+    off = _EFF_MEMO["index"].get(EU.cle(brut))
+    if off is None and len(EU.mots(brut)) >= 2:
+        sug = EU.suggestions(brut, eff, n=2, seuil=0.95)
+        if len(sug) == 1:
+            off = sug[0][0]
+    memo[brut] = off
+    return off
+
+
+def canon_joueuse(brut):
+    """Forme commune d'un nom de joueuse (normalize_name_raw du nom officiel) ; le nom brut
+    inchangé s'il n'est pas rattaché à l'Effectif (« Noms à rattacher » de Gestion → Effectif)."""
+    off = nom_officiel(brut)
+    return normalize_name_raw(off) if off else brut
+
+
+def canon_df(df, col: str):
+    """Remplace les noms de la colonne `col` par leur forme commune (canon_joueuse)."""
+    if not isinstance(df, pd.DataFrame) or df.empty or col not in df.columns:
+        return df
+    _u = df[col].dropna().unique()
+    _m = {v: canon_joueuse(v) for v in _u if isinstance(v, str)}
+    if any(k != v for k, v in _m.items()):
+        df[col] = df[col].map(lambda v: _m.get(v, v) if isinstance(v, str) else v)
+    return df
+
+
+def liste_effectif(noms_donnees=None) -> list:
+    """Liste de joueuses pour les menus : l'Effectif (au club ; tout l'effectif quand on
+    consulte une saison passée), sous la forme commune. Avec `noms_donnees`, seulement les
+    joueuses qui ont des données parmi ces noms (les noms non rattachés n'apparaissent pas)."""
+    import effectif_utils as EU
+    eff = _effectif_courant()
+    if eff is None:
+        try:
+            eff = charger_effectif()
+        except Exception:
+            eff = None
+    if not eff:  # repli : pas d'effectif lisible
+        return retirer_parties(sorted({nettoyer_nom_joueuse(n) for n in (noms_donnees or []) if n}))
+    noms = EU.noms(eff, EU.STATUT_CLUB if _filtre_parties_actif() else None)
+    out = sorted({normalize_name_raw(n) for n in noms})
+    if noms_donnees is not None:
+        dispo = {canon_joueuse(n) for n in noms_donnees if isinstance(n, str)}
+        out = [n for n in out if n in dispo]
+    return out
+
+
+TABLES_NOMS_SUPABASE = [("presence_entrainement", "Présence"), ("visites_medicales", "Médical"),
+                        ("mesures_corporelles", "Mesures"), ("objectifs_joueuse", "Objectifs"),
+                        ("objectifs_evaluations", "Évaluations objectifs")]
+
+
 @st.cache_data(ttl=300, show_spinner=False)
-def _comptes_noms_supabase() -> dict:
-    """{source: {nom saisi: nb de lignes}} des tables Supabase lues par l'app (lecture paginée)."""
+def _noms_table_supabase(table: str) -> dict:
+    """{nom saisi: nb de lignes} d'une table Supabase (lecture paginée, piège n°7)."""
     from collections import Counter
-    out = {}
     _sb = get_supabase_client()
     if _sb is None:
-        return out
-    for table, lib in [("presence_entrainement", "Présence"), ("visites_medicales", "Médical"),
-                       ("mesures_corporelles", "Mesures"), ("objectifs_joueuse", "Objectifs")]:
+        return {}
+    try:
+        rows, debut = [], 0
+        while True:
+            lot = _sb.table(table).select("joueuse").order("joueuse").range(debut, debut + 999).execute().data or []
+            rows += lot
+            if len(lot) < 1000:
+                break
+            debut += 1000
+        return dict(Counter(str(r.get("joueuse") or "") for r in rows))
+    except Exception:
+        return {}
+
+
+def _comptes_noms_supabase() -> dict:
+    """{source: {nom saisi: nb de lignes}} des tables Supabase lues par l'app."""
+    out = {}
+    for table, lib in TABLES_NOMS_SUPABASE:
+        d = _noms_table_supabase(table)
+        if d:
+            out[lib] = d
+    return out
+
+
+def orthographes_supabase(table: str, joueuse: str) -> list:
+    """Toutes les orthographes sous lesquelles une joueuse est enregistrée dans une table
+    Supabase (pour les requêtes .in_("joueuse", …) : une saisie ancienne sous une autre
+    orthographe reste retrouvée)."""
+    c = canon_joueuse(joueuse)
+    out = {joueuse, nettoyer_nom_joueuse(joueuse), c}
+    out |= {n for n in _noms_table_supabase(table) if n and canon_joueuse(n) == c}
+    return sorted(x for x in out if x)
+
+
+def _vider_caches_noms() -> None:
+    """Après une modification de l'Effectif : les données déjà chargées sont relues."""
+    for f in (load_visites_medicales, load_mesures_corporelles, load_objectifs_joueuses,
+              load_objectifs_pour_joueuse, load_pdi_evaluations, load_presence_for_date,
+              load_presence_rate, load_rpe_joueuse, _noms_table_supabase):
         try:
-            rows, debut = [], 0
-            while True:
-                lot = _sb.table(table).select("joueuse").order("joueuse").range(debut, debut + 999).execute().data or []
-                rows += lot
-                if len(lot) < 1000:
-                    break
-                debut += 1000
-            out[lib] = dict(Counter(str(r.get("joueuse") or "") for r in rows))
+            f.clear()
         except Exception:
             pass
-    return out
 
 
 def comptes_noms_donnees(pfc_kpi) -> dict:
@@ -14068,6 +14145,7 @@ def _renommer_fiche_et_photo(ancien: str, nouveau: str) -> None:
 
 def _effectif_maj(eff: dict, message: str) -> None:
     enregistrer_effectif(eff)
+    _vider_caches_noms()
     st.session_state["_eff_v"] = st.session_state.get("_eff_v", 0) + 1
     st.session_state["_eff_msg"] = message
     st.rerun()
@@ -15583,6 +15661,8 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
     )
 
     player_name = get_player_for_profile(user_profile, permissions)
+    if player_name:
+        player_name = canon_joueuse(player_name)  # même forme que les données et les listes
     _sb.markdown(
         f"<div style='font-family:Oswald,sans-serif;font-size:11px;font-weight:500;letter-spacing:0.14em;"
         f"text-transform:uppercase;color:#9FB8D8;padding:0 12px 2px 12px;'>Connecté</div>"
@@ -15626,6 +15706,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
     # Filtrer par saison si nécessaire (collect_data déjà appelé dans main())
     if selected_saison != "Toutes les saisons":
         pfc_kpi, edf_kpi, _gps, _gpsw, _gps_match, _nr = collect_data(selected_saison)
+        pfc_kpi = canon_df(pfc_kpi.copy() if isinstance(pfc_kpi, pd.DataFrame) else pfc_kpi, "Player")
+        _gps, _gpsw, _gps_match = (canon_df(d.copy() if isinstance(d, pd.DataFrame) else d, "Player")
+                                   for d in (_gps, _gpsw, _gps_match))
         st.session_state["name_report_df"] = _nr
         st.session_state["gps_raw_df"] = _gps
         st.session_state["gps_weekly_df"] = _gpsw
@@ -15748,7 +15831,9 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
             # ── Joueuses — filtre & aliases ───────────────────────────────
             with tab_jouеuses:
                 st.subheader("Gestion des joueuses")
-                st.caption("Masquez des joueuses ou corrigez leurs noms pour les raccrocher au bon profil. Ces réglages sont permanents.")
+                st.warning("Ces réglages (joueuses masquées, corrections de noms) ne sont plus utilisés : les listes "
+                           "de joueuses viennent de l'onglet **👥 Effectif**, et les orthographes s'y rattachent. "
+                           "Cet onglet sera retiré.")
 
                 # Charger settings depuis disque
                 _ps = load_player_settings()
@@ -16746,13 +16831,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
             st.warning("Connexion Supabase non configurée (SUPABASE_URL / SUPABASE_SERVICE_KEY manquants dans les secrets).")
         else:
             def _med_get_roster():
-                _roster = load_presence_roster()
-                if _roster:
-                    return retirer_parties(_roster)
-                _ps = st.session_state.get("_player_settings") or load_player_settings()
-                _all_p = sorted(pfc_kpi_all["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
-                         if pfc_kpi_all is not None and not pfc_kpi_all.empty else []
-                return apply_player_settings(_all_p, _ps)
+                return liste_effectif()  # Gestion → 👥 Effectif
 
             _MED_MOIS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
                             "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
@@ -17350,6 +17429,10 @@ def main():
 
     with st.spinner("Chargement des données…"):
         pfc_kpi, edf_kpi, gps_raw_df, gps_week_df, gps_match_df, name_report_df = collect_data()
+    # Noms des joueuses ramenés au nom officiel de l'Effectif (canon_joueuse)
+    pfc_kpi = canon_df(pfc_kpi.copy() if isinstance(pfc_kpi, pd.DataFrame) else pfc_kpi, "Player")
+    gps_raw_df, gps_week_df, gps_match_df = (
+        canon_df(d.copy() if isinstance(d, pd.DataFrame) else d, "Player") for d in (gps_raw_df, gps_week_df, gps_match_df))
     st.session_state["name_report_df"] = name_report_df
     st.session_state["gps_raw_df"] = gps_raw_df
     st.session_state["gps_weekly_df"] = gps_week_df
