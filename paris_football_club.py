@@ -10893,20 +10893,17 @@ def build_fiche_bilan_html(player_name: str,
                            medical_visits_total: int = 0,
                            medical_prof_counts: tuple = (),
                            medical_zone_counts: tuple = (),
-                           health_measures: tuple = ()) -> str:
-    """Génère la fiche bilan périodique HTML d'une joueuse.
-    Reproduit la structure de la fiche papier :
-    - En-tête identité + photo
-    - Radar tactique (KPIs agrégés)
-    - Indicateurs techniques (passes, dribbles, tirs)
-    - Indicateurs défensifs (duels, interceptions, pertes)
-    - Indicateurs athlétiques GPS
-    """
-    import base64 as _b64f, io as _io, math as _mf
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as _plt_f
-    from mplsoccer import Radar
+                           health_measures: tuple = (),
+                           periode: str = "") -> str:
+    """Fiche bilan périodique HTML d'une joueuse — A4 paysage, charte du rapport de
+    match individuel (build_tactical_report_html) :
+    - en-tête navy (logo, nom, postes, période)
+    - gauche « Statistiques » : technique, offensif, défensif (moyennes sur la période)
+    - droite : photo + profil, données athlétiques GPS + objectifs au poste, araignée
+      tactique (build_kpi_spider_b64)
+    - page 2 « Espace santé » si l'indicateur est coché (visites, zones, mesures).
+    `periode` : libellé affiché dans l'en-tête (ex. « Toute la saison »)."""
+    import math as _mf
 
     # None = tout afficher (rétrocompatible) ; sinon set des libellés
     # d'indicateurs à inclure (FICHE_BILAN_ALL_INDICATORS).
@@ -11001,113 +10998,19 @@ def build_fiche_bilan_html(player_name: str,
     tps_gps     = _n(_gps_mean("Durée_min"))
     freq_moy    = round(dist_moy / tps_gps, 1) if (dist_moy and tps_gps and tps_gps > 0) else None
 
-    # ── Radar matplotlib → base64 ─────────────────────────────────────────
+    # ── Présentation : charte du rapport de match (v5) — A4 paysage, navy, cartes
+    # arrondies, Unbounded/Inter, araignée tactique sur panneau blanc ──────────
     _radar_all_labels = ["Rigueur", "Récupération", "Distribution",
                          "Percussion", "Finition", "Créativité"]
-    _radar_all_vals = [rigueur or 0, recuper or 0, distribut or 0,
-                       percussion or 0, finition or 0, creativite or 0]
-    _radar_labels = [l for l in _radar_all_labels if l in _sel]
-    _radar_vals   = [v for l, v in zip(_radar_all_labels, _radar_all_vals) if l in _sel]
-    radar_b64 = ""
-    if _radar_labels:
-      with MPL_LOCK:
-        try:
-            _n_ax = len(_radar_labels)
-            _rdr = Radar(_radar_labels, [0]*_n_ax, [100]*_n_ax, num_rings=4,
-                         ring_width=1, center_circle_radius=1)
-            _fig_r, _ax_r = _rdr.setup_axis(figsize=(4, 4))
-            _fig_r.patch.set_facecolor("#061A40")
-            _ax_r.set_facecolor("#061A40")
-            _rdr.draw_circles(_ax_r, facecolor="#0C1A28", edgecolor="#1E2D40")
-            _rdr.draw_radar(_radar_vals, _ax_r,
-                            kwargs_radar={"facecolor":"#1FA8E0","alpha":0.4},
-                            kwargs_rings={"facecolor":"#1FA8E0","alpha":0.2})
-            _rdr.draw_range_labels(_ax_r, fontsize=6, color="#9FB8D8")
-            _rdr.draw_param_labels(_ax_r, fontsize=8, color="#C8D8E8")
-            _buf_r = _io.BytesIO()
-            _fig_r.savefig(_buf_r, format="png", dpi=130, bbox_inches="tight",
-                           facecolor="#061A40")
-            _buf_r.seek(0)
-            radar_b64 = "data:image/png;base64," + _b64f.b64encode(_buf_r.read()).decode()
-            _plt_f.close(_fig_r)
-        except Exception as _e:
-            pass
+    _radar_all_vals = [rigueur, recuper, distribut, percussion, finition, creativite]
+    _spider_scores = {l: v for l, v in zip(_radar_all_labels, _radar_all_vals) if l in _sel and v is not None}
+    spider_b64 = ""
+    try:
+        spider_b64 = build_kpi_spider_b64(_spider_scores) if _spider_scores else ""
+    except Exception:
+        spider_b64 = ""
 
-    # ── Helpers HTML ──────────────────────────────────────────────────────
-    def _kpi_circle(val, label, color="#1FA8E0", size=70):
-        v = _n(val)
-        pct_arc = int((v or 0))
-        return (
-            f"<div style='text-align:center'>"
-            f"<div style='position:relative;width:{size}px;height:{size}px;margin:0 auto'>"
-            f"<svg viewBox='0 0 36 36' style='width:{size}px;height:{size}px;transform:rotate(-90deg)'>"
-            f"<circle cx='18' cy='18' r='15.9' fill='none' stroke='#1E2D40' stroke-width='3'/>"
-            f"<circle cx='18' cy='18' r='15.9' fill='none' stroke='{color}' stroke-width='3'"
-            f" stroke-dasharray='{pct_arc} {100-pct_arc}' stroke-linecap='round'/>"
-            f"</svg>"
-            f"<div style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"
-            f"font-size:{int(size*0.22)}px;font-weight:700;color:#E8F4FF'>"
-            f"{_fmt(v,0)}%</div>"
-            f"</div>"
-            f"<div style='font-size:9px;color:#8A9BB0;margin-top:3px'>{label}</div>"
-            f"</div>"
-        )
-
-    def _bar_h(val, max_val, color, height=6):
-        pct = min(int((val or 0)/(max_val or 1)*100), 100)
-        return (f"<div style='height:{height}px;background:#1E2D40;border-radius:3px;overflow:hidden'>"
-                f"<div style='width:{pct}%;height:{height}px;background:{color};border-radius:3px'></div></div>")
-
-    def _stat_row(label, val, unit="", color="#1FA8E0", max_val=100):
-        vstr = _fmt(_n(val), 1 if isinstance(val, float) else 0, unit)
-        return (f"<div style='margin-bottom:8px'>"
-                f"<div style='display:flex;justify-content:space-between;margin-bottom:2px'>"
-                f"<span style='font-size:9px;color:#8A9BB0'>{label}</span>"
-                f"<span style='font-size:10px;font-weight:700;color:#E8F4FF'>{vstr}</span></div>"
-                f"{_bar_h(_n(val), max_val, color)}"
-                f"</div>")
-
-    def _minmaxmoy(label, mn, my, mx, color="#1FA8E0"):
-        _mn = _fmt(_n(mn), 0); _my = _fmt(_n(my), 1); _mx = _fmt(_n(mx), 0)
-        fill_w = int((_n(my) or 0)/(_n(mx) or 1)*100) if _n(mx) else 0
-        return (
-            f"<div style='margin-bottom:10px'>"
-            f"<div style='font-size:9px;color:#8A9BB0;margin-bottom:4px'>{label}</div>"
-            f"<div style='display:flex;align-items:center;gap:6px'>"
-            f"<span style='font-size:9px;color:#4A6070;width:16px'>{_mn}</span>"
-            f"<div style='flex:1;height:20px;background:#1E2D40;border-radius:4px;position:relative'>"
-            f"<div style='position:absolute;left:0;top:0;height:100%;width:{fill_w}%;background:{color};border-radius:4px;opacity:0.7'></div>"
-            f"<div style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"
-            f"font-size:11px;font-weight:700;color:#E8F4FF'>{_my}</div>"
-            f"</div>"
-            f"<span style='font-size:9px;color:#4A6070;width:16px;text-align:right'>{_mx}</span>"
-            f"</div></div>"
-        )
-
-    def _section(title, color="#1FA8E0"):
-        return (f"<div style='font-size:8px;font-weight:700;color:{color};"
-                f"text-transform:uppercase;letter-spacing:.12em;"
-                f"border-left:3px solid {color};padding-left:6px;"
-                f"margin:0 0 8px'>{ title}</div>")
-
-    # ── GPS objectifs poste (seuils standards) ────────────────────────────
-    _gps_objectives = {
-        "Endurance (m)": (10000, dist_moy),
-        "Intensité (m)":  (800,  hid_moy),
-        "Sprint (#)":     (10,   spr_moy),
-        "Fréquence (m/min)": (110, freq_moy),
-    }
-
-    photo_html = ""
-    if photo_b64:
-        photo_html = f"<img src='{photo_b64}' style='width:70px;height:70px;border-radius:50%;object-fit:cover;border:2px solid #1FA8E0'>"
-    else:
-        initials = "".join(w[0] for w in player_name.split()[:2]).upper()
-        photo_html = (f"<div style='width:70px;height:70px;border-radius:50%;background:#0C1A28;"
-                      f"border:2px solid #1FA8E0;display:flex;align-items:center;justify-content:center;"
-                      f"font-size:22px;font-weight:700;color:#1FA8E0'>{initials}</div>")
-
-    # ── Registre des données personnelles (source Google Drive) ──────────
+    # ── Registre des données personnelles (repli si la fiche Effectif est vide) ──
     _PLAYER_REGISTRY = {
         "AMMAR PARMENTIER": {"ddn": "15/01/2008", "lateralite": "Gauchère",  "poste1": "Défenseure Centrale Gauche", "poste2": "Latérale Gauche"},
         "BARADJI":          {"ddn": "11/06/2010", "lateralite": "Droitière", "poste1": "Attaquante",                 "poste2": "Attaquante Excentrée Droit"},
@@ -11145,208 +11048,290 @@ def build_fiche_bilan_html(player_name: str,
         "YERRO":            {"ddn": "07/02/2009", "lateralite": "Droitière", "poste1": "Milieu Offensive Droit",     "poste2": "Attaquante Excentrée Droit"},
     }
 
-    # Résoudre les données personnelles depuis le registre
     def _lookup_player(name: str) -> dict:
         """Cherche les infos par nom de famille (insensible à la casse)."""
         name_up = name.upper().strip()
-        # Cherche d'abord correspondance exacte sur le nom de famille
         for key, data in _PLAYER_REGISTRY.items():
             if key.upper() in name_up or name_up.startswith(key.upper().split()[0]):
                 return data
-        # Cherche partielle
         for key, data in _PLAYER_REGISTRY.items():
             if any(part in name_up for part in key.upper().split()):
                 return data
         return {}
 
-    info = player_info or _lookup_player(player_name)
-    name_parts = player_name.title().split()
-    nom = name_parts[0] if name_parts else ""
-    prenom = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+    # Fiche Effectif (ddn, pied, postes) en priorité, registre en repli champ par champ
+    _reg = _lookup_player(player_name)
+    _pi = player_info or {}
+    def _champ(*cles):
+        for src in (_pi, _reg):
+            for c in cles:
+                v = str(src.get(c, "") or "").strip()
+                if v and v not in ("—", "nan"):
+                    return v
+        return ""
+    ddn = _champ("ddn")
+    pied = _champ("pied", "lateralite")
+    poste1 = _champ("poste1")
+    poste2 = _champ("poste2")
+    age_txt = ""
+    if ddn:
+        _dob = pd.to_datetime(ddn, dayfirst=True, errors="coerce")
+        if pd.notna(_dob):
+            _t = pd.Timestamp.today()
+            age_txt = f"{_t.year - _dob.year - ((_t.month, _t.day) < (_dob.month, _dob.day))} ans"
 
-    # ── Espace Santé (visites médicales : camembert + heatmap ; mesures : courbe
-    # poids/masse grasse) — pré-calculé en variable simple pour éviter toute collision
-    # de guillemets imbriqués dans le gros f-string HTML ci-dessous.
-    _med_html = ""
+    # ── Briques HTML (classes du rapport de match) ────────────────────────
+    def _num(v, dec=0, unit=""):
+        return _fmt(_n(v), dec, unit) if _n(v) is not None else "—"
+
+    def row(lbl, val, extra="", barre=None):
+        _b = ""
+        if barre is not None:
+            _b = f'<div class="bar"><i style="width:{max(0, min(100, barre)):.0f}%"></i></div>'
+        _r = f'<div class="r"><div class="rl">{lbl}</div><div class="rv">{val}{extra}</div></div>'
+        return f'<div class="rb">{_r}{_b}</div>' if _b else _r
+
+    def row_pct(lbl, v):
+        v = _n(v)
+        return row(lbl, "—" if v is None else f"{v:.0f}<span class='u'>%</span>", barre=v)
+
+    def row_mm(lbl, mn, my, mx):
+        _ex = (f'<span class="pc mm">min {_fmt(_n(mn), 0)} · max {_fmt(_n(mx), 0)}</span>'
+               if _n(mx) is not None else "")
+        return row(lbl, _num(my, 1), _ex)
+
+    def card(title, body, cls=""):
+        if not body:
+            return ""
+        _k = body.count('class="r"') + body.count('class="obj"')
+        return (f'<div class="card {cls}" style="flex-grow:{max(1, _k)};"><div class="ct">{title}</div>'
+                f'<div class="rows">{body}</div></div>')
+
+    def _cell(lbl, val, couleur="#FFFFFF"):
+        return f'<div class="cell"><div class="cl">{lbl}</div><div class="cv" style="color:{couleur}">{val}</div></div>'
+
+    # ── Cartes STATISTIQUES ───────────────────────────────────────────────
+    tech = ""
+    if "Passes réussies" in _sel:
+        tech += row_pct("Passes réussies", passes_ok_pct)
+    if "Passes courtes" in _sel:
+        tech += row_pct("Passes courtes réussies", _mean("Technique 2"))
+    if "Passes longues" in _sel:
+        tech += row_pct("Passes longues réussies", _mean("Technique 3"))
+    if "Dribbles réussis" in _sel:
+        tech += row_pct("Dribbles réussis", dribbles_ok_pct)
+    if "Tirs cadrés" in _sel:
+        tech += row_pct("Tirs cadrés", tirs_cadres_pct)
+
+    off = ""
+    if "Buts" in _sel or "Passes déc." in _sel:
+        off += row("Buts / Passes décisives", f"{int(buts_tot)} / {int(passes_dec)}")
+    if "Passe 1/3" in _sel:
+        off += row("Passes vers le dernier tiers", int(passes_1t))
+
+    dfn = ""
+    if "Duels défensifs / match" in _sel:
+        dfn += row_mm("Duels défensifs <span class='rs'>/ match</span>", d_min, d_moy, d_max)
+    if "Duels gagnés %" in _sel:
+        dfn += row_pct("Duels gagnés", duels_ok_pct)
+    if "Timing (sans faute %)" in _sel:
+        dfn += row_pct("Timing <span class='rs'>sans faute</span>", timing_val)
+    if "Interceptions / match" in _sel:
+        dfn += row_mm("Interceptions <span class='rs'>/ match</span>", i_min, i_moy, i_max)
+    if "Fautes / match" in _sel and fautes_moy is not None:
+        dfn += row("Fautes <span class='rs'>/ match</span>", _num(fautes_moy, 1))
+
+    col1 = card("Technique <span class='ctl'>(% réussite)</span>", tech) + card("Offensif", off)
+    col2 = card("Défensif", dfn)
+
+    # ── Profil (en-tête droite, à côté de la photo) ───────────────────────
+    prof = (row("Date de naissance", ddn or "—", f'<span class="pc">({age_txt})</span>' if age_txt else "")
+            + row("Pied fort", pied or "—") + row("Poste 1", poste1 or "—") + row("Poste 2", poste2 or "—")
+            + row("Matchs analysés", n_matchs,
+                  f'<span class="pc">(moy. {_fmt(_n(tps_gps or tps_moy), 0)} min)</span>' if _n(tps_gps or tps_moy) else ""))
+    if "Taux de présence" in _sel:
+        prof += row("Taux de présence", "—" if _n(taux_presence) is None else f"{_n(taux_presence):.0f}<span class='u'>%</span>")
+    prof_card = card("Profil", prof, "prof")
+
+    # ── Données athlétiques (moyennes par match) + objectifs au poste ─────
+    _ath_cells = []
+    if "Endurance (m)" in _sel:
+        _ath_cells.append(_cell("Distance <span class='rs'>m</span>", _num(dist_moy), "#5DCAA5"))
+    if "Intensité (m)" in _sel:
+        _ath_cells.append(_cell("Intensité <span class='rs'>m &gt;13 km/h</span>", _num(hid_moy), "#5DCAA5"))
+    if "Sprint (nb)" in _sel:
+        _ath_cells.append(_cell("Sprints <span class='rs'>&gt;23 km/h</span>", _num(spr_moy, 1), "#EF9F27"))
+    if "Vitesse max (km/h)" in _sel:
+        _ath_cells.append(_cell("Vitesse max <span class='rs'>km/h</span>", _num(vmax_max, 1), "#FF6B6B"))
+    if "Fréquence (m/min)" in _sel:
+        _ath_cells.append(_cell("Fréquence <span class='rs'>m/min</span>", _num(freq_moy, 1), "#9FD8F2"))
+    _objectifs = [("Endurance (m)", "Distance", 10000, dist_moy, " m"),
+                  ("Intensité (m)", "Intensité", 800, hid_moy, " m"),
+                  ("Sprint (nb)", "Sprints", 10, spr_moy, ""),
+                  ("Fréquence (m/min)", "Fréquence", 110, freq_moy, " m/min")]
+    _obj_html = "".join(
+        f'<div class="obj"><div class="ol"><span>{lib}</span><b>{_num(val)}<span class="pc">/ {_fmt(obj, 0)}{unit}</span></b></div>'
+        f'<div class="bar"><i style="width:{min(100, (_n(val) or 0) / obj * 100):.0f}%"></i></div></div>'
+        for cle, lib, obj, val, unit in _objectifs if cle in _sel)
+    ath_card = ""
+    if _ath_cells or _obj_html:
+        ath_card = (
+            '<div class="gcard g-ath"><div class="gt"><b>Données athlétiques</b> · moyenne par match (GPS)</div>'
+            + (f'<div class="cells c3">{"".join(_ath_cells)}</div>' if _ath_cells else "")
+            + (f'<div class="sub">Objectifs au poste</div>{_obj_html}' if _obj_html else "")
+            + ('' if not gps_p.empty else '<div class="gn">Aucune donnée GPS match sur la période.</div>')
+            + '</div>')
+
+    spider_card = ""
+    if any(l in _sel for l in _radar_all_labels):
+        spider_card = (
+            '<div class="gcard g-spider"><div class="gt"><b>Indicateurs tactiques</b> · /100</div>'
+            + (f'<div class="panel"><img src="{spider_b64}"/></div>'
+               f'<div class="gn">Moyenne sur {n_matchs} match{"s" if n_matchs > 1 else ""}</div>'
+               if spider_b64 else '<div class="gn">Scores KPI non disponibles sur la période.</div>')
+            + '</div>')
+
+    initials = "".join(w[0].upper() for w in player_name.split()[:2]) if player_name else "??"
+    photo = (f'<img src="{photo_b64}" class="photo"/>' if photo_b64 else f'<div class="photo ph">{initials}</div>')
+    pills = (f'<span class="pill">{_esc(poste1)}</span>' if poste1 else "") + (
+             f'<span class="pill pill-o">{_esc(poste2)}</span>' if poste2 else "")
+    _ctx_sub = " · ".join(x for x in [periode or "", f"{n_matchs} match{'s' if n_matchs > 1 else ''} analysé{'s' if n_matchs > 1 else ''}"] if x)
+
+    PFC_LOGO = "https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png"
+    _bg_uri = _report_background_uri()
+    _bg_css = f"url('{_bg_uri}') center/cover no-repeat," if _bg_uri else ""
+
+    def _entete(sous_titre):
+        return (f'<div class="hdr"><img src="{PFC_LOGO}" alt="PFC" style="width:40px;height:40px;object-fit:contain;" '
+                f'onerror="this.style.display=\'none\'"/><div class="sep"></div>'
+                f'<div class="name">{_esc(player_name)}</div>{pills}'
+                f'<div class="hctx"><div class="hm"><b>{sous_titre}</b></div><div class="hs">{_esc(_ctx_sub)}</div></div></div>')
+
+    _pied = ('<div class="ftr"><span>Paris Football Club · Fiche bilan joueuse</span>'
+             '<span>Données tactiques + GPS</span><span style="color:#1FA8E0;font-weight:700;">Confidentiel</span></div>')
+
+    # ── Page 2 facultative : Espace Santé ─────────────────────────────────
+    page_sante = ""
     if "Espace Santé" in _sel:
-        _med_donut_b64 = render_medical_donut_png(medical_prof_counts) if (medical_visits_total and medical_prof_counts) else None
-        _med_heatmap_b64 = render_medical_heatmap_png(medical_zone_counts) if (medical_visits_total and medical_zone_counts) else None
-        _health_curve_b64 = render_health_curves_png(health_measures) if health_measures else None
-
-        if not medical_visits_total and not _health_curve_b64:
-            _med_html = f'''<div class="panel">
-      {_section("Espace Santé", "#E24B4A")}
-      <div style="color:#9FB8D8;font-size:11px">Aucune donnée de santé enregistrée.</div>
-    </div>'''
+        _donut = render_medical_donut_png(medical_prof_counts) if (medical_visits_total and medical_prof_counts) else None
+        _heat = render_medical_heatmap_png(medical_zone_counts) if (medical_visits_total and medical_zone_counts) else None
+        _courbe = render_health_curves_png(health_measures) if health_measures else None
+        def _gimg(titre, src):
+            return (f'<div class="gcard"><div class="gt"><b>{titre}</b></div>'
+                    + (f'<div class="gimg"><img src="{src}"/></div>' if src else '<div class="gn">Aucune donnée.</div>')
+                    + '</div>')
+        if medical_visits_total or _courbe:
+            _sante_corps = (f'<div class="sante">{_gimg(f"Visites médicales · {int(medical_visits_total or 0)}", _donut)}'
+                            f'{_gimg("Zones concernées", _heat)}{_gimg("Poids et masse grasse", _courbe)}</div>')
         else:
-            _med_donut_img = f'<img src="{_med_donut_b64}" style="max-width:100%;display:block;margin:0 auto">' if _med_donut_b64 else ""
-            _med_heat_img = f'<img src="{_med_heatmap_b64}" style="max-width:100%;display:block;margin:8px auto 0">' if _med_heatmap_b64 else ""
-            _health_curve_img = f'<img src="{_health_curve_b64}" style="max-width:100%;display:block;margin:8px auto 0">' if _health_curve_b64 else ""
-            _med_html = f'''<div class="panel">
-      {_section("Espace Santé", "#E24B4A")}
-      {_med_donut_img}
-      {_med_heat_img}
-      {_health_curve_img}
-    </div>'''
+            _sante_corps = '<div class="gn" style="padding:22px;">Aucune donnée de santé enregistrée.</div>'
+        page_sante = (f'<div class="page">{_entete("Espace santé")}'
+                      f'<div class="right" style="flex:1;min-height:0;"><div class="sect">ESPACE SANTÉ</div>{_sante_corps}</div>'
+                      f'{_pied}</div>')
+
+    _css = """
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exact;display:flex;flex-direction:column;align-items:center;gap:10px;padding:6px;}
+.page{width:297mm;height:210mm;overflow:hidden;display:flex;flex-direction:column;font-family:Inter,sans-serif;color:#E6EEF8;
+  background:__BG__ #0A2453;flex-shrink:0;}
+.hdr{display:flex;align-items:center;gap:14px;padding:12px 22px;background:#061A40;border-bottom:2px solid #1FA8E0;flex-shrink:0;}
+.hdr .sep{width:1px;height:30px;background:rgba(255,255,255,.25);}
+.name{font-family:Unbounded,sans-serif;font-size:23px;font-weight:800;color:#FFF;letter-spacing:.2px;white-space:nowrap;}
+.pill{font-size:11px;font-weight:700;padding:4px 12px;border-radius:999px;background:#1FA8E0;color:#061A40;white-space:nowrap;}
+.pill-o{background:transparent;color:#9FD8F2;border:1.5px solid #1FA8E0;}
+.hctx{margin-left:auto;text-align:right;}
+.hm{font-size:13.5px;color:#FFF;font-weight:500;text-transform:uppercase;letter-spacing:1.6px;}
+.hs{font-size:10.5px;color:#9FB8D8;margin-top:2px;}
+.body{display:grid;grid-template-columns:41% 1fr;flex:1;min-height:0;}
+.left{background:rgba(4,18,50,.15);padding:12px 14px 12px 22px;border-right:2px solid rgba(31,168,224,.35);display:flex;flex-direction:column;min-height:0;}
+.right{padding:12px 22px 12px 18px;display:flex;flex-direction:column;min-height:0;}
+.sect{font-size:12px;font-weight:700;letter-spacing:2.2px;color:#1FA8E0;margin-bottom:9px;}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:10px;flex:1;min-height:0;}
+.col{display:flex;flex-direction:column;gap:10px;min-height:0;}
+.card{background:rgba(16,46,100,.42);border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;}
+.col>.card,.gcol>.card{flex-basis:0;}
+.rows{flex:1;display:flex;flex-direction:column;justify-content:space-around;}
+.ct{font-size:10.5px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:#1FA8E0;margin-bottom:5px;}
+.ctl{text-transform:none;letter-spacing:.3px;color:#9FD8F2;font-weight:500;}
+.r{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.10);}
+.r:last-child{border-bottom:none;}
+.rb{border-bottom:1px solid rgba(255,255,255,.10);padding-bottom:6px;} .rb:last-child{border-bottom:none;} .rb .r{border-bottom:none;padding-bottom:4px;}
+.mm{display:block;text-align:right;margin-top:2px;font-size:10px;}
+.rl{font-size:12.5px;color:#E6EEF8;}
+.rs{font-size:9.5px;color:#8FA9CC;margin-left:4px;}
+.rv{font-family:Unbounded,sans-serif;font-size:15.5px;font-weight:700;color:#FFF;white-space:nowrap;}
+.u{font-size:11px;margin-left:1px;}
+.prof{overflow:hidden;} .prof .rv{font-size:13px;white-space:normal;text-align:right;line-height:1.25;max-width:68%;} .prof .pc{white-space:nowrap;display:block;}
+.pc{font-family:Inter,sans-serif;font-size:11px;font-weight:500;color:#9FD8F2;margin-left:4px;}
+.bar{height:4px;border-radius:2px;background:rgba(255,255,255,.12);overflow:hidden;}
+.bar i{display:block;height:100%;border-radius:2px;background:#1FA8E0;}
+.cells{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;}
+.cells.c3{grid-template-columns:repeat(5,1fr);}
+.cell{background:rgba(6,26,64,.55);border:1px solid rgba(255,255,255,.10);border-radius:10px;padding:8px 9px;}
+.cl{font-size:10px;color:#E6EEF8;line-height:1.25;min-height:25px;}
+.cl .rs{display:block;margin-left:0;}
+.cv{font-family:Unbounded,sans-serif;font-size:15px;font-weight:700;margin-top:3px;white-space:nowrap;}
+.sub{font-size:10.5px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:#1FA8E0;margin:12px 0 4px;}
+.obj{padding:5px 0;}
+.ol{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;margin-bottom:4px;}
+.ol b{font-family:Unbounded,sans-serif;font-size:14px;}
+.graph{display:grid;grid-template-columns:minmax(0,.72fr) minmax(0,1.08fr) minmax(0,1fr);grid-template-rows:minmax(0,.9fr) minmax(0,1.1fr);gap:12px;flex:1;min-height:0;}
+.gcol{display:flex;flex-direction:column;gap:10px;min-height:0;}
+.gcard{background:rgba(12,40,92,.48);border:1px solid rgba(255,255,255,.16);border-top:3px solid #1FA8E0;border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;min-height:0;}
+.g-ath{flex:1;justify-content:flex-start;}
+.g-spider{flex:1;} .g-spider .panel{margin:auto 0;}
+.gt{font-size:12.5px;color:#FFF;margin-bottom:8px;}
+.gt b{font-weight:700;}
+.panel{background:#FFF;border-radius:4px;padding:6px;}
+.panel img{width:100%;display:block;}
+.gn{font-size:9.5px;color:#8FA9CC;margin-top:5px;}
+.pcard{background:linear-gradient(180deg,#F2F5FA,#C9D6E8);border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,.2);min-height:0;}
+.photo{width:100%;height:100%;object-fit:cover;object-position:top center;display:block;}
+.ph{display:flex;align-items:center;justify-content:center;font-family:Unbounded,sans-serif;font-size:44px;font-weight:800;color:#6C84A8;}
+.sante{display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:12px;flex:1;min-height:0;}
+.gimg{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;}
+.gimg img{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;}
+.ftr{height:20px;display:flex;align-items:center;justify-content:space-between;padding:0 22px;background:#061A40;flex-shrink:0;
+  font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#6E88AE;}
+@media print{body{background:#0A2453!important;padding:0;gap:0;} .page{page-break-after:always;break-after:page;} .page:last-child{page-break-after:auto;break-after:auto;} @page{size:A4 landscape;margin:0;}}
+""".replace("__BG__", _bg_css)
 
     html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-@page {{ size: A4 portrait; margin: 0; }}
-* {{ box-sizing:border-box; margin:0; padding:0; }}
-html,body {{
-  background:#061A40 !important;
-  color:#C8D8E8;
-  font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;
-  font-size:10px;
-  -webkit-print-color-adjust:exact !important;
-  print-color-adjust:exact !important;
-}}
-.page {{
-  background:#061A40 !important;
-  width:210mm; min-height:297mm;
-  padding:8mm 10mm 8mm 10mm;
-  display:grid;
-  grid-template-rows:auto 1fr;
-  gap:6px;
-}}
-.header {{
-  display:grid; grid-template-columns:auto 1fr auto;
-  gap:10px; align-items:center;
-  background:#0C1A28; border:1px solid #1E2D40;
-  border-radius:8px; padding:10px 14px;
-  margin-bottom:8px;
-}}
-.grid-3 {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }}
-.grid-2 {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }}
-.panel {{
-  background:#0C1A28; border:1px solid #1E2D40;
-  border-radius:8px; padding:10px 12px;
-}}
-.val-big {{
-  font-size:28px; font-weight:700; color:#E8F4FF; line-height:1;
-}}
-.label-sm {{ font-size:8px; color:#9FB8D8; text-transform:uppercase; letter-spacing:.08em; }}
-.badge {{
-  background:#0A2E18; color:#22C55E; font-size:9px; font-weight:700;
-  padding:3px 10px; border-radius:20px; border:1px solid #1D9E75;
-}}
-</style></head>
+<html lang="fr"><head>
+<meta charset="UTF-8"/>
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>{_css}</style></head>
 <body><div class="page">
-
-<!-- EN-TÊTE -->
-<div class="header">
-  <div style="display:flex;align-items:center;gap:10px">
-    {photo_html}
-    <div>
-      <div style="font-size:8px;color:#1FA8E0;font-weight:700;letter-spacing:.15em;text-transform:uppercase">Fiche Performance</div>
-      <div style="font-size:20px;font-weight:700;color:#E8F4FF;line-height:1.1">{nom}</div>
-      <div style="font-size:14px;color:#8A9BB0">{prenom}</div>
+{_entete("Fiche bilan")}
+<div class="body">
+  <div class="left">
+    <div class="sect">STATISTIQUES <span class="ctl" style="letter-spacing:.3px;">· moyennes sur la période</span></div>
+    <div class="cols">
+      <div class="col">{col1}</div>
+      <div class="col">{col2}</div>
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:0 16px">
-    <div><div class="label-sm">Née le</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('ddn','—')}</div></div>
-    <div><div class="label-sm">Pied fort</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('lateralite','—')}</div></div>
-    <div><div class="label-sm">Poste 1</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('poste1','—')}</div></div>
-    <div><div class="label-sm">Poste 2</div><div style="font-size:10px;color:#C8D8E8;margin-top:2px">{info.get('poste2') or '—'}</div></div>
-  </div>
-  <div style="text-align:right">
-    <div class="label-sm" style="margin-bottom:4px">Matchs analysés</div>
-    <div style="font-size:24px;font-weight:700;color:#1FA8E0">{n_matchs}</div>
-    <div class="label-sm" style="margin-top:4px">Tps moy. <span style="color:#C8D8E8">{_fmt(tps_gps or tps_moy,0)} min</span></div>
-  </div>
-</div>
-
-<!-- CORPS : 3 colonnes -->
-<div class="grid-3">
-
-  <!-- COL 1 : Radar + poste -->
-  <div style="display:flex;flex-direction:column;gap:8px">
-    <div class="panel">
-      {_section("Indicateurs Tactiques")}
-      {"<img src='"+radar_b64+"' style='width:100%;border-radius:4px'>" if radar_b64 else "<div style='height:160px;display:flex;align-items:center;justify-content:center;color:#4A6070'>Données insuffisantes</div>"}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:6px">
-        {"".join(f"<div style='display:flex;justify-content:space-between;font-size:9px'><span style='color:#8A9BB0'>{l}</span><span style='color:#1FA8E0;font-weight:700'>{_fmt(v,0)}</span></div>" for l,v in zip(_radar_all_labels, _radar_all_vals) if l in _sel)}
-      </div>
-    </div>
-  </div>
-
-  <!-- COL 2 : Techniques + Défensifs -->
-  <div style="display:flex;flex-direction:column;gap:8px">
-
-    <div class="panel">
-      {_section("Indicateurs Techniques")}
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">
-        {_kpi_circle(passes_ok_pct, "Passes réussies", "#1FA8E0") if "Passes réussies" in _sel else ""}
-        {_kpi_circle(dribbles_ok_pct, "Dribbles réussis", "#7F77DD") if "Dribbles réussis" in _sel else ""}
-        {_kpi_circle(tirs_cadres_pct, "Tirs cadrés", "#EF9F27") if "Tirs cadrés" in _sel else ""}
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;text-align:center;margin-bottom:8px">
-        {f'<div><div class="val-big" style="font-size:20px;color:#22C55E">{int(buts_tot)}</div><div class="label-sm">Buts</div></div>' if "Buts" in _sel else ""}
-        {f'<div><div class="val-big" style="font-size:20px;color:#5DCAA5">{int(passes_dec)}</div><div class="label-sm">Passes déc.</div></div>' if "Passes déc." in _sel else ""}
-        {f'<div><div class="val-big" style="font-size:20px;color:#378ADD">{int(passes_1t)}</div><div class="label-sm">Passe 1/3</div></div>' if "Passe 1/3" in _sel else ""}
-      </div>
-      <div style="font-size:9px;color:#9FB8D8;margin-bottom:4px">% passes réussies par type</div>
-      {_stat_row("Passes courtes", _n(_mean("Technique 2")), "%", "#378ADD", 100) if "Passes courtes" in _sel else ""}
-      {_stat_row("Passes longues", _n(_mean("Technique 3")), "%", "#7F77DD", 100) if "Passes longues" in _sel else ""}
-    </div>
-
-    <div class="panel">
-      {_section("Indicateurs Défensifs", "#EF9F27")}
-      {_minmaxmoy("Duels défensifs / match", d_min, d_moy, d_max, "#EF9F27") if "Duels défensifs / match" in _sel else ""}
-      {_stat_row("Duels gagnés %", (duels_ok_pct or 0), "%", "#EF9F27", 100) if "Duels gagnés %" in _sel else ""}
-      {_stat_row("Timing (sans faute %)", (timing_val or 0), "%", "#E24B4A", 100) if "Timing (sans faute %)" in _sel else ""}
-      {_minmaxmoy("Interceptions / match", i_min, i_moy, i_max, "#5DCAA5") if "Interceptions / match" in _sel else ""}
-      {_stat_row("Fautes / match", fautes_moy, "", "#FF6B6B", 5) if (fautes_moy is not None and "Fautes / match" in _sel) else ""}
-    </div>
-
-  </div>
-
-  <!-- COL 3 : GPS athlétique -->
-  <div style="display:flex;flex-direction:column;gap:8px">
-    <div class="panel" style="flex:1">
-      {_section("Indicateurs Athlétiques", "#1D9E75")}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
-        {f'''<div style="background:#061A40;border-radius:6px;padding:8px;text-align:center">
-          <div class="val-big" style="font-size:18px;color:#1D9E75">{_fmt(dist_moy,0)}</div>
-          <div class="label-sm">Endurance (m)</div>
-        </div>''' if "Endurance (m)" in _sel else ""}
-        {f'''<div style="background:#061A40;border-radius:6px;padding:8px;text-align:center">
-          <div class="val-big" style="font-size:18px;color:#5DCAA5">{_fmt(hid_moy,0)}</div>
-          <div class="label-sm">Intensité (m)</div>
-        </div>''' if "Intensité (m)" in _sel else ""}
-        {f'''<div style="background:#061A40;border-radius:6px;padding:8px;text-align:center">
-          <div class="val-big" style="font-size:18px;color:#EF9F27">{_fmt(spr_moy,0)}</div>
-          <div class="label-sm">Sprint (nb)</div>
-        </div>''' if "Sprint (nb)" in _sel else ""}
-        {f'''<div style="background:#061A40;border-radius:6px;padding:8px;text-align:center">
-          <div class="val-big" style="font-size:18px;color:#E24B4A">{_fmt(vmax_max,1)}</div>
-          <div class="label-sm">Vitesse max (km/h)</div>
-        </div>''' if "Vitesse max (km/h)" in _sel else ""}
-        {f'''<div style="background:#061A40;border-radius:6px;padding:8px;text-align:center">
-          <div class="val-big" style="font-size:18px;color:#378ADD">{_fmt(freq_moy,1)}</div>
-          <div class="label-sm">Fréquence (m/min)</div>
-        </div>''' if "Fréquence (m/min)" in _sel else ""}
-        {f'''<div style="background:#061A40;border-radius:6px;padding:8px;text-align:center">
-          <div class="val-big" style="font-size:18px;color:#B57EDC">{_fmt(taux_presence,1,"%")}</div>
-          <div class="label-sm">Taux de présence</div>
-        </div>''' if "Taux de présence" in _sel else ""}
-      </div>
-      {_section("Objectifs au poste", "#378ADD") if any(lbl in _sel for lbl in _gps_objectives) else ""}
-      {"".join(_stat_row(lbl, val, "", "#378ADD", obj) for lbl,(obj,val) in _gps_objectives.items() if lbl in _sel)}
+  <div class="right">
+    <div class="graph">
+      <div class="pcard" style="grid-column:1;grid-row:1;">{photo}</div>
+      <div class="gcol" style="grid-column:2 / span 2;grid-row:1;">{prof_card}</div>
+      <div style="grid-column:1 / span 2;grid-row:2;display:flex;min-height:0;">{ath_card}</div>
+      <div class="gcol" style="grid-column:3;grid-row:2;">{spider_card}</div>
     </div>
   </div>
 </div>
-
-{_med_html}
-
-<!-- PIED DE PAGE -->
-<div style="border-top:1px solid #1E2D40;margin-top:6px;padding-top:5px;display:flex;justify-content:space-between;font-size:8px;color:#3A4A5A">
-  <span>Paris FC — Centre de Formation Féminin</span>
-  <span>Fiche générée automatiquement · Données tactiques + GPS</span>
+{_pied}
 </div>
-
-</div></body></html>"""
+{page_sante}
+<script>
+(function(){{
+  // Écran : ajuste la page paysage à la largeur de l'iframe Streamlit (pas d'effet à l'impression)
+  function fit(){{var w=window.innerWidth||1135;var z=Math.min(1,(w-12)/1123);document.body.style.zoom=z;}}
+  if(!window.matchMedia||!window.matchMedia('print').matches){{fit();window.addEventListener('resize',fit);}}
+  window.addEventListener('beforeprint',function(){{document.body.style.zoom=1;}});
+}})();
+</script>
+</body></html>"""
     return html
 
 
@@ -13703,11 +13688,40 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             for _, r in _df_mesures_fiche.iterrows()
                         )) if not _df_mesures_fiche.empty else ()
 
+                        # Profil : fiche Effectif (même source que le rapport de match),
+                        # complétée par le référentiel passerelles
+                        _info_fiche = dict(_info)
+                        try:
+                            _info_fiche.update({k: v for k, v in get_player_demographics(_fiche_player).items() if v})
+                        except Exception:
+                            pass
+                        # Photo : même recherche que le rapport de match
+                        _photo_fiche = ""
+                        try:
+                            _pp_f = find_photo_for_player(_fiche_player,
+                                concordance=st.session_state.get("photo_concordance") or get_photo_concordance(),
+                                photos_index=st.session_state.get("photos_index") or build_photos_index_local())
+                            if _pp_f and os.path.exists(str(_pp_f)):
+                                import base64 as _b64pf
+                                _raw_f = load_photo_bytes(str(_pp_f))
+                                if _raw_f:
+                                    _photo_fiche = "data:image/jpeg;base64," + _b64pf.b64encode(_raw_f).decode()
+                        except Exception:
+                            pass
+                        if _fiche_period_mode == "Plage de dates" and _fiche_date_deb and _fiche_date_fin:
+                            _periode_fiche = f"Du {_fiche_date_deb:%d/%m/%Y} au {_fiche_date_fin:%d/%m/%Y}"
+                        else:
+                            _sais = st.session_state.get("selected_saison", "Toutes les saisons")
+                            _periode_fiche = (f"Saison 20{_sais[:2]}-20{_sais[2:]}"
+                                              if len(str(_sais)) == 4 and str(_sais).isdigit() else "Toutes les saisons")
+
                         _fiche_html = build_fiche_bilan_html(
                             player_name=_fiche_player,
                             pfc_kpi_all=_pfc_kpi_all_fiche,
                             gps_match_df=_gm_all_fiche,
-                            player_info=_info,
+                            photo_b64=_photo_fiche or None,
+                            player_info=_info_fiche,
+                            periode=_periode_fiche,
                             selected_indicators=_selected_indicators,
                             taux_presence=load_presence_rate(_fiche_player),
                             medical_visits_total=_med_summary_fiche["nb_visites"],
@@ -13735,10 +13749,21 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         mime="text/html",
                         key="dl_fiche_html"
                     )
-                st.caption("💡 Ouvre le fichier dans ton navigateur puis fais **Fichier → Imprimer** (Ctrl+P) pour exporter en PDF.")
+                st.caption("💡 Bouton « Imprimer / A4 » ci-dessous, ou ouvre le fichier téléchargé dans ton navigateur puis **Fichier → Imprimer** (A4 paysage).")
                 st.divider()
-                # Aperçu inline
-                st.iframe(_fiche_cached, height=900)
+                # Impression A4 paysage (même bouton que le rapport de match) + aperçu
+                _fiche_js = json.dumps(_fiche_cached).replace('</script', '<\\/script')
+                _fiche_pjs = ('<script>function pr(){var w=window.open("","_blank","width=1200,height=900");'
+                              'var _h=' + _fiche_js + ';'
+                              'w.document.write(_h);'
+                              'w.document.close();setTimeout(()=>w.print(),800);}</script>'
+                              '<button onclick="pr()" style="background:#1FA8E0;color:#061A40;border:none;'
+                              'border-radius:4px;padding:8px 18px;font-family:Oswald,sans-serif;'
+                              'font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px;">'
+                              '\U0001f5a8\ufe0f Imprimer / A4</button>')
+                st.iframe(_fiche_pjs, height=55)
+                # 1 page paysage (≈ 800 px à l'écran) + la page Espace santé si présente
+                st.iframe(_fiche_cached, height=820 * _fiche_cached.count('<div class="page">'))
 
 
 # =========================
