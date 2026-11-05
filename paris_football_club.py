@@ -15,6 +15,7 @@ import threading
 import functools
 import hmac
 from html import escape as _esc
+import math
 import unicodedata
 import warnings
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -15594,9 +15595,11 @@ def _aller_rubrique(rubrique):
 
 
 def _render_accueil(user_profile, role, is_staff_pro=False):
-    """Page d'accueil : une tuile cliquable par rubrique (bouton Streamlit invisible
-    posé sur la carte HTML, cf. CSS .st-key-pfc_tuile_*). Toutes les rubriques sont
-    affichées ; celles réservées à un autre rôle sont grisées et non cliquables."""
+    """Page d'accueil : boutons des rubriques disposés en cercle autour du logo
+    (positions calculées ici, CSS .st-key-pfc_cercle / .st-key-pfc_tuile_*). Chaque
+    bouton = carte HTML + bouton Streamlit invisible posé dessus ; la description
+    apparaît en bulle au survol. Toutes les rubriques sont affichées ; celles
+    réservées à un autre rôle sont grisées et non cliquables."""
     tuiles = list(RUBRIQUES_ACCUEIL)
     if is_staff_pro:
         tuiles.append(("Staff Pro", "Espace dédié au staff professionnel", "etoile", None))
@@ -15609,32 +15612,41 @@ def _render_accueil(user_profile, role, is_staff_pro=False):
         unsafe_allow_html=True,
     )
 
-    n_col = 3
-    for debut in range(0, len(tuiles), n_col):
-        cols = st.columns(n_col, gap="medium")
-        for j, (rub, texte, icone, roles) in enumerate(tuiles[debut:debut + n_col]):
-            i = debut + j
+    # Position de chaque bouton sur le cercle (premier en haut, sens horaire)
+    n = len(tuiles)
+    positions = "".join(
+        f".st-key-pfc_tuile_{i}{{left:{50 + 39 * math.cos(math.radians(-90 + 360 * i / n)):.2f}%;"
+        f"top:{50 + 39 * math.sin(math.radians(-90 + 360 * i / n)):.2f}%;}}"
+        for i in range(n)
+    )
+
+    with st.container(key="pfc_cercle"):
+        st.markdown(
+            f"<style>@media (min-width: 701px) {{ {positions} }}</style>"
+            "<div class='pfc-centre'>"
+            "<div class='pfc-orbite'></div>"
+            f"<div class='pfc-centre-logo'><img src='{PFC_LOGO_URL}' alt='Paris FC'></div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        for i, (rub, texte, icone, roles) in enumerate(tuiles):
             accessible = roles is None or role in roles
-            with cols[j]:
-                with st.container(key=f"pfc_tuile_{i}"):
-                    badge = "" if accessible else (
-                        "<span class='pfc-tuile-badge'>Réservé "
-                        + ("admins" if roles == (ROLE_ADMIN,) else "staff") + "</span>")
-                    st.markdown(
-                        f"<div class='pfc-tuile{'' if accessible else ' pfc-tuile-off'}'>"
-                        f"<div class='pfc-tuile-num'>{i + 1:02d}</div>"
-                        "<div class='pfc-tuile-icone'><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' "
-                        "stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>"
-                        f"{_ICONES_RUBRIQUES[icone]}</svg></div>"
-                        f"<div class='pfc-tuile-titre'>{_esc(rub)}</div>"
-                        f"<div class='pfc-tuile-texte'>{_esc(texte)}</div>"
-                        f"{badge}<div class='pfc-tuile-fleche'>&rarr;</div>"
-                        "</div>",
-                        unsafe_allow_html=True,
-                    )
-                    if accessible:
-                        st.button(rub, key=f"pfc_btn_tuile_{i}", on_click=_aller_rubrique,
-                                  args=(rub,), width="stretch")
+            bulle = _esc(texte) if accessible else (
+                f"{_esc(texte)}<br><b>Réservé {'aux admins' if roles == (ROLE_ADMIN,) else 'au staff'}</b>")
+            with st.container(key=f"pfc_tuile_{i}"):
+                st.markdown(
+                    f"<div class='pfc-tuile{'' if accessible else ' pfc-tuile-off'}'>"
+                    "<div class='pfc-tuile-icone'><svg viewBox='0 0 24 24' fill='none' stroke='currentColor' "
+                    "stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>"
+                    f"{_ICONES_RUBRIQUES[icone]}</svg></div>"
+                    f"<div class='pfc-tuile-titre'>{_esc(rub)}</div>"
+                    f"<div class='pfc-bulle'>{bulle}</div>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                if accessible:
+                    st.button(rub, key=f"pfc_btn_tuile_{i}", on_click=_aller_rubrique,
+                              args=(rub,), width="stretch")
 
 
 def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sidebar=None):
@@ -17201,46 +17213,65 @@ hr { border-color: var(--pfc-border) !important; margin: 1rem 0 !important; }
 ::-webkit-scrollbar-thumb { background: rgba(31,168,224,0.6); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--pfc-blue); }
 .stCaption, [data-testid="stCaptionContainer"] { color: var(--pfc-muted) !important; font-size: 12px !important; }
-/* ── Accueil : tuiles des rubriques (cf. _render_accueil) ── */
-.pfc-accueil-tete { margin: 0.4rem 0 1.6rem 0; }
+/* ── Accueil : boutons en cercle autour du logo (cf. _render_accueil) ── */
+.pfc-accueil-tete { margin: 0.2rem 0 0.4rem 0; text-align: center; }
 .pfc-accueil-salut { font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 0.18em;
                      text-transform: uppercase; color: var(--pfc-blue); }
-.pfc-accueil-titre { font-family: 'Unbounded', sans-serif; font-size: 1.7rem; font-weight: 800; color: var(--pfc-white);
+.pfc-accueil-titre { font-family: 'Unbounded', sans-serif; font-size: 1.6rem; font-weight: 800; color: var(--pfc-white);
                      margin-top: 6px; line-height: 1.15; }
-[class*="st-key-pfc_tuile_"] { position: relative; margin-bottom: 18px; }
+.st-key-pfc_cercle { position: relative; width: min(640px, 100%); aspect-ratio: 1 / 1; margin: 0 auto; gap: 0 !important; }
+.st-key-pfc_cercle .stElementContainer:has(.pfc-centre) { position: absolute !important; inset: 0; margin: 0 !important; pointer-events: none; }
+.pfc-centre { position: absolute; inset: 0; }
+.pfc-orbite { position: absolute; inset: 11%; border-radius: 50%; border: 1px dashed rgba(31,168,224,0.35); }
+.pfc-orbite::before { content: ""; position: absolute; inset: 22%; border-radius: 50%;
+    background: radial-gradient(circle, rgba(31,168,224,0.22) 0%, rgba(31,168,224,0.06) 55%, transparent 72%); }
+.pfc-centre-logo { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 30%; aspect-ratio: 1 / 1;
+    border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 35% 30%, rgba(31,168,224,0.28), rgba(6,26,64,0.92) 70%);
+    border: 2px solid rgba(31,168,224,0.65); box-shadow: 0 0 0 10px rgba(31,168,224,0.07), 0 0 48px rgba(31,168,224,0.35); }
+.pfc-centre-logo img { width: 68%; height: 68%; object-fit: contain; }
+[class*="st-key-pfc_tuile_"] { position: absolute !important; width: 116px !important; transform: translate(-50%, -50%); z-index: 1; }
+[class*="st-key-pfc_tuile_"]:hover { z-index: 20; }
 [class*="st-key-pfc_tuile_"] .stElementContainer:has(.stButton) { position: absolute !important; inset: 0; z-index: 2; margin: 0 !important; }
 [class*="st-key-pfc_tuile_"] .stButton, [class*="st-key-pfc_tuile_"] .stButton > button {
-    width: 100% !important; height: 100% !important; }
+    width: 100% !important; height: 100% !important; min-height: 0 !important; }
 [class*="st-key-pfc_tuile_"] .stButton > button { opacity: 0 !important; cursor: pointer !important; }
-.pfc-tuile { position: relative; overflow: hidden; height: 196px; padding: 22px 22px 18px 22px; border-radius: 18px;
-    background: linear-gradient(150deg, rgba(31,168,224,0.16) 0%, rgba(12,40,92,0.62) 46%, rgba(6,26,64,0.82) 100%);
-    border: 1px solid var(--pfc-border); box-shadow: 0 6px 22px rgba(0,0,0,0.22);
+.pfc-tuile { position: relative; width: 116px; height: 104px; border-radius: 18px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 9px;
+    background: linear-gradient(150deg, rgba(31,168,224,0.18) 0%, rgba(12,40,92,0.7) 50%, rgba(6,26,64,0.9) 100%);
+    border: 1px solid var(--pfc-border); box-shadow: 0 6px 20px rgba(0,0,0,0.28);
     transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
-.pfc-tuile::after { content: ""; position: absolute; left: 22px; right: 22px; bottom: 0; height: 3px; border-radius: 3px 3px 0 0;
-    background: var(--pfc-blue); transform: scaleX(0); transform-origin: left; transition: transform .25s ease; }
-.pfc-tuile-num { position: absolute; top: 16px; right: 20px; font-family: 'Unbounded', sans-serif; font-size: 13px;
-                 font-weight: 700; color: rgba(255,255,255,0.22); letter-spacing: 0.04em; }
-.pfc-tuile-icone { width: 48px; height: 48px; border-radius: 14px; display: flex; align-items: center; justify-content: center;
+.pfc-tuile-icone { width: 42px; height: 42px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
     background: rgba(31,168,224,0.16); border: 1px solid rgba(31,168,224,0.35); color: var(--pfc-blue);
     transition: background .18s ease, color .18s ease; }
-.pfc-tuile-icone svg { width: 26px; height: 26px; }
-.pfc-tuile-titre { font-family: 'Unbounded', sans-serif; font-size: 1.15rem; font-weight: 800; color: var(--pfc-white);
-                   margin-top: 18px; letter-spacing: 0.01em; }
-.pfc-tuile-texte { font-family: 'Inter', sans-serif; font-size: 13px; line-height: 1.45; color: var(--pfc-muted);
-                   margin-top: 6px; padding-right: 34px; }
-.pfc-tuile-fleche { position: absolute; right: 18px; bottom: 18px; width: 32px; height: 32px; border-radius: 50%;
-    display: flex; align-items: center; justify-content: center; font-size: 16px; color: var(--pfc-blue);
-    border: 1px solid rgba(31,168,224,0.45); transition: all .18s ease; }
-[class*="st-key-pfc_tuile_"]:hover .pfc-tuile:not(.pfc-tuile-off) { transform: translateY(-4px);
-    border-color: rgba(31,168,224,0.75); box-shadow: 0 14px 34px rgba(31,168,224,0.22); }
-[class*="st-key-pfc_tuile_"]:hover .pfc-tuile:not(.pfc-tuile-off)::after { transform: scaleX(1); }
+.pfc-tuile-icone svg { width: 23px; height: 23px; }
+.pfc-tuile-titre { font-family: 'Unbounded', sans-serif; font-size: 11.5px; font-weight: 700; color: var(--pfc-white);
+                   letter-spacing: 0.01em; text-align: center; }
+.pfc-bulle { position: absolute; left: 50%; bottom: calc(100% + 12px); transform: translate(-50%, 6px); width: max-content;
+    max-width: 220px; padding: 9px 13px; border-radius: 10px; background: var(--pfc-bande); border: 1px solid rgba(31,168,224,0.6);
+    box-shadow: 0 10px 28px rgba(0,0,0,0.4); font-family: 'Inter', sans-serif; font-size: 12.5px; line-height: 1.4;
+    color: var(--pfc-text); text-align: center; opacity: 0; visibility: hidden; pointer-events: none;
+    transition: opacity .16s ease, transform .16s ease; }
+.pfc-bulle::after { content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
+    border: 7px solid transparent; border-top-color: rgba(31,168,224,0.6); }
+.pfc-bulle b { color: var(--pfc-blue); font-weight: 700; }
+[class*="st-key-pfc_tuile_"]:hover .pfc-bulle { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+[class*="st-key-pfc_tuile_"]:hover .pfc-tuile:not(.pfc-tuile-off) { transform: translateY(-4px) scale(1.04);
+    border-color: rgba(31,168,224,0.8); box-shadow: 0 12px 30px rgba(31,168,224,0.28); }
 [class*="st-key-pfc_tuile_"]:hover .pfc-tuile:not(.pfc-tuile-off) .pfc-tuile-icone { background: var(--pfc-blue); color: var(--pfc-bande); }
-[class*="st-key-pfc_tuile_"]:hover .pfc-tuile:not(.pfc-tuile-off) .pfc-tuile-fleche { background: var(--pfc-blue); color: var(--pfc-bande); }
-.pfc-tuile-off { opacity: 0.42; filter: grayscale(0.6); }
-.pfc-tuile-off .pfc-tuile-fleche { display: none; }
-.pfc-tuile-badge { position: absolute; right: 18px; bottom: 20px; font-family: 'Inter', sans-serif; font-size: 10.5px;
-    font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--pfc-text);
-    border: 1px solid var(--pfc-border); border-radius: 999px; padding: 4px 10px; }
+.pfc-tuile-off { background: rgba(12,40,92,0.35); border-color: rgba(255,255,255,0.08); box-shadow: none; }
+.pfc-tuile-off .pfc-tuile-icone, .pfc-tuile-off .pfc-tuile-titre { opacity: 0.45; filter: grayscale(0.6); }
+@media (max-width: 700px) {
+    .st-key-pfc_cercle { aspect-ratio: auto; display: grid !important; grid-template-columns: repeat(3, 1fr); gap: 12px !important;
+                         justify-items: center; align-items: start; grid-auto-rows: min-content; padding-top: 150px; }
+    .st-key-pfc_cercle .stElementContainer:has(.pfc-centre) { inset: 0 0 auto 0; height: 140px; }
+    .pfc-orbite { display: none; }
+    .pfc-centre-logo { top: 70px; width: 120px; }
+    [class*="st-key-pfc_tuile_"] { position: relative !important; transform: none; width: 100% !important; max-width: 116px;
+                                    height: 104px; margin-bottom: 12px; }
+    .pfc-tuile { width: 100%; height: 104px !important; }
+    .pfc-accueil-titre { font-size: 1.3rem; }
+}
 /* ── Bouton « ← Accueil » en haut de chaque rubrique ── */
 .st-key-pfc_retour .stButton > button { border-radius: 999px !important; padding: 4px 16px !important; min-height: 0 !important;
     background: transparent !important; border: 1px solid rgba(31,168,224,0.55) !important; color: var(--pfc-blue) !important;
@@ -17248,7 +17279,6 @@ hr { border-color: var(--pfc-border) !important; margin: 1rem 0 !important; }
     letter-spacing: 0.12em !important; text-transform: uppercase !important; }
 .st-key-pfc_retour .stButton > button:hover { background: var(--pfc-blue) !important; color: var(--pfc-bande) !important; }
 .st-key-pfc_retour .stButton > button p { color: inherit !important; }
-@media (max-width: 640px) { .pfc-tuile { height: auto; min-height: 160px; } .pfc-accueil-titre { font-size: 1.3rem; } }
 """
 
 
