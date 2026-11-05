@@ -15622,7 +15622,7 @@ def _render_accueil(user_profile, role, is_staff_pro=False):
 
     with st.container(key="pfc_cercle"):
         st.markdown(
-            f"<style>@media (min-width: 701px) {{ {positions} }}</style>"
+            f"<style>@media (min-width: 901px) {{ {positions} }}</style>"
             "<div class='pfc-centre'>"
             "<div class='pfc-orbite'></div>"
             f"<div class='pfc-centre-logo'><img src='{PFC_LOGO_URL}' alt='Paris FC'></div>"
@@ -15633,6 +15633,8 @@ def _render_accueil(user_profile, role, is_staff_pro=False):
             accessible = roles is None or role in roles
             bulle = _esc(texte) if accessible else (
                 f"{_esc(texte)}<br><b>Réservé {'aux admins' if roles == (ROLE_ADMIN,) else 'au staff'}</b>")
+            # Bouton du haut : bulle en dessous pour ne pas masquer le titre
+            haut = math.sin(math.radians(-90 + 360 * i / n)) < -0.9
             with st.container(key=f"pfc_tuile_{i}"):
                 st.markdown(
                     f"<div class='pfc-tuile{'' if accessible else ' pfc-tuile-off'}'>"
@@ -15640,7 +15642,7 @@ def _render_accueil(user_profile, role, is_staff_pro=False):
                     "stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>"
                     f"{_ICONES_RUBRIQUES[icone]}</svg></div>"
                     f"<div class='pfc-tuile-titre'>{_esc(rub)}</div>"
-                    f"<div class='pfc-bulle'>{bulle}</div>"
+                    f"<div class='pfc-bulle{' pfc-bulle-bas' if haut else ''}'>{bulle}</div>"
                     "</div>",
                     unsafe_allow_html=True,
                 )
@@ -17219,33 +17221,34 @@ hr { border-color: var(--pfc-border) !important; margin: 1rem 0 !important; }
                      text-transform: uppercase; color: var(--pfc-blue); }
 .pfc-accueil-titre { font-family: 'Unbounded', sans-serif; font-size: 1.6rem; font-weight: 800; color: var(--pfc-white);
                      margin-top: 6px; line-height: 1.15; }
-.st-key-pfc_cercle { position: relative; width: min(640px, 100%); aspect-ratio: 1 / 1; margin: 0 auto; gap: 0 !important; }
+.st-key-pfc_cercle { position: relative; width: min(860px, 100%, calc(100vh - 190px)); aspect-ratio: 1 / 1;
+                     margin: 0 auto; gap: 0 !important; container-type: inline-size; }
 .st-key-pfc_cercle .stElementContainer:has(.pfc-centre) { position: absolute !important; inset: 0; margin: 0 !important; pointer-events: none; }
 .pfc-centre { position: absolute; inset: 0; }
 .pfc-orbite { position: absolute; inset: 11%; border-radius: 50%; border: 1px dashed rgba(31,168,224,0.35); }
 .pfc-orbite::before { content: ""; position: absolute; inset: 22%; border-radius: 50%;
     background: radial-gradient(circle, rgba(31,168,224,0.22) 0%, rgba(31,168,224,0.06) 55%, transparent 72%); }
-.pfc-centre-logo { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 30%; aspect-ratio: 1 / 1;
+.pfc-centre-logo { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 34%; aspect-ratio: 1 / 1;
     border-radius: 50%; display: flex; align-items: center; justify-content: center;
     background: radial-gradient(circle at 35% 30%, rgba(31,168,224,0.28), rgba(6,26,64,0.92) 70%);
     border: 2px solid rgba(31,168,224,0.65); box-shadow: 0 0 0 10px rgba(31,168,224,0.07), 0 0 48px rgba(31,168,224,0.35); }
 .pfc-centre-logo img { width: 68%; height: 68%; object-fit: contain; }
-[class*="st-key-pfc_tuile_"] { position: absolute !important; width: 116px !important; transform: translate(-50%, -50%); z-index: 1; }
+[class*="st-key-pfc_tuile_"] { position: absolute !important; width: 17.2cqw !important; transform: translate(-50%, -50%); z-index: 1; }
 [class*="st-key-pfc_tuile_"]:hover { z-index: 20; }
 [class*="st-key-pfc_tuile_"] .stElementContainer:has(.stButton) { position: absolute !important; inset: 0; z-index: 2; margin: 0 !important; }
 [class*="st-key-pfc_tuile_"] .stButton, [class*="st-key-pfc_tuile_"] .stButton > button {
     width: 100% !important; height: 100% !important; min-height: 0 !important; }
 [class*="st-key-pfc_tuile_"] .stButton > button { opacity: 0 !important; cursor: pointer !important; }
-.pfc-tuile { position: relative; width: 116px; height: 104px; border-radius: 18px; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; gap: 9px;
+.pfc-tuile { position: relative; width: 100%; height: 15.6cqw; border-radius: 20px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 1.1cqw;
     background: linear-gradient(150deg, rgba(31,168,224,0.18) 0%, rgba(12,40,92,0.7) 50%, rgba(6,26,64,0.9) 100%);
     border: 1px solid var(--pfc-border); box-shadow: 0 6px 20px rgba(0,0,0,0.28);
     transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
-.pfc-tuile-icone { width: 42px; height: 42px; border-radius: 12px; display: flex; align-items: center; justify-content: center;
+.pfc-tuile-icone { width: 6.7cqw; height: 6.7cqw; border-radius: 15px; display: flex; align-items: center; justify-content: center;
     background: rgba(31,168,224,0.16); border: 1px solid rgba(31,168,224,0.35); color: var(--pfc-blue);
     transition: background .18s ease, color .18s ease; }
-.pfc-tuile-icone svg { width: 23px; height: 23px; }
-.pfc-tuile-titre { font-family: 'Unbounded', sans-serif; font-size: 11.5px; font-weight: 700; color: var(--pfc-white);
+.pfc-tuile-icone svg { width: 3.7cqw; height: 3.7cqw; }
+.pfc-tuile-titre { font-family: 'Unbounded', sans-serif; font-size: clamp(10px, 1.63cqw, 14px); font-weight: 700; color: var(--pfc-white);
                    letter-spacing: 0.01em; text-align: center; }
 .pfc-bulle { position: absolute; left: 50%; bottom: calc(100% + 12px); transform: translate(-50%, 6px); width: max-content;
     max-width: 220px; padding: 9px 13px; border-radius: 10px; background: var(--pfc-bande); border: 1px solid rgba(31,168,224,0.6);
@@ -17255,13 +17258,15 @@ hr { border-color: var(--pfc-border) !important; margin: 1rem 0 !important; }
 .pfc-bulle::after { content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
     border: 7px solid transparent; border-top-color: rgba(31,168,224,0.6); }
 .pfc-bulle b { color: var(--pfc-blue); font-weight: 700; }
+.pfc-bulle-bas { bottom: auto; top: calc(100% + 12px); transform: translate(-50%, -6px); }
+.pfc-bulle-bas::after { top: auto; bottom: 100%; border-top-color: transparent; border-bottom-color: rgba(31,168,224,0.6); }
 [class*="st-key-pfc_tuile_"]:hover .pfc-bulle { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
 [class*="st-key-pfc_tuile_"]:hover .pfc-tuile:not(.pfc-tuile-off) { transform: translateY(-4px) scale(1.04);
     border-color: rgba(31,168,224,0.8); box-shadow: 0 12px 30px rgba(31,168,224,0.28); }
 [class*="st-key-pfc_tuile_"]:hover .pfc-tuile:not(.pfc-tuile-off) .pfc-tuile-icone { background: var(--pfc-blue); color: var(--pfc-bande); }
 .pfc-tuile-off { background: rgba(12,40,92,0.35); border-color: rgba(255,255,255,0.08); box-shadow: none; }
 .pfc-tuile-off .pfc-tuile-icone, .pfc-tuile-off .pfc-tuile-titre { opacity: 0.45; filter: grayscale(0.6); }
-@media (max-width: 700px) {
+@media (max-width: 900px) {
     .st-key-pfc_cercle { aspect-ratio: auto; display: grid !important; grid-template-columns: repeat(3, 1fr); gap: 12px !important;
                          justify-items: center; align-items: start; grid-auto-rows: min-content; padding-top: 150px; }
     .st-key-pfc_cercle .stElementContainer:has(.pfc-centre) { inset: 0 0 auto 0; height: 140px; }
@@ -17269,7 +17274,10 @@ hr { border-color: var(--pfc-border) !important; margin: 1rem 0 !important; }
     .pfc-centre-logo { top: 70px; width: 120px; }
     [class*="st-key-pfc_tuile_"] { position: relative !important; transform: none; width: 100% !important; max-width: 116px;
                                     height: 104px; margin-bottom: 12px; }
-    .pfc-tuile { width: 100%; height: 104px !important; }
+    .pfc-tuile { width: 100%; height: 104px !important; gap: 8px; }
+    .pfc-tuile-icone { width: 42px; height: 42px; border-radius: 12px; }
+    .pfc-tuile-icone svg { width: 23px; height: 23px; }
+    .pfc-tuile-titre { font-size: 11.5px; }
     .pfc-accueil-titre { font-size: 1.3rem; }
 }
 /* ── Bouton « ← Accueil » en haut de chaque rubrique ── */
@@ -17290,15 +17298,17 @@ def main():
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        "<div style='background:#061A40;border-bottom:2px solid #1FA8E0;border-radius:12px;padding:0.8rem 2rem;margin:-0.5rem 0 1.5rem 0;display:flex;align-items:center;justify-content:center;gap:1.5rem;position:relative;overflow:hidden;'>"
-        "<img src='https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png' alt='Paris FC' style='width:52px;height:52px;object-fit:contain;flex-shrink:0;position:relative;z-index:1;'>"
-        "<div style='position:relative;z-index:1;text-align:center;'>"
-        "<div style='font-family:Unbounded,sans-serif;font-size:21px;font-weight:800;letter-spacing:0.02em;line-height:1;color:#FFFFFF;'>Centre de Formation F&eacute;minin</div>"
-        "<div style='font-family:Inter,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.18em;color:#1FA8E0;margin-top:6px;text-transform:uppercase;'>Analyse &amp; Suivi des Joueuses</div>"
-        "</div></div>",
-        unsafe_allow_html=True,
-    )
+    # Bandeau masqué sur l'accueil (le logo est déjà au centre du menu circulaire)
+    if not (st.session_state.get("authenticated") and st.session_state.get("pfc_rubrique") is None):
+        st.markdown(
+            "<div style='background:#061A40;border-bottom:2px solid #1FA8E0;border-radius:12px;padding:0.8rem 2rem;margin:-0.5rem 0 1.5rem 0;display:flex;align-items:center;justify-content:center;gap:1.5rem;position:relative;overflow:hidden;'>"
+            "<img src='https://i.postimg.cc/J4vyzjXG/Logo-Paris-FC.png' alt='Paris FC' style='width:52px;height:52px;object-fit:contain;flex-shrink:0;position:relative;z-index:1;'>"
+            "<div style='position:relative;z-index:1;text-align:center;'>"
+            "<div style='font-family:Unbounded,sans-serif;font-size:21px;font-weight:800;letter-spacing:0.02em;line-height:1;color:#FFFFFF;'>Centre de Formation F&eacute;minin</div>"
+            "<div style='font-family:Inter,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.18em;color:#1FA8E0;margin-top:6px;text-transform:uppercase;'>Analyse &amp; Suivi des Joueuses</div>"
+            "</div></div>",
+            unsafe_allow_html=True,
+        )
 
     permissions = load_permissions()
     if not permissions:
