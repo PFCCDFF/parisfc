@@ -252,14 +252,8 @@ def save_player_settings(settings: dict) -> bool:
 
 
 def apply_player_settings(player_list: list, settings: dict) -> list:
-    """Applique filtres et aliases à une liste de noms de joueuses. Si un effectif
-    Présence (upload Excel, cf. load_presence_roster) est configuré, c'est la
-    référence pour toutes les données utilisables : les joueuses hors de cette liste
-    sont exclues, avant même le filtre "hidden" (qui reste géré indépendamment dans
-    Gestion → Joueuses, qui n'appelle pas cette fonction et voit donc tout l'effectif
-    brut pour permettre son propre pilotage)."""
-    # Depuis l'Effectif (Gestion → 👥 Effectif) : seules les joueuses de l'effectif ayant des
-    # données dans `player_list` ; les réglages « masquées » / alias ne s'appliquent plus.
+    """Joueuses de l'Effectif (Gestion → 👥 Effectif) qui ont des données dans `player_list`
+    (cf. liste_effectif). `settings` n'est plus utilisé (ancien réglage masquées / alias)."""
     return liste_effectif(player_list)
 
 
@@ -427,31 +421,6 @@ PRESENCE_STATUTS_SHORT = {
 }
 # Statuts comptant comme "présente à l'entraînement" pour le calcul du taux de présence.
 PRESENCE_STATUTS_PRESENTE = ("Présente", "Sélection", "Pro")
-PRESENCE_ROSTER_PATH = os.path.join("data", "presence_roster.json")
-
-
-def load_presence_roster() -> list:
-    """Charge la liste des joueuses pour la Présence depuis le fichier JSON persistant
-    (chargé via upload Excel). Liste vide si aucun fichier n'a encore été chargé —
-    dans ce cas l'appelant retombe sur la liste déduite des données de matchs/GPS."""
-    if os.path.exists(PRESENCE_ROSTER_PATH):
-        try:
-            with open(PRESENCE_ROSTER_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return []
-
-
-def save_presence_roster(players: list) -> bool:
-    """Sauvegarde la liste des joueuses pour la Présence dans le fichier JSON persistant."""
-    try:
-        os.makedirs(os.path.dirname(PRESENCE_ROSTER_PATH), exist_ok=True)
-        with open(PRESENCE_ROSTER_PATH, "w", encoding="utf-8") as f:
-            json.dump(players, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception:
-        return False
 
 
 PRESENCE_ABSENCES = [st_ for st_ in PRESENCE_STATUTS if st_ != "Présente"]
@@ -12168,7 +12137,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 else:
                     _all_p = sorted(pfc_kpi["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist()) \
                              if pfc_kpi is not None and not pfc_kpi.empty else []
-                    # Appliquer filtres et aliases depuis les réglages persistants
+                    # Joueuses de l'Effectif ayant des données de match
                     _all_p = apply_player_settings(_all_p, _ps_perf)
                     _perf_player = st.selectbox("Joueuse", _all_p, key="perf_player_sel") if _all_p else None
                 # Stocker en session_state pour propagation
@@ -15775,7 +15744,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
         if not check_permission(user_profile, "all", permissions):
             st.warning("⛔ Accès réservé aux administrateurs.")
         else:
-            tab_fiches, tab_ref, tab_perms, tab_jouеuses, tab_admin, tab_passerelles, tab_import = st.tabs(["👥 Effectif", "📋 Référentiel joueuses", "🔐 Profils & permissions", "🏷️ Masquées & alias", "🛠️ Administration", "📋 Passerelles", "📥 Import"])
+            tab_fiches, tab_ref, tab_perms, tab_admin, tab_passerelles, tab_import = st.tabs(["👥 Effectif", "📋 Référentiel joueuses", "🔐 Profils & permissions", "🛠️ Administration", "📋 Passerelles", "📥 Import"])
 
             with tab_fiches:
                 render_effectif(pfc_kpi)
@@ -15827,79 +15796,6 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                     st.dataframe(perms_df, width="stretch")
                 else:
                     st.info("Aucune permission chargée.")
-
-            # ── Joueuses — filtre & aliases ───────────────────────────────
-            with tab_jouеuses:
-                st.subheader("Gestion des joueuses")
-                st.warning("Ces réglages (joueuses masquées, corrections de noms) ne sont plus utilisés : les listes "
-                           "de joueuses viennent de l'onglet **👥 Effectif**, et les orthographes s'y rattachent. "
-                           "Cet onglet sera retiré.")
-
-                # Charger settings depuis disque
-                _ps = load_player_settings()
-                _hidden = set(_ps.get("hidden", []))
-                _aliases = _ps.get("aliases", {})
-
-                # Récupérer la liste complète des joueuses depuis les données
-                _all_raw = []
-                if pfc_kpi is not None and not pfc_kpi.empty and "Player" in pfc_kpi.columns:
-                    _all_raw = sorted(pfc_kpi["Player"].dropna().apply(nettoyer_nom_joueuse).unique().tolist())
-
-                st.info("🚪 Les joueuses parties du club se gèrent maintenant dans l'onglet **👥 Effectif** (colonne Statut).")
-                st.markdown("---")
-
-                if not _all_raw:
-                    st.warning("Aucune joueuse trouvée dans les données Performance.")
-                else:
-                    st.markdown(f"**{len(_all_raw)} joueuses** dans la base · {len(_hidden)} masquée(s) · {len(_aliases)} alias")
-
-                    # ── Section Visibilité ────────────────────────────────
-                    st.markdown("---")
-                    st.markdown("**Visibilité des joueuses**")
-                    st.caption("Décochez pour masquer une joueuse dans Performance.")
-
-                    _new_hidden = set()
-                    _cols_vis = st.columns(3)
-                    for _i, _p in enumerate(_all_raw):
-                        _col = _cols_vis[_i % 3]
-                        _visible = _col.checkbox(
-                            _p,
-                            value=(_p not in _hidden),
-                            key=f"vis_{_p}"
-                        )
-                        if not _visible:
-                            _new_hidden.add(_p)
-
-                    # ── Section Aliases ───────────────────────────────────
-                    st.markdown("---")
-                    st.markdown("**Corrections de noms (aliases)**")
-                    st.caption("Associe un nom CSV à un nom corrigé. Laisser vide = pas d'alias.")
-
-                    _new_aliases = {}
-                    for _p in _all_raw:
-                        _current_alias = _aliases.get(_p, "")
-                        _col_a, _col_b = st.columns([2, 2])
-                        _col_a.markdown(f"`{_p}`")
-                        _alias_val = _col_b.text_input(
-                            "Nom corrigé",
-                            value=_current_alias,
-                            key=f"alias_{_p}",
-                            label_visibility="collapsed",
-                            placeholder="Laisser vide si correct"
-                        )
-                        if _alias_val.strip() and _alias_val.strip() != _p:
-                            _new_aliases[_p] = _alias_val.strip()
-
-                    # ── Bouton sauvegarder ────────────────────────────────
-                    st.markdown("---")
-                    if st.button("💾 Sauvegarder les réglages", type="primary", key="save_player_settings"):
-                        _new_settings = {**load_player_settings(), "hidden": list(_new_hidden), "aliases": _new_aliases}
-                        if save_player_settings(_new_settings):
-                            st.session_state["_player_settings"] = _new_settings
-                            st.success(f"✅ Réglages sauvegardés — {len(_new_hidden)} masquée(s), {len(_new_aliases)} alias")
-                            st.rerun()
-                        else:
-                            st.error("❌ Erreur lors de la sauvegarde.")
 
             # ── Administration ────────────────────────────────────────────
             with tab_admin:
