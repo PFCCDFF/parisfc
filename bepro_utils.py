@@ -227,11 +227,25 @@ def load_bepro_folder(folder: str = BEPRO_FOLDER) -> Dict[str, dict]:
     return out
 
 
+# Compétitions U23 : Bepro nomme l'équipe « Paris FC U19 Féminines » même au Challenge Espoirs
+# LFFP (« 2026-10-07_Paris FC U19 Féminines vs AJ Auxerre Féminines(Challenge Espoirs LFFP)… »).
+_COMPET_U23 = re.compile(r"espoir|challenge|\bu23\b|r[ée]gional", re.IGNORECASE)
+
+
+def bepro_categorie(info: dict) -> str:
+    """Catégorie d'un export (« U23 », « U19 »…, "" si inconnue) : la compétition prime sur le
+    nom des équipes, qui reste « U19 » pour les matchs U23."""
+    if _COMPET_U23.search(str(info.get("competition", "") or "")):
+        return "U23"
+    m = re.search(r"U(\d{2})", f"{info.get('home', '')} {info.get('away', '')}".upper())
+    return f"U{m.group(1)}" if m else ""
+
+
 def find_bepro_match(bepro: Dict[str, dict], date, adversaire: str = "",
                      categorie: str = "") -> Optional[pd.DataFrame]:
-    """Export Bepro d'un match : même date, même catégorie (« U19 ») si elle figure des deux
-    côtés — sinon un export U19 servirait au match U23 du même jour —, et adversaire présent
-    dans le nom s'il reste plusieurs candidats."""
+    """Export Bepro d'un match : même date, même catégorie (« U19 ») si elle est connue des
+    deux côtés — sinon un export U19 servirait au match U23 du même jour —, et adversaire
+    présent dans le nom s'il reste plusieurs candidats."""
     d = pd.to_datetime(date, errors="coerce")
     if pd.isna(d):
         return None
@@ -239,10 +253,7 @@ def find_bepro_match(bepro: Dict[str, dict], date, adversaire: str = "",
              and v["info"]["date"].normalize() == d.normalize()]
     if categorie:
         cat = categorie.strip().upper()
-
-        def _cats(v):
-            return set(re.findall(r"U\d{2}", (v["info"]["home"] + " " + v["info"]["away"]).upper()))
-        cands = [v for v in cands if not _cats(v) or cat in _cats(v)]
+        cands = [v for v in cands if not bepro_categorie(v["info"]) or bepro_categorie(v["info"]) == cat]
     if len(cands) > 1 and adversaire:
         a = _norm(adversaire)
         toks = [t for t in a.split() if len(t) > 2]
@@ -468,3 +479,224 @@ def bepro_kpi_inputs(df: pd.DataFrame) -> pd.DataFrame:
         rows.append({"Player": player, **c})
     return pd.DataFrame(rows, columns=["Player"] + KPI_INPUT_COLS)
 
+
+
+# ── Rapport collectif ────────────────────────────────────────────────────────
+
+# Actions avec ballon qui ouvrent / prolongent une possession ; START en ouvre toujours une
+# nouvelle (récupération, interception, coup de pied arrêté, remise en jeu).
+_POSS_START = {"Recoveries", "Interceptions", "Set Pieces", "Step-in"}
+_POSS_BALL = {"Passes", "Passes Received", "Crosses", "Crosses Received", "Take-on",
+              "Shots & Goals", "Aerial Control"} | _POSS_START
+_POSS_GAP_MS = 15000  # plus de 15 s sans action de l'équipe : le ballon a changé de mains
+_TIERS = _SVG_W * 2 / 3
+_ZONE_ROWS, _ZONE_COLS = ["Def", "MDef", "MOf", "Off"], ["G", "C", "D"]
+
+
+def _zone(x, y):
+    if x is None or y is None or x != x or y != y:
+        return None
+    ri = min(3, max(0, int(x // (_SVG_W / 4))))
+    ci = min(2, max(0, int(y // (_SVG_H / 3))))
+    return _ZONE_ROWS[ri] + _ZONE_COLS[ci]
+
+
+def _couloir(y):
+    return "Couloir Gauche" if y < _SVG_H / 3 else ("Couloir Droit" if y > _SVG_H * 2 / 3 else "Couloir Central")
+
+
+def _mi_temps(period: str) -> str:
+    p = str(period or "").lower()
+    return "MT1" if p.startswith("1st") else ("MT2" if p.startswith("2nd") else "")
+
+
+def compute_bepro_collective_report(df: pd.DataFrame, adv_name: str = "Adversaire") -> dict:
+    """Rapport collectif (mêmes clés que compute_collective_report sur Sportscode) depuis un
+    export Bepro. La plupart des exports ne contiennent que les actions du Paris FC : les
+    valeurs adverses sont alors None (« — » dans le rapport), sauf les fautes adverses
+    (= fautes subies par le Paris FC). Possessions reconstituées : suite d'actions avec ballon
+    de la même équipe, close par une perte (passe, centre ou dribble raté, erreur), un tir,
+    un hors-jeu, une récupération / un coup de pied arrêté (nouvelle possession) ou 15 s sans
+    action. Pourcentages de possession et temps de jeu effectif seulement si l'export contient
+    les deux équipes. {} si aucune action du Paris FC."""
+    if df is None or df.empty:
+        return {}
+    d = df.copy()
+    d["_pfc"] = d["team"].astype(str).map(_norm).str.contains("paris")
+    if not d["_pfc"].any():
+        return {}
+    # Adversaire « complet » seulement si l'export suit vraiment ses actions (l'export de
+    # Montpellier du 04/11/2026 ne contient que ses 4 buts) ; sinon seuls ses buts sont repris.
+    _n_adv = int((~d["_pfc"] & d["team"].astype(str).str.strip().ne("")).sum())
+    has_adv = _n_adv >= 0.3 * int(d["_pfc"].sum())
+    d["_mt"] = d["period"].map(_mi_temps)
+    d["_po"] = d["period"].map(lambda p: {"MT1": 0, "MT2": 1}.get(_mi_temps(p), 2))
+    d["_t"] = pd.to_numeric(d["time_ms"], errors="coerce")
+    d = d.sort_values(["match_id", "_po", "_t"], kind="stable")
+    PFC, ADV = "PFC", (adv_name or "Adversaire")
+
+    poss = []          # {team, mt, t0, t1, perte, entree, couloir, x_min}
+    recup_pfc, perte_pfc = [], []
+    cnt = {k: dict.fromkeys(("tirs", "tirs_cadres", "buts", "hors_jeu", "fautes", "fautes_subies",
+                             "passes", "passes_ok", "passes_avant", "passes_longues",
+                             "passes_dt", "passes_dt_ok", "centres"), 0) for k in (PFC, ADV)}
+    cur = None
+
+    def _close():
+        nonlocal cur
+        if cur is not None:
+            poss.append(cur)
+        cur = None
+
+    for _, r in d.iterrows():
+        team = PFC if r["_pfc"] else ADV
+        evs = r["events"] or []
+        names = {e.get("event_name") for e in evs}
+        c = cnt[team]
+        perte = False
+        for e in evs:
+            en, pr = e.get("event_name"), e.get("property") or {}
+            out = str(pr.get("Outcome", ""))
+            if en == "Shots & Goals":
+                c["tirs"] += 1
+                c["tirs_cadres"] += out in ("Shots On Target", "Goals")
+                c["buts"] += out == "Goals"
+            elif en == "Offsides":
+                c["hors_jeu"] += 1
+            elif en == "Fouls":
+                c["fautes"] += pr.get("Type") in ("Fouls", "Handball Foul")
+                c["fautes_subies"] += pr.get("Type") == "Fouls Won"
+            elif en == "Passes":
+                ok = out == "Succeeded"
+                c["passes"] += 1
+                c["passes_ok"] += ok
+                c["passes_avant"] += pr.get("Direction") == "Passes Forward"
+                c["passes_longues"] += pr.get("Distance") == "Long Passes"
+                if pr.get("Area") == "Passes In Final Third":
+                    c["passes_dt"] += 1
+                    c["passes_dt_ok"] += ok
+                perte |= out == "Failed"
+            elif en == "Crosses":
+                c["centres"] += 1
+                perte |= out == "Failed"
+            elif en in ("Take-on", "Aerial Control"):
+                perte |= out == "Failed"
+            elif en == "Mistakes":
+                perte = True
+        tacle_poss = any(e.get("event_name") == "Tackles"
+                         and str((e.get("property") or {}).get("Outcome", "")).endswith(": Possession")
+                         for e in evs)
+        x, y = r["x"], r["y"]
+        if team == PFC and (names & {"Recoveries", "Interceptions"} or tacle_poss):
+            z = _zone(x, y)
+            if z:
+                recup_pfc.append(z)
+        if not (names & _POSS_BALL or tacle_poss):
+            continue
+        t = r["_t"] if pd.notna(r["_t"]) else (cur["t1"] if cur else 0)
+        if (cur is None or cur["team"] != team or cur["mt"] != r["_mt"] or cur["mid"] != r["match_id"]
+                or names & _POSS_START or tacle_poss or t - cur["t1"] > _POSS_GAP_MS):
+            _close()
+            cur = {"team": team, "mt": r["_mt"], "mid": r["match_id"], "t0": t, "t1": t,
+                   "perte": False, "entree": False, "couloir": None,
+                   "bas": x is not None and x == x and x < _TIERS}
+        cur["t1"] = t
+        # Entrée dans le dernier 1/3 : action avec ballon au-delà des 2/3, ou passe / centre
+        # réussi qui y arrive, après être passé par les deux premiers tiers.
+        if not cur["entree"]:
+            pts = []
+            for e in evs:
+                if e.get("event_name") in ("Passes", "Crosses") and \
+                        (e.get("property") or {}).get("Outcome") == "Succeeded" and r["to_x"] is not None:
+                    pts.append((r["to_x"], r["to_y"]))
+            if x is not None and x == x:
+                pts.insert(0, (x, y))
+            for px, py in pts:
+                if px is None or px != px:
+                    continue
+                if px >= _TIERS and cur["bas"] and py is not None and py == py:
+                    cur["entree"], cur["couloir"] = True, _couloir(py)
+                    break
+                if px < _TIERS:
+                    cur["bas"] = True
+        if perte:
+            cur["perte"] = True
+            if team == PFC:
+                z = _zone(x, y)
+                if z:
+                    perte_pfc.append(z)
+            _close()
+        elif names & {"Shots & Goals", "Offsides"}:
+            _close()
+    _close()
+
+    def team_stats(team):
+        if team == ADV and not has_adv:
+            st = dict.fromkeys(("possessions", "duree_totale", "duree_moyenne", "tirs", "tirs_cadres",
+                                "tirs_non_cadres", "buts", "hors_jeu", "pertes", "pct_pertes",
+                                "pct_tirs_cadres", "entrees_1_3", "poss_par_entree", "entrees_par_tir"))
+            st["fautes"] = cnt[PFC]["fautes_subies"]
+            if cnt[ADV]["buts"]:
+                st["buts"] = cnt[ADV]["buts"]
+            return st
+        p = [q for q in poss if q["team"] == team]
+        durs = [max(0.0, (q["t1"] - q["t0"]) / 1000.0) for q in p]
+        n, c = len(p), cnt[team]
+        pertes = sum(q["perte"] for q in p)
+        entrees = sum(q["entree"] for q in p)
+        tirs = c["tirs"]
+        return {
+            "possessions": n,
+            "duree_totale": float(sum(durs)),
+            "duree_moyenne": float(sum(durs) / n) if n else 0.0,
+            "tirs": tirs, "tirs_cadres": c["tirs_cadres"], "tirs_non_cadres": tirs - c["tirs_cadres"],
+            "buts": c["buts"], "hors_jeu": c["hors_jeu"], "pertes": pertes,
+            "pct_pertes": round(pertes / n * 100, 1) if n else 0.0,
+            "pct_tirs_cadres": round(c["tirs_cadres"] / tirs * 100, 1) if tirs else 0.0,
+            "entrees_1_3": entrees,
+            "poss_par_entree": round(n / entrees, 1) if entrees else None,
+            "entrees_par_tir": round(entrees / tirs, 1) if tirs else None,
+            "fautes": c["fautes"],
+        }
+
+    stats = {PFC: team_stats(PFC), ADV: team_stats(ADV)}
+
+    def _dur(team, mt=None):
+        return sum(max(0.0, (q["t1"] - q["t0"]) / 1000.0) for q in poss
+                   if q["team"] == team and (mt is None or q["mt"] == mt))
+
+    def _pct(mt=None):
+        if not has_adv:
+            return {PFC: None, ADV: None}
+        a, b = _dur(PFC, mt), _dur(ADV, mt)
+        return {PFC: round(a / (a + b) * 100, 1) if a + b else 50.0,
+                ADV: round(b / (a + b) * 100, 1) if a + b else 50.0}
+
+    def _temps(mt=None):
+        return (_dur(PFC, mt) + _dur(ADV, mt)) if has_adv else None
+
+    entrees = [q["couloir"] for q in poss if q["team"] == PFC and q["entree"]]
+    entree_tiers = {k: round(entrees.count(k) / len(entrees) * 100, 1) if entrees else 0.0
+                    for k in ("Couloir Gauche", "Couloir Central", "Couloir Droit")}
+
+    def _grid(zs):
+        n = len(zs)
+        return [[round(zs.count(r + c) / n * 100, 1) if n else 0.0 for c in _ZONE_COLS] for r in _ZONE_ROWS]
+
+    c = cnt[PFC]
+    pc = lambda a, b: round(a / b * 100, 1) if b else 0.0  # noqa: E731
+    return {
+        "pfc_name": PFC, "adv_name": ADV, "source": "bepro", "adv_absent": not has_adv,
+        "stats": stats,
+        "temps_total": _temps(), "temps_mt1": _temps("MT1"), "temps_mt2": _temps("MT2"),
+        "poss_total": _pct(), "poss_mt1": _pct("MT1"), "poss_mt2": _pct("MT2"),
+        "animation": {}, "circulation": {},
+        "passes": {"Passes réussies": pc(c["passes_ok"], c["passes"]),
+                   "Passes vers l'avant": pc(c["passes_avant"], c["passes"]),
+                   "Passes longues": pc(c["passes_longues"], c["passes"]),
+                   "Réussite dans le dernier 1/3": pc(c["passes_dt_ok"], c["passes_dt"])},
+        "n_passes": c["passes"],
+        "entree_tiers": entree_tiers,
+        "grid_recup": _grid(recup_pfc), "grid_perte": _grid(perte_pfc),
+        "zone_rows": list(_ZONE_ROWS), "zone_cols": list(_ZONE_COLS),
+    }

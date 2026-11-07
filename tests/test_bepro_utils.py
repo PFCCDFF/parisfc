@@ -164,3 +164,35 @@ class TestNomsParMaillot(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCategorie(unittest.TestCase):
+    def test_challenge_espoirs_en_u23(self):
+        info = B.parse_bepro_filename("2026-10-07_Paris FC U19 Féminines vs AJ Auxerre Féminines"
+                                      "(Challenge Espoirs LFFP)_Raw Event Data_JSON.zip")
+        self.assertEqual(B.bepro_categorie(info), "U23")
+        self.assertEqual(B.bepro_categorie(B.parse_bepro_filename(NOM_ZIP)), "U19")
+        bp = {"x": {"info": info, "df": pd.DataFrame({"a": [1]})}}
+        self.assertIsNotNone(B.find_bepro_match(bp, "2026-10-07", "Auxerre", "U23"))
+        self.assertIsNone(B.find_bepro_match(bp, "2026-10-07", "Auxerre", "U19"))
+
+
+class TestCollectif(unittest.TestCase):
+    def test_possessions_pertes_entrees(self):
+        def ev(t, events, x, y, to=(None, None)):
+            e = _ev("Sylia Renai", events, x, y, to=to)
+            e["event_time"] = t
+            return e
+        df = B.bepro_events_frame([
+            ev(1000, [{"event_name": "Recoveries"}, _passe()], 0.40, 0.5, to=(0.75, 0.9)),  # entrée côté gauche
+            ev(3000, [{"event_name": "Passes Received"}], 0.75, 0.9),
+            ev(4000, [{"event_name": "Shots & Goals", "property": {"Outcome": "Goals"}}], 0.9, 0.5),
+            ev(9000, [{"event_name": "Set Pieces"}, _passe(outcome="Failed")], 0.5, 0.5),  # perte
+        ])
+        r = B.compute_bepro_collective_report(df, "HAC")
+        s = r["stats"]["PFC"]
+        self.assertEqual((s["possessions"], s["pertes"], s["buts"], s["entrees_1_3"]), (2, 1, 1, 1))
+        self.assertEqual(r["entree_tiers"]["Couloir Gauche"], 100.0)
+        self.assertTrue(r["adv_absent"])
+        self.assertIsNone(r["stats"]["HAC"]["tirs"])
+        self.assertIsNone(r["poss_total"]["PFC"])

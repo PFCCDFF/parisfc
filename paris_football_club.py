@@ -2489,6 +2489,10 @@ def sync_logos_from_drive() -> dict:
     return index
 
 
+# Noms de fichiers logo qui ne figurent pas parmi les alias d'adversaires (_ADV_NORM_MAP).
+_LOGO_ALIAS = {"Montpellier": ("mhsc",), "Saint-Étienne": ("asse",)}
+
+
 def find_logo_for_club(club_name: str, logos_index: dict = None) -> str:
     """Retourne le chemin local du logo pour un club, ou '' si non trouvé.
     Cherche par correspondance exacte puis partielle sur le nom normalisé.
@@ -2499,6 +2503,20 @@ def find_logo_for_club(club_name: str, logos_index: dict = None) -> str:
     # Exact
     if cn in logos_index:
         return logos_index[cn]
+    # Nom long (Bepro : « Le Havre AC U19 Féminines », « Montpellier HSC Féminines ») : sans la
+    # catégorie, puis via les alias d'adversaires (_ADV_NORM_MAP) → fichier « HAC », « MHSC »…
+    cn = re.sub(r"\b(feminines?|u\d{2}f?)\b", " ", cn)
+    cn = " ".join(cn.split())
+    if cn in logos_index:
+        return logos_index[cn]
+    _canon = next((v for k, v in sorted(_ADV_NORM_MAP.items(), key=lambda kv: -len(kv[0]))
+                   if len(k) >= 3 and re.search(rf"(^|\s){re.escape(k)}($|\s)", cn)), None)
+    if _canon:
+        _alias = {normalize_str(_canon)} | {k for k, v in _ADV_NORM_MAP.items() if v == _canon} \
+                 | set(_LOGO_ALIAS.get(_canon, ()))
+        for a in _alias:
+            if a in logos_index:
+                return logos_index[a]
     # Partiel : le nom du fichier est contenu dans le nom du club ou vice versa
     for key, path in logos_index.items():
         if key in cn or cn in key:
@@ -5618,7 +5636,8 @@ def bepro_only_matches(tac_files: list) -> list:
         info = v["info"]
         if info.get("date") is None:
             continue
-        cat = _cat(info.get("home", "") + " " + info.get("away", ""))
+        from bepro_utils import bepro_categorie
+        cat = _cat(bepro_categorie(info))  # « 23 » au Challenge Espoirs (équipe nommée « U19 » par Bepro)
         if (pd.Timestamp(info["date"]).normalize(), cat) in _deja:
             continue
         home, away = info.get("home", ""), info.get("away", "")
@@ -5628,7 +5647,11 @@ def bepro_only_matches(tac_files: list) -> list:
         # « Player 4 » : joueuse non nommée dans Bepro et absente de la table n° → nom
         # (bepro_utils.BEPRO_JOUEUSES_SANS_NOM / data/bepro_noms.json) — écartée.
         from bepro_utils import est_sans_nom
-        for pn in sorted({p for p in v["df"]["player"].dropna().unique()
+        _dfv = v["df"]
+        if "team" in _dfv.columns:  # l'export peut contenir quelques actions adverses (buts)
+            _pfc_rows = _dfv["team"].astype(str).str.contains(r"paris\s*fc", case=False, regex=True)
+            _dfv = _dfv[_pfc_rows] if _pfc_rows.any() else _dfv
+        for pn in sorted({p for p in _dfv["player"].dropna().unique()
                           if str(p).strip() and not est_sans_nom(p)}):
             canon = None
             if ref is not None:
@@ -5640,7 +5663,10 @@ def bepro_only_matches(tac_files: list) -> list:
             joueuses.append(canon)
         d = pd.Timestamp(info["date"])
         y = d.year if d.month >= 7 else d.year - 1
-        _score = load_scores_matchs().get(f"{d:%Y-%m-%d}|U{cat}", "")
+        _scores = load_scores_matchs()
+        _score = _scores.get(f"{d:%Y-%m-%d}|U{cat}", "")
+        if not _score and cat == "23":  # score saisi quand le match était classé U19
+            _score = _scores.get(f"{d:%Y-%m-%d}|U19", "")
         out.append({
             "score": _score,
             "filename": f"BEPRO {d:%Y-%m-%d} {home} vs {away}",
@@ -5649,8 +5675,21 @@ def bepro_only_matches(tac_files: list) -> list:
             "saison": f"{y % 100:02d}/{(y + 1) % 100:02d}",
             "df": pd.DataFrame({"Row": joueuses}),
             "bepro_only": True,
+            "categorie": f"U{cat}" if cat else "",
+            "bepro_df": v["df"],
         })
     return out
+
+
+def _categorie_match_row(r: dict) -> str:
+    """Catégorie (« U19 », « U23 ») d'une ligne de match : celle du match Bepro seul si elle
+    est connue (Bepro nomme l'équipe « U19 » même au Challenge Espoirs U23), sinon celle du
+    nom du fichier Sportscode."""
+    tac = r.get("tac_obj") or {}
+    if tac.get("categorie"):
+        return tac["categorie"]
+    _m = re.search(r"U(\d{2})", str(tac.get("filename", "") or r.get("display", "") or ""))
+    return f"U{_m.group(1)}" if _m else ""
 
 
 def get_bepro_kpi_scores(match_rows: list, player: str, gps_match_df=None) -> dict:
@@ -5666,9 +5705,7 @@ def get_bepro_kpi_scores(match_rows: list, player: str, gps_match_df=None) -> di
             return {}
         parts = []
         for r in match_rows:
-            _src = str((r.get("tac_obj") or {}).get("filename", "") or r.get("display", "") or "")
-            _m = re.search(r"U(\d{2})", _src)
-            bdf = find_bepro_match(bepro, r.get("date"), r.get("adversaire", ""), f"U{_m.group(1)}" if _m else "")
+            bdf = find_bepro_match(bepro, r.get("date"), r.get("adversaire", ""), _categorie_match_row(r))
             if bdf is None:
                 return {}
             inp = bepro_kpi_inputs(bdf)
@@ -5761,11 +5798,8 @@ def get_bepro_stats_for_matches(match_rows: list, player: str) -> dict:
         bepro = _load_bepro_cached(_bepro_folder_signature())
         if not bepro:
             return {}
-        def _cat(r):
-            _src = str((r.get("tac_obj") or {}).get("filename", "") or r.get("display", "") or "")
-            _m = re.search(r"U(\d{2})", _src)
-            return f"U{_m.group(1)}" if _m else ""
-        dfs = [find_bepro_match(bepro, r.get("date"), r.get("adversaire", ""), _cat(r)) for r in match_rows]
+        dfs = [find_bepro_match(bepro, r.get("date"), r.get("adversaire", ""), _categorie_match_row(r))
+               for r in match_rows]
         found = [d for d in dfs if d is not None]
         if not found:
             return {}
@@ -7454,6 +7488,8 @@ def build_collective_report_html(report: dict, gps_stats: dict = None, match_inf
 
     # ── Statistiques comparées (barres miroir) ───────────────────────────────
     def _mirror(label, v1, v2, unit="", is_pct=False):
+        if v1 is None and v2 is None:  # indisponible (Bepro sans l'adversaire : % possession)
+            return ""
         try:
             f1 = float(v1) if v1 not in (None, "—") else 0.0
             f2 = float(v2) if v2 not in (None, "—") else 0.0
@@ -7476,7 +7512,8 @@ def build_collective_report_html(report: dict, gps_stats: dict = None, match_inf
         _mirror("% Possession MT1", report["poss_mt1"][pfc_name], report["poss_mt1"][adv_name], is_pct=True),
         _mirror("% Possession MT2", report["poss_mt2"][pfc_name], report["poss_mt2"][adv_name], is_pct=True),
         _mirror("Nombre de possessions", s_pfc["possessions"], s_adv["possessions"]),
-        _mirror("Durée moyenne possession", round(s_pfc["duree_moyenne"], 1), round(s_adv["duree_moyenne"], 1), unit="s"),
+        _mirror("Durée moyenne possession", *[None if v is None else round(v, 1)
+                                              for v in (s_pfc["duree_moyenne"], s_adv["duree_moyenne"])], unit="s"),
     ])
     _fin = "".join([
         _mirror("Tirs", s_pfc["tirs"], s_adv["tirs"]),
@@ -7512,10 +7549,13 @@ def build_collective_report_html(report: dict, gps_stats: dict = None, match_inf
             return "—"
         return f"{sec // 60}'{sec % 60:02d}"
 
-    temps_html = ('<div class="cells c3">'
-                  + _cell("Total", _mmss(report["temps_total"]))
-                  + _cell("MT1", _mmss(report["temps_mt1"]))
-                  + _cell("MT2", _mmss(report["temps_mt2"])) + '</div>')
+    if report["temps_total"] is None:  # Bepro sans les actions adverses
+        temps_html = '<div class="note">Indisponible : l\'export Bepro ne contient que les actions du Paris FC.</div>'
+    else:
+        temps_html = ('<div class="cells c3">'
+                      + _cell("Total", _mmss(report["temps_total"]))
+                      + _cell("MT1", _mmss(report["temps_mt1"]))
+                      + _cell("MT2", _mmss(report["temps_mt2"])) + '</div>')
 
     def _bar(label, val, color):
         try:
@@ -7531,8 +7571,12 @@ def build_collective_report_html(report: dict, gps_stats: dict = None, match_inf
     if any(report["animation"].values()):
         rep_html += '<div class="sub">Type d\'animation offensive</div>' + "".join(
             _bar(l, v, CYAN) for l, v in report["animation"].items())
-    rep_html += '<div class="sub">Élimination des lignes adverses</div>' + "".join(
-        _bar(l, v, "#9FA8FF") for l, v in report["circulation"].items())
+    if report["circulation"]:
+        rep_html += '<div class="sub">Élimination des lignes adverses</div>' + "".join(
+            _bar(l, v, "#9FA8FF") for l, v in report["circulation"].items())
+    if report.get("passes"):  # rapport Bepro : pas de tag d'animation ni de circulation
+        rep_html += (f'<div class="sub">Passes · {report.get("n_passes", 0)}</div>' + "".join(
+            _bar(l, v, "#9FA8FF") for l, v in report["passes"].items()))
 
     def _n(v, fmt="{:,.0f}", unit=""):
         return "—" if v is None else fmt.format(v).replace(",", " ") + unit
@@ -12043,10 +12087,18 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 st.info("Aucun fichier tactique trouvé dans `data/`.")
             else:
                 _mrows_c = []
-                for _tac in _tac_files:
+                # Matchs couverts uniquement par un export Bepro (pas de fichier Sportscode)
+                try:
+                    _bp_only_c = bepro_only_matches(_tac_files)
+                except Exception as _e_bpc:
+                    _bp_only_c = []
+                    _warn(f"Bepro : matchs sans Sportscode non chargés → {_e_bpc}")
+                for _tac in list(_tac_files) + _bp_only_c:
                     _s = _tac.get("saison", ""); _sc = re.sub(r"20(\d{2})/20(\d{2})", r"\1/\2", _s) if _s else ""
                     _j = _tac.get("journee", ""); _a = _tac.get("adversaire", ""); _cp = _tac.get("competition", "")
                     _pts = [p for p in [_sc, _cp, f"J{_j}" if _j else "", _a] if p]
+                    if _tac.get("bepro_only") and _tac.get("date") is not None:
+                        _pts.append(pd.Timestamp(_tac["date"]).strftime("%d/%m"))
                     _mrows_c.append({
                         "display": " · ".join(_pts) if _pts else _tac.get("filename", ""),
                         "journee": _j,
@@ -12064,7 +12116,29 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 _sr_c = next((m for m in _mrows_c if m["display"] == _sd_c), _mrows_c[0])
                 _dft_c = _sr_c["tac_obj"].get("df")
 
-                if _dft_c is None:
+                if _sr_c["tac_obj"].get("bepro_only"):
+                    # Match Bepro sans Sportscode : indicateurs collectifs recalculés depuis
+                    # les événements Bepro (bepro_utils.compute_bepro_collective_report).
+                    from bepro_utils import compute_bepro_collective_report
+                    _tb = _sr_c["tac_obj"]
+                    _sc_b = [x.strip() for x in str(_tb.get("score") or "").split("-")]
+                    _ok_sc = len(_sc_b) == 2 and all(x.isdigit() for x in _sc_b)
+                    st.markdown(f"### Paris FC  {_sc_b[0] if _ok_sc else ''} – {_sc_b[1] if _ok_sc else ''}  "
+                                f"{_tb.get('adversaire', '')}" if _ok_sc else
+                                f"### Paris FC – {_tb.get('adversaire', '')}")
+                    _rep_b = compute_bepro_collective_report(_tb.get("bepro_df"), _tb.get("adversaire") or "Adversaire")
+                    if _rep_b.get("adv_absent"):
+                        st.caption("Source Bepro : l'export ne contient que les actions du Paris FC — "
+                                   "statistiques adverses et % de possession indisponibles. "
+                                   "Score à saisir dans Gestion → Import → Scores des matchs Bepro.")
+                    render_collective_report(_rep_b, gps_stats=compute_collective_gps_stats(
+                        _gps_match_df, match_date=_tb.get("date"), adversaire=_tb.get("adversaire"),
+                        journee=None), match_info={
+                        "score_pfc": _sc_b[0] if _ok_sc else None, "score_adv": _sc_b[1] if _ok_sc else None,
+                        "date": _tb.get("date"), "journee": "", "competition": _tb.get("competition"),
+                        "lieu": "",
+                    })
+                elif _dft_c is None:
                     st.info("Fichier tactique introuvable pour ce match.")
                 else:
                     _ctx_c = _get_match_context(_dft_c)
@@ -14447,10 +14521,12 @@ def render_scores_bepro():
         info = v["info"]
         if info.get("date") is None:
             continue
-        m_ = re.search(r"U(\d{2})", info.get("home", "") + " " + info.get("away", ""))
-        cle = f"{info['date']:%Y-%m-%d}|U{m_.group(1) if m_ else ''}"
+        from bepro_utils import bepro_categorie
+        cle = f"{info['date']:%Y-%m-%d}|{bepro_categorie(info) or 'U'}"
         lignes.append({"Clé": cle, "Date": info["date"].strftime("%d/%m/%Y"),
-                       "Match": f"{info['home']} vs {info['away']}", "Score PFC-ADV": scores.get(cle, "")})
+                       "Match": f"{info['home']} vs {info['away']}",
+                       "Score PFC-ADV": scores.get(cle, "") or (scores.get(cle.replace("U23", "U19"), "")
+                                                                 if cle.endswith("U23") else "")})
     ed = st.data_editor(pd.DataFrame(lignes), hide_index=True, width="stretch", key="scores_bepro_ed",
                         disabled=["Clé", "Date", "Match"], column_config={"Clé": None})
     if st.button("💾 Enregistrer les scores", key="scores_bepro_save"):
