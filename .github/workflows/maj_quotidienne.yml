@@ -1,0 +1,41 @@
+name: Mise à jour quotidienne des données
+
+# Chaque nuit : téléchargement Drive → data/ sur le serveur (maj_quotidienne.py, même travail
+# que Gestion → « Mettre à jour la base »), puis redémarrage de l'app pour vider ses caches.
+# 4 h UTC = 5 h (hiver) / 6 h (été) à Paris. Lancement manuel possible depuis l'onglet Actions.
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: serveur-parisfc
+  cancel-in-progress: false
+
+jobs:
+  maj:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mise à jour sur le serveur
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 45m
+          script: |
+            set -e
+            cd /opt/parisfc
+            # Même Python et même utilisateur que le service de l'app
+            EXE=$(systemctl show -p ExecStart --value parisfc | sed -n 's/.*path=\([^ ;]*\).*/\1/p')
+            PY="$(dirname "$EXE")/python"
+            [ -x "$PY" ] || PY=python3
+            USR=$(systemctl show -p User --value parisfc)
+            STATUT=0
+            if [ -n "$USR" ] && [ "$USR" != "$(whoami)" ]; then
+              sudo -u "$USR" "$PY" maj_quotidienne.py || STATUT=$?
+            else
+              "$PY" maj_quotidienne.py || STATUT=$?
+            fi
+            systemctl restart parisfc
+            exit $STATUT
