@@ -584,7 +584,7 @@ def load_objectifs_pour_joueuse(joueuse: str) -> pd.DataFrame:
         return pd.DataFrame()
     try:
         _res = _sb.table("objectifs_joueuse").select(
-            "id,poste,categorie,objectif,statut,statut_label,actif,mois_actifs,ordre"
+            "id,joueuse,poste,categorie,objectif,statut,statut_label,actif,mois_actifs,ordre"
         ).in_("joueuse", orthographes_supabase("objectifs_joueuse", joueuse)).order("ordre").execute()
         if not _res.data:
             return pd.DataFrame()
@@ -631,6 +631,125 @@ def save_objectifs_evaluations(objectif_notes: dict, joueuse: str, match_date: s
         ]
         if _rows:
             _sb.table("objectifs_evaluations").upsert(_rows, on_conflict="objectif_id,match_date,evaluateur").execute()
+        load_pdi_evaluations.clear()
+        load_objectifs_historique.clear()
+        return True
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=300)
+def load_objectifs_catalogue() -> pd.DataFrame:
+    """Tous les indicateurs possibles : union des objectifs de tous les plans (table
+    objectifs_joueuse, lecture paginée — piège n°7), dédoublonnés par (catégorie, texte normalisé).
+    Colonnes : categorie, cle, objectif (orthographe la plus fréquente), postes (liste)."""
+    _sb = get_supabase_client()
+    if _sb is None:
+        return pd.DataFrame()
+    try:
+        rows, debut = [], 0
+        while True:
+            lot = _sb.table("objectifs_joueuse").select("categorie,objectif,poste").order("id") \
+                .range(debut, debut + 999).execute().data or []
+            rows += lot
+            if len(lot) < 1000:
+                break
+            debut += 1000
+    except Exception:
+        return pd.DataFrame()
+    from collections import Counter, defaultdict
+    _txt, _postes = defaultdict(Counter), defaultdict(set)
+    for r in rows:
+        _o = str(r.get("objectif") or "").strip()
+        _c = r.get("categorie") or ""
+        if not _o or _c not in OBJECTIFS_CATEGORIE_LABELS:
+            continue
+        _k = (_c, normalize_str(_o))
+        _txt[_k][_o] += 1
+        if r.get("poste"):
+            _postes[_k].add(str(r["poste"]).strip())
+    _out = [{"categorie": c, "cle": k, "objectif": _txt[(c, k)].most_common(1)[0][0],
+             "postes": sorted(_postes[(c, k)])} for (c, k) in _txt]
+    _df = pd.DataFrame(_out, columns=["categorie", "cle", "objectif", "postes"])
+    return _df.sort_values(["categorie", "objectif"]).reset_index(drop=True)
+
+
+def enregistrer_selection_objectifs(joueuse: str, poste: str, plan_df: pd.DataFrame,
+                                    coches: set, catalogue: pd.DataFrame) -> str:
+    """Indicateurs affichés pour une joueuse = lignes `actif` de son plan. `coches` : ensemble de
+    (categorie, cle normalisée). Une ligne existante change seulement de `actif` ; un indicateur
+    absent de son plan y est ajouté (actif). Retourne "" si tout est enregistré, sinon l'erreur."""
+    _sb = get_supabase_client()
+    if _sb is None:
+        return "Base de données indisponible."
+    erreurs = []
+    deja = set()
+    _nom = joueuse
+    if plan_df is not None and not plan_df.empty:
+        if "joueuse" in plan_df.columns and plan_df["joueuse"].notna().any():
+            _nom = str(plan_df["joueuse"].dropna().iloc[0])
+        for _, r in plan_df.iterrows():
+            _k = (r["categorie"], normalize_str(r["objectif"]))
+            voulu = _k in coches and _k not in deja  # doublon dans le plan : une seule ligne active
+            if voulu:
+                deja.add(_k)
+            if bool(r.get("actif")) != voulu:
+                try:
+                    _sb.table("objectifs_joueuse").update({"actif": voulu}).eq("id", r["id"]).execute()
+                except Exception as e:
+                    erreurs.append(str(e))
+    _ordre = 0
+    if plan_df is not None and not plan_df.empty and "ordre" in plan_df.columns:
+        _ordre = int(pd.to_numeric(plan_df["ordre"], errors="coerce").fillna(0).max())
+    _nouveaux = []
+    for _k in sorted(coches - deja):
+        _m = catalogue[(catalogue["categorie"] == _k[0]) & (catalogue["cle"] == _k[1])]
+        if _m.empty:
+            continue
+        _ordre += 1
+        _nouveaux.append({"joueuse": _nom, "poste": poste or "", "categorie": _k[0],
+                          "objectif": _m["objectif"].iloc[0], "actif": True, "ordre": _ordre})
+    if _nouveaux:
+        try:
+            _sb.table("objectifs_joueuse").insert(_nouveaux).execute()
+        except Exception as e:
+            erreurs.append(str(e))
+    for f in (load_objectifs_pour_joueuse, load_objectifs_joueuses, load_objectifs_catalogue,
+              _noms_table_supabase):
+        try:
+            f.clear()
+        except Exception:
+            pass
+    return " ; ".join(erreurs)
+
+
+@st.cache_data(ttl=60)
+def load_objectifs_historique(joueuse: str) -> pd.DataFrame:
+    """Toutes les évaluations staff d'une joueuse (une par date, conservées pour l'évolution).
+    Colonnes : objectif_id, match_date, match_label, evaluateur_nom, note."""
+    _sb = get_supabase_client()
+    if _sb is None or not joueuse:
+        return pd.DataFrame()
+    try:
+        _res = _sb.table("objectifs_evaluations").select(
+            "objectif_id,match_date,match_label,evaluateur_nom,note"
+        ).in_("joueuse", orthographes_supabase("objectifs_evaluations", joueuse)) \
+            .eq("evaluateur", "coach").order("match_date").execute()
+        return pd.DataFrame(_res.data) if _res.data else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+def supprimer_evaluation_objectifs(joueuse: str, match_date: str) -> bool:
+    """Supprime l'évaluation staff d'une joueuse à une date (toutes les notes de ce jour)."""
+    _sb = get_supabase_client()
+    if _sb is None:
+        return False
+    try:
+        _sb.table("objectifs_evaluations").delete() \
+            .in_("joueuse", orthographes_supabase("objectifs_evaluations", joueuse)) \
+            .eq("match_date", match_date).eq("evaluateur", "coach").execute()
+        load_objectifs_historique.clear()
         load_pdi_evaluations.clear()
         return True
     except Exception:
@@ -12653,189 +12772,239 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 # Sélecteur de joueuse propre à la page (« Toutes » par défaut)
                 render_evaluation_page(user_profile, permissions, _saison_sel)
 
-    # ── Objectifs (plan de développement individuel — import du Gantt staff) ──
-    # La joueuse suit le sélecteur commun _pgps (basé sur les données GPS),
-    # rapprochée par tokens de nom des joueuses de la table objectifs_joueuse
-    # (le référentiel joueuses et le roster Présence sont incomplets en prod).
-    # Sélecteur dédié seulement s'il n'y a pas de données GPS.
+    # ── Objectifs (plan de développement individuel) ─────────────────────────
+    # Le staff choisit, pour chaque joueuse, les indicateurs affichés parmi tous ceux qui
+    # existent (union des plans de toutes les joueuses : load_objectifs_catalogue) — ce sont
+    # les lignes `actif` de objectifs_joueuse. Il évalue ensuite la joueuse (1 à 5) : une
+    # évaluation initiale à date libre, puis une par match. Chaque date est conservée
+    # (objectifs_evaluations, evaluateur="coach") pour montrer l'évolution. La joueuse
+    # consulte en lecture seule. L'auto-évaluation joueuse est retirée pour l'instant.
     if rubrique == "Objectifs":
-        _obj_joueuses = liste_effectif(load_objectifs_joueuses())
-        if not _obj_joueuses:
-            st.info("Aucun plan de développement disponible pour le moment.")
+        _obj_staff = role != ROLE_JOUEUSE
+        _OBJ_COUL = {1: "#EF4444", 2: "#F4830A", 3: "#FFD700", 4: "#84CC16", 5: "#22C55E"}
+        _OBJ_CATS = ("incontournable", "technique_tactique", "physique")
+
+        if _obj_staff:
+            _obj_liste = liste_effectif()
+            _obj_def = next((p for p in _obj_liste if nom_tokens(p) & nom_tokens(_pgps_name or _perf_player or "")), None)
+            _obj_sel = st.selectbox(
+                "Joueuse", _obj_liste,
+                index=_obj_liste.index(_obj_def) if _obj_def in _obj_liste else 0,
+                key="objectifs_player_sel",
+            ) if _obj_liste else None
         else:
-            _obj_default = None
-            if role == ROLE_JOUEUSE:
-                _obj_default = next(
-                    (p for p in _obj_joueuses if nom_tokens(p) & nom_tokens(_perf_player or "")), None
-                )
-
-            if role == ROLE_JOUEUSE and _obj_default:
-                _obj_sel = _obj_default
-                st.caption(f"Joueuse : **{_obj_sel}**")
-            elif role == ROLE_JOUEUSE:
-                st.info("Aucun plan de développement disponible pour le moment.")
-                _obj_sel = None
-            elif _pgps:
-                # Suit le sélecteur commun de « Suivi de la performance » :
-                # correspondance par tokens de nom (ordre et casse indifférents),
-                # en gardant la joueuse qui partage le plus de tokens.
-                _pgps_tok = nom_tokens(_pgps)
-                _obj_scores = [(len(nom_tokens(p) & _pgps_tok), p) for p in _obj_joueuses]
-                _obj_best = max(_obj_scores, key=lambda s: s[0], default=(0, None))
-                _obj_sel = _obj_best[1] if _obj_best[0] > 0 else None
-                if _obj_sel is None:
-                    st.info(f"Aucun plan de développement pour **{_pgps}**.")
-            else:
-                # Pas de données GPS (donc pas de sélecteur commun) : sélecteur dédié
-                _obj_sel = st.selectbox("Joueuse", _obj_joueuses, key="objectifs_player_sel")
-
+            _obj_sel = next((p for p in liste_effectif(load_objectifs_joueuses())
+                             if nom_tokens(p) & nom_tokens(_perf_player or "")), None)
             if _obj_sel:
-                _obj_df = load_objectifs_pour_joueuse(_obj_sel)
-                if _obj_df.empty:
-                    st.info("Aucun objectif enregistré pour cette joueuse.")
-                else:
-                    st.caption(f"Poste : **{_obj_df['poste'].iloc[0]}**")
+                st.caption(f"Joueuse : **{_obj_sel}**")
+            else:
+                st.info("Aucun plan de développement disponible pour le moment.")
 
-                    def _obj_statut_badge(statut, statut_label):
-                        if statut_label:
-                            return f"<span style='background:#2A4A7A;color:#9FB8D8;border-radius:3px;padding:2px 7px;font-size:11px;font-weight:600;'>{statut_label}</span>"
-                        if statut is None or (isinstance(statut, float) and pd.isna(statut)):
-                            return ""
-                        _s = int(statut)
-                        _colors = {1: "#EF4444", 2: "#F4830A", 3: "#FFD700", 4: "#84CC16", 5: "#22C55E"}
-                        _c = _colors.get(_s, "#9FB8D8")
-                        return f"<span style='background:{_c}22;color:{_c};border:1px solid {_c}55;border-radius:3px;padding:2px 7px;font-size:11px;font-weight:700;'>{_s}/5</span>"
+        if _obj_sel:
+            _obj_df = load_objectifs_pour_joueuse(_obj_sel)
+            _obj_poste = (str(_obj_df["poste"].dropna().iloc[0]) if not _obj_df.empty and _obj_df["poste"].notna().any()
+                          else get_player_demographics(_obj_sel).get("poste1", ""))
+            if _obj_poste:
+                st.caption(f"Poste : **{_obj_poste}**")
+            _obj_actifs = _obj_df[_obj_df["actif"].fillna(False).astype(bool)] if not _obj_df.empty else pd.DataFrame()
+            _obj_hist = load_objectifs_historique(_obj_sel)
+            if not _obj_hist.empty and not _obj_actifs.empty:
+                _obj_hist = _obj_hist[_obj_hist["objectif_id"].isin(_obj_actifs["id"])]
 
-                    def _render_objectif_row(_row, show_statut=False):
-                        _badge = _obj_statut_badge(_row.get("statut"), _row.get("statut_label")) if show_statut else ""
-                        st.markdown(
-                            f"<div style='background:#0E2B5E;border-left:2px solid #1FA8E0;border-radius:2px;"
-                            f"padding:8px 14px;margin-bottom:6px;'>"
-                            f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
-                            f"<span style='color:#C8D8E8;font-size:13.5px;'>{_esc(str(_row['objectif']))}</span>{_badge}"
-                            f"</div></div>",
-                            unsafe_allow_html=True
-                        )
+            def _obj_badge(note):
+                if note is None or pd.isna(note):
+                    return "<span style='color:#5A7090;font-size:12px;'>—</span>"
+                _n = int(round(float(note)))
+                _c = _OBJ_COUL.get(_n, "#9FB8D8")
+                return (f"<span style='display:inline-block;min-width:30px;text-align:center;background:{_c}22;"
+                        f"color:{_c};border:1px solid {_c}55;border-radius:3px;padding:2px 6px;font-size:12px;"
+                        f"font-weight:700;'>{_n}</span>")
 
-                    for _cat in ("incontournable", "technique_tactique", "physique"):
-                        _cat_df = _obj_df[_obj_df["categorie"] == _cat]
-                        if _cat_df.empty:
-                            continue
-                        st.markdown(f"**{OBJECTIFS_CATEGORIE_LABELS[_cat]}**")
-
-                        if _cat == "incontournable":
-                            for _, _row in _cat_df.iterrows():
-                                _render_objectif_row(_row, show_statut=True)
-                        else:
-                            _actifs_df = _cat_df[_cat_df["actif"]]
-                            _inactifs_df = _cat_df[~_cat_df["actif"]]
-                            if _actifs_df.empty:
-                                st.caption("Aucun objectif actif dans cette catégorie.")
-                            else:
-                                for _, _row in _actifs_df.iterrows():
-                                    _render_objectif_row(_row)
-                            if not _inactifs_df.empty:
-                                with st.expander(f"Voir le pool complet ({len(_inactifs_df)} non actifs)"):
-                                    for _, _row in _inactifs_df.iterrows():
-                                        st.caption(f"· {_row['objectif']}")
-                        st.markdown("")
-
-                    # ── Évaluation après match (joueuse vs coach) ──────────────
-                    st.divider()
-                    st.markdown("**📝 Évaluation après match**")
-                    _obj_matches = sorted(
-                        (t for t in _tac_files if t.get("date") is not None),
-                        key=lambda t: t["date"], reverse=True
-                    )
-                    _obj_actifs_df = _obj_df[_obj_df["actif"]]
-                    if not _obj_matches:
-                        st.caption("Aucun match disponible pour évaluer les objectifs.")
-                    elif _obj_actifs_df.empty:
-                        st.caption("Aucun objectif actif à évaluer.")
+            # ── 1. Choix des indicateurs (staff) ─────────────────────────────
+            if _obj_staff:
+                _obj_cat = load_objectifs_catalogue()
+                with st.expander(f"☑️ Choisir les indicateurs suivis ({len(_obj_actifs)} sélectionnés)",
+                                 expanded=_obj_actifs.empty):
+                    if _obj_cat.empty:
+                        st.caption("Aucun indicateur disponible (base de données indisponible ?).")
                     else:
-                        _obj_match_labels = [t["label"] for t in _obj_matches]
-                        _obj_match_sel_label = st.selectbox(
-                            "Match", _obj_match_labels, key=f"objectifs_match_sel_{_obj_sel}"
-                        )
-                        _obj_match = next(t for t in _obj_matches if t["label"] == _obj_match_sel_label)
-                        _obj_match_date_iso = pd.Timestamp(_obj_match["date"]).date().isoformat()
-                        _obj_evals = load_pdi_evaluations(_obj_sel, _obj_match_date_iso)
-
-                        if not _obj_evals.empty:
-                            _pivot = _obj_evals.pivot_table(
-                                index="objectif_id", columns="evaluateur", values="note", aggfunc="last"
-                            )
-                            _comp_rows = []
-                            for _, _row in _obj_actifs_df.iterrows():
-                                _oid = _row["id"]
-                                if _oid not in _pivot.index:
+                        _obj_coches_act = {(r["categorie"], normalize_str(r["objectif"])) for _, r in _obj_actifs.iterrows()}
+                        _obj_poste_n = normalize_str(_obj_poste)
+                        with st.form(f"objectifs_selection_{_obj_sel}"):
+                            st.caption("Cochez les indicateurs à faire apparaître pour cette joueuse. "
+                                       "Ceux de son poste sont listés en premier.")
+                            _obj_choix = {}
+                            for _cat in _OBJ_CATS:
+                                _c_df = _obj_cat[_obj_cat["categorie"] == _cat].copy()
+                                if _c_df.empty:
                                     continue
-                                _nj = _pivot.loc[_oid].get("joueuse")
-                                _nc = _pivot.loc[_oid].get("coach")
-                                _comp_rows.append({
-                                    "Objectif": _row["objectif"],
-                                    "Joueuse": _nj if pd.notna(_nj) else "—",
-                                    "Coach": _nc if pd.notna(_nc) else "—",
-                                    "Écart": abs(_nj - _nc) if pd.notna(_nj) and pd.notna(_nc) else "—",
-                                })
-                            if _comp_rows:
-                                st.dataframe(pd.DataFrame(_comp_rows), hide_index=True, width="stretch")
+                                _c_df["_poste"] = _c_df["postes"].apply(
+                                    lambda ps: any(normalize_str(p) == _obj_poste_n for p in ps))
+                                _c_df = _c_df.sort_values(["_poste", "objectif"], ascending=[False, True])
+                                _n_sel = sum(1 for k in _obj_coches_act if k[0] == _cat)
+                                st.markdown(f"**{OBJECTIFS_CATEGORIE_LABELS[_cat]}** · {_n_sel} sélectionné(s)")
+                                for _, _r in _c_df.iterrows():
+                                    _k = (_cat, _r["cle"])
+                                    _aide = None if _r["_poste"] or not _r["postes"] else "Postes : " + ", ".join(_r["postes"])
+                                    _obj_choix[_k] = st.checkbox(
+                                        _r["objectif"], value=_k in _obj_coches_act, help=_aide,
+                                        key=f"objsel_{_obj_sel}_{_cat}_{_r['cle']}",
+                                    )
+                            if st.form_submit_button("💾 Enregistrer la sélection", type="primary"):
+                                _err = enregistrer_selection_objectifs(
+                                    _obj_sel, _obj_poste, _obj_df, {k for k, v in _obj_choix.items() if v}, _obj_cat)
+                                if _err:
+                                    st.error(f"Enregistrement incomplet : {_err}")
+                                else:
+                                    st.rerun()
+
+            if _obj_actifs.empty:
+                st.info("Aucun indicateur sélectionné pour cette joueuse." +
+                        (" Cochez-en dans la liste ci-dessus." if _obj_staff else ""))
+            else:
+                # ── 2. Indicateurs suivis et évolution ───────────────────────
+                _obj_dates = []
+                if not _obj_hist.empty:
+                    _obj_dates = (_obj_hist.sort_values("match_date")
+                                  .drop_duplicates("match_date", keep="last")[["match_date", "match_label"]]
+                                  .values.tolist())
+                _obj_notes = ({(r["objectif_id"], r["match_date"]): r["note"] for _, r in _obj_hist.iterrows()}
+                              if not _obj_hist.empty else {})
+
+                st.markdown("**📈 Évolution**" if _obj_dates else "**🎯 Indicateurs suivis**")
+                _th = "padding:6px 8px;color:#9FB8D8;font-size:11px;font-weight:600;text-align:center;white-space:nowrap;"
+                _td = "padding:5px 8px;text-align:center;border-top:1px solid #1A3A6A;"
+                _h = ["<div style='overflow-x:auto;'><table style='border-collapse:collapse;width:100%;'><tr>",
+                      f"<th style='{_th}text-align:left;'>Indicateur</th>"]
+                for _d, _lbl in _obj_dates:
+                    _h.append(f"<th style='{_th}' title='{_esc(str(_lbl or ''))}'>"
+                              f"{pd.Timestamp(_d).strftime('%d/%m/%y')}<br>"
+                              f"<span style='font-weight:400;color:#6F8AAE;'>{_esc(str(_lbl or '')[:22])}</span></th>")
+                if len(_obj_dates) >= 2:
+                    _h.append(f"<th style='{_th}'>Tendance</th>")
+                _h.append("</tr>")
+                for _cat in _OBJ_CATS:
+                    _c_act = _obj_actifs[_obj_actifs["categorie"] == _cat]
+                    if _c_act.empty:
+                        continue
+                    _h.append(f"<tr><td colspan='{len(_obj_dates) + 2}' style='padding:10px 8px 4px;color:#1FA8E0;"
+                              f"font-weight:700;font-size:13px;'>{OBJECTIFS_CATEGORIE_LABELS[_cat]}</td></tr>")
+                    for _, _r in _c_act.iterrows():
+                        _sl = _r.get("statut_label")
+                        _st = _r.get("statut")
+                        _gantt = ""
+                        if _cat == "incontournable" and (_sl or (_st is not None and not pd.isna(_st))):
+                            _gantt = (f" <span style='color:#6F8AAE;font-size:11px;'>(plan : "
+                                      f"{_esc(str(_sl)) if _sl else str(int(_st)) + '/5'})</span>")
+                        _h.append(f"<tr><td style='{_td}text-align:left;color:#C8D8E8;font-size:13px;'>"
+                                  f"{_esc(str(_r['objectif']))}{_gantt}</td>")
+                        _vals = []
+                        for _d, _ in _obj_dates:
+                            _v = _obj_notes.get((_r["id"], _d))
+                            _vals.append(_v)
+                            _h.append(f"<td style='{_td}'>{_obj_badge(_v)}</td>")
+                        if len(_obj_dates) >= 2:
+                            _vv = [v for v in _vals if v is not None and not pd.isna(v)]
+                            if len(_vv) >= 2:
+                                _dv = float(_vv[-1]) - float(_vv[0])
+                                _tr = ("<span style='color:#22C55E;'>▲ +%g</span>" % _dv if _dv > 0 else
+                                       "<span style='color:#EF4444;'>▼ %g</span>" % _dv if _dv < 0 else
+                                       "<span style='color:#9FB8D8;'>=</span>")
                             else:
-                                st.caption("Aucune évaluation pour ce match.")
-                        else:
-                            st.caption("Aucune évaluation pour ce match.")
+                                _tr = "<span style='color:#5A7090;'>—</span>"
+                            _h.append(f"<td style='{_td}font-size:12px;font-weight:700;'>{_tr}</td>")
+                        _h.append("</tr>")
+                _h.append("</table></div>")
+                st.markdown("".join(_h), unsafe_allow_html=True)
 
-                        _obj_eval_role = "joueuse" if (role == ROLE_JOUEUSE and _obj_sel == _obj_default) else "coach"
-                        _obj_eval_btn_label = "✏️ M'évaluer pour ce match" if _obj_eval_role == "joueuse" else "✏️ Évaluer (coach) pour ce match"
-                        _obj_eval_ctx = (_obj_sel, _obj_match_date_iso, _obj_eval_role)
+                # Courbe : moyenne par catégorie à chaque évaluation
+                if len(_obj_dates) >= 2:
+                    _m = _obj_hist.merge(_obj_actifs[["id", "categorie"]], left_on="objectif_id", right_on="id")
+                    _m = _m.groupby(["match_date", "categorie"], as_index=False)["note"].mean()
+                    _fig = go.Figure()
+                    _cc = {"incontournable": "#FFD700", "technique_tactique": "#1FA8E0", "physique": "#22C55E"}
+                    for _cat in _OBJ_CATS:
+                        _s = _m[_m["categorie"] == _cat]
+                        if _s.empty:
+                            continue
+                        _fig.add_trace(go.Scatter(
+                            x=pd.to_datetime(_s["match_date"]), y=_s["note"], mode="lines+markers",
+                            name=OBJECTIFS_CATEGORIE_LABELS[_cat].split(" ", 1)[1], line=dict(color=_cc[_cat], width=2),
+                            hovertemplate="%{x|%d/%m/%y} : %{y:.1f}/5<extra></extra>"))
+                    _fig.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10),
+                                       paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                       font=dict(color="#C8D8E8"), yaxis=dict(range=[0.5, 5.5], dtick=1, gridcolor="#1A3A6A"),
+                                       xaxis=dict(gridcolor="#1A3A6A", tickformat="%d/%m"),
+                                       legend=dict(orientation="h", y=-0.2))
+                    st.plotly_chart(_fig, width="stretch", config={"displayModeBar": False})
 
-                        if st.button(_obj_eval_btn_label, key=f"objectifs_eval_btn_{_obj_sel}_{_obj_match_date_iso}_{_obj_eval_role}"):
-                            st.session_state["_objectifs_eval_ctx"] = _obj_eval_ctx
-                            st.session_state["_active_dialog_id"] = "objectifs"
+                # ── 3. Nouvelle évaluation (staff) ───────────────────────────
+                if _obj_staff:
+                    st.divider()
+                    st.markdown("**📝 Évaluer la joueuse**")
+                    try:
+                        _obj_bp = bepro_only_matches(_tac_files)
+                    except Exception:
+                        _obj_bp = []
+                    _obj_matchs, _vus = [], set()
+                    for _t in sorted((t for t in list(_tac_files) + _obj_bp if t.get("date") is not None),
+                                     key=lambda t: t["date"], reverse=True):
+                        _dt = pd.Timestamp(_t["date"]).date()
+                        if _dt in _vus:
+                            continue
+                        _vus.add(_dt)
+                        _lib = " · ".join(x for x in [_t.get("competition", ""), _t.get("adversaire", "")] if x) or _t.get("label", "")
+                        _obj_matchs.append((f"{_dt.strftime('%d/%m/%y')} · {_lib}", _dt, f"Match · {_t.get('adversaire') or _lib}"))
+                    _modes = ["Après un match", "Date libre"]
+                    _mode = st.radio("Type d'évaluation", _modes, horizontal=True,
+                                     index=1 if not _obj_dates or not _obj_matchs else 0,
+                                     key=f"objectifs_mode_{_obj_sel}")
+                    if _mode == "Date libre":
+                        _ed = st.date_input("Date", value=date.today(), format="DD/MM/YYYY", key=f"objectifs_date_{_obj_sel}")
+                        _el = "Évaluation initiale" if not _obj_dates or pd.Timestamp(_obj_dates[0][0]).date() >= _ed else "Évaluation"
+                    elif _obj_matchs:
+                        _ms = st.selectbox("Match", [m[0] for m in _obj_matchs], key=f"objectifs_match_{_obj_sel}")
+                        _, _ed, _el = next(m for m in _obj_matchs if m[0] == _ms)
+                    else:
+                        _ed = None
+                        st.caption("Aucun match disponible : utilisez « Date libre ».")
 
-                        if st.session_state.get("_objectifs_eval_ctx") == _obj_eval_ctx and st.session_state.get("_active_dialog_id") == "objectifs":
-                            _obj_existing_notes = {}
-                            if not _obj_evals.empty:
-                                _mine = _obj_evals[_obj_evals["evaluateur"] == _obj_eval_role]
-                                _obj_existing_notes = dict(zip(_mine["objectif_id"], _mine["note"]))
-
-                            def _objectifs_eval_fermer():  # fermeture par la croix
-                                st.session_state.pop("_objectifs_eval_ctx", None)
-                                st.session_state.pop("_active_dialog_id", None)
-
-                            @st.dialog(f"Évaluation — {_obj_match_sel_label}", on_dismiss=_objectifs_eval_fermer)
-                            def _objectifs_eval_dialog():
-                                st.caption(f"Joueuse : **{_obj_sel}**")
-                                _new_notes = {}
-                                for _cat2 in ("incontournable", "technique_tactique", "physique"):
-                                    _cat_actifs = _obj_actifs_df[_obj_actifs_df["categorie"] == _cat2]
-                                    if _cat_actifs.empty:
-                                        continue
-                                    st.markdown(f"**{OBJECTIFS_CATEGORIE_LABELS[_cat2]}**")
-                                    for _, _row2 in _cat_actifs.iterrows():
-                                        _default_note = int(_obj_existing_notes.get(_row2["id"], 3))
-                                        _new_notes[_row2["id"]] = st.select_slider(
-                                            _row2["objectif"], options=[1, 2, 3, 4, 5],
-                                            value=_default_note, key=f"objectifs_eval_slider_{_row2['id']}"
-                                        )
-                                st.divider()
-                                _odb1, _odb2 = st.columns(2)
-                                with _odb1:
-                                    if st.button("💾 Enregistrer", type="primary", key="objectifs_eval_save", width="stretch"):
-                                        save_objectifs_evaluations(
-                                            _new_notes, _obj_sel, _obj_match_date_iso, _obj_match_sel_label,
-                                            _obj_eval_role, user_profile
-                                        )
-                                        st.session_state.pop("_objectifs_eval_ctx", None)
-                                        st.session_state.pop("_active_dialog_id", None)
+                    if _ed is not None:
+                        _ed_iso = _ed.isoformat()
+                        _deja = {oid: n for (oid, d), n in _obj_notes.items() if d == _ed_iso}
+                        if _deja:
+                            st.caption(f"Une évaluation existe déjà le {_ed.strftime('%d/%m/%y')} : "
+                                       "l'enregistrer à nouveau la remplace.")
+                        with st.form(f"objectifs_eval_{_obj_sel}_{_ed_iso}"):
+                            _notes = {}
+                            for _cat in _OBJ_CATS:
+                                _c_act = _obj_actifs[_obj_actifs["categorie"] == _cat]
+                                if _c_act.empty:
+                                    continue
+                                st.markdown(f"**{OBJECTIFS_CATEGORIE_LABELS[_cat]}**")
+                                for _, _r in _c_act.iterrows():
+                                    _v0 = _deja.get(_r["id"])
+                                    _notes[_r["id"]] = st.select_slider(
+                                        _r["objectif"], options=["—", 1, 2, 3, 4, 5],
+                                        value=int(_v0) if _v0 is not None and not pd.isna(_v0) else "—",
+                                        key=f"objectifs_note_{_obj_sel}_{_ed_iso}_{_r['id']}",
+                                    )
+                            st.caption("« — » = indicateur non évalué ce jour-là.")
+                            if st.form_submit_button("💾 Enregistrer l'évaluation", type="primary"):
+                                _a_ecrire = {k: v for k, v in _notes.items() if v != "—"}
+                                if not _a_ecrire:
+                                    st.warning("Aucune note saisie.")
+                                else:
+                                    if _deja:  # remplace l'évaluation de ce jour (y compris notes retirées)
+                                        supprimer_evaluation_objectifs(_obj_sel, _ed_iso)
+                                    if save_objectifs_evaluations(_a_ecrire, _obj_sel, _ed_iso, _el, "coach", user_profile):
                                         st.rerun()
-                                with _odb2:
-                                    if st.button("Annuler", key="objectifs_eval_cancel", width="stretch"):
-                                        st.session_state.pop("_objectifs_eval_ctx", None)
-                                        st.session_state.pop("_active_dialog_id", None)
-                                        st.rerun()
-
-                            _objectifs_eval_dialog()
+                                    else:
+                                        st.error("Enregistrement impossible (base de données indisponible ?).")
+                        if _deja and st.button(f"🗑️ Supprimer l'évaluation du {_ed.strftime('%d/%m/%y')}",
+                                               key=f"objectifs_suppr_{_obj_sel}_{_ed_iso}"):
+                            supprimer_evaluation_objectifs(_obj_sel, _ed_iso)
+                            st.rerun()
 
     # ── Séances (méthodologie Emma : cartes par catégorie + profil en
     # barres vs moyenne équipe) — remplace les anciens onglets
@@ -14156,7 +14325,8 @@ def orthographes_supabase(table: str, joueuse: str) -> list:
 def _vider_caches_noms() -> None:
     """Après une modification de l'Effectif : les données déjà chargées sont relues."""
     for f in (load_visites_medicales, load_mesures_corporelles, load_objectifs_joueuses,
-              load_objectifs_pour_joueuse, load_pdi_evaluations, load_presence_for_date,
+              load_objectifs_pour_joueuse, load_pdi_evaluations, load_objectifs_historique,
+              load_objectifs_catalogue, load_presence_for_date,
               load_presence_rate, load_rpe_joueuse, _noms_table_supabase):
         try:
             f.clear()
