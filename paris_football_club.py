@@ -11520,6 +11520,10 @@ def build_fiche_bilan_html(player_name: str,
         else:
             _tableau = '<div class="gn" style="padding:14px;">Aucun indicateur suivi pour cette joueuse.</div>'
 
+        # Taille de police sans script (estimation selon le nombre de lignes) ; le script de la
+        # page repart de 11,5 px et la réduit jusqu'à ce que le tableau tienne (fitObjectifs).
+        _n_lig = len(_lignes)
+        _f0 = 11.5 if _n_lig <= 18 else max(6.5, round(11.5 * 18 / _n_lig, 2))
         _moy_deb = sum(_deb_all) / len(_deb_all) if _deb_all else None
         _moy_fin = sum(_fin_all) / len(_fin_all) if _fin_all else None
         _cells_o = (_cell(f"Évaluations {'(auto)' if _vue_j else 'staff'}", str(len(_dates_src)))
@@ -11539,11 +11543,13 @@ def build_fiche_bilan_html(player_name: str,
             f'<div class="obody"><div class="right" style="min-height:0;">'
             f'<div class="sect">ÉVOLUTION DES OBJECTIFS <span class="ctl">· {_qui.lower()} sur la période</span></div>'
             f'<div class="cells c4">{_cells_o}</div>'
-            f'<div class="gcard" style="flex:1;margin-top:10px;overflow:hidden;">{_tableau}'
+            f'<div class="gcard ofit" data-f="11.5" style="flex:1;margin-top:10px;overflow:hidden;font-size:{_f0}px;">{_tableau}'
             f'<div class="gn">{_legende}</div></div></div>'
             f'<div class="right" style="padding-left:6px;min-height:0;"><div class="sect">BILAN</div>'
             f'<div class="gcard" style="flex:1;"><div class="gt"><b>{"Mon bilan" if _vue_j else "Bilan du staff"}</b> · '
-            f'points forts, axes de progrès, objectifs à venir</div>{_comm_html}</div></div></div>'
+            f'points forts, axes de progrès, objectifs à venir</div>'
+            f'<div class="ofit" data-f="12.5" style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;">'
+            f'{_comm_html}</div></div></div></div>'
             f'{_pied}</div>')
 
     _css = """
@@ -11608,16 +11614,16 @@ body{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exac
 .sante{display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:12px;flex:1;min-height:0;}
 .obody{display:grid;grid-template-columns:1fr 31%;flex:1;min-height:0;}
 .cells.c4{grid-template-columns:repeat(4,1fr);}
-.otab{width:100%;border-collapse:collapse;font-size:11.5px;}
-.otab th{font-size:9.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:#9FB8D8;padding:3px 6px;text-align:center;}
-.otab td{padding:3px 6px;text-align:center;border-top:1px solid rgba(255,255,255,.10);vertical-align:middle;}
+.otab{width:100%;border-collapse:collapse;font-size:1em;}
+.otab th{font-size:.83em;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#9FB8D8;padding:.25em .5em;text-align:center;}
+.otab td{padding:.22em .5em;text-align:center;border-top:1px solid rgba(255,255,255,.10);vertical-align:middle;}
 .otab td.ol2{text-align:left;color:#E6EEF8;line-height:1.25;}
 .otab td.oe{font-weight:700;white-space:nowrap;}
-.otab tr.of td{border-top:none;text-align:left;padding:8px 6px 2px;font-size:10.5px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:#1FA8E0;}
-.otab svg{display:block;margin:auto;}
-.ob{display:inline-block;min-width:26px;padding:1px 5px;border-radius:4px;font-family:Unbounded,sans-serif;font-size:11px;font-weight:700;}
+.otab tr.of td{border-top:none;text-align:left;padding:.6em .5em .15em;font-size:.91em;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#1FA8E0;}
+.otab svg{display:block;margin:auto;width:8em;height:1.75em;}
+.ob{display:inline-block;min-width:2.3em;padding:.05em .45em;border-radius:4px;font-family:Unbounded,sans-serif;font-size:.95em;font-weight:700;}
 .on{color:#5A7090;}
-.ocom{flex:1;font-size:12.5px;line-height:1.55;color:#E6EEF8;white-space:pre-wrap;}
+.ocom{font-size:1em;line-height:1.55;color:#E6EEF8;white-space:pre-wrap;overflow-wrap:anywhere;}
 .olines{flex:1;display:flex;flex-direction:column;justify-content:space-around;}
 .olines i{display:block;border-bottom:1px dashed rgba(255,255,255,.22);height:1px;}
 .gimg{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;}
@@ -11659,8 +11665,19 @@ body{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exac
 (function(){{
   // Écran : ajuste la page paysage à la largeur de l'iframe Streamlit (pas d'effet à l'impression)
   function fit(){{var w=window.innerWidth||1135;var z=Math.min(1,(w-12)/1123);document.body.style.zoom=z;}}
+  // Bilan des objectifs : police réduite pas à pas tant que le contenu déborde de son cadre
+  function fitObjectifs(){{
+    document.querySelectorAll('.ofit').forEach(function(c){{
+      var f=parseFloat(c.getAttribute('data-f'))||11.5, n=0;
+      c.style.fontSize=f+'px';
+      while(c.scrollHeight>c.clientHeight+1&&f>5.5&&n<80){{f-=0.25;c.style.fontSize=f+'px';n++;}}
+    }});
+  }}
+  fitObjectifs();
+  if(document.fonts&&document.fonts.ready){{document.fonts.ready.then(fitObjectifs);}}
+  window.addEventListener('load',fitObjectifs);
   if(!window.matchMedia||!window.matchMedia('print').matches){{fit();window.addEventListener('resize',fit);}}
-  window.addEventListener('beforeprint',function(){{document.body.style.zoom=1;}});
+  window.addEventListener('beforeprint',function(){{document.body.style.zoom=1;fitObjectifs();}});
 }})();
 </script>
 </body></html>"""
