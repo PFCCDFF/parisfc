@@ -312,6 +312,7 @@ FICHE_BILAN_INDICATORS = {
     "Athlétique": ["Endurance (m)", "Intensité (m)", "Sprint (nb)", "Vitesse max (km/h)", "Fréquence (m/min)"],
     "Assiduité":  ["Taux de présence"],
     "Santé":      ["Espace Santé"],
+    "Objectifs":  ["Bilan des objectifs"],
 }
 FICHE_BILAN_ALL_INDICATORS = [i for cat in FICHE_BILAN_INDICATORS.values() for i in cat]
 FICHE_TEMPLATES_PATH = os.path.join("data", "fiche_bilan_templates.json")
@@ -11105,14 +11106,19 @@ def build_fiche_bilan_html(player_name: str,
                            medical_prof_counts: tuple = (),
                            medical_zone_counts: tuple = (),
                            health_measures: tuple = (),
-                           periode: str = "") -> str:
+                           periode: str = "",
+                           objectifs: list = None,
+                           objectifs_commentaire: str = "",
+                           objectifs_vue: str = "staff") -> str:
     """Fiche bilan périodique HTML d'une joueuse — A4 paysage, charte du rapport de
     match individuel (build_tactical_report_html) :
     - en-tête navy (logo, nom, postes, période)
     - gauche « Statistiques » : technique, offensif, défensif (moyennes sur la période)
     - droite : photo + profil, données athlétiques GPS + objectifs au poste, araignée
       tactique (build_kpi_spider_b64)
-    - page 2 « Espace santé » si l'indicateur est coché (visites, zones, mesures).
+    - page « Espace santé » si l'indicateur est coché (visites, zones, mesures).
+    - page « Bilan des objectifs » si l'indicateur est coché : début / fin / évolution de chaque
+      indicateur suivi sur la période (`objectifs`), auto-évaluation, bilan écrit du staff.
     `periode` : libellé affiché dans l'en-tête (ex. « Toute la saison »)."""
     import math as _mf
 
@@ -11440,6 +11446,106 @@ def build_fiche_bilan_html(player_name: str,
                       f'<div class="right" style="flex:1;min-height:0;"><div class="sect">ESPACE SANTÉ</div>{_sante_corps}</div>'
                       f'{_pied}</div>')
 
+    # ── Page facultative : Bilan des objectifs ────────────────────────────
+    # `objectifs` : liste de {categorie, objectif, coach: [(date iso, note)], joueuse: [...]}
+    # déjà bornée à la période. objectifs_vue="joueuse" : fiche vue par la joueuse, seules
+    # ses auto-évaluations apparaissent.
+    page_objectifs = ""
+    if "Bilan des objectifs" in _sel:
+        _OCOUL = {1: "#EF4444", 2: "#F4830A", 3: "#FFD700", 4: "#84CC16", 5: "#22C55E"}
+        _vue_j = objectifs_vue == "joueuse"
+        _src = "joueuse" if _vue_j else "coach"
+        _objs = list(objectifs or [])
+
+        def _nb(v, plein=True):
+            if v is None:
+                return '<span class="on">—</span>'
+            _c = _OCOUL.get(int(round(v)), "#9FB8D8")
+            _t = f"{v:.0f}" if float(v).is_integer() else f"{v:.1f}"
+            return (f'<span class="ob" style="color:{_c};border:1px {"solid" if plein else "dashed"} {_c};'
+                    f'background:{_c + "26" if plein else "transparent"};">{_t}</span>')
+
+        def _spark(pts, couleur="#1FA8E0", tirets=False):
+            if len(pts) < 2:
+                return ""
+            _w, _hh = 92, 24
+            _xs = [i * (_w - 6) / (len(pts) - 1) + 3 for i in range(len(pts))]
+            _ys = [_hh - 3 - (float(n) - 1) / 4 * (_hh - 6) for _, n in pts]
+            _p = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(_xs, _ys))
+            _da = 'stroke-dasharray="3 2"' if tirets else ""
+            return (f'<svg width="{_w}" height="{_hh}" viewBox="0 0 {_w} {_hh}"><polyline points="{_p}" fill="none" '
+                    f'stroke="{couleur}" stroke-width="1.8" {_da}/>'
+                    + "".join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="1.8" fill="{couleur}"/>' for x, y in zip(_xs, _ys))
+                    + '</svg>')
+
+        _lignes, _n_prog, _n_eval, _deb_all, _fin_all = [], 0, 0, [], []
+        _dates_src, _dates_j = set(), set()
+        _fams = [("incontournable", "Incontournables"), ("technique_tactique", "Techniques / tactiques"),
+                 ("physique", "Physiques / athlétiques")]
+        for _cat, _lib in _fams:
+            _co = [o for o in _objs if o.get("categorie") == _cat]
+            if not _co:
+                continue
+            _lignes.append(f'<tr class="of"><td colspan="7">{_lib}</td></tr>')
+            for o in _co:
+                _ns = sorted(o.get(_src) or [])
+                _nj = sorted(o.get("joueuse") or [])
+                _dates_src |= {d for d, _ in _ns}
+                _dates_j |= {d for d, _ in _nj}
+                _deb = _ns[0][1] if _ns else None
+                _fin = _ns[-1][1] if _ns else None
+                _moy = sum(n for _, n in _ns) / len(_ns) if _ns else None
+                if _deb is not None:
+                    _deb_all.append(_deb); _fin_all.append(_fin); _n_eval += 1
+                if len(_ns) >= 2:
+                    _dv = _fin - _deb
+                    if _dv > 0:
+                        _n_prog += 1
+                    _evo = (f'<span style="color:#22C55E;">▲ +{_dv:g}</span>' if _dv > 0 else
+                            f'<span style="color:#EF4444;">▼ {_dv:g}</span>' if _dv < 0 else
+                            '<span style="color:#9FB8D8;">=</span>')
+                else:
+                    _evo = '<span class="on">—</span>'
+                _auto = "" if _vue_j else f'<td>{_nb(_nj[-1][1] if _nj else None, plein=False)}</td>'
+                _lignes.append(
+                    f'<tr><td class="ol2">{_esc(str(o.get("objectif", "")))}</td>'
+                    f'<td>{_nb(_deb, not _vue_j)}</td><td>{_nb(_fin, not _vue_j)}</td><td class="oe">{_evo}</td>'
+                    f'<td>{_nb(_moy, not _vue_j)}</td>{_auto}'
+                    f'<td>{_spark(_ns, "#9FD8F2" if _vue_j else "#1FA8E0", tirets=_vue_j)}</td></tr>')
+        _qui = "Auto-évaluation" if _vue_j else "Note staff"
+        _thead = (f'<tr><th style="text-align:left;">Indicateur</th><th>Début</th><th>Fin</th><th>Évolution</th>'
+                  f'<th>Moyenne</th>{"" if _vue_j else "<th>Auto-éval.</th>"}<th>Courbe</th></tr>')
+        if _lignes:
+            _tableau = f'<table class="otab">{_thead}{"".join(_lignes)}</table>'
+        else:
+            _tableau = '<div class="gn" style="padding:14px;">Aucun indicateur suivi pour cette joueuse.</div>'
+
+        _moy_deb = sum(_deb_all) / len(_deb_all) if _deb_all else None
+        _moy_fin = sum(_fin_all) / len(_fin_all) if _fin_all else None
+        _cells_o = (_cell(f"Évaluations {'(auto)' if _vue_j else 'staff'}", str(len(_dates_src)))
+                    + ("" if _vue_j else _cell("Auto-évaluations", str(len(_dates_j)), "#9FD8F2"))
+                    + _cell("Moyenne début → fin",
+                            "—" if _moy_deb is None else f"{_moy_deb:.1f} → {_moy_fin:.1f}",
+                            "#FFFFFF" if _moy_deb is None or _moy_fin == _moy_deb else
+                            ("#22C55E" if _moy_fin > _moy_deb else "#EF4444"))
+                    + _cell("Indicateurs en progression", f"{_n_prog} / {_n_eval}" if _n_eval else "—", "#5DCAA5"))
+        _comm = str(objectifs_commentaire or "").strip()
+        _comm_html = (f'<div class="ocom">{_esc(_comm)}</div>' if _comm
+                      else '<div class="olines">' + '<i></i>' * 12 + '</div>')
+        _legende = ("Notes de 1 à 5 · Début / Fin = première et dernière " + ("auto-évaluation" if _vue_j else "note du staff")
+                    + " de la période" + ("" if _vue_j else " · Auto-éval. = dernière auto-évaluation de la joueuse"))
+        page_objectifs = (
+            f'<div class="page">{_entete("Bilan des objectifs")}'
+            f'<div class="obody"><div class="right" style="min-height:0;">'
+            f'<div class="sect">ÉVOLUTION DES OBJECTIFS <span class="ctl">· {_qui.lower()} sur la période</span></div>'
+            f'<div class="cells c4">{_cells_o}</div>'
+            f'<div class="gcard" style="flex:1;margin-top:10px;overflow:hidden;">{_tableau}'
+            f'<div class="gn">{_legende}</div></div></div>'
+            f'<div class="right" style="padding-left:6px;min-height:0;"><div class="sect">BILAN</div>'
+            f'<div class="gcard" style="flex:1;"><div class="gt"><b>{"Mon bilan" if _vue_j else "Bilan du staff"}</b> · '
+            f'points forts, axes de progrès, objectifs à venir</div>{_comm_html}</div></div></div>'
+            f'{_pied}</div>')
+
     _css = """
 *{margin:0;padding:0;box-sizing:border-box;}
 body{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exact;display:flex;flex-direction:column;align-items:center;gap:10px;padding:6px;}
@@ -11500,6 +11606,20 @@ body{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exac
 .photo{width:100%;height:100%;object-fit:cover;object-position:top center;display:block;}
 .ph{display:flex;align-items:center;justify-content:center;font-family:Unbounded,sans-serif;font-size:44px;font-weight:800;color:#6C84A8;}
 .sante{display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:12px;flex:1;min-height:0;}
+.obody{display:grid;grid-template-columns:1fr 31%;flex:1;min-height:0;}
+.cells.c4{grid-template-columns:repeat(4,1fr);}
+.otab{width:100%;border-collapse:collapse;font-size:11.5px;}
+.otab th{font-size:9.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:#9FB8D8;padding:3px 6px;text-align:center;}
+.otab td{padding:3px 6px;text-align:center;border-top:1px solid rgba(255,255,255,.10);vertical-align:middle;}
+.otab td.ol2{text-align:left;color:#E6EEF8;line-height:1.25;}
+.otab td.oe{font-weight:700;white-space:nowrap;}
+.otab tr.of td{border-top:none;text-align:left;padding:8px 6px 2px;font-size:10.5px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:#1FA8E0;}
+.otab svg{display:block;margin:auto;}
+.ob{display:inline-block;min-width:26px;padding:1px 5px;border-radius:4px;font-family:Unbounded,sans-serif;font-size:11px;font-weight:700;}
+.on{color:#5A7090;}
+.ocom{flex:1;font-size:12.5px;line-height:1.55;color:#E6EEF8;white-space:pre-wrap;}
+.olines{flex:1;display:flex;flex-direction:column;justify-content:space-around;}
+.olines i{display:block;border-bottom:1px dashed rgba(255,255,255,.22);height:1px;}
 .gimg{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;}
 .gimg img{max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;}
 .ftr{height:20px;display:flex;align-items:center;justify-content:space-between;padding:0 22px;background:#061A40;flex-shrink:0;
@@ -11533,6 +11653,7 @@ body{background:#020B1F;-webkit-print-color-adjust:exact;print-color-adjust:exac
 </div>
 {_pied}
 </div>
+{page_objectifs}
 {page_sante}
 <script>
 (function(){{
@@ -14060,8 +14181,16 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         st.rerun()
 
             _selected_indicators = set(st.session_state["_fiche_indic_sel"])
+            # Bilan des objectifs : texte libre du staff (ou de la joueuse sur sa fiche), imprimé
+            # dans l'encadré « Bilan » ; vide = lignes pour écrire à la main.
+            _fiche_obj_comm = ""
+            if "Bilan des objectifs" in _selected_indicators:
+                _fiche_obj_comm = st.text_area(
+                    "Bilan des objectifs (texte imprimé sur la fiche, facultatif)",
+                    key=f"fiche_obj_comm_{_fiche_player}", height=110,
+                    placeholder="Points forts, axes de progrès, objectifs pour la prochaine période…")
             _fiche_cache_key = (_fiche_player, frozenset(_selected_indicators),
-                                _fiche_period_mode, _fiche_date_deb, _fiche_date_fin)
+                                _fiche_period_mode, _fiche_date_deb, _fiche_date_fin, _fiche_obj_comm)
 
             _col_btn1, _col_btn2 = st.columns([1, 1])
             with _col_btn1:
@@ -14166,6 +14295,31 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             _periode_fiche = (f"Saison 20{_sais[:2]}-20{_sais[2:]}"
                                               if len(str(_sais)) == 4 and str(_sais).isdigit() else "Toutes les saisons")
 
+                        # Objectifs suivis + évaluations bornées à la période (dates choisies, sinon
+                        # saison sélectionnée « 2526 » = 01/07/2025 → 30/06/2026, sinon tout).
+                        _fiche_objectifs = []
+                        if "Bilan des objectifs" in _selected_indicators:
+                            _o_deb = _o_fin = None
+                            if _fiche_period_mode == "Plage de dates" and _fiche_date_deb and _fiche_date_fin:
+                                _o_deb, _o_fin = _fiche_date_deb.isoformat(), _fiche_date_fin.isoformat()
+                            else:
+                                _sz = str(st.session_state.get("selected_saison", ""))
+                                if len(_sz) == 4 and _sz.isdigit():
+                                    _o_deb, _o_fin = f"20{_sz[:2]}-07-01", f"20{_sz[2:]}-06-30"
+                            _o_plan = load_objectifs_pour_joueuse(_fiche_player)
+                            _o_hist = load_objectifs_historique(_fiche_player)
+                            if not _o_hist.empty and _o_deb:
+                                _o_hist = _o_hist[(_o_hist["match_date"] >= _o_deb) & (_o_hist["match_date"] <= _o_fin)]
+                            if not _o_plan.empty:
+                                for _, _or in _o_plan[_o_plan["actif"].fillna(False).astype(bool)].iterrows():
+                                    _oh = _o_hist[_o_hist["objectif_id"] == _or["id"]] if not _o_hist.empty else _o_hist
+                                    _fiche_objectifs.append({
+                                        "categorie": _or["categorie"], "objectif": _or["objectif"],
+                                        **{_ev: [(r["match_date"], float(r["note"])) for _, r in
+                                                 (_oh[_oh["evaluateur"] == _ev].iterrows() if not _oh.empty else [])]
+                                           for _ev in ("coach", "joueuse")},
+                                    })
+
                         _fiche_html = build_fiche_bilan_html(
                             player_name=_fiche_player,
                             pfc_kpi_all=_pfc_kpi_all_fiche,
@@ -14179,6 +14333,9 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             medical_prof_counts=tuple(sorted(_med_summary_fiche["prof_counts"].items())),
                             medical_zone_counts=tuple(sorted(_med_summary_fiche["zones"].items())),
                             health_measures=_health_measures_key,
+                            objectifs=_fiche_objectifs,
+                            objectifs_commentaire=_fiche_obj_comm,
+                            objectifs_vue="joueuse" if role == ROLE_JOUEUSE else "staff",
                         )
                         st.session_state["_fiche_html_cache"] = _fiche_html
                         st.session_state["_fiche_html_cache_key"] = _fiche_cache_key
