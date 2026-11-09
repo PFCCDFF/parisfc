@@ -13076,6 +13076,42 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                        legend=dict(orientation="h", y=-0.2))
                     st.plotly_chart(_fig, width="stretch", config={"displayModeBar": False})
 
+                # ── Admin : liste des saisies (staff et joueuse) avec suppression ──
+                if role == ROLE_ADMIN:
+                    _obj_all = load_objectifs_historique(_obj_sel)
+                    with st.expander(f"🗂️ Saisies enregistrées ({0 if _obj_all.empty else _obj_all.groupby(['match_date', 'evaluateur']).ngroups})"):
+                        if _obj_all.empty:
+                            st.caption("Aucune saisie pour cette joueuse.")
+                        else:
+                            _grp = (_obj_all.groupby(["match_date", "evaluateur"], as_index=False)
+                                    .agg(libelle=("match_label", "last"), par=("evaluateur_nom", "last"),
+                                         n=("note", "size"))
+                                    .sort_values(["match_date", "evaluateur"], ascending=[False, True]))
+                            _pend = st.session_state.get("_objectifs_suppr_attente")
+                            for _, _g in _grp.iterrows():
+                                _cle = (_obj_sel, _g["match_date"], _g["evaluateur"])
+                                _c1, _c2 = st.columns([4, 1.4])
+                                with _c1:
+                                    st.markdown(
+                                        f"**{pd.Timestamp(_g['match_date']).strftime('%d/%m/%y')}** · "
+                                        f"{'Staff' if _g['evaluateur'] == 'coach' else 'Joueuse'} · "
+                                        f"{_esc(str(_g['libelle'] or ''))} · {int(_g['n'])} note(s)"
+                                        + (f" · saisi par {_esc(str(_g['par']))}" if _g["par"] else ""))
+                                with _c2:
+                                    _k = f"objectifs_adm_{_g['match_date']}_{_g['evaluateur']}"
+                                    if _pend == _cle:
+                                        if st.button("Confirmer", key=_k + "_ok", type="primary", width="stretch"):
+                                            supprimer_evaluation_objectifs(_obj_sel, _g["match_date"], _g["evaluateur"])
+                                            st.session_state.pop("_objectifs_suppr_attente", None)
+                                            st.rerun()
+                                        if st.button("Annuler", key=_k + "_no", width="stretch"):
+                                            st.session_state.pop("_objectifs_suppr_attente", None)
+                                            st.rerun()
+                                    elif st.button("🗑️ Supprimer", key=_k, width="stretch"):
+                                        st.session_state["_objectifs_suppr_attente"] = _cle
+                                        st.rerun()
+                            st.caption("La suppression est définitive.")
+
                 # ── 3. Évaluation : staff (coach) ou auto-évaluation (joueuse) ─
                 _obj_role_eval = "coach" if _obj_staff else "joueuse"
                 st.divider()
