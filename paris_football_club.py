@@ -740,6 +740,50 @@ def load_objectifs_historique(joueuse: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def creer_objectif(joueuse: str, poste: str, categorie: str, texte: str,
+                   plan_df: pd.DataFrame, catalogue: pd.DataFrame) -> str:
+    """Nouvel objectif créé par le staff dans une famille (categorie) : ajouté au plan de la
+    joueuse, actif. Il rejoint ainsi la liste de tous les indicateurs (load_objectifs_catalogue),
+    proposé pour `poste` ("" = tous les postes). Un objectif identique (même famille, même texte
+    normalisé) déjà existant est simplement sélectionné. Retourne "" si ok, sinon l'erreur."""
+    texte = " ".join(str(texte or "").split())
+    if not texte:
+        return "Texte de l'objectif vide."
+    _k = (categorie, normalize_str(texte))
+    _cles = set()
+    if plan_df is not None and not plan_df.empty:
+        _cles = {(r["categorie"], normalize_str(r["objectif"])) for _, r in plan_df[plan_df["actif"].fillna(False).astype(bool)].iterrows()}
+    if _k in _cles:
+        return ""
+    if catalogue is not None and not catalogue.empty:
+        _m = catalogue[(catalogue["categorie"] == categorie) & (catalogue["cle"] == _k[1])]
+        if not _m.empty:  # existe déjà (autre joueuse / ligne inactive) : on le sélectionne
+            return enregistrer_selection_objectifs(joueuse, poste, plan_df, _cles | {_k}, catalogue)
+    _sb = get_supabase_client()
+    if _sb is None:
+        return "Base de données indisponible."
+    _nom, _ordre = joueuse, 0
+    if plan_df is not None and not plan_df.empty:
+        if "joueuse" in plan_df.columns and plan_df["joueuse"].notna().any():
+            _nom = str(plan_df["joueuse"].dropna().iloc[0])
+        if "ordre" in plan_df.columns:
+            _ordre = int(pd.to_numeric(plan_df["ordre"], errors="coerce").fillna(0).max())
+    try:
+        _sb.table("objectifs_joueuse").insert([{
+            "joueuse": _nom, "poste": poste or "", "categorie": categorie, "objectif": texte,
+            "actif": True, "ordre": _ordre + 1,
+        }]).execute()
+    except Exception as e:
+        return str(e)
+    for f in (load_objectifs_pour_joueuse, load_objectifs_joueuses, load_objectifs_catalogue,
+              _noms_table_supabase):
+        try:
+            f.clear()
+        except Exception:
+            pass
+    return ""
+
+
 def supprimer_evaluation_objectifs(joueuse: str, match_date: str) -> bool:
     """Supprime l'évaluation staff d'une joueuse à une date (toutes les notes de ce jour)."""
     _sb = get_supabase_client()
@@ -12804,7 +12848,9 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
 
         if _obj_sel:
             _obj_df = load_objectifs_pour_joueuse(_obj_sel)
-            _obj_poste = (str(_obj_df["poste"].dropna().iloc[0]) if not _obj_df.empty and _obj_df["poste"].notna().any()
+            _obj_postes_plan = ([p for p in _obj_df["poste"].dropna().astype(str).str.strip() if p]
+                                if not _obj_df.empty else [])
+            _obj_poste = (_obj_postes_plan[0] if _obj_postes_plan
                           else get_player_demographics(_obj_sel).get("poste1", ""))
             if _obj_poste:
                 st.caption(f"Poste : **{_obj_poste}**")
@@ -12850,7 +12896,7 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                             _obj_vis = _obj_cat
                         else:
                             _obj_vis = _obj_cat[_obj_cat["postes"].apply(
-                                lambda ps: any(normalize_str(p) == _obj_p_n for p in ps))]
+                                lambda ps: not ps or any(normalize_str(p) == _obj_p_n for p in ps))]
                         _obj_vis_cles = set(zip(_obj_vis["categorie"], _obj_vis["cle"]))
                         _obj_hors = _obj_coches_act - _obj_vis_cles
                         with st.form(f"objectifs_selection_{_obj_sel}_{_obj_p_n}"):
@@ -12878,6 +12924,35 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                                     _obj_hors | {k for k, v in _obj_choix.items() if v}, _obj_cat)
                                 if _err:
                                     st.error(f"Enregistrement incomplet : {_err}")
+                                else:
+                                    st.rerun()
+
+                # Nouvel objectif dans la famille choisie : ajouté au plan de la joueuse (coché)
+                # et proposé ensuite pour le poste indiqué (ou tous les postes).
+                with st.expander("➕ Créer un nouvel objectif"):
+                    _obj_postes_new = sorted({p for ps in (_obj_cat["postes"] if not _obj_cat.empty else [])
+                                              for p in ps} | ({_obj_poste} if _obj_poste else set()), key=normalize_str)
+                    with st.form(f"objectifs_creation_{_obj_sel}", clear_on_submit=True):
+                        _nc1, _nc2 = st.columns(2)
+                        with _nc1:
+                            _new_cat = st.selectbox("Famille", list(_OBJ_CATS),
+                                                    format_func=lambda c: OBJECTIFS_CATEGORIE_LABELS[c])
+                        with _nc2:
+                            _new_p = st.selectbox(
+                                "Poste concerné", _obj_postes_new + ["Tous les postes"],
+                                index=_obj_postes_new.index(_obj_poste) if _obj_poste in _obj_postes_new else len(_obj_postes_new),
+                            )
+                        _new_txt = st.text_input("Objectif", placeholder="Ex. : Orienter ses contrôles vers l'avant")
+                        st.caption("L'objectif est ajouté et sélectionné pour cette joueuse, puis proposé "
+                                   "pour les autres joueuses du poste choisi.")
+                        if st.form_submit_button("➕ Créer l'objectif", type="primary"):
+                            if not _new_txt.strip():
+                                st.warning("Saisissez le texte de l'objectif.")
+                            else:
+                                _err = creer_objectif(_obj_sel, "" if _new_p == "Tous les postes" else _new_p,
+                                                      _new_cat, _new_txt, _obj_df, _obj_cat)
+                                if _err:
+                                    st.error(f"Création impossible : {_err}")
                                 else:
                                     st.rerun()
 
