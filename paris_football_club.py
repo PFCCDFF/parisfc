@@ -725,16 +725,17 @@ def enregistrer_selection_objectifs(joueuse: str, poste: str, plan_df: pd.DataFr
 
 @st.cache_data(ttl=60)
 def load_objectifs_historique(joueuse: str) -> pd.DataFrame:
-    """Toutes les évaluations staff d'une joueuse (une par date, conservées pour l'évolution).
-    Colonnes : objectif_id, match_date, match_label, evaluateur_nom, note."""
+    """Toutes les évaluations d'une joueuse (une par date et par évaluateur, conservées pour
+    l'évolution). evaluateur = "coach" (staff) ou "joueuse" (auto-évaluation).
+    Colonnes : objectif_id, match_date, match_label, evaluateur, evaluateur_nom, note."""
     _sb = get_supabase_client()
     if _sb is None or not joueuse:
         return pd.DataFrame()
     try:
         _res = _sb.table("objectifs_evaluations").select(
-            "objectif_id,match_date,match_label,evaluateur_nom,note"
+            "objectif_id,match_date,match_label,evaluateur,evaluateur_nom,note"
         ).in_("joueuse", orthographes_supabase("objectifs_evaluations", joueuse)) \
-            .eq("evaluateur", "coach").order("match_date").execute()
+            .order("match_date").execute()
         return pd.DataFrame(_res.data) if _res.data else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
@@ -784,15 +785,16 @@ def creer_objectif(joueuse: str, poste: str, categorie: str, texte: str,
     return ""
 
 
-def supprimer_evaluation_objectifs(joueuse: str, match_date: str) -> bool:
-    """Supprime l'évaluation staff d'une joueuse à une date (toutes les notes de ce jour)."""
+def supprimer_evaluation_objectifs(joueuse: str, match_date: str, evaluateur: str = "coach") -> bool:
+    """Supprime l'évaluation d'une joueuse à une date (toutes les notes de ce jour) pour un
+    évaluateur ("coach" ou "joueuse")."""
     _sb = get_supabase_client()
     if _sb is None:
         return False
     try:
         _sb.table("objectifs_evaluations").delete() \
             .in_("joueuse", orthographes_supabase("objectifs_evaluations", joueuse)) \
-            .eq("match_date", match_date).eq("evaluateur", "coach").execute()
+            .eq("match_date", match_date).eq("evaluateur", evaluateur).execute()
         load_objectifs_historique.clear()
         load_pdi_evaluations.clear()
         return True
@@ -12824,7 +12826,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
     # les lignes `actif` de objectifs_joueuse. Il évalue ensuite la joueuse (1 à 5) : une
     # évaluation initiale à date libre, puis une par match. Chaque date est conservée
     # (objectifs_evaluations, evaluateur="coach") pour montrer l'évolution. La joueuse
-    # consulte en lecture seule. L'auto-évaluation joueuse est retirée pour l'instant.
+    # s'auto-évalue de la même façon (date libre puis ses matchs) et ne voit que ses propres
+    # notes ; le staff et les admins voient tout (staff, joueuse ou comparaison).
     if rubrique == "Objectifs":
         _obj_staff = role != ROLE_JOUEUSE
         _OBJ_COUL = {1: "#EF4444", 2: "#F4830A", 3: "#FFD700", 4: "#84CC16", 5: "#22C55E"}
@@ -12960,18 +12963,54 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 st.info("Aucun indicateur sélectionné pour cette joueuse." +
                         (" Cochez-en dans la liste ci-dessus." if _obj_staff else ""))
             else:
-                # ── 2. Indicateurs suivis et évolution ───────────────────────
+                # ── 2. Évolution ─────────────────────────────────────────────
+                # Staff / admin : notes staff, auto-évaluations ou les deux (comparaison).
+                # Joueuse : uniquement ses propres notes.
+                _OBJ_SRC = {"coach": "Staff", "joueuse": "Joueuse"}
+                if _obj_staff:
+                    _obj_vue = st.radio("Notes affichées", ["Comparaison", "Staff", "Joueuse"], horizontal=True,
+                                        key=f"objectifs_vue_{_obj_sel}")
+                    _obj_srcs = {"Comparaison": ["coach", "joueuse"], "Staff": ["coach"], "Joueuse": ["joueuse"]}[_obj_vue]
+                else:
+                    _obj_srcs = ["joueuse"]
+                _obj_h = (_obj_hist[_obj_hist["evaluateur"].isin(_obj_srcs)]
+                          if not _obj_hist.empty else _obj_hist)
                 _obj_dates = []
-                if not _obj_hist.empty:
-                    _obj_dates = (_obj_hist.sort_values("match_date")
-                                  .drop_duplicates("match_date", keep="last")[["match_date", "match_label"]]
-                                  .values.tolist())
-                _obj_notes = ({(r["objectif_id"], r["match_date"]): r["note"] for _, r in _obj_hist.iterrows()}
-                              if not _obj_hist.empty else {})
+                if not _obj_h.empty:
+                    _lbls = {}
+                    for _, _r in _obj_h.sort_values("match_date").iterrows():
+                        # libellé du match de préférence à « Évaluation »/« Auto-évaluation »
+                        if _r["match_date"] not in _lbls or str(_r.get("match_label") or "").startswith("Match"):
+                            _lbls[_r["match_date"]] = _r.get("match_label") or ""
+                    _obj_dates = sorted(_lbls.items())
+                _obj_notes = ({(r["objectif_id"], r["match_date"], r["evaluateur"]): r["note"] for _, r in _obj_h.iterrows()}
+                              if not _obj_h.empty else {})
+                _cmp = len(_obj_srcs) == 2
 
                 st.markdown("**📈 Évolution**" if _obj_dates else "**🎯 Indicateurs suivis**")
+                if _cmp and _obj_dates:
+                    st.caption("Dans chaque case : note du staff à gauche (pleine), auto-évaluation de la joueuse "
+                               "à droite (contour). Tendance calculée sur les notes du staff.")
+
+                def _obj_badge_j(note):  # auto-évaluation : badge en contour
+                    if note is None or pd.isna(note):
+                        return "<span style='color:#5A7090;font-size:12px;'>—</span>"
+                    _n = int(round(float(note)))
+                    _c = _OBJ_COUL.get(_n, "#9FB8D8")
+                    return (f"<span style='display:inline-block;min-width:30px;text-align:center;background:transparent;"
+                            f"color:{_c};border:1px dashed {_c};border-radius:3px;padding:1px 6px;font-size:12px;"
+                            f"font-weight:700;'>{_n}</span>")
+
+                def _obj_cell(oid, d):
+                    if _cmp:
+                        return (f"{_obj_badge(_obj_notes.get((oid, d, 'coach')))}&nbsp;"
+                                f"{_obj_badge_j(_obj_notes.get((oid, d, 'joueuse')))}")
+                    _src = _obj_srcs[0]
+                    return (_obj_badge if _src == "coach" else _obj_badge_j)(_obj_notes.get((oid, d, _src)))
+
+                _src_tend = "coach" if "coach" in _obj_srcs else "joueuse"
                 _th = "padding:6px 8px;color:#9FB8D8;font-size:11px;font-weight:600;text-align:center;white-space:nowrap;"
-                _td = "padding:5px 8px;text-align:center;border-top:1px solid #1A3A6A;"
+                _td = "padding:5px 8px;text-align:center;white-space:nowrap;border-top:1px solid #1A3A6A;"
                 _h = ["<div style='overflow-x:auto;'><table style='border-collapse:collapse;width:100%;'><tr>",
                       f"<th style='{_th}text-align:left;'>Indicateur</th>"]
                 for _d, _lbl in _obj_dates:
@@ -12991,18 +13030,16 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         _sl = _r.get("statut_label")
                         _st = _r.get("statut")
                         _gantt = ""
-                        if _cat == "incontournable" and (_sl or (_st is not None and not pd.isna(_st))):
+                        if _obj_staff and _cat == "incontournable" and (_sl or (_st is not None and not pd.isna(_st))):
                             _gantt = (f" <span style='color:#6F8AAE;font-size:11px;'>(plan : "
                                       f"{_esc(str(_sl)) if _sl else str(int(_st)) + '/5'})</span>")
-                        _h.append(f"<tr><td style='{_td}text-align:left;color:#C8D8E8;font-size:13px;'>"
+                        _h.append(f"<tr><td style='{_td}text-align:left;white-space:normal;color:#C8D8E8;font-size:13px;'>"
                                   f"{_esc(str(_r['objectif']))}{_gantt}</td>")
-                        _vals = []
                         for _d, _ in _obj_dates:
-                            _v = _obj_notes.get((_r["id"], _d))
-                            _vals.append(_v)
-                            _h.append(f"<td style='{_td}'>{_obj_badge(_v)}</td>")
+                            _h.append(f"<td style='{_td}'>{_obj_cell(_r['id'], _d)}</td>")
                         if len(_obj_dates) >= 2:
-                            _vv = [v for v in _vals if v is not None and not pd.isna(v)]
+                            _vv = [v for v in (_obj_notes.get((_r["id"], _d, _src_tend)) for _d, _ in _obj_dates)
+                                   if v is not None and not pd.isna(v)]
                             if len(_vv) >= 2:
                                 _dv = float(_vv[-1]) - float(_vv[0])
                                 _tr = ("<span style='color:#22C55E;'>▲ +%g</span>" % _dv if _dv > 0 else
@@ -13015,94 +13052,130 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                 _h.append("</table></div>")
                 st.markdown("".join(_h), unsafe_allow_html=True)
 
-                # Courbe : moyenne par catégorie à chaque évaluation
+                # Courbe : moyenne par catégorie à chaque évaluation (pointillés = auto-évaluation)
                 if len(_obj_dates) >= 2:
-                    _m = _obj_hist.merge(_obj_actifs[["id", "categorie"]], left_on="objectif_id", right_on="id")
-                    _m = _m.groupby(["match_date", "categorie"], as_index=False)["note"].mean()
+                    _m = _obj_h.merge(_obj_actifs[["id", "categorie"]], left_on="objectif_id", right_on="id")
+                    _m = _m.groupby(["match_date", "categorie", "evaluateur"], as_index=False)["note"].mean()
                     _fig = go.Figure()
                     _cc = {"incontournable": "#FFD700", "technique_tactique": "#1FA8E0", "physique": "#22C55E"}
-                    for _cat in _OBJ_CATS:
-                        _s = _m[_m["categorie"] == _cat]
-                        if _s.empty:
-                            continue
-                        _fig.add_trace(go.Scatter(
-                            x=pd.to_datetime(_s["match_date"]), y=_s["note"], mode="lines+markers",
-                            name=OBJECTIFS_CATEGORIE_LABELS[_cat].split(" ", 1)[1], line=dict(color=_cc[_cat], width=2),
-                            hovertemplate="%{x|%d/%m/%y} : %{y:.1f}/5<extra></extra>"))
-                    _fig.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10),
+                    for _src in _obj_srcs:
+                        for _cat in _OBJ_CATS:
+                            _s = _m[(_m["categorie"] == _cat) & (_m["evaluateur"] == _src)].sort_values("match_date")
+                            if _s.empty:
+                                continue
+                            _nm = OBJECTIFS_CATEGORIE_LABELS[_cat].split(" ", 1)[1]
+                            _fig.add_trace(go.Scatter(
+                                x=pd.to_datetime(_s["match_date"]), y=_s["note"], mode="lines+markers",
+                                name=f"{_nm} ({_OBJ_SRC[_src]})" if _cmp else _nm,
+                                line=dict(color=_cc[_cat], width=2, dash="dot" if _src == "joueuse" else "solid"),
+                                hovertemplate="%{x|%d/%m/%y} : %{y:.1f}/5<extra></extra>"))
+                    _fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10),
                                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                                        font=dict(color="#C8D8E8"), yaxis=dict(range=[0.5, 5.5], dtick=1, gridcolor="#1A3A6A"),
                                        xaxis=dict(gridcolor="#1A3A6A", tickformat="%d/%m"),
                                        legend=dict(orientation="h", y=-0.2))
                     st.plotly_chart(_fig, width="stretch", config={"displayModeBar": False})
 
-                # ── 3. Nouvelle évaluation (staff) ───────────────────────────
-                if _obj_staff:
-                    st.divider()
-                    st.markdown("**📝 Évaluer la joueuse**")
-                    try:
-                        _obj_bp = bepro_only_matches(_tac_files)
-                    except Exception:
-                        _obj_bp = []
-                    _obj_matchs, _vus = [], set()
-                    for _t in sorted((t for t in list(_tac_files) + _obj_bp if t.get("date") is not None),
-                                     key=lambda t: t["date"], reverse=True):
-                        _dt = pd.Timestamp(_t["date"]).date()
+                # ── 3. Évaluation : staff (coach) ou auto-évaluation (joueuse) ─
+                _obj_role_eval = "coach" if _obj_staff else "joueuse"
+                st.divider()
+                st.markdown("**📝 Évaluer la joueuse**" if _obj_staff else "**📝 M'auto-évaluer**")
+                try:
+                    _obj_bp = bepro_only_matches(_tac_files)
+                except Exception:
+                    _obj_bp = []
+                _obj_matchs, _vus = [], set()
+                for _t in sorted((t for t in list(_tac_files) + _obj_bp if t.get("date") is not None),
+                                 key=lambda t: t["date"], reverse=True):
+                    _dt = pd.Timestamp(_t["date"]).date()
+                    if _dt in _vus:
+                        continue
+                    _vus.add(_dt)
+                    _lib = " · ".join(x for x in [_t.get("competition", ""), _t.get("adversaire", "")] if x) or _t.get("label", "")
+                    _obj_matchs.append((f"{_dt.strftime('%d/%m/%y')} · {_lib}", _dt, f"Match · {_t.get('adversaire') or _lib}"))
+                # Matchs couverts seulement par le GPS (sans fichier tactique ni Bepro)
+                if isinstance(_gps_match_df, pd.DataFrame) and not _gps_match_df.empty and "DATE" in _gps_match_df.columns:
+                    _gm = _gps_match_df.assign(_d=pd.to_datetime(_gps_match_df["DATE"], errors="coerce", dayfirst=True).dt.date)
+                    for _dt, _g in _gm.dropna(subset=["_d"]).groupby("_d"):
                         if _dt in _vus:
                             continue
                         _vus.add(_dt)
-                        _lib = " · ".join(x for x in [_t.get("competition", ""), _t.get("adversaire", "")] if x) or _t.get("label", "")
-                        _obj_matchs.append((f"{_dt.strftime('%d/%m/%y')} · {_lib}", _dt, f"Match · {_t.get('adversaire') or _lib}"))
-                    _modes = ["Après un match", "Date libre"]
-                    _mode = st.radio("Type d'évaluation", _modes, horizontal=True,
-                                     index=1 if not _obj_dates or not _obj_matchs else 0,
-                                     key=f"objectifs_mode_{_obj_sel}")
-                    if _mode == "Date libre":
-                        _ed = st.date_input("Date", value=date.today(), format="DD/MM/YYYY", key=f"objectifs_date_{_obj_sel}")
-                        _el = "Évaluation initiale" if not _obj_dates or pd.Timestamp(_obj_dates[0][0]).date() >= _ed else "Évaluation"
-                    elif _obj_matchs:
-                        _ms = st.selectbox("Match", [m[0] for m in _obj_matchs], key=f"objectifs_match_{_obj_sel}")
-                        _, _ed, _el = next(m for m in _obj_matchs if m[0] == _ms)
-                    else:
-                        _ed = None
-                        st.caption("Aucun match disponible : utilisez « Date libre ».")
+                        _adv = (str(_g["__adversaire"].dropna().iloc[0]) if "__adversaire" in _g.columns
+                                and _g["__adversaire"].notna().any() else "")
+                        _obj_matchs.append((f"{_dt.strftime('%d/%m/%y')} · {_adv or 'Match'}", _dt, f"Match · {_adv}" if _adv else "Match"))
+                    _obj_matchs.sort(key=lambda m: m[1], reverse=True)
 
-                    if _ed is not None:
-                        _ed_iso = _ed.isoformat()
-                        _deja = {oid: n for (oid, d), n in _obj_notes.items() if d == _ed_iso}
-                        if _deja:
-                            st.caption(f"Une évaluation existe déjà le {_ed.strftime('%d/%m/%y')} : "
-                                       "l'enregistrer à nouveau la remplace.")
-                        with st.form(f"objectifs_eval_{_obj_sel}_{_ed_iso}"):
-                            _notes = {}
-                            for _cat in _OBJ_CATS:
-                                _c_act = _obj_actifs[_obj_actifs["categorie"] == _cat]
-                                if _c_act.empty:
-                                    continue
-                                st.markdown(f"**{OBJECTIFS_CATEGORIE_LABELS[_cat]}**")
-                                for _, _r in _c_act.iterrows():
-                                    _v0 = _deja.get(_r["id"])
-                                    _notes[_r["id"]] = st.select_slider(
-                                        _r["objectif"], options=["—", 1, 2, 3, 4, 5],
-                                        value=int(_v0) if _v0 is not None and not pd.isna(_v0) else "—",
-                                        key=f"objectifs_note_{_obj_sel}_{_ed_iso}_{_r['id']}",
-                                    )
-                            st.caption("« — » = indicateur non évalué ce jour-là.")
-                            if st.form_submit_button("💾 Enregistrer l'évaluation", type="primary"):
-                                _a_ecrire = {k: v for k, v in _notes.items() if v != "—"}
-                                if not _a_ecrire:
-                                    st.warning("Aucune note saisie.")
+                # Joueuse : seulement les matchs qu'elle a joués (stats de match ou GPS match)
+                if not _obj_staff:
+                    _joues = set()
+                    _cible = canon_joueuse(_obj_sel)
+                    for _src_df, _col in ((pfc_kpi_all, "Date"), (_gps_match_df, "DATE")):
+                        if isinstance(_src_df, pd.DataFrame) and not _src_df.empty and {"Player", _col} <= set(_src_df.columns):
+                            _pm = _src_df[_src_df["Player"].astype(str).map(
+                                lambda n: canon_joueuse(n) == _cible or nom_tokens(n) == nom_tokens(_obj_sel))]
+                            _joues |= set(pd.to_datetime(_pm[_col], errors="coerce", dayfirst=(_col == "DATE")).dt.date.dropna())
+                    if _joues:
+                        _obj_matchs = [m for m in _obj_matchs if m[1] in _joues]
+
+                _modes = ["Après un match", "Date libre"]
+                _mes_dates = (_obj_hist[_obj_hist["evaluateur"] == _obj_role_eval]["match_date"].unique().tolist()
+                              if not _obj_hist.empty else [])
+                _mode = st.radio("Type d'évaluation", _modes, horizontal=True,
+                                 index=1 if not _mes_dates or not _obj_matchs else 0,
+                                 key=f"objectifs_mode_{_obj_sel}_{_obj_role_eval}")
+                if _mode == "Date libre":
+                    st.caption("Date libre : à utiliser en début de phase d'objectifs.")
+                    _ed = st.date_input("Date", value=date.today(), format="DD/MM/YYYY",
+                                        key=f"objectifs_date_{_obj_sel}_{_obj_role_eval}")
+                    _premiere = not _mes_dates or min(_mes_dates) >= _ed.isoformat()
+                    _el = ("Évaluation initiale" if _premiere else "Évaluation") if _obj_staff else \
+                          ("Auto-évaluation initiale" if _premiere else "Auto-évaluation")
+                elif _obj_matchs:
+                    _ms = st.selectbox("Match", [m[0] for m in _obj_matchs], key=f"objectifs_match_{_obj_sel}_{_obj_role_eval}")
+                    _, _ed, _el = next(m for m in _obj_matchs if m[0] == _ms)
+                else:
+                    _ed = None
+                    st.caption("Aucun match disponible : utilisez « Date libre ».")
+
+                if _ed is not None:
+                    _ed_iso = _ed.isoformat()
+                    _deja = ({r["objectif_id"]: r["note"] for _, r in _obj_hist[
+                        (_obj_hist["evaluateur"] == _obj_role_eval) & (_obj_hist["match_date"] == _ed_iso)].iterrows()}
+                        if not _obj_hist.empty else {})
+                    if _deja:
+                        st.caption(f"Une évaluation existe déjà le {_ed.strftime('%d/%m/%y')} : "
+                                   "l'enregistrer à nouveau la remplace.")
+                    with st.form(f"objectifs_eval_{_obj_sel}_{_ed_iso}_{_obj_role_eval}"):
+                        _notes = {}
+                        for _cat in _OBJ_CATS:
+                            _c_act = _obj_actifs[_obj_actifs["categorie"] == _cat]
+                            if _c_act.empty:
+                                continue
+                            st.markdown(f"**{OBJECTIFS_CATEGORIE_LABELS[_cat]}**")
+                            for _, _r in _c_act.iterrows():
+                                _v0 = _deja.get(_r["id"])
+                                _notes[_r["id"]] = st.select_slider(
+                                    _r["objectif"], options=["—", 1, 2, 3, 4, 5],
+                                    value=int(_v0) if _v0 is not None and not pd.isna(_v0) else "—",
+                                    key=f"objectifs_note_{_obj_sel}_{_ed_iso}_{_obj_role_eval}_{_r['id']}",
+                                )
+                        st.caption("« — » = indicateur non évalué ce jour-là.")
+                        if st.form_submit_button("💾 Enregistrer l'évaluation" if _obj_staff else "💾 Enregistrer mon auto-évaluation",
+                                                 type="primary"):
+                            _a_ecrire = {k: v for k, v in _notes.items() if v != "—"}
+                            if not _a_ecrire:
+                                st.warning("Aucune note saisie.")
+                            else:
+                                if _deja:  # remplace l'évaluation de ce jour (y compris notes retirées)
+                                    supprimer_evaluation_objectifs(_obj_sel, _ed_iso, _obj_role_eval)
+                                if save_objectifs_evaluations(_a_ecrire, _obj_sel, _ed_iso, _el, _obj_role_eval, user_profile):
+                                    st.rerun()
                                 else:
-                                    if _deja:  # remplace l'évaluation de ce jour (y compris notes retirées)
-                                        supprimer_evaluation_objectifs(_obj_sel, _ed_iso)
-                                    if save_objectifs_evaluations(_a_ecrire, _obj_sel, _ed_iso, _el, "coach", user_profile):
-                                        st.rerun()
-                                    else:
-                                        st.error("Enregistrement impossible (base de données indisponible ?).")
-                        if _deja and st.button(f"🗑️ Supprimer l'évaluation du {_ed.strftime('%d/%m/%y')}",
-                                               key=f"objectifs_suppr_{_obj_sel}_{_ed_iso}"):
-                            supprimer_evaluation_objectifs(_obj_sel, _ed_iso)
-                            st.rerun()
+                                    st.error("Enregistrement impossible (base de données indisponible ?).")
+                    if _deja and st.button(f"🗑️ Supprimer l'évaluation du {_ed.strftime('%d/%m/%y')}",
+                                           key=f"objectifs_suppr_{_obj_sel}_{_ed_iso}_{_obj_role_eval}"):
+                        supprimer_evaluation_objectifs(_obj_sel, _ed_iso, _obj_role_eval)
+                        st.rerun()
 
     # ── Séances (méthodologie Emma : cartes par catégorie + profil en
     # barres vs moyenne équipe) — remplace les anciens onglets
