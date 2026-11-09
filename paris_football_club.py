@@ -13105,17 +13105,17 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         _obj_matchs.append((f"{_dt.strftime('%d/%m/%y')} · {_adv or 'Match'}", _dt, f"Match · {_adv}" if _adv else "Match"))
                     _obj_matchs.sort(key=lambda m: m[1], reverse=True)
 
-                # Joueuse : seulement les matchs qu'elle a joués (stats de match ou GPS match)
-                if not _obj_staff:
-                    _joues = set()
-                    _cible = canon_joueuse(_obj_sel)
-                    for _src_df, _col in ((pfc_kpi_all, "Date"), (_gps_match_df, "DATE")):
-                        if isinstance(_src_df, pd.DataFrame) and not _src_df.empty and {"Player", _col} <= set(_src_df.columns):
-                            _pm = _src_df[_src_df["Player"].astype(str).map(
-                                lambda n: canon_joueuse(n) == _cible or nom_tokens(n) == nom_tokens(_obj_sel))]
-                            _joues |= set(pd.to_datetime(_pm[_col], errors="coerce", dayfirst=(_col == "DATE")).dt.date.dropna())
-                    if _joues:
-                        _obj_matchs = [m for m in _obj_matchs if m[1] in _joues]
+                # Seulement les matchs que la joueuse a joués (stats de match ou GPS match), pour le
+                # staff comme pour elle : une joueuse sans données de match (ex. en séniors) n'a que
+                # la date libre, pas les matchs U19.
+                _joues = set()
+                _cible = canon_joueuse(_obj_sel)
+                for _src_df, _col in ((pfc_kpi_all, "Date"), (_gps_match_df, "DATE")):
+                    if isinstance(_src_df, pd.DataFrame) and not _src_df.empty and {"Player", _col} <= set(_src_df.columns):
+                        _pm = _src_df[_src_df["Player"].astype(str).map(
+                            lambda n: canon_joueuse(n) == _cible or nom_tokens(n) == nom_tokens(_obj_sel))]
+                        _joues |= set(pd.to_datetime(_pm[_col], errors="coerce", dayfirst=(_col == "DATE")).dt.date.dropna())
+                _obj_matchs = [m for m in _obj_matchs if m[1] in _joues]
 
                 _modes = ["Après un match", "Date libre"]
                 _mes_dates = (_obj_hist[_obj_hist["evaluateur"] == _obj_role_eval]["match_date"].unique().tolist()
@@ -13135,7 +13135,8 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                     _, _ed, _el = next(m for m in _obj_matchs if m[0] == _ms)
                 else:
                     _ed = None
-                    st.caption("Aucun match disponible : utilisez « Date libre ».")
+                    st.caption("Aucun match trouvé pour cette joueuse (statistiques de match ou GPS match) : "
+                               "utilisez « Date libre ».")
 
                 if _ed is not None:
                     _ed_iso = _ed.isoformat()
