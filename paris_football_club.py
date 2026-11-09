@@ -2868,7 +2868,7 @@ def list_files_in_folder_paged(service, folder_id: str, q_extra: str = "", page_
     while True:
         req = service.files().list(
             q=q,
-            fields="nextPageToken, files(id, name, mimeType, modifiedTime, size, shortcutDetails, thumbnailLink)",
+            fields="nextPageToken, files(id, name, mimeType, modifiedTime, createdTime, size, shortcutDetails, thumbnailLink)",
             pageSize=page_size,
             pageToken=page_token,
             supportsAllDrives=True,
@@ -2997,7 +2997,9 @@ def sync_gps_from_drive_autonomous():
 
     for folder_id in walk_drive_folders(service, DRIVE_GPS_FOLDER_ID, state):
         try:
-            q_extra = f"modifiedTime > '{last_m}'" if last_m else ""
+            # createdTime aussi : un fichier déposé sur le Drive garde souvent sa date de
+            # modification d'origine (antérieure à la dernière sync) et serait sinon ignoré.
+            q_extra = f"modifiedTime > '{last_m}' or createdTime > '{last_m}'" if last_m else ""
             items = list_files_in_folder_paged(service, folder_id, q_extra=q_extra, page_size=200)
 
             for f in items:
@@ -3031,9 +3033,9 @@ def sync_gps_from_drive_autonomous():
                 except Exception as e:
                     st.warning(f"GPS: téléchargement/export CSV impossible {name} -> {e}")
 
-                mtime = f.get("modifiedTime")
-                if mtime and (newest_modified is None or mtime > newest_modified):
-                    newest_modified = mtime
+                for mtime in (f.get("modifiedTime"), f.get("createdTime")):
+                    if mtime and (newest_modified is None or mtime > newest_modified):
+                        newest_modified = mtime
 
         except Exception:
             state.setdefault("folders_failed", {})[folder_id] = time.time()
