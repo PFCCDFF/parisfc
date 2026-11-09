@@ -12829,30 +12829,51 @@ def render_performance_page(pfc_kpi, edf_kpi, pfc_kpi_all, edf_kpi_all,
                         st.caption("Aucun indicateur disponible (base de données indisponible ?).")
                     else:
                         _obj_coches_act = {(r["categorie"], normalize_str(r["objectif"])) for _, r in _obj_actifs.iterrows()}
-                        _obj_poste_n = normalize_str(_obj_poste)
-                        with st.form(f"objectifs_selection_{_obj_sel}"):
-                            st.caption("Cochez les indicateurs à faire apparaître pour cette joueuse. "
-                                       "Ceux de son poste sont listés en premier.")
+                        # Filtre par poste : seuls les indicateurs des plans de ce poste sont proposés
+                        # (poste de la joueuse par défaut).
+                        _obj_postes = {}
+                        for _ps in _obj_cat["postes"]:
+                            for _p in _ps:
+                                _obj_postes.setdefault(normalize_str(_p), _p)
+                        _obj_postes_l = sorted(_obj_postes.values(), key=normalize_str)
+                        _TOUS = "Tous les postes"
+                        _obj_p_def = _obj_postes.get(normalize_str(_obj_poste))
+                        _obj_p_sel = st.selectbox(
+                            "Poste", _obj_postes_l + [_TOUS],
+                            index=(_obj_postes_l.index(_obj_p_def) if _obj_p_def else len(_obj_postes_l)),
+                            key=f"objectifs_poste_filtre_{_obj_sel}",
+                        )
+                        _obj_p_n = normalize_str(_obj_p_sel)
+                        if _obj_p_sel == _TOUS:
+                            _obj_vis = _obj_cat
+                        else:
+                            _obj_vis = _obj_cat[_obj_cat["postes"].apply(
+                                lambda ps: any(normalize_str(p) == _obj_p_n for p in ps))]
+                        _obj_vis_cles = set(zip(_obj_vis["categorie"], _obj_vis["cle"]))
+                        _obj_hors = _obj_coches_act - _obj_vis_cles
+                        with st.form(f"objectifs_selection_{_obj_sel}_{_obj_p_n}"):
+                            st.caption("Cochez les indicateurs à faire apparaître pour cette joueuse.")
                             _obj_choix = {}
                             for _cat in _OBJ_CATS:
-                                _c_df = _obj_cat[_obj_cat["categorie"] == _cat].copy()
+                                _c_df = _obj_vis[_obj_vis["categorie"] == _cat].sort_values("objectif")
                                 if _c_df.empty:
                                     continue
-                                _c_df["_poste"] = _c_df["postes"].apply(
-                                    lambda ps: any(normalize_str(p) == _obj_poste_n for p in ps))
-                                _c_df = _c_df.sort_values(["_poste", "objectif"], ascending=[False, True])
-                                _n_sel = sum(1 for k in _obj_coches_act if k[0] == _cat)
+                                _n_sel = sum(1 for k in _obj_coches_act if k[0] == _cat and k in _obj_vis_cles)
                                 st.markdown(f"**{OBJECTIFS_CATEGORIE_LABELS[_cat]}** · {_n_sel} sélectionné(s)")
-                                for _, _r in _c_df.iterrows():
+                                _cols = st.columns(2)
+                                for _i, (_, _r) in enumerate(_c_df.iterrows()):
                                     _k = (_cat, _r["cle"])
-                                    _aide = None if _r["_poste"] or not _r["postes"] else "Postes : " + ", ".join(_r["postes"])
-                                    _obj_choix[_k] = st.checkbox(
-                                        _r["objectif"], value=_k in _obj_coches_act, help=_aide,
-                                        key=f"objsel_{_obj_sel}_{_cat}_{_r['cle']}",
-                                    )
+                                    with _cols[_i % 2]:
+                                        _obj_choix[_k] = st.checkbox(
+                                            _r["objectif"], value=_k in _obj_coches_act,
+                                            key=f"objsel_{_obj_sel}_{_cat}_{_r['cle']}",
+                                        )
+                            if _obj_hors:
+                                st.caption(f"+ {len(_obj_hors)} indicateur(s) déjà sélectionné(s) d'un autre poste, conservé(s).")
                             if st.form_submit_button("💾 Enregistrer la sélection", type="primary"):
                                 _err = enregistrer_selection_objectifs(
-                                    _obj_sel, _obj_poste, _obj_df, {k for k, v in _obj_choix.items() if v}, _obj_cat)
+                                    _obj_sel, _obj_poste or ("" if _obj_p_sel == _TOUS else _obj_p_sel), _obj_df,
+                                    _obj_hors | {k for k, v in _obj_choix.items() if v}, _obj_cat)
                                 if _err:
                                     st.error(f"Enregistrement incomplet : {_err}")
                                 else:
