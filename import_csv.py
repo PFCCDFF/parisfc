@@ -161,6 +161,93 @@ def lignes_collectives(contenu: bytes) -> int:
     return int((df["Row"].astype(str).str.strip().str.upper() == "PFC").sum())
 
 
+# ── Fichiers Sportscode complémentaires (collectif + individuel d'un même match) ──
+# Un match peut être tagué dans deux exports : un collectif (lignes PFC / adversaire /
+# transitions, aucune action de joueuse) et un individuel (lignes des joueuses avec Action,
+# aucune ligne PFC). L'app les réunit au lieu d'ignorer l'un des deux comme un doublon.
+
+def nature_sportscode(df: pd.DataFrame) -> str:
+    """« collectif », « individuel », « complet » (les deux tagages) ou « vide »."""
+    if df is None or "Row" not in df.columns:
+        return "vide"
+    n_pfc = int((df["Row"].astype(str).str.strip().str.upper() == "PFC").sum())
+    actions = False
+    if "Action" in df.columns:
+        a = df["Action"].astype(str).str.strip()
+        actions = bool((a.ne("") & a.str.lower().ne("nan")).any())
+    if n_pfc and actions:
+        return "complet"
+    if n_pfc:
+        return "collectif"
+    if actions:
+        return "individuel"
+    return "vide"
+
+
+def nature_contenu(contenu: bytes) -> str:
+    try:
+        return nature_sportscode(_lire_csv_texte(contenu)[0])
+    except Exception:
+        return "vide"
+
+
+_NATURE_CACHE: dict = {}
+
+
+def nature_fichier(chemin: str) -> str:
+    """nature_sportscode d'un fichier local (mise en cache par chemin + date + taille)."""
+    try:
+        cle = (chemin, os.path.getmtime(chemin), os.path.getsize(chemin))
+    except OSError:
+        return "vide"
+    if cle not in _NATURE_CACHE:
+        with open(chemin, "rb") as f:
+            _NATURE_CACHE[cle] = nature_contenu(f.read())
+    return _NATURE_CACHE[cle]
+
+
+def paire_complementaire(chemins: Iterable[str]) -> Optional[tuple[str, str]]:
+    """(individuel, collectif) les plus récents parmi les fichiers d'un même match, si les deux
+    natures sont présentes ; None sinon (doublon classique : le plus récent est gardé)."""
+    chemins = list(chemins)
+    if len(chemins) < 2:
+        return None
+    ind = [p for p in chemins if nature_fichier(p) == "individuel"]
+    col = [p for p in chemins if nature_fichier(p) == "collectif"]
+    if not ind or not col:
+        return None
+    return max(ind, key=os.path.getmtime), max(col, key=os.path.getmtime)
+
+
+DECALAGE_INSTANCES_COLLECTIF = 1_000_000
+
+
+def fusionner_sportscode(df_individuel: pd.DataFrame, df_collectif: pd.DataFrame) -> pd.DataFrame:
+    """Lignes des deux exports dans un seul tableau. Les « Instance number » du collectif sont
+    décalés : chaque export numérote ses lignes de son côté, et le rapport individuel rattache
+    une action à la mi-temps via le numéro des lignes PFC (même numéro = même instance dans un
+    export unique) — sans décalage, des actions de joueuses seraient associées à des lignes PFC
+    sans rapport. Les données individuelles sont ainsi lues comme dans l'export individuel seul."""
+    col = df_collectif.copy()
+    if "Instance number" in col.columns:
+        def _dec(v):
+            try:
+                n = int(float(str(v).split(",")[0].strip())) + DECALAGE_INSTANCES_COLLECTIF
+            except (TypeError, ValueError):
+                return v
+            return str(n) if isinstance(v, str) else n  # type d'origine conservé (comparaisons int)
+        col["Instance number"] = col["Instance number"].map(_dec)
+    return pd.concat([df_individuel, col], ignore_index=True, sort=False)
+
+
+def nom_complementaire(nom: str, nature: str) -> str:
+    """« …_08-11-2026.csv » → « …_08-11-2026_individuel.csv » (même clé de match)."""
+    base, ext = os.path.splitext(nom)
+    if base.lower().endswith("_" + nature):
+        return nom
+    return f"{base}_{nature}{ext or '.csv'}"
+
+
 def retagger_sportscode(contenu: bytes, journee: str = "", competition: str = "") -> bytes:
     """Réécrit les cellules non vides des colonnes Journée / Compétition (tags restés sur ceux
     du modèle Sportscode, ex. « D1 Arkema » / 1 pour un match R1 J4). Le reste est inchangé."""
@@ -292,7 +379,7 @@ def cle_match_tactique(nom: str, infos_tactique: Callable[[str], dict]):
 
 
 def blocages_import(nom_final: str, typ: str, contenu: bytes, existants: dict, tactiques: dict,
-                    infos_tactique: Callable[[str], dict]) -> list[str]:
+                    infos_tactique: Callable[[str], dict], complementaire: bool = False) -> list[str]:
     """Raisons de refuser un import (liste vide = OK).
     existants : {empreinte: chemin} des CSV déjà sur le serveur ;
     tactiques : {cle_match: chemin} des fichiers tactiques déjà présents."""
@@ -300,7 +387,7 @@ def blocages_import(nom_final: str, typ: str, contenu: bytes, existants: dict, t
     dbl = existants.get(empreinte(contenu))
     if dbl:
         raisons.append(f"contenu identique à « {os.path.basename(dbl)} », déjà présent")
-    if typ == "Tactique":
+    if typ == "Tactique" and not complementaire:
         cle = cle_match_tactique(nom_final, infos_tactique)
         autre = tactiques.get(cle) if cle else None
         if autre and os.path.basename(autre) != nom_final:
@@ -378,8 +465,12 @@ def lister_doublons(dossiers_gps: Iterable[str], dossiers_tactique: Iterable[str
     k = 0
     for cle, ps in sorted(par_match.items(), key=lambda kv: str(kv[0])):
         if len(ps) > 1 and frozenset(ps) not in deja:
+            paire = paire_complementaire(ps)
+            if paire and len(ps) == 2:
+                continue  # collectif + individuel du même match : réunis par l'app, pas un doublon
             k += 1
-            ajouter(f"T{k}", "Même match tactique", ps, conserve=max(ps, key=os.path.getmtime))
+            ajouter(f"T{k}", "Même match tactique", ps,
+                    conserve=paire[0] if paire else max(ps, key=os.path.getmtime))
 
     cols = ["groupe", "motif", "fichier", "dossier", "taille_ko", "modifie", "conserve", "chemin"]
     return pd.DataFrame(lignes, columns=cols)

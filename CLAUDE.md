@@ -92,6 +92,8 @@ Un match tagué uniquement collectivement (pas de tag individuel par joueuse) n'
 
 `load_tactical_files()` dédoublonne par clé `(date, journee, adv_norm)` et garde le fichier le plus récent (`mtime`). Motif : un renommage de catégorie sur Drive (ex. `U19` → `U19F`) laisse l'ancien fichier orphelin en local sans le supprimer ; sans ce dédoublonnage les stats d'un même match se comptent en double.
 
+Exception (même règle dans `collect_data` pour les KPI) : un export **collectif** (lignes PFC / adversaire, sans `Action`) + un export **individuel** (actions des joueuses, sans ligne PFC) du même match sont réunis (`import_csv.paire_complementaire` / `fusionner_sportscode`, `Instance number` du collectif décalés de 1 000 000 pour ne pas rattacher les actions des joueuses aux lignes PFC). L'Import les enregistre sous `…_collectif.csv` / `…_individuel.csv` (même clé de match).
+
 ### 6. Deux mécanismes de secrets indépendants
 
 - L'app Streamlit lit `st.secrets` (`.streamlit/secrets.toml`, gitignored) : `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, et un bloc `[GOOGLE_SERVICE_ACCOUNT_JSON]` (JSON du compte de service Drive).

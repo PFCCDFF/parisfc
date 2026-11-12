@@ -167,3 +167,62 @@ class TestNommageEtTags(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestComplementaires(unittest.TestCase):
+    """Export collectif + export individuel d'un même match (ex. LOSC J7 08/11/2026)."""
+    ENTETE = "Timeline,Start time,Duration,Row,Instance number,Action,Mi-temps,X_localisation,Y_localisation\n"
+    COLLECTIF = ENTETE + "M,0,10,PFC,1,,MT1,,\nM,5,4,LOSC,1,,MT1,,\nM,3000,10,PFC,2,,MT2,,\n"
+    INDIVIDUEL = ENTETE + "M,20,1,MANE Mélita,1,Passe,,40,40\nM,30,1,RENAI Sylia,2,Tir,,70,30\n"
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def ecrire(self, nom, contenu, mtime=None):
+        p = os.path.join(self.dir, nom)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(contenu)
+        if mtime:
+            os.utime(p, (mtime, mtime))
+        return p
+
+    def test_nature(self):
+        self.assertEqual(ic.nature_contenu(self.COLLECTIF.encode()), "collectif")
+        self.assertEqual(ic.nature_contenu(self.INDIVIDUEL.encode()), "individuel")
+        complet = self.COLLECTIF + "M,40,1,MANE Mélita,3,Passe,,40,40\n"
+        self.assertEqual(ic.nature_contenu(complet.encode()), "complet")
+        self.assertEqual(ic.nature_contenu(b"a,b\n1,2\n"), "vide")
+
+    def test_paire(self):
+        c = self.ecrire("PFC_VS_ 2627 U19F LOSC_J7_U19_08-11-2026.csv", self.COLLECTIF)
+        i = self.ecrire("PFC_VS_ 2627 U19F LOSC_J7_U19_08-11-2026_individuel.csv", self.INDIVIDUEL)
+        self.assertEqual(ic.paire_complementaire([c, i]), (i, c))
+        # la paire n'est pas listée comme doublon
+        d = ic.lister_doublons([], [self.dir], est_tactique, infos_tactique)
+        self.assertNotIn(os.path.basename(i), d.fichier.tolist())
+        # même nature des deux côtés : doublon classique, pas de paire
+        c2 = self.ecrire("PFC_VS_ 2627 U19 LOSC_J7_U19_08-11-2026.csv", self.COLLECTIF + "\n")
+        self.assertIsNone(ic.paire_complementaire([c, c2]))
+        # même clé de match malgré le suffixe
+        self.assertEqual(ic.cle_match_tactique(os.path.basename(i), infos_tactique),
+                         ic.cle_match_tactique(os.path.basename(c), infos_tactique))
+
+    def test_fusion_decale_les_instances_du_collectif(self):
+        import pandas as pd, io as _io
+        ind = pd.read_csv(_io.StringIO(self.INDIVIDUEL))
+        col = pd.read_csv(_io.StringIO(self.COLLECTIF))
+        f = ic.fusionner_sportscode(ind, col)
+        self.assertEqual(len(f), 5)
+        pfc = f[f["Row"] == "PFC"]["Instance number"].tolist()
+        self.assertEqual(pfc, [1 + ic.DECALAGE_INSTANCES_COLLECTIF, 2 + ic.DECALAGE_INSTANCES_COLLECTIF])
+        self.assertEqual(f[f["Row"] == "MANE Mélita"]["Instance number"].tolist(), [1])
+
+    def test_nom_complementaire_et_blocage(self):
+        n = "PFC_VS_ 2627 U19F LOSC_J7_U19_08-11-2026.csv"
+        self.assertEqual(ic.nom_complementaire(n, "individuel"), "PFC_VS_ 2627 U19F LOSC_J7_U19_08-11-2026_individuel.csv")
+        c = self.ecrire(n, self.COLLECTIF)
+        cle = ic.cle_match_tactique(n, infos_tactique)
+        nom_i = ic.nom_complementaire(n, "individuel")
+        self.assertTrue(ic.blocages_import(nom_i, "Tactique", self.INDIVIDUEL.encode(), {}, {cle: c}, infos_tactique))
+        self.assertEqual(ic.blocages_import(nom_i, "Tactique", self.INDIVIDUEL.encode(), {}, {cle: c},
+                                            infos_tactique, complementaire=True), [])

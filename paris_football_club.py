@@ -6899,14 +6899,22 @@ def load_tactical_files() -> list:
                 continue
             _candidates.append((full, f, _key, _mtime))
 
-    _best_by_key = {}
+    # Exception : un export collectif + un export individuel du même match sont complémentaires
+    # → réunis (import_csv.paire_complementaire / fusionner_sportscode) au lieu d'en ignorer un.
+    from import_csv import paire_complementaire, fusionner_sportscode
+    _par_cle = {}
     for full, f, key, mtime in _candidates:
-        _cur = _best_by_key.get(key)
-        if _cur is None or mtime > _cur[1]:
-            _best_by_key[key] = (full, mtime)
-    _files_to_keep = {v[0] for v in _best_by_key.values()}
+        _par_cle.setdefault(key, []).append((full, mtime))
+    _files_to_keep, _complement = set(), {}
+    for _lst in _par_cle.values():
+        _paire = paire_complementaire([p for p, _ in _lst]) if len(_lst) > 1 else None
+        if _paire:
+            _files_to_keep.add(_paire[0])
+            _complement[_paire[0]] = _paire[1]
+        else:
+            _files_to_keep.add(max(_lst, key=lambda x: x[1])[0])
     for full, f, key, mtime in _candidates:
-        if full not in _files_to_keep:
+        if full not in _files_to_keep and full not in _complement.values():
             _warn(f"Tactique: {f} ignoré — doublon d'un même match (fichier plus récent conservé)")
 
     for full, f, key, mtime in _candidates:
@@ -6914,6 +6922,8 @@ def load_tactical_files() -> list:
             continue
         try:
             df = nettoyer_tags_sportscode(read_csv_auto(full))
+            if full in _complement:  # export individuel + export collectif du même match
+                df = fusionner_sportscode(df, nettoyer_tags_sportscode(read_csv_auto(_complement[full])))
             # Vérification : doit avoir Timeline et Row (colonnes Sportscode).
             # "Action" n'existe que si des lignes joueuses ont été taguées : un
             # match taggé uniquement collectivement (PFC / adversaire / transitions,
@@ -9321,14 +9331,23 @@ def collect_data(selected_season=None):
             continue
         _pfc_candidates.append((filename, _match_key, _mtime))
 
-    _pfc_best_by_key = {}
+    # Exception : export collectif + export individuel du même match → réunis (cf. load_tactical_files).
+    from import_csv import paire_complementaire, fusionner_sportscode
+    _pfc_par_cle = {}
     for _filename, _key, _mtime in _pfc_candidates:
-        _cur = _pfc_best_by_key.get(_key)
-        if _cur is None or _mtime > _cur[1]:
-            _pfc_best_by_key[_key] = (_filename, _mtime)
-    _pfc_files_to_process = {v[0] for v in _pfc_best_by_key.values()}
+        _pfc_par_cle.setdefault(_key, []).append((_filename, _mtime))
+    _pfc_files_to_process, _pfc_complement = set(), {}
+    for _lst in _pfc_par_cle.values():
+        _paire = (paire_complementaire([os.path.join(DATA_FOLDER, f) for f, _ in _lst])
+                  if len(_lst) > 1 else None)
+        if _paire:
+            _ind, _col = os.path.basename(_paire[0]), os.path.basename(_paire[1])
+            _pfc_files_to_process.add(_ind)
+            _pfc_complement[_ind] = _col
+        else:
+            _pfc_files_to_process.add(max(_lst, key=lambda x: x[1])[0])
     for _filename, _key, _mtime in _pfc_candidates:
-        if _filename not in _pfc_files_to_process:
+        if _filename not in _pfc_files_to_process and _filename not in _pfc_complement.values():
             _warn(f"Match: {_filename} ignoré — doublon d'un même match (fichier plus récent conservé)")
 
     for filename in fichiers:
@@ -9344,6 +9363,9 @@ def collect_data(selected_season=None):
             date = parts[5]
 
             data = nettoyer_tags_sportscode(pd.read_csv(path))
+            if filename in _pfc_complement:  # export individuel + export collectif du même match
+                data = fusionner_sportscode(data, nettoyer_tags_sportscode(
+                    pd.read_csv(os.path.join(DATA_FOLDER, _pfc_complement[filename]))))
             if "Row" not in data.columns:
                 continue
 
@@ -15867,8 +15889,9 @@ def render_import_bepro():
 
 def render_import_csv():
     from import_csv import (TYPES, analyser_fichier, blocages_import, categorie_valide, cle_match_tactique,
-                            empreinte, lignes_collectives, lister_doublons, nom_standard_tactique,
-                            retagger_sportscode, tags_sportscode)
+                            empreinte, lignes_collectives, lister_doublons, nom_complementaire,
+                            nom_standard_tactique, nature_contenu, nature_fichier, retagger_sportscode,
+                            tags_sportscode)
 
     st.subheader("📥 Importer des CSV")
     st.caption("Exports de la plateforme GPS (séances, matchs) ou fichiers tactiques Sportscode (PFC_VS_…). "
@@ -15889,7 +15912,7 @@ def render_import_csv():
                             with open(os.path.join(racine, f), "rb") as fh:
                                 existants.setdefault(empreinte(fh.read()), os.path.join(racine, f))
         # Matchs tactiques déjà présents, par clé de dédoublonnage de load_tactical_files.
-        tactiques = {}
+        tactiques, tactiques_tous = {}, {}
         for d in (TACTICAL_FOLDER, "data/tactical"):
             if os.path.isdir(d):
                 for f in os.listdir(d):
@@ -15897,6 +15920,7 @@ def render_import_csv():
                         cle = cle_match_tactique(f, parse_tactical_filename)
                         if cle:
                             tactiques.setdefault(cle, os.path.join(d, f))
+                            tactiques_tous.setdefault(cle, []).append(os.path.join(d, f))
         lignes, analyses = [], {}
         par_contenu = {up.name: up.getvalue() for up in fichiers}
         for up in fichiers:
@@ -15995,6 +16019,34 @@ def render_import_csv():
                     # réimporté après ajout des actions individuelles : même nom standard).
                     _autre = tactiques.get(_k) if _k else None
                 _identique = existants.get(empreinte(par_contenu[n]))
+                # Export collectif + export individuel du même match : complémentaires, réunis par
+                # l'app (load_tactical_files / collect_data). Le fichier est ajouté sous un nom
+                # suffixé (…_collectif / …_individuel), sans remplacer ni bloquer l'autre.
+                if r["Type"] == "Tactique" and _k and not _identique:
+                    _nat = nature_contenu(par_contenu[n])
+                    _opp = {"individuel": "collectif", "collectif": "individuel"}.get(_nat)
+                    _partenaire = None
+                    if _opp:
+                        _deja_la = [p for p in (tactiques_tous.get(_k) or []) if os.path.exists(p)]
+                        _partenaire = next((os.path.basename(p) for p in _deja_la if nature_fichier(p) == _opp), None)
+                        if _partenaire is None:
+                            for _, r2 in a_importer.iterrows():
+                                m = r2["Fichier"]
+                                if m != n and r2["Type"] == "Tactique" and nature_contenu(par_contenu[m]) == _opp \
+                                        and cle_match_tactique(noms_finaux.get(m, m), parse_tactical_filename) == _k:
+                                    _partenaire = m
+                                    break
+                    if _partenaire:
+                        _final = nom_complementaire(_final, _nat)
+                        noms_finaux[n] = _final
+                        st.info(f"🔗 {n} : export {_nat} complémentaire de « {_partenaire} » (même match) — "
+                                f"les deux seront réunis. Enregistré sous `{_final}`.")
+                        raisons = blocages_import(_final, r["Type"], par_contenu[n], existants,
+                                                  tactiques, parse_tactical_filename, complementaire=True)
+                        if raisons:
+                            blocages[n] = raisons
+                            st.error(f"⛔ {n} ne sera pas importé : " + " ; ".join(raisons) + ".")
+                        continue
                 if r["Type"] == "Tactique" and not (_autre and not _identique):
                     # Même match déjà importé sous un AUTRE nom (journée ou catégorie erronée) :
                     # remplacement avec le nom corrigé (fichier Drive renommé, ancien supprimé).
