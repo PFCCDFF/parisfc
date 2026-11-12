@@ -872,6 +872,284 @@ def insert_visite_medicale(joueuse: str, date_iso: str, professionnel: str, type
         return False
 
 
+# ── Séances de kiné / réathlétisation (table seances_kine, kine_utils) ─────
+@st.cache_data(ttl=60)
+def load_seances_kine() -> pd.DataFrame:
+    """Toutes les séances de kiné (lecture paginée, piège n°7), noms ramenés à l'Effectif."""
+    _sb = get_supabase_client()
+    if _sb is None:
+        return pd.DataFrame()
+    try:
+        rows, debut = [], 0
+        while True:
+            lot = _sb.table("seances_kine").select("*").order("id").range(debut, debut + 999).execute().data or []
+            rows += lot
+            if len(lot) < 1000:
+                break
+            debut += 1000
+    except Exception:
+        return pd.DataFrame()
+    _df = pd.DataFrame(rows)
+    if _df.empty:
+        return _df
+    _df["date"] = pd.to_datetime(_df["date"])
+    return canon_df(_df, "joueuse").sort_values(["date", "id"], ascending=[False, False]).reset_index(drop=True)
+
+
+def enregistrer_seance_kine(champs: dict, saisi_par: str, seance_id: int = None) -> str:
+    """Ajoute (ou modifie si seance_id) une séance. Retourne "" si ok, sinon le message d'erreur."""
+    import kine_utils as KU
+    _sb = get_supabase_client()
+    if _sb is None:
+        return "Base de données indisponible."
+    _row = dict(champs)
+    _row["date"] = pd.Timestamp(_row["date"]).date().isoformat()
+    for _k in ("type_seance", "zone", "type_blessure", "disponibilite", "observations", "kine"):
+        _row[_k] = (str(_row.get(_k) or "").strip() or None)
+    _row["empreinte"] = KU.empreinte(_row)
+    try:
+        if seance_id is None:
+            _row["saisi_par"] = saisi_par or None
+            _sb.table("seances_kine").insert([_row]).execute()
+        else:
+            _sb.table("seances_kine").update(_row).eq("id", int(seance_id)).execute()
+    except Exception as e:
+        _msg = str(e)
+        return ("Une séance identique (même date, joueuse, type, zone, kiné et notes) existe déjà."
+                if "duplicate" in _msg.lower() or "23505" in _msg else _msg)
+    load_seances_kine.clear()
+    return ""
+
+
+def supprimer_seance_kine(seance_id: int) -> bool:
+    _sb = get_supabase_client()
+    if _sb is None:
+        return False
+    try:
+        _sb.table("seances_kine").delete().eq("id", int(seance_id)).execute()
+        load_seances_kine.clear()
+        return True
+    except Exception:
+        return False
+
+
+def importer_seances_kine(lignes: list, par_lot: int = 200) -> tuple:
+    """Insère les séances du classeur ; celles dont l'empreinte existe déjà sont ignorées
+    (upsert ignore_duplicates). Retourne (nb envoyées, message d'erreur ou "")."""
+    _sb = get_supabase_client()
+    if _sb is None:
+        return 0, "Base de données indisponible."
+    n = 0
+    try:
+        for i in range(0, len(lignes), par_lot):
+            lot = lignes[i:i + par_lot]
+            _sb.table("seances_kine").upsert(lot, on_conflict="empreinte", ignore_duplicates=True).execute()
+            n += len(lot)
+    except Exception as e:
+        load_seances_kine.clear()
+        return n, str(e)
+    load_seances_kine.clear()
+    return n, ""
+
+
+_KINE_COUL_DISPO = {"Disponible": "#22C55E", "Indisponible": "#EF4444", "À réévaluer": "#F4830A"}
+
+
+def _kine_carte_html(r) -> str:
+    def _v(c):
+        x = r.get(c)
+        return "" if x is None or (isinstance(x, float) and pd.isna(x)) else str(x).strip()
+    _c = _KINE_COUL_DISPO.get(_v("disponibilite"), "#9FB8D8")
+    return (
+        "<div style='background:rgba(16,46,100,.42);border:1px solid rgba(255,255,255,.14);"
+        f"border-left:3px solid {_c};border-radius:8px;padding:9px 13px;margin-bottom:8px;'>"
+        "<div style='display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;'>"
+        f"<b style='color:#FFF;'>{r['date'].strftime('%d/%m/%Y')} · {_esc(_v('type_seance') or 'Séance')}</b>"
+        f"<span style='color:#9FB8D8;font-size:12.5px;'>{_esc(' · '.join(x for x in [_v('zone'), _v('type_blessure'), _v('kine')] if x))}</span></div>"
+        + (f"<div style='margin-top:3px;font-size:12.5px;color:{_c};'>Lendemain : {_esc(_v('disponibilite'))}</div>"
+           if _v("disponibilite") else "")
+        + (f"<div style='margin-top:5px;color:#E6EEF8;font-size:13.5px;white-space:pre-wrap;'>{_esc(_v('observations'))}</div>"
+           if _v("observations") else "")
+        + "</div>")
+
+
+def _kine_champs(prefix: str, defauts: dict, kines: list) -> dict:
+    """Champs de l'onglet « Saisie Séances » (mêmes listes déroulantes que le classeur)."""
+    import kine_utils as KU
+
+    def _idx(liste, v, defaut=0):
+        return liste.index(v) if v in liste else defaut
+    c1, c2 = st.columns(2)
+    type_seance = c1.selectbox("Type de séance", KU.TYPES_SEANCE,
+                               index=_idx(KU.TYPES_SEANCE, defauts.get("type_seance")), key=f"{prefix}_type")
+    zone = c2.selectbox("Zone / Région", KU.ZONES, index=_idx(KU.ZONES, defauts.get("zone")), key=f"{prefix}_zone")
+    c3, c4, c5 = st.columns(3)
+    type_blessure = c3.selectbox("Type de blessure", KU.TYPES_BLESSURE,
+                                 index=_idx(KU.TYPES_BLESSURE, defauts.get("type_blessure"), 1), key=f"{prefix}_bless")
+    disponibilite = c4.selectbox("Disponibilité lendemain", KU.DISPONIBILITES,
+                                 index=_idx(KU.DISPONIBILITES, defauts.get("disponibilite")), key=f"{prefix}_dispo")
+    kine = c5.selectbox("Kiné", kines, index=_idx(kines, defauts.get("kine")), key=f"{prefix}_kine")
+    observations = st.text_area("Observations / notes kiné", value=defauts.get("observations") or "",
+                                height=150, key=f"{prefix}_obs")
+    return {"type_seance": type_seance, "zone": zone, "type_blessure": type_blessure,
+            "disponibilite": disponibilite, "kine": kine, "observations": observations}
+
+
+def render_kine_tab(user_profile: str) -> None:
+    """Médical → 🦵 Kiné / Réathlé : saisie des séances (forme de l'onglet « Saisie Séances » du
+    classeur de suivi kiné), suivi équipe / joueuse, import de l'historique Excel."""
+    import kine_utils as KU
+    _df = load_seances_kine()
+    _kines = KU.KINES + sorted(set(_df["kine"].dropna()) - set(KU.KINES)) if not _df.empty else list(KU.KINES)
+    _t_saisie, _t_suivi, _t_import = st.tabs(["✏️ Saisie séance", "📈 Suivi", "📥 Import Excel"])
+
+    # ── Saisie ──────────────────────────────────────────────────────────────
+    with _t_saisie:
+        _roster = liste_effectif()
+        _c1, _c2 = st.columns([1, 2])
+        _d = _c1.date_input("Date", value=date.today(), format="DD/MM/YYYY", key="kine_saisie_date")
+        _j = _c2.selectbox("Joueuse", _roster, index=None, placeholder="Choisir une joueuse", key="kine_saisie_joueuse")
+        if _j:
+            # Zone, blessure et kiné repris de la dernière séance de la joueuse
+            _prec = _df[_df["joueuse"] == _j] if not _df.empty else pd.DataFrame()
+            _def = {}
+            if not _prec.empty:
+                _p = _prec.iloc[0]
+                _def = {k: _p.get(k) for k in ("type_seance", "zone", "type_blessure", "kine")}
+                st.caption(f"Dernière séance : {_p['date']:%d/%m/%Y} · {_p.get('type_seance') or ''} · "
+                           f"{_p.get('zone') or ''} · lendemain : {_p.get('disponibilite') or '—'} "
+                           "(zone, blessure et kiné repris par défaut)")
+            with st.form(f"kine_saisie_{_j}", clear_on_submit=True):
+                _champs = _kine_champs(f"kine_new_{_j}", _def, _kines)
+                if st.form_submit_button("💾 Enregistrer la séance", type="primary"):
+                    _err = enregistrer_seance_kine({"date": _d, "joueuse": _j, **_champs}, user_profile)
+                    if _err:
+                        st.error(_err)
+                    else:
+                        st.success(f"Séance enregistrée : {_j}, {_d:%d/%m/%Y}.")
+                        st.rerun()
+
+        st.divider()
+        _du_jour = _df[_df["date"].dt.date == _d] if not _df.empty else pd.DataFrame()
+        st.markdown(f"**Séances du {_d:%d/%m/%Y}** · {len(_du_jour)}")
+        if _du_jour.empty:
+            st.caption("Aucune séance saisie ce jour-là.")
+        for _, _r in _du_jour.iterrows():
+            _sid = int(_r["id"])
+            with st.expander(f"{_r['joueuse']} · {_r.get('type_seance') or ''} · {_r.get('zone') or ''} · {_r.get('kine') or ''}"):
+                with st.form(f"kine_edit_{_sid}"):
+                    _ed_d = st.date_input("Date", value=_r["date"].date(), format="DD/MM/YYYY", key=f"kine_ed_d_{_sid}")
+                    _ed = _kine_champs(f"kine_ed_{_sid}", _r.to_dict(), _kines)
+                    if st.form_submit_button("💾 Enregistrer les modifications"):
+                        _err = enregistrer_seance_kine({"date": _ed_d, "joueuse": _r["joueuse"], **_ed},
+                                                       user_profile, seance_id=_sid)
+                        if _err:
+                            st.error(_err)
+                        else:
+                            st.rerun()
+                _ok = st.checkbox("Confirmer la suppression", key=f"kine_del_ok_{_sid}")
+                if st.button("🗑️ Supprimer la séance", key=f"kine_del_{_sid}", disabled=not _ok):
+                    if supprimer_seance_kine(_sid):
+                        st.rerun()
+                    else:
+                        st.error("Suppression impossible.")
+
+    # ── Suivi ───────────────────────────────────────────────────────────────
+    with _t_suivi:
+        if _df.empty:
+            st.info("Aucune séance enregistrée. Saisir une séance ou importer le classeur Excel (onglet 📥).")
+        else:
+            st.markdown("#### Statut de l'équipe")
+            st.caption("Dernière séance de chaque joueuse suivie ; « Disponibilité » = disponibilité "
+                       "prévue le lendemain de cette séance. Indisponibles en premier.")
+            _stat = KU.statut_equipe(_df)
+
+            def _col_dispo(v):
+                _c = _KINE_COUL_DISPO.get(v)
+                return f"color:{_c};font-weight:700;" if _c else ""
+            _sty = _stat.style
+            _sty = (_sty.map if hasattr(_sty, "map") else _sty.applymap)(_col_dispo, subset=["Disponibilité"])
+            st.dataframe(_sty, hide_index=True, width="stretch",
+                         column_config={"Dernière séance": st.column_config.DateColumn(format="DD/MM/YYYY")})
+
+            st.divider()
+            st.markdown("#### Suivi d'une joueuse")
+            _joueuses = _stat["Joueuse"].tolist()
+            _js = st.selectbox("Joueuse", _joueuses, key="kine_suivi_joueuse")
+            _dj = _df[_df["joueuse"] == _js]
+            _res = KU.resume_joueuse(_dj)
+            _m1, _m2, _m3, _m4 = st.columns(4)
+            _m1.metric("Séances", _res["n"])
+            _m2.metric("Dont rééducation", _res["n_reeduc"])
+            _m3.metric("Dernière séance", f"{_res['derniere']:%d/%m/%Y}" if _res["derniere"] else "—")
+            _m4.metric("Disponibilité", _res["dispo"] or "—")
+            if _res["zones"]:
+                st.caption("Zones : " + " · ".join(f"{z} ({n})" for z, n in _res["zones"])
+                           + "  —  Types : " + " · ".join(f"{t} ({n})" for t, n in _res["types"]))
+            _sem = KU.seances_par_semaine(_dj)
+            if not _sem.empty:
+                _fig = px.bar(_sem, x="semaine", y="n", color="type_seance",
+                              labels={"semaine": "Semaine", "n": "Séances", "type_seance": "Type"})
+                _fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10), barmode="stack",
+                                   paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                   font=dict(color="#C8D8E8"), legend=dict(orientation="h", y=-0.25),
+                                   xaxis=dict(tickformat="%d/%m", gridcolor="#1A3A6A"),
+                                   yaxis=dict(dtick=1, gridcolor="#1A3A6A"))
+                st.plotly_chart(_fig, width="stretch", config={"displayModeBar": False})
+            _zf = st.multiselect("Filtrer par zone", [z for z, _ in _res["zones"]], key=f"kine_suivi_zone_{_js}")
+            _aff = _dj[_dj["zone"].isin(_zf)] if _zf else _dj
+            st.markdown(f"**Historique** · {len(_aff)} séance(s), la plus récente en premier")
+            st.markdown("".join(_kine_carte_html(r) for _, r in _aff.iterrows()), unsafe_allow_html=True)
+
+    # ── Import Excel ────────────────────────────────────────────────────────
+    with _t_import:
+        st.caption("Classeur de suivi kiné (ex. « Suivi kiné 26-27 U19N.xlsx ») : les séances de l'onglet "
+                   "« Saisie Séances » sont ajoutées à la base. Les séances déjà présentes (même date, joueuse, "
+                   "type, zone, kiné et notes) sont ignorées : le classeur peut être réimporté sans doublon.")
+        _n_up = st.session_state.get("_kine_import_n", 0)
+        _up = st.file_uploader("Classeur Excel", type=["xlsx"], key=f"kine_import_{_n_up}")
+        if _up is not None:
+            try:
+                _ok, _rej = KU.lire_classeur(_up.getvalue())
+            except Exception as e:
+                st.error(f"Lecture impossible : {e}")
+                _ok = _rej = None
+            if _ok is not None:
+                _deja = set(_df["empreinte"].dropna()) if not _df.empty and "empreinte" in _df.columns else set()
+                _nouv = _ok[~_ok["empreinte"].isin(_deja)]
+                _a, _b, _c, _e = st.columns(4)
+                _a.metric("Séances lues", len(_ok) + len(_rej))
+                _b.metric("Déjà en base", len(_ok) - len(_nouv))
+                _c.metric("À importer", len(_nouv))
+                _e.metric("Ignorées", len(_rej))
+                if not _rej.empty:
+                    st.warning("Lignes ignorées (à compléter dans le classeur) :")
+                    st.dataframe(_rej[["ligne_excel", "date", "joueuse", "type_seance", "motif"]].rename(columns={
+                        "ligne_excel": "Ligne Excel", "date": "Date", "joueuse": "Joueuse", "type_seance": "Type",
+                        "motif": "Motif"}), hide_index=True, width="stretch",
+                        column_config={"Date": st.column_config.DateColumn(format="DD/MM/YYYY")})
+                _eff = set(liste_effectif())
+                _inconnues = sorted({n for n in _nouv["joueuse"] if canon_joueuse(n) not in _eff})
+                if _inconnues:
+                    st.info("Noms non reconnus dans l'Effectif (importés tels quels, à rattacher dans "
+                            "Gestion → 👥 Effectif → « Noms à rattacher ») : " + ", ".join(_inconnues))
+                if not _nouv.empty:
+                    with st.expander(f"Aperçu des {len(_nouv)} séances à importer"):
+                        st.dataframe(_nouv[["date", "joueuse", "type_seance", "zone", "disponibilite", "kine"]],
+                                     hide_index=True, width="stretch",
+                                     column_config={"date": st.column_config.DateColumn("Date", format="DD/MM/YYYY")})
+                    if st.button(f"📥 Importer {len(_nouv)} séance(s)", type="primary", key="kine_import_go"):
+                        _n, _err = importer_seances_kine(KU.lignes_supabase(_nouv, user_profile))
+                        if _err:
+                            st.error(f"Import interrompu après {_n} séance(s) : {_err}")
+                        else:
+                            st.session_state["_kine_import_n"] = _n_up + 1
+                            st.session_state["_kine_import_msg"] = f"{_n} séance(s) importée(s)."
+                            st.rerun()
+        if st.session_state.get("_kine_import_msg"):
+            st.success(st.session_state.pop("_kine_import_msg"))
+
+
 def medical_rdv_inputs(key_prefix: str, ligne=None):
     """Case « Rdv complémentaire » + champs du rendez-vous (spécialiste, médecin, adresse, date).
     ligne : visite existante (édition) pour préremplir. Retourne (champs, erreur) :
@@ -14776,6 +15054,7 @@ def liste_effectif(noms_donnees=None) -> list:
 
 TABLES_NOMS_SUPABASE = [("presence_entrainement", "Présence"), ("visites_medicales", "Médical"),
                         ("mesures_corporelles", "Mesures"), ("objectifs_joueuse", "Objectifs"),
+                        ("seances_kine", "Kiné"),
                         ("objectifs_evaluations", "Évaluations objectifs")]
 
 
@@ -14823,7 +15102,7 @@ def _vider_caches_noms() -> None:
     """Après une modification de l'Effectif : les données déjà chargées sont relues."""
     for f in (load_visites_medicales, load_mesures_corporelles, load_objectifs_joueuses,
               load_objectifs_pour_joueuse, load_pdi_evaluations, load_objectifs_historique,
-              load_objectifs_catalogue, load_presence_for_date,
+              load_objectifs_catalogue, load_seances_kine, load_presence_for_date,
               load_presence_rate, load_rpe_joueuse, _noms_table_supabase):
         try:
             f.clear()
@@ -16381,7 +16660,7 @@ RUBRIQUES_ACCUEIL = [
     ("Objectifs", "Plans de développement individuels", "cible", None),
     ("Bilan", "Fiche bilan périodique de la joueuse", "bilan", None),
     ("Gestion", "Effectif, référentiel, profils, imports", "reglages", (ROLE_ADMIN,)),
-    ("Médical", "Calendrier des visites, mesures, bilan", "coeur", (ROLE_ADMIN, ROLE_STAFF)),
+    ("Médical", "Calendrier des visites, séances kiné, mesures, bilan", "coeur", (ROLE_ADMIN, ROLE_STAFF)),
     ("Recrutement", "Joueuses suivies et rapports de match", "loupe", (ROLE_ADMIN, ROLE_STAFF)),
     ("Laboratoire", "Fonctionnalités en test", "fiole", (ROLE_ADMIN,)),
 ]
@@ -17573,7 +17852,12 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
             _MED_JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
 
             _med_df = load_visites_medicales()
-            _med_tab_cal, _med_tab_mesures, _med_tab_bilan = st.tabs(["📅 Calendrier", "📏 Mesures", "📊 Bilan"])
+            _med_tab_cal, _med_tab_kine, _med_tab_mesures, _med_tab_bilan = st.tabs(
+                ["📅 Calendrier", "🦵 Kiné / Réathlé", "📏 Mesures", "📊 Bilan"])
+
+            # ── Kiné / réathlétisation ──────────────────────────────────────
+            with _med_tab_kine:
+                render_kine_tab(user_profile)
 
             # ── Calendrier ──────────────────────────────────────────────────
             with _med_tab_cal:
