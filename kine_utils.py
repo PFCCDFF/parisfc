@@ -170,3 +170,24 @@ def seances_par_semaine(df: pd.DataFrame) -> pd.DataFrame:
     d = df.assign(semaine=df["date"].dt.to_period("W-SUN").dt.start_time,
                   type_seance=df["type_seance"].fillna("Non précisé"))
     return d.groupby(["semaine", "type_seance"]).size().reset_index(name="n")
+
+
+# Zones détaillées du classeur (côté compris) → zones du schéma corporel du bilan médical
+# (MEDICAL_ZONES_CORPS de l'app). None = pas de zone sur le schéma (Général / Corps entier).
+_ZONE_CORPS = [
+    (("cheville", "pied"), "Cheville/Pied"), (("mollet", "tibia"), "Mollet/Tibia"), (("genou",), "Genou"),
+    (("cuisse",), "Cuisse"), (("adducteur", "hanche", "fessier", "bassin"), "Hanche/Aine"),
+    (("epaule",), "Épaule"), (("avant-bras", "bras", "coude"), "Bras/Coude"), (("poignet", "main"), "Poignet/Main"),
+    (("lombaire", "dos"), "Dos"), (("thorax", "abdo"), "Thorax/Abdomen"), (("cervical",), "Cou"), (("tete",), "Tête"),
+]
+
+
+def zone_corps(zone) -> Optional[str]:
+    """« Cheville G » → « Cheville/Pied », « Adducteurs D » → « Hanche/Aine »…"""
+    z = _norm(zone)
+    if not z:
+        return None
+    for mots, cible in _ZONE_CORPS:
+        if any(z.startswith(m) or f" {m}" in f" {z}" for m in mots):
+            return cible
+    return None

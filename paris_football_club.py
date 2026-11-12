@@ -995,159 +995,84 @@ def _kine_champs(prefix: str, defauts: dict, kines: list) -> dict:
             "disponibilite": disponibilite, "kine": kine, "observations": observations}
 
 
-def render_kine_tab(user_profile: str) -> None:
-    """Médical → 🦵 Kiné / Réathlé : saisie des séances (forme de l'onglet « Saisie Séances » du
-    classeur de suivi kiné), suivi équipe / joueuse, import de l'historique Excel."""
+def render_kine_import(df_kine: pd.DataFrame, user_profile: str) -> None:
+    """Import du classeur de suivi kiné (onglet « Saisie Séances ») dans seances_kine ; séances
+    déjà présentes (même empreinte) ignorées : réimport sans doublon."""
     import kine_utils as KU
-    _df = load_seances_kine()
-    _kines = KU.KINES + sorted(set(_df["kine"].dropna()) - set(KU.KINES)) if not _df.empty else list(KU.KINES)
-    _t_saisie, _t_suivi, _t_import = st.tabs(["✏️ Saisie séance", "📈 Suivi", "📥 Import Excel"])
-
-    # ── Saisie ──────────────────────────────────────────────────────────────
-    with _t_saisie:
-        _roster = liste_effectif()
-        _c1, _c2 = st.columns([1, 2])
-        _d = _c1.date_input("Date", value=date.today(), format="DD/MM/YYYY", key="kine_saisie_date")
-        _j = _c2.selectbox("Joueuse", _roster, index=None, placeholder="Choisir une joueuse", key="kine_saisie_joueuse")
-        if _j:
-            # Zone, blessure et kiné repris de la dernière séance de la joueuse
-            _prec = _df[_df["joueuse"] == _j] if not _df.empty else pd.DataFrame()
-            _def = {}
-            if not _prec.empty:
-                _p = _prec.iloc[0]
-                _def = {k: _p.get(k) for k in ("type_seance", "zone", "type_blessure", "kine")}
-                st.caption(f"Dernière séance : {_p['date']:%d/%m/%Y} · {_p.get('type_seance') or ''} · "
-                           f"{_p.get('zone') or ''} · lendemain : {_p.get('disponibilite') or '—'} "
-                           "(zone, blessure et kiné repris par défaut)")
-            with st.form(f"kine_saisie_{_j}", clear_on_submit=True):
-                _champs = _kine_champs(f"kine_new_{_j}", _def, _kines)
-                if st.form_submit_button("💾 Enregistrer la séance", type="primary"):
-                    _err = enregistrer_seance_kine({"date": _d, "joueuse": _j, **_champs}, user_profile)
-                    if _err:
-                        st.error(_err)
-                    else:
-                        st.success(f"Séance enregistrée : {_j}, {_d:%d/%m/%Y}.")
-                        st.rerun()
-
-        st.divider()
-        _du_jour = _df[_df["date"].dt.date == _d] if not _df.empty else pd.DataFrame()
-        st.markdown(f"**Séances du {_d:%d/%m/%Y}** · {len(_du_jour)}")
-        if _du_jour.empty:
-            st.caption("Aucune séance saisie ce jour-là.")
-        for _, _r in _du_jour.iterrows():
-            _sid = int(_r["id"])
-            with st.expander(f"{_r['joueuse']} · {_r.get('type_seance') or ''} · {_r.get('zone') or ''} · {_r.get('kine') or ''}"):
-                with st.form(f"kine_edit_{_sid}"):
-                    _ed_d = st.date_input("Date", value=_r["date"].date(), format="DD/MM/YYYY", key=f"kine_ed_d_{_sid}")
-                    _ed = _kine_champs(f"kine_ed_{_sid}", _r.to_dict(), _kines)
-                    if st.form_submit_button("💾 Enregistrer les modifications"):
-                        _err = enregistrer_seance_kine({"date": _ed_d, "joueuse": _r["joueuse"], **_ed},
-                                                       user_profile, seance_id=_sid)
-                        if _err:
-                            st.error(_err)
-                        else:
-                            st.rerun()
-                _ok = st.checkbox("Confirmer la suppression", key=f"kine_del_ok_{_sid}")
-                if st.button("🗑️ Supprimer la séance", key=f"kine_del_{_sid}", disabled=not _ok):
-                    if supprimer_seance_kine(_sid):
-                        st.rerun()
-                    else:
-                        st.error("Suppression impossible.")
-
-    # ── Suivi ───────────────────────────────────────────────────────────────
-    with _t_suivi:
-        if _df.empty:
-            st.info("Aucune séance enregistrée. Saisir une séance ou importer le classeur Excel (onglet 📥).")
+    st.caption("Classeur de suivi kiné (ex. « Suivi kiné 26-27 U19N.xlsx ») : les séances de l'onglet "
+               "« Saisie Séances » sont ajoutées à la base. Les séances déjà présentes (même date, joueuse, "
+               "type, zone, kiné et notes) sont ignorées : le classeur peut être réimporté sans doublon.")
+    _n_up = st.session_state.get("_kine_import_n", 0)
+    _up = st.file_uploader("Classeur Excel", type=["xlsx"], key=f"kine_import_{_n_up}")
+    if st.session_state.get("_kine_import_msg"):
+        st.success(st.session_state.pop("_kine_import_msg"))
+    if _up is None:
+        return
+    try:
+        _ok, _rej = KU.lire_classeur(_up.getvalue())
+    except Exception as e:
+        st.error(f"Lecture impossible : {e}")
+        return
+    _deja = set(df_kine["empreinte"].dropna()) if not df_kine.empty and "empreinte" in df_kine.columns else set()
+    _nouv = _ok[~_ok["empreinte"].isin(_deja)]
+    _a, _b, _c, _e = st.columns(4)
+    _a.metric("Séances lues", len(_ok) + len(_rej))
+    _b.metric("Déjà en base", len(_ok) - len(_nouv))
+    _c.metric("À importer", len(_nouv))
+    _e.metric("Ignorées", len(_rej))
+    if not _rej.empty:
+        st.warning("Lignes ignorées (à compléter dans le classeur) :")
+        st.dataframe(_rej[["ligne_excel", "date", "joueuse", "type_seance", "motif"]].rename(columns={
+            "ligne_excel": "Ligne Excel", "date": "Date", "joueuse": "Joueuse", "type_seance": "Type",
+            "motif": "Motif"}), hide_index=True, width="stretch",
+            column_config={"Date": st.column_config.DateColumn(format="DD/MM/YYYY")})
+    _eff = set(liste_effectif())
+    _inconnues = sorted({n for n in _nouv["joueuse"] if canon_joueuse(n) not in _eff})
+    if _inconnues:
+        st.info("Noms non reconnus dans l'Effectif (importés tels quels, à rattacher dans "
+                "Gestion → 👥 Effectif → « Noms à rattacher ») : " + ", ".join(_inconnues))
+    if _nouv.empty:
+        return
+    with st.expander(f"Aperçu des {len(_nouv)} séances à importer"):
+        st.dataframe(_nouv[["date", "joueuse", "type_seance", "zone", "disponibilite", "kine"]],
+                     hide_index=True, width="stretch",
+                     column_config={"date": st.column_config.DateColumn("Date", format="DD/MM/YYYY")})
+    if st.button(f"📥 Importer {len(_nouv)} séance(s)", type="primary", key="kine_import_go"):
+        _n, _err = importer_seances_kine(KU.lignes_supabase(_nouv, user_profile))
+        if _err:
+            st.error(f"Import interrompu après {_n} séance(s) : {_err}")
         else:
-            st.markdown("#### Statut de l'équipe")
-            st.caption("Dernière séance de chaque joueuse suivie ; « Disponibilité » = disponibilité "
-                       "prévue le lendemain de cette séance. Indisponibles en premier.")
-            _stat = KU.statut_equipe(_df)
+            st.session_state["_kine_import_n"] = _n_up + 1
+            st.session_state["_kine_import_msg"] = f"{_n} séance(s) importée(s)."
+            st.rerun()
 
-            def _col_dispo(v):
-                _c = _KINE_COUL_DISPO.get(v)
-                return f"color:{_c};font-weight:700;" if _c else ""
-            _sty = _stat.style
-            _sty = (_sty.map if hasattr(_sty, "map") else _sty.applymap)(_col_dispo, subset=["Disponibilité"])
-            st.dataframe(_sty, hide_index=True, width="stretch",
-                         column_config={"Dernière séance": st.column_config.DateColumn(format="DD/MM/YYYY")})
 
-            st.divider()
-            st.markdown("#### Suivi d'une joueuse")
-            _joueuses = _stat["Joueuse"].tolist()
-            _js = st.selectbox("Joueuse", _joueuses, key="kine_suivi_joueuse")
-            _dj = _df[_df["joueuse"] == _js]
-            _res = KU.resume_joueuse(_dj)
-            _m1, _m2, _m3, _m4 = st.columns(4)
-            _m1.metric("Séances", _res["n"])
-            _m2.metric("Dont rééducation", _res["n_reeduc"])
-            _m3.metric("Dernière séance", f"{_res['derniere']:%d/%m/%Y}" if _res["derniere"] else "—")
-            _m4.metric("Disponibilité", _res["dispo"] or "—")
-            if _res["zones"]:
-                st.caption("Zones : " + " · ".join(f"{z} ({n})" for z, n in _res["zones"])
-                           + "  —  Types : " + " · ".join(f"{t} ({n})" for t, n in _res["types"]))
-            _sem = KU.seances_par_semaine(_dj)
-            if not _sem.empty:
-                _fig = px.bar(_sem, x="semaine", y="n", color="type_seance",
-                              labels={"semaine": "Semaine", "n": "Séances", "type_seance": "Type"})
-                _fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10), barmode="stack",
-                                   paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                   font=dict(color="#C8D8E8"), legend=dict(orientation="h", y=-0.25),
-                                   xaxis=dict(tickformat="%d/%m", gridcolor="#1A3A6A"),
-                                   yaxis=dict(dtick=1, gridcolor="#1A3A6A"))
-                st.plotly_chart(_fig, width="stretch", config={"displayModeBar": False})
-            _zf = st.multiselect("Filtrer par zone", [z for z, _ in _res["zones"]], key=f"kine_suivi_zone_{_js}")
-            _aff = _dj[_dj["zone"].isin(_zf)] if _zf else _dj
-            st.markdown(f"**Historique** · {len(_aff)} séance(s), la plus récente en premier")
-            st.markdown("".join(_kine_carte_html(r) for _, r in _aff.iterrows()), unsafe_allow_html=True)
-
-    # ── Import Excel ────────────────────────────────────────────────────────
-    with _t_import:
-        st.caption("Classeur de suivi kiné (ex. « Suivi kiné 26-27 U19N.xlsx ») : les séances de l'onglet "
-                   "« Saisie Séances » sont ajoutées à la base. Les séances déjà présentes (même date, joueuse, "
-                   "type, zone, kiné et notes) sont ignorées : le classeur peut être réimporté sans doublon.")
-        _n_up = st.session_state.get("_kine_import_n", 0)
-        _up = st.file_uploader("Classeur Excel", type=["xlsx"], key=f"kine_import_{_n_up}")
-        if _up is not None:
-            try:
-                _ok, _rej = KU.lire_classeur(_up.getvalue())
-            except Exception as e:
-                st.error(f"Lecture impossible : {e}")
-                _ok = _rej = None
-            if _ok is not None:
-                _deja = set(_df["empreinte"].dropna()) if not _df.empty and "empreinte" in _df.columns else set()
-                _nouv = _ok[~_ok["empreinte"].isin(_deja)]
-                _a, _b, _c, _e = st.columns(4)
-                _a.metric("Séances lues", len(_ok) + len(_rej))
-                _b.metric("Déjà en base", len(_ok) - len(_nouv))
-                _c.metric("À importer", len(_nouv))
-                _e.metric("Ignorées", len(_rej))
-                if not _rej.empty:
-                    st.warning("Lignes ignorées (à compléter dans le classeur) :")
-                    st.dataframe(_rej[["ligne_excel", "date", "joueuse", "type_seance", "motif"]].rename(columns={
-                        "ligne_excel": "Ligne Excel", "date": "Date", "joueuse": "Joueuse", "type_seance": "Type",
-                        "motif": "Motif"}), hide_index=True, width="stretch",
-                        column_config={"Date": st.column_config.DateColumn(format="DD/MM/YYYY")})
-                _eff = set(liste_effectif())
-                _inconnues = sorted({n for n in _nouv["joueuse"] if canon_joueuse(n) not in _eff})
-                if _inconnues:
-                    st.info("Noms non reconnus dans l'Effectif (importés tels quels, à rattacher dans "
-                            "Gestion → 👥 Effectif → « Noms à rattacher ») : " + ", ".join(_inconnues))
-                if not _nouv.empty:
-                    with st.expander(f"Aperçu des {len(_nouv)} séances à importer"):
-                        st.dataframe(_nouv[["date", "joueuse", "type_seance", "zone", "disponibilite", "kine"]],
-                                     hide_index=True, width="stretch",
-                                     column_config={"date": st.column_config.DateColumn("Date", format="DD/MM/YYYY")})
-                    if st.button(f"📥 Importer {len(_nouv)} séance(s)", type="primary", key="kine_import_go"):
-                        _n, _err = importer_seances_kine(KU.lignes_supabase(_nouv, user_profile))
-                        if _err:
-                            st.error(f"Import interrompu après {_n} séance(s) : {_err}")
-                        else:
-                            st.session_state["_kine_import_n"] = _n_up + 1
-                            st.session_state["_kine_import_msg"] = f"{_n} séance(s) importée(s)."
-                            st.rerun()
-        if st.session_state.get("_kine_import_msg"):
-            st.success(st.session_state.pop("_kine_import_msg"))
+def render_kine_joueuse(dj: pd.DataFrame, cle: str) -> None:
+    """Bilan médical d'une joueuse : séances de kiné cumulées (indicateurs, séances par semaine,
+    historique des notes filtrable par zone)."""
+    import kine_utils as KU
+    _res = KU.resume_joueuse(dj)
+    _m1, _m2, _m3 = st.columns(3)
+    _m1.metric("Dont rééducation", _res["n_reeduc"])
+    _m2.metric("Première séance", f"{_res['premiere']:%d/%m/%Y}" if _res["premiere"] else "—")
+    _m3.metric("Dernière séance", f"{_res['derniere']:%d/%m/%Y}" if _res["derniere"] else "—")
+    if _res["zones"]:
+        st.caption("Zones : " + " · ".join(f"{z} ({n})" for z, n in _res["zones"])
+                   + "  —  Types : " + " · ".join(f"{t} ({n})" for t, n in _res["types"]))
+    _sem = KU.seances_par_semaine(dj)
+    if not _sem.empty:
+        _fig = px.bar(_sem, x="semaine", y="n", color="type_seance",
+                      labels={"semaine": "Semaine", "n": "Séances", "type_seance": "Type"})
+        _fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10), barmode="stack",
+                           paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                           font=dict(color="#C8D8E8"), legend=dict(orientation="h", y=-0.25),
+                           xaxis=dict(tickformat="%d/%m", gridcolor="#1A3A6A"),
+                           yaxis=dict(dtick=1, gridcolor="#1A3A6A"))
+        st.plotly_chart(_fig, width="stretch", config={"displayModeBar": False}, key=f"kine_sem_{cle}")
+    _zf = st.multiselect("Filtrer par zone", [z for z, _ in _res["zones"]], key=f"kine_zone_f_{cle}")
+    _aff = dj[dj["zone"].isin(_zf)] if _zf else dj
+    with st.expander(f"Historique des séances kiné · {len(_aff)} (la plus récente en premier)"):
+        st.markdown("".join(_kine_carte_html(r) for _, r in _aff.iterrows()), unsafe_allow_html=True)
 
 
 def medical_rdv_inputs(key_prefix: str, ligne=None):
@@ -1336,7 +1261,7 @@ def medical_body_figure(zone_counts: dict) -> "go.Figure":
         x=_xs, y=_ys, mode="markers+text", text=[str(c) for c in _cs], customdata=_zs,
         textfont=dict(color="white", size=13, family="Inter, sans-serif"),
         marker=dict(size=_ss, color=_cols, opacity=0.95, line=dict(color="white", width=1.5)),
-        hovertemplate="<b>%{customdata}</b><br>%{text} visite(s) — cliquer pour le détail<extra></extra>",
+        hovertemplate="<b>%{customdata}</b><br>%{text} visite(s) / séance(s) — cliquer pour le détail<extra></extra>",
         selected=dict(marker=dict(opacity=1), textfont=dict(color="white")),
         unselected=dict(marker=dict(opacity=0.95), textfont=dict(color="white")),
     ))
@@ -16660,7 +16585,7 @@ RUBRIQUES_ACCUEIL = [
     ("Objectifs", "Plans de développement individuels", "cible", None),
     ("Bilan", "Fiche bilan périodique de la joueuse", "bilan", None),
     ("Gestion", "Effectif, référentiel, profils, imports", "reglages", (ROLE_ADMIN,)),
-    ("Médical", "Calendrier des visites, séances kiné, mesures, bilan", "coeur", (ROLE_ADMIN, ROLE_STAFF)),
+    ("Médical", "Calendrier des visites et séances kiné, mesures, bilan", "coeur", (ROLE_ADMIN, ROLE_STAFF)),
     ("Recrutement", "Joueuses suivies et rapports de match", "loupe", (ROLE_ADMIN, ROLE_STAFF)),
     ("Laboratoire", "Fonctionnalités en test", "fiole", (ROLE_ADMIN,)),
 ]
@@ -17852,16 +17777,12 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
             _MED_JOURS_FR = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
 
             _med_df = load_visites_medicales()
-            _med_tab_cal, _med_tab_kine, _med_tab_mesures, _med_tab_bilan = st.tabs(
-                ["📅 Calendrier", "🦵 Kiné / Réathlé", "📏 Mesures", "📊 Bilan"])
-
-            # ── Kiné / réathlétisation ──────────────────────────────────────
-            with _med_tab_kine:
-                render_kine_tab(user_profile)
+            _med_kine_df = load_seances_kine()  # séances kiné (trame du classeur de suivi kiné)
+            _med_tab_cal, _med_tab_mesures, _med_tab_bilan = st.tabs(["📅 Calendrier", "📏 Mesures", "📊 Bilan"])
 
             # ── Calendrier ──────────────────────────────────────────────────
             with _med_tab_cal:
-                _med_dates = medical_visit_dates(_med_df)
+                _med_dates = medical_visit_dates(_med_df) | medical_visit_dates(_med_kine_df)
                 _med_today = date.today()
 
                 if "_med_cal_year" not in st.session_state:
@@ -17933,7 +17854,10 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                                 st.session_state["_med_dialog_date"] = _md_date
                                 st.session_state["_active_dialog_id"] = "medical"
 
-                st.caption("🩺 Jour avec visite(s) médicale(s) — clique sur une date pour saisir/consulter.")
+                st.caption("🩺 Jour avec visite(s) médicale(s) ou séance(s) de kiné — clique sur une date pour "
+                           "saisir/consulter (professionnel « Kiné » : trame du classeur de suivi kiné).")
+                with st.expander("📥 Importer le classeur de suivi kiné (historique des séances)"):
+                    render_kine_import(_med_kine_df, user_profile)
 
                 _med_dialog_date = st.session_state.get("_med_dialog_date")
                 if _med_dialog_date and st.session_state.get("_active_dialog_id") == "medical":
@@ -17944,37 +17868,63 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                         st.session_state.pop("_med_dialog_date", None)
                         st.session_state.pop("_active_dialog_id", None)
 
-                    @st.dialog(f"Visites médicales du {_med_dialog_date.strftime('%d/%m/%Y')}", on_dismiss=_medical_fermer)
+                    @st.dialog(f"Visites médicales du {_med_dialog_date.strftime('%d/%m/%Y')}", on_dismiss=_medical_fermer,
+                               width="large")
                     def _medical_dialog():
                         st.markdown("#### Ajouter une visite")
                         _ma1, _ma2 = st.columns(2)
                         _ma_joueuse = _ma1.selectbox("Joueuse", _med_roster, key="med_add_joueuse")
                         _ma_pro = _ma2.selectbox("Professionnel", MEDICAL_PROFESSIONNELS, key="med_add_pro")
-                        _ma_soin = _ma1.selectbox("Type de soin", MEDICAL_TYPES_SOIN, key="med_add_soin")
-                        if _ma_soin == "Autre":
-                            _ma_soin = st.text_input("Préciser le type de soin", key="med_add_soin_libre")
-                        _ma_zone = _ma2.selectbox("Partie du corps", MEDICAL_ZONES_CORPS, key="med_add_zone")
-                        _ma_arret = st.number_input("Durée de l'arrêt complet (jours, 0 si aucun)",
-                                                     min_value=0, value=0, step=1, key="med_add_arret")
-                        _ma_com = st.text_area("Commentaire (facultatif)", key="med_add_com")
-                        _ma_rdv, _ma_rdv_err = medical_rdv_inputs("med_add")
-
-                        if st.button("➕ Ajouter", type="primary", key="med_add_btn"):
-                            if _ma_soin == "Autre" or not str(_ma_soin).strip():
-                                st.warning("Précise un type de soin.")
-                            elif _ma_rdv_err:
-                                st.warning(_ma_rdv_err)
-                            else:
-                                if insert_visite_medicale(
-                                    joueuse=_ma_joueuse, date_iso=_med_date_iso, professionnel=_ma_pro,
-                                    type_soin=str(_ma_soin).strip(), partie_corps=_ma_zone,
-                                    duree_arret_jours=_ma_arret, commentaire=_ma_com, rdv=_ma_rdv,
-                                ):
-                                    st.success(f"Visite ajoutée pour {_ma_joueuse}.")
-                                    st.rerun()
+                        if _ma_pro == "Kiné":
+                            # Séance de kiné / réathlétisation : trame de l'onglet « Saisie Séances »
+                            # du classeur de suivi kiné (table seances_kine).
+                            import kine_utils as _KU
+                            _kines = _KU.KINES + sorted(set(_med_kine_df["kine"].dropna()) - set(_KU.KINES)) \
+                                if not _med_kine_df.empty else list(_KU.KINES)
+                            _k_prec = (_med_kine_df[_med_kine_df["joueuse"] == _ma_joueuse]
+                                       if not _med_kine_df.empty else pd.DataFrame())
+                            _k_def = {}
+                            if not _k_prec.empty:
+                                _kp = _k_prec.iloc[0]
+                                _k_def = {k: _kp.get(k) for k in ("type_seance", "zone", "type_blessure", "kine")}
+                                st.caption(f"Dernière séance : {_kp['date']:%d/%m/%Y} · {_kp.get('type_seance') or ''} · "
+                                           f"{_kp.get('zone') or ''} · lendemain : {_kp.get('disponibilite') or '—'} "
+                                           "(zone, blessure et kiné repris par défaut)")
+                            _k_champs = _kine_champs(f"med_add_kine_{_ma_joueuse}", _k_def, _kines)
+                            if st.button("➕ Ajouter la séance", type="primary", key="med_add_kine_btn"):
+                                _k_err = enregistrer_seance_kine({"date": _med_dialog_date, "joueuse": _ma_joueuse,
+                                                                  **_k_champs}, user_profile)
+                                if _k_err:
+                                    st.error(_k_err)
                                 else:
-                                    st.error(_MED_RDV_ERREUR if _ma_rdv else
-                                             "Échec de l'enregistrement (Supabase indisponible ?).")
+                                    st.success(f"Séance de kiné ajoutée pour {_ma_joueuse}.")
+                                    st.rerun()
+                        else:
+                            _ma_soin = _ma1.selectbox("Type de soin", MEDICAL_TYPES_SOIN, key="med_add_soin")
+                            if _ma_soin == "Autre":
+                                _ma_soin = st.text_input("Préciser le type de soin", key="med_add_soin_libre")
+                            _ma_zone = _ma2.selectbox("Partie du corps", MEDICAL_ZONES_CORPS, key="med_add_zone")
+                            _ma_arret = st.number_input("Durée de l'arrêt complet (jours, 0 si aucun)",
+                                                         min_value=0, value=0, step=1, key="med_add_arret")
+                            _ma_com = st.text_area("Commentaire (facultatif)", key="med_add_com")
+                            _ma_rdv, _ma_rdv_err = medical_rdv_inputs("med_add")
+
+                            if st.button("➕ Ajouter", type="primary", key="med_add_btn"):
+                                if _ma_soin == "Autre" or not str(_ma_soin).strip():
+                                    st.warning("Précise un type de soin.")
+                                elif _ma_rdv_err:
+                                    st.warning(_ma_rdv_err)
+                                else:
+                                    if insert_visite_medicale(
+                                        joueuse=_ma_joueuse, date_iso=_med_date_iso, professionnel=_ma_pro,
+                                        type_soin=str(_ma_soin).strip(), partie_corps=_ma_zone,
+                                        duree_arret_jours=_ma_arret, commentaire=_ma_com, rdv=_ma_rdv,
+                                    ):
+                                        st.success(f"Visite ajoutée pour {_ma_joueuse}.")
+                                        st.rerun()
+                                    else:
+                                        st.error(_MED_RDV_ERREUR if _ma_rdv else
+                                                 "Échec de l'enregistrement (Supabase indisponible ?).")
 
                         st.divider()
                         st.markdown("#### Visites déjà enregistrées ce jour")
@@ -18037,6 +17987,37 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                             if _meb2.button("🗑️ Supprimer", key=f"med_ed_del_{_med_vid}", width="stretch"):
                                 if delete_visite_medicale(_med_vid):
                                     st.success("Visite supprimée.")
+                                    st.rerun()
+                                else:
+                                    st.error("Échec de la suppression.")
+
+                        st.divider()
+                        st.markdown("#### Séances de kiné ce jour")
+                        _k_jour = (_med_kine_df[_med_kine_df["date"].dt.date == _med_dialog_date]
+                                   if not _med_kine_df.empty else pd.DataFrame())
+                        if _k_jour.empty:
+                            st.caption("Aucune séance de kiné enregistrée.")
+                        else:
+                            import kine_utils as _KU
+                            _kines_j = _KU.KINES + sorted(set(_med_kine_df["kine"].dropna()) - set(_KU.KINES))
+                            _k_opts = {f"{r['joueuse']} — {r.get('type_seance') or ''} — {r.get('zone') or ''} — "
+                                       f"{r.get('kine') or ''}": int(r["id"]) for _, r in _k_jour.iterrows()}
+                            _k_choix = st.selectbox("Séance", list(_k_opts), key="med_kine_edit_pick")
+                            _k_id = _k_opts[_k_choix]
+                            _k_l = _k_jour[_k_jour["id"] == _k_id].iloc[0]
+                            _k_ed = _kine_champs(f"med_kine_ed_{_k_id}", _k_l.to_dict(), _kines_j)
+                            _kb1, _kb2 = st.columns(2)
+                            if _kb1.button("💾 Enregistrer", type="primary", key=f"med_kine_save_{_k_id}", width="stretch"):
+                                _k_err = enregistrer_seance_kine({"date": _med_dialog_date, "joueuse": _k_l["joueuse"],
+                                                                  **_k_ed}, user_profile, seance_id=_k_id)
+                                if _k_err:
+                                    st.error(_k_err)
+                                else:
+                                    st.success("Séance mise à jour.")
+                                    st.rerun()
+                            if _kb2.button("🗑️ Supprimer", key=f"med_kine_del_{_k_id}", width="stretch"):
+                                if supprimer_seance_kine(_k_id):
+                                    st.success("Séance supprimée.")
                                     st.rerun()
                                 else:
                                     st.error("Échec de la suppression.")
@@ -18136,29 +18117,73 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
 
             # ── Bilan ────────────────────────────────────────────────────────
             with _med_tab_bilan:
-                if _med_df.empty:
-                    st.info("Aucune visite médicale enregistrée pour l'instant.")
+                # Visites médicales + séances de kiné cumulées (zones du classeur ramenées à celles
+                # du schéma corporel par kine_utils.zone_corps).
+                import kine_utils as _KU
+                if _med_df.empty and _med_kine_df.empty:
+                    st.info("Aucune visite médicale ni séance de kiné enregistrée pour l'instant.")
                 else:
                     st.markdown("#### Synthèse équipe")
-                    st.dataframe(medical_team_summary(_med_df), width="stretch", hide_index=True)
+                    _syn = medical_team_summary(_med_df)
+                    _kst = _KU.statut_equipe(_med_kine_df)
+                    if not _kst.empty:
+                        _kst = _kst.rename(columns={"Total": "Séances kiné", "Dernière séance": "Dernière séance kiné",
+                                                    "Disponibilité": "Dispo. lendemain", "Zone": "Zone kiné",
+                                                    "7 j": "Kiné 7 j"})[
+                            ["Joueuse", "Séances kiné", "Kiné 7 j", "Dernière séance kiné", "Dispo. lendemain", "Zone kiné"]]
+                        _syn = _syn.merge(_kst, on="Joueuse", how="outer")
+                        for _c in ("Nb visites", "Jours d'arrêt", "Séances kiné", "Kiné 7 j"):
+                            if _c in _syn.columns:
+                                _syn[_c] = pd.to_numeric(_syn[_c], errors="coerce").fillna(0).astype(int)
+                        _o = {"Indisponible": 0, "À réévaluer": 1}
+                        _syn["_o"] = _syn["Dispo. lendemain"].map(_o).fillna(2)
+                        _syn = _syn.sort_values(["_o", "Séances kiné", "Nb visites"], ascending=[True, False, False]) \
+                            .drop(columns="_o").reset_index(drop=True)
+                        _syn["Dispo. lendemain"] = _syn["Dispo. lendemain"].fillna("")
+                        _syn["Zone kiné"] = _syn["Zone kiné"].fillna("")
+
+                        def _col_dispo(v):
+                            _c = _KINE_COUL_DISPO.get(v)
+                            return f"color:{_c};font-weight:700;" if _c else ""
+                        _sty = _syn.style
+                        _sty = (_sty.map if hasattr(_sty, "map") else _sty.applymap)(_col_dispo, subset=["Dispo. lendemain"])
+                        st.dataframe(_sty, width="stretch", hide_index=True, column_config={
+                            "Dernière séance kiné": st.column_config.DateColumn(format="DD/MM/YYYY")})
+                        st.caption("Dispo. lendemain : disponibilité indiquée à la dernière séance de kiné. "
+                                   "Kiné 7 j : séances des 7 derniers jours.")
+                    else:
+                        st.dataframe(_syn, width="stretch", hide_index=True)
 
                     st.divider()
                     st.markdown("#### Détail par joueuse")
                     _med_roster_bilan = _med_get_roster()
-                    _med_players_with_data = [p for p in _med_roster_bilan if p in set(_med_df["joueuse"])]
+                    _avec = set(_med_df["joueuse"]) if not _med_df.empty else set()
+                    _avec |= set(_med_kine_df["joueuse"]) if not _med_kine_df.empty else set()
+                    _med_players_with_data = [p for p in _med_roster_bilan if p in _avec]
                     if not _med_players_with_data:
-                        st.info("Aucune joueuse de l'effectif n'a de visite enregistrée.")
+                        st.info("Aucune joueuse de l'effectif n'a de visite ou de séance enregistrée.")
                     else:
                         _med_bilan_player = st.selectbox("Joueuse", _med_players_with_data, key="med_bilan_player_sel")
                         _med_summary = medical_player_summary(_med_df, _med_bilan_player)
+                        _dk = (_med_kine_df[_med_kine_df["joueuse"] == _med_bilan_player]
+                               if not _med_kine_df.empty else pd.DataFrame())
+                        _kres = _KU.resume_joueuse(_dk)
 
-                        _mc1, _mc2 = st.columns(2)
-                        _mc1.metric("Nombre de visites", _med_summary["nb_visites"])
+                        _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+                        _mc1.metric("Visites médicales", _med_summary["nb_visites"])
                         _mc2.metric("Jours d'arrêt total", _med_summary["jours_arret"])
+                        _mc3.metric("Séances kiné", _kres["n"])
+                        _mc4.metric("Dispo. lendemain", _kres["dispo"] or "—")
+
+                        # Zones : visites + séances kiné (zone du classeur → zone du schéma)
+                        _dk_corps = _dk.assign(_corps=_dk["zone"].map(_KU.zone_corps)) if not _dk.empty else _dk
+                        _zones_tot = Counter(_med_summary["zones"])
+                        if not _dk.empty:
+                            _zones_tot.update(_dk_corps["_corps"].dropna().tolist())
 
                         # Schéma interactif : clic sur une pastille (ou choix dans la liste) →
-                        # détail des visites enregistrées pour cette zone.
-                        _med_fig = medical_body_figure(dict(_med_summary["zones"]))
+                        # détail des visites et séances de kiné de cette zone.
+                        _med_fig = medical_body_figure(dict(_zones_tot))
                         if _med_fig is None:
                             st.caption("Aucune zone du corps enregistrée pour cette joueuse.")
                         else:
@@ -18173,7 +18198,7 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                             _clic = next((p.get("customdata") for p in _pts if p.get("customdata")), None)
                             if isinstance(_clic, (list, tuple)):
                                 _clic = _clic[0] if _clic else None
-                            _zones_j = sorted(_med_summary["zones"].items(), key=lambda kv: (-kv[1], kv[0]))
+                            _zones_j = sorted(_zones_tot.items(), key=lambda kv: (-kv[1], kv[0]))
                             _zone_opts = [z for z, _ in _zones_j]
                             if _clic in _zone_opts:
                                 st.session_state[_k_zone] = _clic
@@ -18181,12 +18206,25 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                                 st.session_state[_k_zone] = _zone_opts[0]
                             _zone_sel = st.selectbox(
                                 "Zone (ou cliquer sur une pastille)", _zone_opts, key=_k_zone,
-                                format_func=lambda z: f"{z} · {_med_summary['zones'][z]} visite(s)")
-                            _dfz = _med_df[(_med_df["joueuse"] == _med_bilan_player) & (_med_df["partie_corps"] == _zone_sel)]
-                            _arr = int(pd.to_numeric(_dfz["duree_arret_jours"], errors="coerce").fillna(0).sum())
-                            st.markdown(f"**{_zone_sel}** — {len(_dfz)} visite(s)"
+                                format_func=lambda z: f"{z} · {_zones_tot[z]}")
+                            _dfz = (_med_df[(_med_df["joueuse"] == _med_bilan_player) & (_med_df["partie_corps"] == _zone_sel)]
+                                    if not _med_df.empty else pd.DataFrame())
+                            _dkz = _dk_corps[_dk_corps["_corps"] == _zone_sel] if not _dk.empty else pd.DataFrame()
+                            _arr = (int(pd.to_numeric(_dfz["duree_arret_jours"], errors="coerce").fillna(0).sum())
+                                    if not _dfz.empty else 0)
+                            st.markdown(f"**{_zone_sel}** — {len(_dfz)} visite(s) médicale(s), {len(_dkz)} séance(s) de kiné"
                                         + (f" · {_arr} jour(s) d'arrêt" if _arr else ""))
-                            st.markdown(medical_zone_detail_html(_dfz), unsafe_allow_html=True)
+                            if not _dfz.empty:
+                                st.markdown(medical_zone_detail_html(_dfz), unsafe_allow_html=True)
+                            if not _dkz.empty:
+                                with st.expander(f"Séances de kiné · {_zone_sel} ({len(_dkz)})", expanded=_dfz.empty):
+                                    st.markdown("".join(_kine_carte_html(r) for _, r in _dkz.iterrows()),
+                                                unsafe_allow_html=True)
+
+                        if not _dk.empty:
+                            st.divider()
+                            st.markdown("#### Séances de kiné")
+                            render_kine_joueuse(_dk, _med_bilan_player)
 
     # ══════════════════════════════════════════════════════
     # PAGE STAFF PRO

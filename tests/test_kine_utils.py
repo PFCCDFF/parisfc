@@ -83,6 +83,14 @@ class TestSuivi(unittest.TestCase):
         sem = K.seances_par_semaine(self.df)
         self.assertEqual(int(sem["n"].sum()), 3)
 
+    def test_zone_corps(self):
+        self.assertEqual(K.zone_corps("Cheville G"), "Cheville/Pied")
+        self.assertEqual(K.zone_corps("Adducteurs D"), "Hanche/Aine")
+        self.assertEqual(K.zone_corps("Avant-bras Bilatéral"), "Bras/Coude")
+        self.assertEqual(K.zone_corps("Cervicales"), "Cou")
+        self.assertIsNone(K.zone_corps("Général / Corps entier"))
+        self.assertTrue(all(K.zone_corps(z) for z in K.ZONES if z != "Général / Corps entier"))
+
     def test_listes(self):
         self.assertEqual(len(K.ZONES), 53)
         self.assertEqual(set(K.COMPTE_REEDUCATION), set(K.TYPES_SEANCE))
