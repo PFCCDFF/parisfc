@@ -1015,6 +1015,99 @@ MEDICAL_BODY_ZONE_POINTS = {
 }
 
 
+@functools.lru_cache(maxsize=1)
+def _medical_body_image_uri() -> str:
+    """Schéma corporel réduit de moitié (envoyé au navigateur à chaque affichage du bilan)."""
+    try:
+        from PIL import Image as _PILImage
+        import base64 as _b64b, io as _iob
+        _im = _PILImage.open(MEDICAL_BODY_IMAGE_PATH).convert("RGB")
+        _im = _im.resize((_im.width // 2, _im.height // 2))
+        _buf = _iob.BytesIO()
+        _im.save(_buf, format="JPEG", quality=85)
+        return "data:image/jpeg;base64," + _b64b.b64encode(_buf.getvalue()).decode()
+    except Exception:
+        return ""
+
+
+def medical_body_figure(zone_counts: dict) -> "go.Figure":
+    """Schéma corporel interactif (Plotly) : mêmes pastilles que render_medical_heatmap_png,
+    cliquables — chaque point porte sa zone en customdata (sélection → détail des visites).
+    None si aucune zone connue."""
+    _counts = {z: c for z, c in zone_counts.items() if c and z in MEDICAL_BODY_ZONE_POINTS}
+    if not _counts:
+        return None
+    _w, _h = MEDICAL_BODY_IMAGE_SIZE
+    _max = max(_counts.values())
+    _lo, _hi = (253, 186, 116), (220, 38, 38)
+
+    def _col(c):
+        _t = c / _max if _max > 1 else 1.0
+        return "#" + "".join(f"{int(a + (b - a) * _t):02x}" for a, b in zip(_lo, _hi))
+
+    _xs, _ys, _zs, _cs, _ss, _cols = [], [], [], [], [], []
+    for _z, _c in _counts.items():
+        for (_x, _y) in MEDICAL_BODY_ZONE_POINTS[_z]:
+            _xs.append(_x); _ys.append(_y); _zs.append(_z); _cs.append(_c)
+            _ss.append(26 + 14 * (_c / _max)); _cols.append(_col(_c))
+    _fig = go.Figure()
+    # halo
+    _fig.add_trace(go.Scatter(x=_xs, y=_ys, mode="markers", hoverinfo="skip",
+                              marker=dict(size=[s * 1.5 for s in _ss], color=_cols, opacity=0.28, line=dict(width=0))))
+    _fig.add_trace(go.Scatter(
+        x=_xs, y=_ys, mode="markers+text", text=[str(c) for c in _cs], customdata=_zs,
+        textfont=dict(color="white", size=13, family="Inter, sans-serif"),
+        marker=dict(size=_ss, color=_cols, opacity=0.95, line=dict(color="white", width=1.5)),
+        hovertemplate="<b>%{customdata}</b><br>%{text} visite(s) — cliquer pour le détail<extra></extra>",
+        selected=dict(marker=dict(opacity=1), textfont=dict(color="white")),
+        unselected=dict(marker=dict(opacity=0.95), textfont=dict(color="white")),
+    ))
+    _uri = _medical_body_image_uri()
+    if _uri:
+        _fig.add_layout_image(dict(source=_uri, xref="x", yref="y", x=0, y=0, sizex=_w, sizey=_h,
+                                   xanchor="left", yanchor="top", sizing="stretch", layer="below"))
+    _fig.update_xaxes(range=[0, _w], visible=False, fixedrange=True)
+    _fig.update_yaxes(range=[_h, 0], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1)
+    _fig.update_layout(
+        title=dict(text="Zones les plus touchées", x=0.5, font=dict(color="#C8D8E8", size=16)),
+        height=560, margin=dict(l=0, r=0, t=40, b=0), showlegend=False, dragmode=False,
+        paper_bgcolor="#08172E", plot_bgcolor="#08172E", clickmode="event+select",
+    )
+    return _fig
+
+
+def medical_zone_detail_html(df_zone: pd.DataFrame) -> str:
+    """Cartes des visites d'une zone (plus récente d'abord) : date, professionnel, soin,
+    arrêt, commentaire, rdv complémentaire."""
+    _cartes = []
+    for _, r in df_zone.sort_values("date", ascending=False).iterrows():
+        def _v(c):
+            x = r.get(c)
+            return "" if x is None or (isinstance(x, float) and pd.isna(x)) else str(x).strip()
+        _arret = int(pd.to_numeric(r.get("duree_arret_jours"), errors="coerce") or 0) if pd.notna(
+            pd.to_numeric(r.get("duree_arret_jours"), errors="coerce")) else 0
+        _rdv = ""
+        if r.get("rdv_complementaire") is True or str(r.get("rdv_complementaire")).lower() == "true":
+            _rd = pd.to_datetime(r.get("rdv_date"), errors="coerce")
+            _rdv = ("<div style='margin-top:4px;color:#9FD8F2;font-size:12.5px;'>📅 Rdv complémentaire : "
+                    + _esc(" · ".join(x for x in [_v("rdv_specialiste"), _v("rdv_medecin"),
+                                                    _rd.strftime("%d/%m/%Y") if pd.notna(_rd) else ""] if x))
+                    + "</div>")
+        _cartes.append(
+            "<div style='background:rgba(16,46,100,.42);border:1px solid rgba(255,255,255,.14);"
+            "border-left:3px solid #DC2626;border-radius:8px;padding:9px 13px;margin-bottom:8px;'>"
+            f"<div style='display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;'>"
+            f"<b style='color:#FFF;'>{r['date'].strftime('%d/%m/%Y') if pd.notna(r['date']) else '—'}</b>"
+            f"<span style='color:#9FB8D8;font-size:12.5px;'>{_esc(_v('professionnel'))}"
+            f"{' · ' + _esc(_v('type_soin')) if _v('type_soin') else ''}</span></div>"
+            + (f"<div style='margin-top:3px;color:#FCA5A5;font-size:12.5px;'>Arrêt : {_arret} jour{'s' if _arret > 1 else ''}</div>"
+               if _arret else "")
+            + (f"<div style='margin-top:5px;color:#E6EEF8;font-size:13.5px;white-space:pre-wrap;'>{_esc(_v('commentaire'))}</div>"
+               if _v("commentaire") else "<div style='margin-top:5px;color:#6F8AAE;font-size:12.5px;'>Pas de commentaire.</div>")
+            + _rdv + "</div>")
+    return "".join(_cartes)
+
+
 @st.cache_data(ttl=300)
 @_mpl_safe
 def render_medical_heatmap_png(zone_counts: tuple) -> str:
@@ -17779,12 +17872,37 @@ def script_streamlit(pfc_kpi, edf_kpi, permissions, user_profile, page=None, sid
                         _mc1.metric("Nombre de visites", _med_summary["nb_visites"])
                         _mc2.metric("Jours d'arrêt total", _med_summary["jours_arret"])
 
-                        _med_zone_key = tuple(sorted(_med_summary["zones"].items()))
-                        _med_heatmap = render_medical_heatmap_png(_med_zone_key)
-                        if _med_heatmap:
-                            st.image(_med_heatmap)
-                        else:
+                        # Schéma interactif : clic sur une pastille (ou choix dans la liste) →
+                        # détail des visites enregistrées pour cette zone.
+                        _med_fig = medical_body_figure(dict(_med_summary["zones"]))
+                        if _med_fig is None:
                             st.caption("Aucune zone du corps enregistrée pour cette joueuse.")
+                        else:
+                            _k_zone = f"med_bilan_zone_{_med_bilan_player}"
+                            _ev = st.plotly_chart(_med_fig, width="stretch", on_select="rerun",
+                                                  selection_mode="points", key=f"med_body_{_med_bilan_player}",
+                                                  config={"displayModeBar": False})
+                            try:
+                                _pts = _ev.selection.points if _ev else []
+                            except Exception:
+                                _pts = []
+                            _clic = next((p.get("customdata") for p in _pts if p.get("customdata")), None)
+                            if isinstance(_clic, (list, tuple)):
+                                _clic = _clic[0] if _clic else None
+                            _zones_j = sorted(_med_summary["zones"].items(), key=lambda kv: (-kv[1], kv[0]))
+                            _zone_opts = [z for z, _ in _zones_j]
+                            if _clic in _zone_opts:
+                                st.session_state[_k_zone] = _clic
+                            if st.session_state.get(_k_zone) not in _zone_opts:
+                                st.session_state[_k_zone] = _zone_opts[0]
+                            _zone_sel = st.selectbox(
+                                "Zone (ou cliquer sur une pastille)", _zone_opts, key=_k_zone,
+                                format_func=lambda z: f"{z} · {_med_summary['zones'][z]} visite(s)")
+                            _dfz = _med_df[(_med_df["joueuse"] == _med_bilan_player) & (_med_df["partie_corps"] == _zone_sel)]
+                            _arr = int(pd.to_numeric(_dfz["duree_arret_jours"], errors="coerce").fillna(0).sum())
+                            st.markdown(f"**{_zone_sel}** — {len(_dfz)} visite(s)"
+                                        + (f" · {_arr} jour(s) d'arrêt" if _arr else ""))
+                            st.markdown(medical_zone_detail_html(_dfz), unsafe_allow_html=True)
 
     # ══════════════════════════════════════════════════════
     # PAGE STAFF PRO
